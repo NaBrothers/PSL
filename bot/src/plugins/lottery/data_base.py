@@ -1,7 +1,10 @@
 import pymysql
 import random
 
-
+HOSTNAME="127.0.0.1"
+USERNAME="root"
+PASSWORD="woshinaiwei"
+DBNAME="bot"
 
 #前锋位置
 forward = ["ST","RW","RS","LW","CF","LS","LF","RF"]
@@ -30,7 +33,7 @@ def getPlayer_external(pos,min=0):
 
 def getPlayer(min,positions):
     # 打开数据库连接
-    db = pymysql.connect("localhost","root","","gacha" )
+    db = pymysql.connect(HOSTNAME,USERNAME,PASSWORD,DBNAME )
 
     # 使用 cursor() 方法创建一个游标对象 cursor
     cursor = db.cursor()

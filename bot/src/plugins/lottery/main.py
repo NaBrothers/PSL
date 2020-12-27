@@ -6,9 +6,6 @@ import data_base
 
 positions = ["前锋", "中场", "后卫", "门将"]
 
-
-
-
 result = "十连结果：\n"
 for i in range(10):
     index = random.randint(0,3)

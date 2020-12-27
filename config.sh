@@ -36,6 +36,6 @@ git submodule update --init --recursive
 cd cqhttp
 go env -w GOPROXY=https://goproxy.cn,direct
 go build -ldflags "-s -w -extldflags '-static'"
-./go-cqhttp
+cp ../config.hjson .
 
 echo "====== 完成！请手动配置cqhttp/config.hjson后运行go-cqhttp"
