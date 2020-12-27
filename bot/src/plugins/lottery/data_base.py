@@ -2,7 +2,7 @@ import pymysql
 import random
 
 HOSTNAME="127.0.0.1"
-USERNAME="root"
+USERNAME="navi"
 PASSWORD="woshinaiwei"
 DBNAME="bot"
 
