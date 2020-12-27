@@ -9,7 +9,6 @@ DBNAME="bot"
 
 
 echo "====== Required OS: Ubuntu 16.04+"
-echo "====== Required enviornment: python3.8, mysql5.6.0"
 
 echo "====== 安装python"
 sudo apt update
@@ -29,5 +28,14 @@ echo "======导入数据库"
 echo "CREATE DATABASE if not exists ${DBNAME} character set utf8" | mysql -h${HOSTNAME} -P${PORT} -u${USERNAME} -p${PASSWORD}
 mysql -h${HOSTNAME} -P${PORT} -u${USERNAME} -p${PASSWORD} ${DBNAME} <./database/players.sql
 
+echo "======安装golang"
+sudo apt install golang
 
-echo "完成！"
+echo "======安装cqhttp"
+git submodule update --init --recursive
+cd cqhttp
+go env -w GOPROXY=https://goproxy.cn,direct
+go build -ldflags "-s -w -extldflags '-static'"
+./go-cqhttp
+
+echo "====== 完成！请手动配置cqhttp/config.hjson后运行go-cqhttp"
