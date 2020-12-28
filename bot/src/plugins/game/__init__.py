@@ -14,5 +14,5 @@ config = Config(**global_config.dict())
 # def some_function():
 #     pass
 
-from .utils import database
-from .lottery import data_source, data_source2
+from game.utils import database
+from game.model import lottery
