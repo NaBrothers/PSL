@@ -2,7 +2,7 @@ import random
 from nonebot import on_startswith
 from nonebot.rule import to_me
 from nonebot.adapters.cqhttp import Bot, Event
-from . import data_base
+from game.utils import database
 
 positions = ["前锋", "中场", "后卫", "门将"]
 
@@ -23,7 +23,7 @@ async def handle_first_receive(bot: Bot, event: Event, state: dict):
         if state["pool"] not in positions:
             await test.finish("位置：前锋，中场，后卫，门将",**{'at_sender':True})
         
-        result = data_base.getPlayer_external(state["pool"],80)
+        result = database.getPlayer_external(state["pool"],80)
         name = result.split(",")[0]
         overall = int(result.split(",")[1])
         pos = result.split(",")[2]

@@ -1,10 +1,6 @@
 import pymysql
 import random
-
-HOSTNAME="127.0.0.1"
-USERNAME="navi"
-PASSWORD="woshinaiwei"
-DBNAME="bot"
+from game.config import *
 
 # 打开数据库连接
 db = pymysql.connect(HOSTNAME,USERNAME,PASSWORD,DBNAME )

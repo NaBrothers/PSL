@@ -2,7 +2,7 @@ import random
 from nonebot import on_startswith
 from nonebot.rule import to_me
 from nonebot.adapters.cqhttp import Bot, Event
-from . import data_base
+from game.utils import database
 
 positions = ["前锋", "中场", "后卫", "门将"]
 
@@ -24,9 +24,9 @@ async def handle_first_receive2(bot: Bot, event: Event, state: dict):
         for i in range(10):
             index = random.randint(0,3)
             if i==9 and not floored:
-                tmp = data_base.getPlayer_external(positions[index],87)
+                tmp = database.getPlayer_external(positions[index],87)
             else:
-                tmp = data_base.getPlayer_external(positions[index],80)
+                tmp = database.getPlayer_external(positions[index],80)
             name = tmp.split(",")[0]
             overall = int(tmp.split(",")[1])
             pos = tmp.split(",")[2]
@@ -55,7 +55,7 @@ async def handle_first_receive3(bot: Bot, event: Event, state: dict):
         floored = False
         for i in range(100):
             index = random.randint(0,3)
-            tmp = data_base.getPlayer_external(positions[index],80)
+            tmp = database.getPlayer_external(positions[index],80)
             name = tmp.split(",")[0]
             overall = int(tmp.split(",")[1])
             pos = tmp.split(",")[2]
