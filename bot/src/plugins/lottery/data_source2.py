@@ -45,3 +45,30 @@ async def handle_first_receive2(bot: Bot, event: Event, state: dict):
     else:
         await test2.finish(arg)
 
+test3 = on_startswith(msg="抽卡百连", rule=to_me(), priority=1)
+
+@test3.handle()
+async def handle_first_receive3(bot: Bot, event: Event, state: dict):
+    arg = str(event.message)
+    if arg=="抽卡百连":
+        result = "百连结果：\n"
+        floored = False
+        for i in range(100):
+            index = random.randint(0,3)
+            tmp = data_base.getPlayer_external(positions[index],80)
+            name = tmp.split(",")[0]
+            overall = int(tmp.split(",")[1])
+            pos = tmp.split(",")[2]
+            photo_url = tmp.split(",")[3]
+            result += name
+            result += " "
+            result += str(overall)
+            result += " "
+            result += pos
+            result += " "
+            result += stars[overall]
+            result += "\n"
+        await test3.finish(result,**{'at_sender':True})
+    else:
+        await test3.finish(arg)
+

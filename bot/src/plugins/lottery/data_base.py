@@ -6,6 +6,11 @@ USERNAME="navi"
 PASSWORD="woshinaiwei"
 DBNAME="bot"
 
+# 打开数据库连接
+db = pymysql.connect(HOSTNAME,USERNAME,PASSWORD,DBNAME )
+# 使用 cursor() 方法创建一个游标对象 cursor
+cursor = db.cursor()
+
 #前锋位置
 forward = ["ST","RW","RS","LW","CF","LS","LF","RF"]
 
@@ -32,11 +37,6 @@ def getPlayer_external(pos,min=0):
         return getPlayer(min,goalkeeper)
 
 def getPlayer(min,positions):
-    # 打开数据库连接
-    db = pymysql.connect(HOSTNAME,USERNAME,PASSWORD,DBNAME )
-
-    # 使用 cursor() 方法创建一个游标对象 cursor
-    cursor = db.cursor()
     # 使用 execute()  方法执行 SQL 查询
     sqlstr = "SELECT Name,Overall,Position,Photo from players where ("
     for i in range(len(positions)):
@@ -48,12 +48,11 @@ def getPlayer(min,positions):
     sqlstr += ") AND Overall>="
     sqlstr += str(min)
     count = cursor.execute(sqlstr)
-    index = random.randint(0,count-1)
+    index = random.randint(1,count)
     for i in range(index):
         result = cursor.fetchone()
-    cursor.close()
-    db.close()
-    
+    #cursor.close()
+    #db.close()
     return str(result).strip('()')
 
 

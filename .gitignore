@@ -179,3 +179,5 @@ typings/
 # Serverless directories
 .serverless
 
+# server
+nohup.out
