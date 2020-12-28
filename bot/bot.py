@@ -27,7 +27,7 @@ nonebot.load_plugins("src/plugins")
 # 
 # config = driver.config
 # do something...
-
+SHORT_MESSAGE_MAX_LENGTH = 2000
 
 if __name__ == "__main__":
     nonebot.run(app="bot:app")
