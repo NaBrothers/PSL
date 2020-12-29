@@ -1,56 +1,28 @@
 import pymysql
 import random
 from game.config import *
+from game.utils.const import Const
 
-# 打开数据库连接
-db = pymysql.connect(HOSTNAME,USERNAME,PASSWORD,DBNAME )
-# 使用 cursor() 方法创建一个游标对象 cursor
-cursor = db.cursor()
+class Database:
 
-#前锋位置
-forward = ["ST","RW","RS","LW","CF","LS","LF","RF"]
+    def __init__(self):
+      # 打开数据库连接
+      self.db = pymysql.connect(HOSTNAME, USERNAME,
+                         PASSWORD, DBNAME)
+      
 
-#中场位置
-middle = ["RM","LM","LCM","CM","CDM","CAM","RAM","RCM","LDM","LAM","RDM"]
+    def __del__(self):
+      self.db.close()
 
-#后卫位置
-back = ["RB","CB","LB","RCB","RWB","LCB","LWB"]
+    # 获取一个游标
+    def cursor(self):
+      return self.db.cursor()
 
-#门将位置
-goalkeeper = ["GK"]
+    # 更新数据库
+    def update(self, sql :str):
+      cursor = db.cursor()
+      cursor.execute(sql)
+      cursor.close()
 
-
-def getPlayer_external(pos,min=0):
-    if pos not in ["forward","middle","back","goalkeeper","前锋", "中场", "后卫", "门将"]:
-        return "unkown position"
-    if pos == "forward" or pos == "前锋":
-        return getPlayer(min,forward)
-    if pos == "middle" or pos == "中场":
-        return getPlayer(min,middle)
-    if pos == "back" or pos == "后卫":
-        return getPlayer(min,back)
-    if pos == "goalkeeper" or pos == "门将":
-        return getPlayer(min,goalkeeper)
-
-def getPlayer(min,positions):
-    # 使用 execute()  方法执行 SQL 查询
-    sqlstr = "SELECT Name,Overall,Position,Photo from players where ("
-    for i in range(len(positions)):
-        if i != 0:
-            sqlstr += " OR "
-        sqlstr += "Position='"
-        sqlstr += positions[i]
-        sqlstr += "'"
-    sqlstr += ") AND Overall>="
-    sqlstr += str(min)
-    count = cursor.execute(sqlstr)
-    index = random.randint(1,count)
-    for i in range(index):
-        result = cursor.fetchone()
-    #cursor.close()
-    #db.close()
-    return str(result).strip('()')
-
-
-
-
+# 全局数据库
+g_database = Database()

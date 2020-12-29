@@ -14,5 +14,9 @@ config = Config(**global_config.dict())
 # def some_function():
 #     pass
 
-from game.utils import database
-from game.model import lottery
+from .utils import database,const,pool
+from .kernel import server,lottery
+from .model import player,user
+
+# 部署服务器
+server.g_server.start()
