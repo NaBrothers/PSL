@@ -6,6 +6,7 @@ from game.utils.database import *
 from game.utils.const import *
 from game.utils.pool import *
 from game.kernel.account import check_account
+from game.kernel.bag import *
 
 try_single = on_startswith(msg="抽卡", rule=to_me(), priority=1)
 try_ten = on_startswith(msg="十连", rule=to_me(), priority=1)
@@ -14,7 +15,7 @@ try_hundred = on_startswith(msg="百连", rule=to_me(), priority=1)
 
 @try_single.handle()
 async def try_single_handler(bot: Bot, event: Event, state: dict):
-    check_account(event)
+    user = check_account(event)
     args = str(event.message).split(" ")
     if len(args) > 1:
         pos = state["pool"] = args[1]
@@ -29,7 +30,7 @@ async def try_single_handler(bot: Bot, event: Event, state: dict):
           player = random.choice(g_pool.guard)
         elif (pos == "门将"):
           player = random.choice(g_pool.goalkeeper)
-
+        Bag.add(user, player)
         await try_single.finish(player.format(), **{"at_sender": True})
     else:
         await try_single.finish("抽卡格式：抽卡 位置", **{'at_sender': True})

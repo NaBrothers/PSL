@@ -21,7 +21,7 @@ class Database:
 
     # 更新数据库
     def update(self, sql :str):
-      cursor = db.cursor()
+      cursor = self.db.cursor()
       cursor.execute(sql)
       cursor.close()
 

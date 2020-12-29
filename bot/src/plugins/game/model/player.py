@@ -101,3 +101,13 @@ class Player:
     # 返回一个格式化字符串
     def format(self):
         return self.Name+" "+str(self.Overall)+" "+self.Position+" "+Const.STARS[self.Overall]
+
+    def getPlayerByID(id):
+        cursor = g_database.cursor()
+        count = cursor.execute("select * from players where id = " + str(id))
+        if (count == 0):
+            player = None
+        else:
+            player = Player(cursor.fetchone())
+        cursor.close()
+        return player
