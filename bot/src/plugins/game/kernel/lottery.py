@@ -28,7 +28,7 @@ async def try_single_handler(bot: Bot, event: Event, state: dict):
         elif (pos == "门将"):
           player = random.choice(g_pool.goalkeeper)
 
-        await try_single.finish(player.Name+" "+str(player.Overall)+" "+player.Position+" "+Const.STARS[player.Overall], **{"at_sender": True})
+        await try_single.finish(player.format(), **{"at_sender": True})
     else:
         await try_single.finish("抽卡格式：抽卡 位置", **{'at_sender': True})
 
@@ -47,13 +47,7 @@ async def try_ten_handler(bot: Bot, event: Event, state: dict):
                 player = random.choice(g_pool.normal)
             if player.Overall > 86:
                 floored = True
-            result += player.Name
-            result += " "
-            result += str(player.Overall)
-            result += " "
-            result += player.Position
-            result += " "
-            result += Const.STARS[player.Overall]
+            result += player.format()
             result += "\n"
         await try_ten.finish(result, **{'at_sender': True})
     else:
@@ -67,13 +61,7 @@ async def try_hundred_handler(bot: Bot, event: Event, state: dict):
         result = "百连结果：\n"
         for i in range(100):
             player = random.choice(g_pool.normal)
-            result += player.Name
-            result += " "
-            result += str(player.Overall)
-            result += " "
-            result += player.Position
-            result += " "
-            result += Const.STARS[player.Overall]
+            result += player.format()
             result += "\n"
         await try_hundred.finish(result, **{'at_sender': True})
     else:
