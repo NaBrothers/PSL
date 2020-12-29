@@ -5,6 +5,7 @@ from nonebot.adapters.cqhttp import Bot, Event
 from game.utils.database import *
 from game.utils.const import *
 from game.utils.pool import *
+from game.kernel.account import check_account
 
 try_single = on_startswith(msg="抽卡", rule=to_me(), priority=1)
 try_ten = on_startswith(msg="十连", rule=to_me(), priority=1)
@@ -13,6 +14,7 @@ try_hundred = on_startswith(msg="百连", rule=to_me(), priority=1)
 
 @try_single.handle()
 async def try_single_handler(bot: Bot, event: Event, state: dict):
+    check_account(event)
     args = str(event.message).split(" ")
     if len(args) > 1:
         pos = state["pool"] = args[1]
@@ -35,6 +37,7 @@ async def try_single_handler(bot: Bot, event: Event, state: dict):
 
 @try_ten.handle()
 async def try_ten_handler(bot: Bot, event: Event, state: dict):
+    check_account(event)
     arg = str(event.message)
     if arg == "十连":
         result = "十连结果：\n"
@@ -56,6 +59,7 @@ async def try_ten_handler(bot: Bot, event: Event, state: dict):
 
 @try_hundred.handle()
 async def try_hundred_handler(bot: Bot, event: Event, state: dict):
+    check_account(event)
     arg = str(event.message)
     if arg == "百连":
         result = "百连结果：\n"

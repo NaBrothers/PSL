@@ -9,6 +9,7 @@ class Database:
       # 打开数据库连接
       self.db = pymysql.connect(HOSTNAME, USERNAME,
                          PASSWORD, DBNAME)
+      self.db.autocommit(True)
       
 
     def __del__(self):
