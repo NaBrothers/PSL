@@ -3,6 +3,9 @@ from game.utils.database import *
 
 # 服务器类
 class Server:
+  def __init__(self):
+    self.start()
+
   # 服务器启动逻辑
   def start(self):
     logger.info("PSL启动!")

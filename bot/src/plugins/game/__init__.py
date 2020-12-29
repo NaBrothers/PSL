@@ -14,9 +14,5 @@ config = Config(**global_config.dict())
 # def some_function():
 #     pass
 
-from .utils import database,const,pool
+# 添加一个新的功能（监听事件），在此处import
 from .kernel import server,lottery
-from .model import player,user
-
-# 部署服务器
-server.g_server.start()
