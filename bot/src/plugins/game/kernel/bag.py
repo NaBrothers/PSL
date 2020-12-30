@@ -17,7 +17,8 @@ async def user_bag_handler(bot: Bot, event: Event, state: dict):
   bag = Bag.getBagByUser(user)
   ret = ""
   if (bag != None):
-    for player in bag.players:
-      ret += "\n"
+    for (id, player) in bag.players:
+      ret += "[" + str(id) + "]\t"
       ret += player.format()
-  await user_bag.finish("当前背包：" + toImage(ret), **{"at_sender": True})
+      ret += "\n"
+  await user_bag.finish("当前背包：\n" + toImage(ret), **{"at_sender": True})

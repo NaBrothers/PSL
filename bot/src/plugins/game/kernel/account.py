@@ -28,6 +28,6 @@ def check_account(event):
 @user_profile.handle()
 async def user_profile_handler(bot: Bot, event: Event, state: dict):
   user = check_account(event)
-  await user_profile.finish(user.format(), **{"at_sender": True})
+  await user_profile.finish(toImage(user.format()), **{"at_sender": True})
 
 

@@ -6,6 +6,8 @@ USERNAME="navi"
 PASSWORD="woshinaiwei"
 DBNAME="bot"
 
+PROJECT_DIR="/home/admin/PSL"
+
 class Config(BaseSettings):
     # Your Config Here
 

@@ -1,9 +1,13 @@
+from game.config import *
 from PIL import Image, ImageFont, ImageDraw
+import os
 import random
+
+os.makedirs(PROJECT_DIR + "/cqhttp/data/images/text2image/", exist_ok=True)
 
 class TextToImage:
   LINE_CHAR_COUNT = 30*2  # 每行最大字符数：30个中文字符(=60英文字符)
-  CHAR_SIZE = 30 # 字号
+  CHAR_SIZE = 20 # 字号
   TABLE_WIDTH = 4
 
   # 获取这段文字的最大宽度
@@ -22,6 +26,8 @@ class TextToImage:
         elif c == '\n':
           ret = max(ret, width)
           width = 0
+        elif c == ' ':
+          width += 2
         else:
           width += 1
 
@@ -61,13 +67,13 @@ class TextToImage:
   # 将文字转换成图片
   def toImage(text):
     new_text = TextToImage.line_break(text)
-    font = ImageFont.truetype("/home/admin/PSL/simsun.ttf", TextToImage.CHAR_SIZE, encoding="unic")
+    font = ImageFont.truetype(PROJECT_DIR + "/sarasa.ttf", TextToImage.CHAR_SIZE, encoding="unic")
     lines = new_text.count("\n")
-    im = Image.new("L", (TextToImage.get_max_count(text)*TextToImage.CHAR_SIZE // 2, TextToImage.CHAR_SIZE*lines), "white")
+    im = Image.new("L", (TextToImage.get_max_count(text)*TextToImage.CHAR_SIZE // 2, (TextToImage.CHAR_SIZE+2)*lines), "white")
     draw_table = ImageDraw.Draw(im)
-    draw_table.text(xy=(0, 0), text=new_text, fill='#000000', font= font, spacing=4)
+    draw_table.text(xy=(0, 0), text=new_text, fill='#000000', font= font, spacing=2)
     filename = str(random.randint(1, 100)) + ".png"
-    im.save("/home/admin/PSL/cqhttp/data/images/text2image/" + filename)
+    im.save(PROJECT_DIR + "/cqhttp/data/images/text2image/" + filename)
     return filename
 
 # 返回一个CQ Image

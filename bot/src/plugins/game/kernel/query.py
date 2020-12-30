@@ -27,11 +27,11 @@ async def query_player_handler(bot: Bot, event: Event, state: dict):
 
         ret = ""
         for i in range(min(20, count)):
-            ret += "\n"
             ret += Player(result[i]).format()
+            ret += "\n"
         if (count > 20):
-            ret += "\n结果过多，只显示前20条"
+            ret += "结果过多，只显示前20条"
 
-        await query_player.finish("查询到以下球员：" + toImage(ret), **{"at_sender": True})
+        await query_player.finish("查询到以下球员：\n" + toImage(ret), **{"at_sender": True})
     else:
         await query_player.finish("格式：查询 代码", **{'at_sender': True})

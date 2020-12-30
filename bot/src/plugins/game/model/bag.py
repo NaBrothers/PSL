@@ -4,12 +4,13 @@ from game.model.player import *
 
 class Bag:
   def __init__(self, data:list):
-    self.user = User.getUserByQQ(data[0][0])
-    self.players = [Player.getPlayerByID(i[1]) for i in data]
+    self.user = User.getUserByQQ(data[0][1])
+    self.players = [(i[0], Player.getPlayerByID(i[2])) for i in data]
+    self.players.sort(key = lambda p : p[1].Overall, reverse=True)
 
   def getBagByUser(user):  
         cursor = g_database.cursor()
-        count = cursor.execute("select user,player from bag where user = " + str(user.qq))
+        count = cursor.execute("select * from bag where user = " + str(user.qq))
         if (count == 0):
             bag = None
         else:
