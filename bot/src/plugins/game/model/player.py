@@ -111,3 +111,18 @@ class Player:
             player = Player(cursor.fetchone())
         cursor.close()
         return player
+
+    def getPlayerByIDMany(ids: list):
+        cursor = g_database.cursor()
+        sql = "select * from players where id in ("
+        for id in ids:
+          sql += str(id)+","
+        sql += "-1)"
+        count = cursor.execute(sql)
+        if (count == 0):
+            players = []
+        else:
+            data = cursor.fetchall()
+            players = [Player(i) for i in data]
+        cursor.close()
+        return players

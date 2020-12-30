@@ -5,7 +5,9 @@ from game.model.player import *
 class Bag:
   def __init__(self, data:list):
     self.user = User.getUserByQQ(data[0][1])
-    self.players = [(i[0], Player.getPlayerByID(i[2])) for i in data]
+    players = Player.getPlayerByIDMany([i[2] for i in data])
+    ids = [i[0] for i in data]
+    self.players = [(ids[i], players[i]) for i in range(len(players))]
     self.players.sort(key = lambda p : p[1].Overall, reverse=True)
 
   def getBagByUser(user):  
