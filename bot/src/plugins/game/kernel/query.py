@@ -3,6 +3,7 @@ from nonebot.rule import to_me
 from nonebot.adapters.cqhttp import Bot, Event
 from game.utils.database import *
 from game.model.player import *
+from game.utils.text2image import toImage
 
 query_player = on_startswith(msg="查询", rule=to_me(), priority=1)
 
@@ -24,13 +25,13 @@ async def query_player_handler(bot: Bot, event: Event, state: dict):
         result = cursor.fetchall()
         cursor.close()
 
-        ret = "查询到以下球员："
-        for i in range(min(10, count)):
+        ret = ""
+        for i in range(min(20, count)):
             ret += "\n"
             ret += Player(result[i]).format()
-        if (count > 10):
-            ret += "\n结果过多，只显示前10条"
+        if (count > 20):
+            ret += "\n结果过多，只显示前20条"
 
-        await query_player.finish(ret, **{"at_sender": True})
+        await query_player.finish("查询到以下球员：" + toImage(ret), **{"at_sender": True})
     else:
         await query_player.finish("格式：查询 代码", **{'at_sender': True})

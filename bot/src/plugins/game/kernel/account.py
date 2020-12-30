@@ -3,6 +3,7 @@ from nonebot.rule import to_me
 from nonebot.adapters.cqhttp import Bot, Event
 from game.utils.database import *
 from game.model.user import *
+from game.utils.text2image import toImage
 
 user_profile = on_startswith(msg="账号", rule=to_me(), priority=1)
 

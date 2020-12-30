@@ -3,5 +3,6 @@ create table IF NOT EXISTS `users` (
   `QQ` int(11) NOT NULL UNIQUE,
   `Name` varchar(50) default null,
   `Level` int(11) default null,
+  `Money` int(11) default null
   primary key(`id`)
 ) default charset = utf8;

@@ -21,7 +21,7 @@ class Bag:
       g_database.update("insert into bag (user, player) values (" + str(user.qq) + "," + str(player.ID)+")")
 
   def addMany(user, players:list):
-      cursor = db.cursor()
+      cursor = g_database.cursor()
       for player in players:
         cursor.execute("insert into bag (user, player) values (" + str(user.qq) + "," + str(player.ID)+")")
       cursor.close()
