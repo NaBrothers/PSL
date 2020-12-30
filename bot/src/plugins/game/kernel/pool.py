@@ -30,7 +30,7 @@ class Pool:
 
     def init_vip():
         cursor = g_database.cursor()
-        count = cursor.execute("select * from players where Overall >= 86;")
+        count = cursor.execute("select * from players where Overall > 86;")
         result = cursor.fetchall()
         cursor.close()
         ret = []

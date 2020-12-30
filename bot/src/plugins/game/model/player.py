@@ -100,7 +100,11 @@ class Player:
 
     # 返回一个格式化字符串
     def format(self):
-        return self.Name+" "+str(self.Overall)+" "+self.Position+" "+Const.STARS[self.Overall]
+        if not PICTURE_MODE:
+            return self.Name+" (" + Const.STARS[self.Overall][0] + ") "+str(self.Overall)+" "+self.Position+" "
+        else:
+            return Const.STARS[self.Overall][1] + self.Name + "/ " + str(self.Overall)+" "+self.Position+" "
+
 
     def getPlayerByID(id):
         cursor = g_database.cursor()
@@ -116,7 +120,7 @@ class Player:
         cursor = g_database.cursor()
         sql = "select * from players where id in ("
         for id in ids:
-          sql += str(id)+","
+            sql += str(id)+","
         sql += "-1)"
         count = cursor.execute(sql)
         if (count == 0):

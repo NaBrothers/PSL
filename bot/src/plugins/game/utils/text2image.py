@@ -1,4 +1,5 @@
 from game.config import *
+from game.utils.const import *
 from PIL import Image, ImageFont, ImageDraw
 import os
 import random
@@ -10,27 +11,25 @@ class TextToImage:
   CHAR_SIZE = 20 # 字号
   TABLE_WIDTH = 4
 
-  # 获取这段文字的最大宽度
-  def get_max_count(line):
+  # 计算一段文字的最大宽度
+  def get_max_width(line):
     ret = 0
     width = 0
     for c in line:
       if (width >= TextToImage.LINE_CHAR_COUNT):
-        return TextToImage.LINE_CHAR_COUNT
-
+          return TextToImage.LINE_CHAR_COUNT
       if len(c.encode('utf8')) == 3:
-        width += 2
-      else:
-        if c == '\t':
-          width += TextToImage.TABLE_WIDTH - width % TextToImage.TABLE_WIDTH
-        elif c == '\n':
-          ret = max(ret, width)
-          width = 0
-        elif c == ' ':
           width += 2
-        else:
-          width += 1
-
+      else:
+          if c == '\t':
+              width += TextToImage.TABLE_WIDTH - width % TextToImage.TABLE_WIDTH
+          elif c == '\n':
+              ret = max(ret, width)
+              width = 0
+          elif c == '/' or c == '~':
+              continue
+          else:
+              width += 1
     ret = max(ret, min(width, TextToImage.LINE_CHAR_COUNT))
     return ret
 
@@ -54,6 +53,8 @@ class TextToImage:
               elif c == '\n':
                   width = 0
                   ret += c
+              elif c == '/' or c == '~':
+                  ret += c
               else:
                   width += 1
                   ret += c
@@ -64,20 +65,56 @@ class TextToImage:
           return ret
       return ret + '\n'
 
+  # 计算一行文字的宽度
+  def get_width(text):
+    width = 0
+    for c in text:
+      if len(c.encode('utf8')) == 3:
+        width += 2
+      else:
+        if c == '\t':
+          width += TextToImage.TABLE_WIDTH - width % TextToImage.TABLE_WIDTH
+        elif c == '\n':
+          continue
+        elif c == '/' or c == '~':
+          continue
+        else:
+          width += 1
+    return width
+
+
   # 将文字转换成图片
   def toImage(text):
     new_text = TextToImage.line_break(text)
     font = ImageFont.truetype(PROJECT_DIR + "/sarasa.ttf", TextToImage.CHAR_SIZE, encoding="unic")
     lines = new_text.count("\n")
-    im = Image.new("L", (TextToImage.get_max_count(text)*TextToImage.CHAR_SIZE // 2, (TextToImage.CHAR_SIZE+2)*lines), "white")
+    im = Image.new("RGB", (TextToImage.get_max_width(text)*TextToImage.CHAR_SIZE // 2, (TextToImage.CHAR_SIZE+2)*lines), "white")
+
     draw_table = ImageDraw.Draw(im)
-    draw_table.text(xy=(0, 0), text=new_text, fill='#000000', font= font, spacing=2)
+    lines = new_text.split("\n")
+    for i, line in enumerate(lines):
+      items = line.split("/")
+      offset = 0
+      for j, item in enumerate(items):
+        if item == "":
+          continue 
+        if item[0] == '~':
+          color = Const.COLOR[item[1]]
+          item = item[2:]
+        else:
+          color = "black"
+        draw_table.text(xy=(offset, (TextToImage.CHAR_SIZE+2)*i), text=item, fill=color, font= font)
+
+        offset += TextToImage.get_width(item)*TextToImage.CHAR_SIZE//2
+
     filename = str(random.randint(1, 100)) + ".png"
     im.save(PROJECT_DIR + "/cqhttp/data/images/text2image/" + filename)
     return filename
 
 # 返回一个CQ Image
 def toImage(text):
+  if not PICTURE_MODE:
+    return text
   filename = TextToImage.toImage(text)
   ret = "[CQ:image,file=/text2image/" + filename + "]"
   return ret

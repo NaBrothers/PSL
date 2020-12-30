@@ -45,5 +45,5 @@ async def get_bag_by_page(bag: Bag, page: str):
             ret += "[" + str(id) + "]\t"
             ret += player.format()
             ret += "\n"
-    foot = "第" + str(page) + "页/共" + str(total_page) + "页\n请输入“背包 页码”跳转到指定页"
+    foot = "第" + str(page) + "页//共" + str(total_page) + "页\n请输入“背包 页码”跳转到指定页"
     await user_bag.finish("当前背包：\n" + toImage(ret+foot), **{"at_sender": True})
