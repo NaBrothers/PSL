@@ -10,10 +10,11 @@ user_profile = on_startswith(msg="账号", rule=to_me(), priority=1)
 
 def check_account(event):
   qq = event.sender["user_id"]
+  name = event.sender["nickname"].replace("'", "''")
   user = User.getUserByQQ(qq)
   if (user == None):
     # 第一次登陆
-    sql = "insert into users (qq, name, level) values (" + str(qq) + ",'" + event.sender["nickname"] + "',0)"
+    sql = "insert into users (qq, name, level, money) values (" + str(qq) + ",'" + name + "',0, 0)"
     cursor = g_database.cursor()
     cursor.execute(sql)
     cursor.execute("select * from users where qq = " + str(qq))

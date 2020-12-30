@@ -8,9 +8,10 @@ class User:
         self.qq = data[1]
         self.name = data[2]
         self.level = data[3]
+        self.money = data[4]
 
     def format(self):
-        return str(self.qq) + " " + self.name + " " + str(self.level) + "级"
+        return str(self.qq) + " " + self.name + " " + str(self.level) + "级\n" + "球币：" + str(self.money)
 
     def getUserByQQ(qq):
         cursor = g_database.cursor()
