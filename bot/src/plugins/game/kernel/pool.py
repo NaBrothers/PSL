@@ -1,44 +1,52 @@
 from game.model.player import *
 from game.utils.database import *
+import random
 
-# 卡池
+# 卡池基类
 class Pool:
-
     def __init__(self):
-      # 普通卡池
-      self.normal = Pool.init_normal()
-      # 四五星卡池
-      self.vip = Pool.init_vip()
-      # 前锋卡池
-      self.forward = Pool.init_forward()
-      # 中场卡池
-      self.midfield = Pool.init_midfield()
-      # 后卫卡池
-      self.guard = Pool.init_guard()
-      # 门将卡池
-      self.goalkeeper = Pool.init_goalkeeper()
+      self.pool = []
+      self.init()
 
-    def init_normal():
+    def init(self):
+      pass
+
+    def choice(self):
+      return random.choice(self.pool)
+
+# 普通卡池
+class NormalPool(Pool):
+    def init(self):
         cursor = g_database.cursor()
         count = cursor.execute("select * from players where Overall >= 80;")
         result = cursor.fetchall()
         cursor.close()
-        ret = []
         for i in range(count):
-            ret.append(Player(result[i]))
-        return ret
+            self.pool.append(Player(result[i]))
 
-    def init_vip():
+# 球星卡池
+class BetterPool(Pool):
+    def init(self):
+        cursor = g_database.cursor()
+        count = cursor.execute("select * from players where Overall > 83;")
+        result = cursor.fetchall()
+        cursor.close()
+        for i in range(count):
+            self.pool.append(Player(result[i]))
+
+# 巨星卡池
+class VipPool(Pool):
+    def init(self):
         cursor = g_database.cursor()
         count = cursor.execute("select * from players where Overall > 86;")
         result = cursor.fetchall()
         cursor.close()
-        ret = []
         for i in range(count):
-            ret.append(Player(result[i]))
-        return ret
+            self.pool.append(Player(result[i]))
 
-    def init_forward():
+# 前锋卡池
+class ForwardPool(Pool):
+    def init(self):
         cursor = g_database.cursor()
         sqlstr = "SELECT * from players where ("
         for i in range(len(Const.FORWARD)):
@@ -51,12 +59,12 @@ class Pool:
         count = cursor.execute(sqlstr)
         result = cursor.fetchall()
         cursor.close()
-        ret = []
         for i in range(count):
-            ret.append(Player(result[i]))
-        return ret
+            self.pool.append(Player(result[i]))
 
-    def init_midfield():
+# 中场卡池
+class MidfieldPool(Pool):
+    def init(self):
         cursor = g_database.cursor()
         sqlstr = "SELECT * from players where ("
         for i in range(len(Const.MIDFIELD)):
@@ -69,12 +77,12 @@ class Pool:
         count = cursor.execute(sqlstr)
         result = cursor.fetchall()
         cursor.close()
-        ret = []
         for i in range(count):
-            ret.append(Player(result[i]))
-        return ret
+            self.pool.append(Player(result[i]))
 
-    def init_guard():
+# 后卫卡池
+class GuardPool(Pool):
+    def init(self):
         cursor = g_database.cursor()
         sqlstr = "SELECT * from players where ("
         for i in range(len(Const.GUARD)):
@@ -87,13 +95,11 @@ class Pool:
         count = cursor.execute(sqlstr)
         result = cursor.fetchall()
         cursor.close()
-        ret = []
         for i in range(count):
-            ret.append(Player(result[i]))
-        return ret
-
-
-    def init_goalkeeper():
+            self.pool.append(Player(result[i]))
+# 门将卡池
+class GoalkeeperPool(Pool):
+    def init(self):
         cursor = g_database.cursor()
         sqlstr = "SELECT * from players where ("
         for i in range(len(Const.GOALKEEPER)):
@@ -106,10 +112,17 @@ class Pool:
         count = cursor.execute(sqlstr)
         result = cursor.fetchall()
         cursor.close()
-        ret = []
         for i in range(count):
-            ret.append(Player(result[i]))
-        return ret
+            self.pool.append(Player(result[i]))
 
 # 全局卡池
-g_pool = Pool()
+g_pool = {
+  "普通" : NormalPool(),
+  "球星" : BetterPool(),
+  "巨星" : VipPool(),
+  "前锋": ForwardPool(),
+  "中场": MidfieldPool(),
+  "后卫": GuardPool(),
+  "门将": GoalkeeperPool(),
+  "十连": None
+}
