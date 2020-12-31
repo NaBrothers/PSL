@@ -4,5 +4,6 @@ create table IF NOT EXISTS `users` (
   `Name` varchar(50) default null,
   `Level` int(11) default null,
   `Money` int(11) default null,
+  `isFirst` boolean default true,
   primary key(`ID`)
 ) default charset = utf8;

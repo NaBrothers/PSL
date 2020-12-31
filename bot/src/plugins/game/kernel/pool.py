@@ -44,6 +44,16 @@ class VipPool(Pool):
         for i in range(count):
             self.pool.append(Player(result[i]))
 
+# 巅峰卡池
+class BestPool(Pool):
+    def init(self):
+        cursor = g_database.cursor()
+        count = cursor.execute("select * from players where Overall > 88;")
+        result = cursor.fetchall()
+        cursor.close()
+        for i in range(count):
+            self.pool.append(Player(result[i]))
+
 # 前锋卡池
 class ForwardPool(Pool):
     def init(self):
@@ -117,12 +127,44 @@ class GoalkeeperPool(Pool):
 
 # 全局卡池
 g_pool = {
-  "普通" : NormalPool(),
-  "球星" : BetterPool(),
-  "巨星" : VipPool(),
-  "前锋": ForwardPool(),
-  "中场": MidfieldPool(),
-  "后卫": GuardPool(),
-  "门将": GoalkeeperPool(),
-  "十连": None
+  "普通" : {
+    "pool": NormalPool(),
+    "cost" : 10
+  },
+  "球星" : {
+    "pool": BetterPool(),
+    "cost" : 30
+  },
+  "巨星" : {
+    "pool": VipPool(),
+    "cost" : 50
+  },
+  "巅峰" : {
+    "pool": BestPool(),
+    "cost" : 100
+  },
+  "前锋": {
+    "pool": ForwardPool(),
+    "cost" : 30
+  },
+  "中场": {
+    "pool": MidfieldPool(),
+    "cost" : 30
+  },
+  "后卫": {
+    "pool": GuardPool(),
+    "cost" : 30
+  },
+  "门将": {
+    "pool": GoalkeeperPool(),
+    "cost" : 30
+  },
+  "十连": {
+    "pool": None,
+    "cost" : 200
+  },
+  "新手": {
+    "pool": None,
+    "cost" : 0
+  }
 }

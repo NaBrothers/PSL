@@ -9,6 +9,7 @@ class User:
         self.name = data[2]
         self.level = data[3]
         self.money = data[4]
+        self.isFirst = data[5]
 
     def format(self):
         return str(self.qq) + " " + self.name + " " + str(self.level) + "级\n" + "球币：" + str(self.money)
@@ -22,3 +23,11 @@ class User:
             user = User(cursor.fetchone())
         cursor.close()
         return user
+
+    def spend(self, cost):
+        self.money -= cost
+        g_database.update("update users set money = " + str(self.money) + " where qq = " + str(self.qq))
+
+    def setIsFirst(self, isFirst):
+        self.isFirst = isFirst
+        g_database.update("update users set isfirst = " + isFirst + " where qq = " + str(self.qq))
