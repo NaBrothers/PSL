@@ -27,6 +27,10 @@ class User:
     def spend(self, cost):
         self.money -= cost
         g_database.update("update users set money = " + str(self.money) + " where qq = " + str(self.qq))
+    
+    def earn(self, money):
+        self.money += money
+        g_database.update("update users set money = " + str(self.money) + " where qq = " + str(self.qq))
 
     def setIsFirst(self, isFirst):
         self.isFirst = isFirst

@@ -15,4 +15,4 @@ config = Config(**global_config.dict())
 #     pass
 
 # 添加一个新的功能（监听事件），在此处import
-from .kernel import server,lottery,query,account,bag,test
+from .kernel import server,lottery,query,account,bag,test,payment

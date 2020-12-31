@@ -8,4 +8,4 @@ test_test = on_startswith(msg="测试", rule=to_me(), priority=1)
 
 @test_test.handle()
 async def test_handler(bot: Bot, event: Event, state: dict):
-    await test_test.finish(toImage(str(event.message)), **{'at_sender': True})
+    await test_test.finish(toImage(str(event.message).lstrip("测试 ")), **{'at_sender': True})
