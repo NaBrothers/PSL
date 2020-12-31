@@ -7,6 +7,7 @@ from game.utils.const import *
 from game.kernel.pool import *
 from game.kernel.account import check_account
 from game.kernel.bag import *
+from game.model.card import *
 from game.utils.text2image import toImage
 
 return_text = '''所有卡包：
@@ -53,12 +54,13 @@ async def try_lottery_handler(bot: Bot, event: Event, state: dict):
 
 def try_single(user, pool):
   player = g_pool[pool]["pool"].choice()
-  Bag.add(user, player)
+  card = Card.new(player, user)
+  user.addToBag(card)
   user.spend(g_pool[pool]["cost"])
-  return player.format()
+  return card.format()
 
 def try_ten(user, pool):
-    players = []
+    cards = []
     result = ""
     floored = False
     for i in range(10):
@@ -69,15 +71,16 @@ def try_ten(user, pool):
             player = g_pool["普通"]["pool"].choice()
         if player.Overall > 86:
             floored = True
-        players.append(player)
-        result += player.format()
+        card = Card.new(player, user)
+        cards.append(card)
+        result += card.format()
         result += "\n"
-    Bag.addMany(user, players)
+    user.addToBagMany(cards)
     user.spend(g_pool[pool]["cost"])
     return result.rstrip("\n")
 
 def try_newbee(user, pool):
-    players = []
+    cards = []
     result = ""
     floored = False
 
@@ -85,25 +88,25 @@ def try_newbee(user, pool):
         player = g_pool["前锋"]["pool"].choice()
         if player.Overall > 88:
             floored = True
-        players.append(player)
+        cards.append(Card.new(player, user))
 
     for i in range(6):
         player = g_pool["中场"]["pool"].choice()
         if player.Overall > 88:
             floored = True
-        players.append(player)
+        cards.append(Card.new(player, user))
 
     for i in range(6):
         player = g_pool["后卫"]["pool"].choice()
         if player.Overall > 88:
             floored = True
-        players.append(player)
+        cards.append(Card.new(player, user))
 
     for i in range(2):
         player = g_pool["门将"]["pool"].choice()
         if player.Overall > 88:
             floored = True
-        players.append(player)   
+        cards.append(Card.new(player, user))  
 
     if not floored:
         player = g_pool["巅峰"]["pool"].choice()
@@ -115,13 +118,13 @@ def try_newbee(user, pool):
           index = random.randint(12, 17)
         else:
           index = random.randint(18, 19)
-        players[index] = player
+        cards[index] = Card.new(player, user)
     
-    for player in players:
-      result += player.format()
+    for card in cards:
+      result += card.format()
       result += '\n'
 
-    Bag.addMany(user, players)
+    user.addToBagMany(cards)
     user.spend(g_pool[pool]["cost"])
     user.setIsFirst("false")
     return result

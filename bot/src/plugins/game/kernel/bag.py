@@ -17,7 +17,7 @@ user_bag = on_startswith(msg="背包", rule=to_me(), priority=1)
 async def user_bag_handler(bot: Bot, event: Event, state: dict):
     arg = str(event.message).split(" ", 1)
     user = await check_account(user_bag, event)
-    bag = Bag.getBagByUser(user)
+    bag = user.getBag()
     if (len(arg) == 1):
         await get_bag_by_page(bag, "1")
     else:
@@ -31,7 +31,7 @@ async def user_bag_handler(bot: Bot, event: Event, state: dict):
 async def get_bag_by_page(bag: Bag, page: str):
     if bag == None:
       await user_bag.finish("当前背包为空", **{"at_sender":True})
-    total_page = math.ceil(len(bag.players) / 20)
+    total_page = math.ceil(len(bag.cards) / 20)
     page = int(page)
     if page > total_page or page <= 0:
         await user_bag.finish("页码错误", **{"at_sender": True})
@@ -41,11 +41,11 @@ async def get_bag_by_page(bag: Bag, page: str):
     if (bag != None):
         for i in range(20):
             index = (page - 1) * 20 + i
-            if index >= len(bag.players):
+            if index >= len(bag.cards):
                 break
-            (id, player) = bag.players[index]
-            ret += "[" + str(id) + "]\t"
-            ret += player.format()
+            card = bag.cards[index]
+            ret += "[" + str(card.id) + "]\t"
+            ret += card.format()
             ret += "\n"
     foot = "第" + str(page) + "页 共" + str(total_page) + "页\n请输入“背包 页码”跳转到指定页"
     await user_bag.finish("当前背包：\n" + toImage(ret+foot), **{"at_sender": True})

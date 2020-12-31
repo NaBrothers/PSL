@@ -100,10 +100,7 @@ class Player:
 
     # 返回一个格式化字符串
     def format(self):
-        if not PICTURE_MODE:
-            return self.Name+" (" + Const.STARS[self.Overall][0] + ") "+str(self.Overall)+" "+self.Position+" "
-        else:
-            return Const.STARS[self.Overall][1] + self.Name + "/ " + str(self.Overall)+" "+self.Position+" "
+        return self.Position+"\t" + Const.QUALITY[self.Overall] + self.Name + "/ " + str(self.Overall)
 
 
     def getPlayerByID(id):

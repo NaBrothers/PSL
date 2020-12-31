@@ -85,6 +85,10 @@ class TextToImage:
 
   # 将文字转换成图片
   def toImage(text):
+    filename = str(hash(text)) + ".png"
+    if os.path.exists(filename):
+      return filename
+    
     new_text = TextToImage.line_break(text)
     font = ImageFont.truetype(PROJECT_DIR + "/sarasa.ttf", TextToImage.CHAR_SIZE, encoding="unic")
     lines = new_text.count("\n")
@@ -107,7 +111,6 @@ class TextToImage:
 
         offset += TextToImage.get_width(item)*TextToImage.CHAR_SIZE//2
 
-    filename = str(random.randint(1, 100)) + ".png"
     im.save(PROJECT_DIR + "/cqhttp/data/images/text2image/" + filename)
     return filename
 
