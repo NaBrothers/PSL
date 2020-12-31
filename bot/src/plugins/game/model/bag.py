@@ -4,8 +4,6 @@ from game.model.player import *
 
 class Bag:
   def __init__(self, data:list):
-    # TODO 
-    # fix me!
     self.user = User.getUserByQQ(data[0][1])
     players = Player.getPlayerByIDMany([i[2] for i in data])
     ids = [i[0] for i in data]

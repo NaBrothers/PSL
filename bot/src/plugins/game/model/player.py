@@ -127,6 +127,11 @@ class Player:
             players = []
         else:
             data = cursor.fetchall()
-            players = [Player(i) for i in data]
+            id2player = {}
+            for line in data:
+              player = Player(line)
+              id2player[player.ID] = player
+            players = [id2player[i] for i in ids]
         cursor.close()
+
         return players

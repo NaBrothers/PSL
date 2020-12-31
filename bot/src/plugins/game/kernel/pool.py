@@ -18,7 +18,7 @@ class Pool:
 class NormalPool(Pool):
     def init(self):
         cursor = g_database.cursor()
-        count = cursor.execute("select * from players where Overall >= 80;")
+        count = cursor.execute("select * from players;")
         result = cursor.fetchall()
         cursor.close()
         for i in range(count):
@@ -65,7 +65,7 @@ class ForwardPool(Pool):
             sqlstr += "Position='"
             sqlstr += Const.FORWARD[i]
             sqlstr += "'"
-        sqlstr += ") AND Overall >= 80;"
+        sqlstr += ");"
         count = cursor.execute(sqlstr)
         result = cursor.fetchall()
         cursor.close()
@@ -83,7 +83,7 @@ class MidfieldPool(Pool):
             sqlstr += "Position='"
             sqlstr += Const.MIDFIELD[i]
             sqlstr += "'"
-        sqlstr += ") AND Overall >= 80;"
+        sqlstr += ");"
         count = cursor.execute(sqlstr)
         result = cursor.fetchall()
         cursor.close()
@@ -101,7 +101,7 @@ class GuardPool(Pool):
             sqlstr += "Position='"
             sqlstr += Const.GUARD[i]
             sqlstr += "'"
-        sqlstr += ") AND Overall >= 80;"
+        sqlstr += ");"
         count = cursor.execute(sqlstr)
         result = cursor.fetchall()
         cursor.close()
@@ -118,7 +118,7 @@ class GoalkeeperPool(Pool):
             sqlstr += "Position='"
             sqlstr += Const.GOALKEEPER[i]
             sqlstr += "'"
-        sqlstr += ") AND Overall >= 80;"
+        sqlstr += ");"
         count = cursor.execute(sqlstr)
         result = cursor.fetchall()
         cursor.close()

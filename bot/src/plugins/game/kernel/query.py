@@ -15,7 +15,7 @@ async def query_player_handler(bot: Bot, event: Event, state: dict):
         cursor = g_database.cursor()
         try:
             count = cursor.execute(
-                "select * from players where Overall >= 80 and " + args[1])
+                "select * from players where " + args[1])
         except Exception as e:
             await query_player.finish("格式错误", **{"at_sender": True})
             return
@@ -30,7 +30,7 @@ async def query_player_handler(bot: Bot, event: Event, state: dict):
             ret += Player(result[i]).format()
             ret += "\n"
         if (count > 20):
-            ret += "结果过多，只显示前20条"
+            ret += "共查询到"+str(count)+"个结果，只显示前20条"
 
         await query_player.finish("查询到以下球员：\n" + toImage(ret), **{"at_sender": True})
     else:
