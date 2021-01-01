@@ -115,7 +115,7 @@ async def buy_card(user, id):
     trans.user.earn(trans.cost)
     ret = "剩余球币：" + str(user.money)
 
-    msg = str(user.name) + "购买了你的球员" + trans.card.format() + "，价格" + str(trans.cost) + "球币"
+    msg = str(user.name) + "购买了你的球员\n" + trans.card.format() + "\b价格" + str(trans.cost) + "球币"
     Offline.send(trans.user, toImage(msg))
 
     await transfer.finish("购买成功！\n" + toImage(ret), **{'at_sender': True})

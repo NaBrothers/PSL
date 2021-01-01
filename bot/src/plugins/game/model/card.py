@@ -39,4 +39,4 @@ class Card:
       status = " (" + Const.STATUS[self.status] + ")"
     else:
       status = ""
-    return self.player.Position+" " + Const.QUALITY[self.player.Overall] + self.player.Name + "/ " + str(self.player.Overall) + " " + Const.STARS[self.star] + " " + Const.STYLE[self.style]["name"] + status
+    return self.player.Position+"\t" + Const.QUALITY[self.player.Overall] + self.player.Name + "/ " + str(self.player.Overall) + " " + Const.STARS[self.star] + " " + Const.STYLE[self.style]["name"] + status

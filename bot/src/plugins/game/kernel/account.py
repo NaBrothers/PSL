@@ -16,6 +16,7 @@ async def check_account(matcher, event):
   if (user == None):
     # 第一次登陆
     await matcher.send("欢迎加入游戏！送你一发新手卡包，输入\"抽卡 新手\"获取", **{"at_sender": True})
+    await matcher.send("输入\"帮助\"获取游戏菜单", **{"at_sender": True})
     sql = "insert into users (qq, name, level, money) values (" + str(qq) + ",'" + name + "',0, 1000)"
     cursor = g_database.cursor()
     cursor.execute(sql)

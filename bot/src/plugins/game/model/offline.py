@@ -24,3 +24,17 @@ class Offline:
     count = cursor.execute("delete from offline where user = " + str(user.qq))
     cursor.close()
 
+  def broadcast(user, msg):
+    msg = msg.replace("\\", "\\\\")
+    msg = msg.replace("\n", "\\n")
+    msg = msg.replace("\t", "\\t")
+    msg = "'来自" + user.name + "的广播：" + msg + "'"
+    cursor = g_database.cursor()
+    count = cursor.execute("select qq from users")
+    qqs = cursor.fetchall()
+    for qq in qqs:
+      if qq == user.qq:
+        continue
+      count = cursor.execute("insert into offline (user, message) values (" +  str(qq[0]) + "," + msg + ")")
+    cursor.close()
+
