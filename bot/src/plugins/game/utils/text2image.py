@@ -85,6 +85,9 @@ class TextToImage:
 
   # 将文字转换成图片
   def toImage(text):
+    if text == "":
+      return text
+
     filename = str(hash(text)) + ".png"
     if os.path.exists(filename):
       return filename

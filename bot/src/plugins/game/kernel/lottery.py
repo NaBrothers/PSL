@@ -55,7 +55,7 @@ async def try_lottery_handler(bot: Bot, event: Event, state: dict):
 def try_single(user, pool):
   player = g_pool[pool]["pool"].choice()
   card = Card.new(player, user)
-  user.addToBag(card)
+  Bag.addToBag(user, card)
   user.spend(g_pool[pool]["cost"])
   return card.format()
 
@@ -75,7 +75,7 @@ def try_ten(user, pool):
         cards.append(card)
         result += card.format()
         result += "\n"
-    user.addToBagMany(cards)
+    Bag.addToBagMany(user, cards)
     user.spend(g_pool[pool]["cost"])
     return result.rstrip("\n")
 
@@ -124,7 +124,7 @@ def try_newbee(user, pool):
       result += card.format()
       result += '\n'
 
-    user.addToBagMany(cards)
+    Bag.addToBagMany(user, cards)
     user.spend(g_pool[pool]["cost"])
     user.setIsFirst("false")
     return result

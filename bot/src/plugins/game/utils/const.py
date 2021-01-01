@@ -41,6 +41,11 @@ class Const:
              "o": "orange",
              "r": "red"}
 
+    # 状态
+    STATUS = {0: "",
+              1: "转会中"
+    }
+
     # 特性
     STYLE = {
       "sniper": {

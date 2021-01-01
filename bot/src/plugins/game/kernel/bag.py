@@ -17,7 +17,7 @@ user_bag = on_startswith(msg="背包", rule=to_me(), priority=1)
 async def user_bag_handler(bot: Bot, event: Event, state: dict):
     arg = str(event.message).split(" ", 1)
     user = await check_account(user_bag, event)
-    bag = user.getBag()
+    bag = Bag.getBag(user)
     if (len(arg) == 1):
         await get_bag_by_page(bag, "1")
     else:

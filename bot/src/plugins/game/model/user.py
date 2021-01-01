@@ -1,6 +1,5 @@
 # 玩家信息
 from game.utils.database import *
-from game.model.bag import Bag
 
 class User:
     def __init__(self, data: list):
@@ -35,22 +34,3 @@ class User:
     def setIsFirst(self, isFirst):
         self.isFirst = isFirst
         g_database.update("update users set isfirst = " + isFirst + " where qq = " + str(self.qq))
-
-    def getBag(self):
-        cursor = g_database.cursor()
-        count = cursor.execute("select * from cards where user = " + str(self.qq))
-        if (count == 0):
-            bag = None
-        else:
-            bag = Bag(cursor.fetchall())
-        cursor.close()
-        return bag
-
-    def addToBag(self, card):
-      g_database.update("insert into cards (user, player, star, style) values (" + str(self.qq) + "," + str(card.player.ID)+ "," + str(card.star) + ",\"" + card.style +"\")")
-
-    def addToBagMany(self, cards:list):
-      cursor = g_database.cursor()
-      for card in cards:
-        g_database.update("insert into cards (user, player, star, style) values (" + str(self.qq) + "," + str(card.player.ID)+ "," + str(card.star) + ",\"" + card.style +"\")")
-      cursor.close()
