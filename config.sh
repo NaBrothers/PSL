@@ -45,4 +45,6 @@ go env -w GOPROXY=https://goproxy.cn,direct
 go build -ldflags "-s -w -extldflags '-static'"
 cp ../config.hjson .
 
+cp -r assets/avatars/ cqhttp/data/images/
+
 echo "====== 完成！请手动配置cqhttp/config.hjson后运行go-cqhttp"

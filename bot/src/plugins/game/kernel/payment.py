@@ -3,7 +3,7 @@ from nonebot.rule import to_me
 from nonebot.adapters.cqhttp import Bot, Event
 from game.utils.database import *
 from game.model.user import *
-from game.utils.text2image import toImage
+from game.utils.image import toImage
 from game.kernel.account import *
 payment = on_startswith(msg="充值", rule=to_me(), priority=1)  
   

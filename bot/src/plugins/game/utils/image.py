@@ -125,8 +125,7 @@ def toImage(text):
   ret = "[CQ:image,file=/text2image/" + filename + "]"
   return ret
 
+# path根目录为gohttp/data/images
 def getImage(path):
-  if not PICTURE_MODE:
-    return path
-  ret = "[CQ:image,file=/text2image/" + path + "]"
+  ret = "[CQ:image,file=" + path + "]"
   return ret

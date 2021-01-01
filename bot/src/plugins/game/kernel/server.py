@@ -15,7 +15,7 @@ class Server:
     else:
       logger.info("当前模式：文字模式")
   
-    download_avatars()
+    #download_avatars()
     
 
   def close(self):

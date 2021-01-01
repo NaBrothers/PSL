@@ -3,7 +3,7 @@ from nonebot.rule import to_me
 from nonebot.adapters.cqhttp import Bot, Event
 from game.utils.database import *
 from game.model.player import *
-from game.utils.text2image import toImage
+from game.utils.image import toImage
 from game.kernel.account import check_account
 
 query_player = on_startswith(msg="查询", rule=to_me(), priority=1)

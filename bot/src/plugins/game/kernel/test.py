@@ -2,7 +2,7 @@ import random
 from nonebot import on_startswith
 from nonebot.rule import to_me
 from nonebot.adapters.cqhttp import Bot, Event
-from game.utils.text2image import toImage
+from game.utils.image import toImage
 from game.model import offline
 from game.kernel.account import check_account
 

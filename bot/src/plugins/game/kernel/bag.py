@@ -8,7 +8,7 @@ from game.model.user import *
 from game.model.player import *
 from game.model.bag import *
 from game.kernel.account import check_account
-from game.utils.text2image import toImage
+from game.utils.image import toImage
 
 user_bag = on_startswith(msg="背包", rule=to_me(), priority=1)
 

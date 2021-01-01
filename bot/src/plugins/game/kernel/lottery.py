@@ -8,7 +8,7 @@ from game.kernel.pool import *
 from game.kernel.account import check_account
 from game.kernel.bag import *
 from game.model.card import *
-from game.utils.text2image import toImage
+from game.utils.image import toImage
 
 return_text = '''所有卡包：
 [10]\t普通：一张任意位置球员卡
