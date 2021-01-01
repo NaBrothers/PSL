@@ -9,6 +9,7 @@ from game.model.transfer import *
 from game.model.card import *
 from game.kernel.account import *
 from game.utils.text2image import toImage
+from game.model.offline import *
 import math
 
 error_text = '''转会：查看当前转会市场
@@ -84,6 +85,7 @@ async def sell_card(user, id, cost):
       return
     count = cursor.execute("insert into transfer (user, card, cost) values ( " + str(user.qq) + ", " + str(card.id) + ", " + str(cost) + ");")
     count = cursor.execute("update cards set status = 1 where id = " + str(card.id))
+    cursor.close()
     await transfer.finish("出售成功！", **{'at_sender': True})
 
 async def buy_card(user, id):
@@ -107,8 +109,13 @@ async def buy_card(user, id):
       return
     count = cursor.execute("delete from transfer where card = " + id)
     count = cursor.execute("update cards set status = 0, user = " + str(user.qq) + " where id = " + id)
-    
+    trans.card.status = 0
+    cursor.close()
     user.spend(trans.cost)
     trans.user.earn(trans.cost)
     ret = "剩余球币：" + str(user.money)
+
+    msg = str(user.name) + "购买了你的球员" + trans.card.format() + "，价格" + str(trans.cost) + "球币"
+    Offline.send(trans.user, toImage(msg))
+
     await transfer.finish("购买成功！\n" + toImage(ret), **{'at_sender': True})

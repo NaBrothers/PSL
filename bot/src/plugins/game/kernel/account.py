@@ -4,10 +4,10 @@ from nonebot.adapters.cqhttp import Bot, Event
 from game.utils.database import *
 from game.model.user import *
 from game.utils.text2image import toImage
+from game.model.offline import *
+
 
 user_profile = on_startswith(msg="账号", rule=to_me(), priority=1)
-
-
 
 async def check_account(matcher, event):
   qq = event.sender["user_id"]
@@ -23,6 +23,11 @@ async def check_account(matcher, event):
     user = User(cursor.fetchone())
     cursor.close()
 
+  # 查询离线消息
+  message = Offline.get(user)
+  for msg in message:
+    await matcher.send(msg, **{"at_sender" : True})
+  Offline.remove(user)
   return user
   
   

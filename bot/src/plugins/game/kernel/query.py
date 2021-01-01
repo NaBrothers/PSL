@@ -4,12 +4,14 @@ from nonebot.adapters.cqhttp import Bot, Event
 from game.utils.database import *
 from game.model.player import *
 from game.utils.text2image import toImage
+from game.kernel.account import check_account
 
 query_player = on_startswith(msg="查询", rule=to_me(), priority=1)
 
 
 @query_player.handle()
 async def query_player_handler(bot: Bot, event: Event, state: dict):
+    check_account(query_player, event)
     args = str(event.message).split(" ", 1)
     if len(args) > 1:
         cursor = g_database.cursor()
