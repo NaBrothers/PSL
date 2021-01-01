@@ -10,6 +10,18 @@ class Card:
     self.star = star
     self.style = style
     self.status = status
+    self.ability = {
+      "Heading" : 0,
+      "Long_Shot" : 0,
+      "Finishing" : 0,
+      "Long_Passing" : 0,
+      "Short_Passing" : 0,
+      "Dribbling" : 0,
+      "Tackling" : 0,
+      "Defence" : 0,
+      "Speed" : 0,
+      "IQ" : 0
+    }
 
   def new(player, user, star = 1, style = 0, id=0, status=False):
     if style == 0:
