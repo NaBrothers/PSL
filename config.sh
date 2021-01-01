@@ -20,6 +20,8 @@ echo "====== 安装python依赖库"
 pip3 install nonebot2
 pip3 install pymysql
 pip3 install cryptography
+pip3 install requests
+pip3 install pillow
 
 echo "======安装MySQL"
 sudo apt install mysql-server

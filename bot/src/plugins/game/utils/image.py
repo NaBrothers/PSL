@@ -87,9 +87,10 @@ class TextToImage:
   def toImage(text):
     if text == "":
       return text
-
+    path = PROJECT_DIR + "/cqhttp/data/images/text2image/"
     filename = str(hash(text)) + ".png"
-    if os.path.exists(filename):
+    
+    if os.path.exists(path + filename):
       return filename
     
     new_text = TextToImage.line_break(text)
@@ -111,10 +112,9 @@ class TextToImage:
         else:
           color = "black"
         draw_table.text(xy=(offset, (TextToImage.CHAR_SIZE+2)*i), text=item, fill=color, font= font)
-
         offset += TextToImage.get_width(item)*TextToImage.CHAR_SIZE//2
 
-    im.save(PROJECT_DIR + "/cqhttp/data/images/text2image/" + filename)
+    im.save(path + filename)
     return filename
 
 # 返回一个CQ Image
@@ -124,4 +124,9 @@ def toImage(text):
   filename = TextToImage.toImage(text)
   ret = "[CQ:image,file=/text2image/" + filename + "]"
   return ret
-    
+
+def getImage(path):
+  if not PICTURE_MODE:
+    return path
+  ret = "[CQ:image,file=/text2image/" + path + "]"
+  return ret
