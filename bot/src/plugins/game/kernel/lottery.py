@@ -56,9 +56,9 @@ async def try_lottery_handler(bot: Bot, event: Event, state: dict):
 
 def try_single(user, pool):
   card = g_pool[pool]["pool"].choice(user)
-  Bag.addToBag(user, card)
+  id = Bag.addToBag(user, card)
   user.spend(g_pool[pool]["cost"])
-  return card.format()
+  return "[" + str(id) + "] " + card.format()
 
 def try_ten(user, pool):
     cards = []
@@ -73,9 +73,13 @@ def try_ten(user, pool):
         if card.player.Overall > 86:
             floored = True
         cards.append(card)
-        result += card.format()
-        result += "\n"
-    Bag.addToBagMany(user, cards)
+
+    ids = Bag.addToBagMany(user, cards)
+
+    for i,card in enumerate(cards):
+      result += "[" + str(ids[i]) + "] "
+      result += card.format() + "\n"
+
     user.spend(g_pool[pool]["cost"])
     return result.rstrip("\n")
 
@@ -119,12 +123,13 @@ def try_newbee(user, pool):
         else:
           index = random.randint(18, 19)
         cards[index] = card
-    
-    for card in cards:
+
+    ids = Bag.addToBagMany(user, cards)
+    for i,card in enumerate(cards):
+      result += "[" + str(ids[i]) + "] "
       result += card.format()
       result += '\n'
-
-    Bag.addToBagMany(user, cards)
+    result.rstrip("\n")
     user.spend(g_pool[pool]["cost"])
     user.setIsFirst("false")
     return result
@@ -135,10 +140,12 @@ def try_nb(user, pool):
     for i in range(10):
         card = g_pool["至尊"]["pool"].choice(user)
         cards.append(card)
-        result += card.format()
-        result += "\n"
 
-    Bag.addToBagMany(user, cards)
+    ids = Bag.addToBagMany(user, cards)
+    for i,card in enumerate(cards):
+      result += "[" + str(ids[i]) + "] "
+      result += card.format() + "\n"
+    result.rstrip("\n")
     user.spend(g_pool[pool]["cost"])
     user.setIsFirst("false")
     return result
