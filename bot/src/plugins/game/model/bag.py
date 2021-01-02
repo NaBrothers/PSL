@@ -13,7 +13,7 @@ class Bag:
     styles = [i[4] for i in data]
     statuses = [i[5] for i in data]
     self.cards = [Card(ids[i], players[i], user, stars[i], styles[i], statuses[i]) for i in range(len(data))]
-    self.cards.sort(key = lambda p : (p.player.Overall, p.player.Name), reverse=True)
+    self.cards.sort(key = lambda p : (p.overall, p.player.Name), reverse=True)
 
   def getBag(user):
       cursor = g_database.cursor()

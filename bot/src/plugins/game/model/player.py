@@ -100,7 +100,7 @@ class Player:
 
     # 返回一个格式化字符串
     def format(self):
-        return self.Position+"\t" + Const.QUALITY[self.Overall] + self.Name + "/ " + str(self.Overall)
+        return self.Position+"\t" + self.getNameWithColor() + " " + str(self.Overall)
 
 
     def getPlayerByID(id):
@@ -132,3 +132,21 @@ class Player:
         cursor.close()
 
         return players
+
+    def getNameWithColor(self):
+        ret = "/~"
+        if self.Overall >= 92:
+          ret += "r"
+        elif self.Overall >= 89:
+          ret += "o"
+        elif self.Overall >= 87:
+          ret += "p"
+        elif self.Overall >= 84:
+          ret += "b"
+        elif self.Overall >= 82:
+          ret += "g"
+        elif self.Overall >= 80:
+          ret += "w"
+        ret += self.Name
+        ret += "/"
+        return ret

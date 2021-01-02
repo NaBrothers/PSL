@@ -14,6 +14,7 @@ class Offline:
     msg = msg.replace("\\", "\\\\")
     msg = msg.replace("\n", "\\n")
     msg = msg.replace("\t", "\\t")
+    msg = msg.replace("'", "''")
     msg = "'" + msg + "'"
     cursor = g_database.cursor()
     count = cursor.execute("insert into offline (user, message) values (" + str(user.qq) + ", " + msg + ")")
@@ -33,7 +34,7 @@ class Offline:
     count = cursor.execute("select qq from users")
     qqs = cursor.fetchall()
     for qq in qqs:
-      if qq == user.qq:
+      if qq[0] == user.qq:
         continue
       count = cursor.execute("insert into offline (user, message) values (" +  str(qq[0]) + "," + msg + ")")
     cursor.close()

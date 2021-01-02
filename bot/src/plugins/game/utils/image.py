@@ -7,7 +7,7 @@ import random
 os.makedirs(PROJECT_DIR + "/cqhttp/data/images/text2image/", exist_ok=True)
 
 class TextToImage:
-  LINE_CHAR_COUNT = 30*2  # 每行最大字符数：30个中文字符(=60英文字符)
+  LINE_CHAR_COUNT = 50*2  # 每行最大字符数：30个中文字符(=60英文字符)
   CHAR_SIZE = 20 # 字号
   TABLE_WIDTH = 4
 
@@ -26,8 +26,10 @@ class TextToImage:
           elif c == '\n':
               ret = max(ret, width)
               width = 0
-          elif c == '/' or c == '~':
+          elif c == '/':
               continue
+          elif c == "~":
+              width -= 1
           else:
               width += 1
     ret = max(ret, min(width, TextToImage.LINE_CHAR_COUNT))
@@ -53,7 +55,10 @@ class TextToImage:
               elif c == '\n':
                   width = 0
                   ret += c
-              elif c == '/' or c == '~':
+              elif c == '/':
+                  ret += c
+              elif c == "~":
+                  width -= 1
                   ret += c
               else:
                   width += 1

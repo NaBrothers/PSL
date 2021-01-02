@@ -22,6 +22,7 @@ class Card:
       "Speed" : 0,
       "IQ" : 0
     }
+    self.overall = self.player.Overall + Const.STARS[self.star][1]
 
   def new(player, user, star = 1, style = 0, id=0, status=False):
     if style == 0:
@@ -51,4 +52,34 @@ class Card:
       status = " (" + Const.STATUS[self.status] + ")"
     else:
       status = ""
-    return self.player.Position+"\t" + Const.QUALITY[self.player.Overall] + self.player.Name + "/ " + str(self.player.Overall) + " " + Const.STARS[self.star] + " " + Const.STYLE[self.style]["name"] + status
+    return self.player.Position+"\t" + self.getNameWithColor() + " " + str(self.overall) + " " + Const.STARS[self.star][0] + " " + Const.STYLE[self.style]["name"] + status
+
+  def getNameWithColor(self):
+    overall = self.star + self.player.Overall
+    if overall >= 100:
+      ret = ""
+      colors = ["r", "o", "p", "b", "g"]
+      letters = list(self.player.Name)
+      for i in range(len(letters)):
+        ret += "/~"
+        ret += colors[i%5]
+        ret += letters[i]
+      ret += "/"
+      return ret
+
+    ret = "/~"
+    if overall >= 92:
+      ret += "r"
+    elif overall >= 89:
+      ret += "o"
+    elif overall >= 87:
+      ret += "p"
+    elif overall >= 84:
+      ret += "b"
+    elif overall >= 82:
+      ret += "g"
+    elif overall >= 80:
+      ret += "w"
+    ret += self.player.Name
+    ret += "/"
+    return ret

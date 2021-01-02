@@ -1,5 +1,7 @@
 from game.model.player import *
 from game.utils.database import *
+from game.model.card import *
+from game.model.user import *
 import random
 
 # 卡池基类
@@ -11,8 +13,10 @@ class Pool:
     def init(self):
       pass
 
-    def choice(self):
-      return random.choice(self.pool)
+    def choice(self, user):
+      player = random.choice(self.pool)
+      card = Card.new(player, user)
+      return card
 
 # 普通卡池
 class NormalPool(Pool):
@@ -53,6 +57,21 @@ class BestPool(Pool):
         cursor.close()
         for i in range(count):
             self.pool.append(Player(result[i]))
+
+# 至尊卡池
+class NBPool(Pool):
+    def init(self):
+        cursor = g_database.cursor()
+        count = cursor.execute("select * from players;")
+        result = cursor.fetchall()
+        cursor.close()
+        for i in range(count):
+            self.pool.append(Player(result[i]))
+    
+    def choice(self,user):
+        player = random.choice(self.pool)
+        card = Card.new(player, user, random.randint(1,10))
+        return card
 
 # 前锋卡池
 class ForwardPool(Pool):
@@ -142,6 +161,10 @@ g_pool = {
   "巅峰" : {
     "pool": BestPool(),
     "cost" : 100
+  },
+  "至尊" : {
+    "pool": NBPool(),
+    "cost" : 0
   },
   "前锋": {
     "pool": ForwardPool(),
