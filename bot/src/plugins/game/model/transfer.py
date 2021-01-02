@@ -11,5 +11,5 @@ class Transfer:
     self.cost = data[3]
 
   def format(self):
-    return self.user.name + " [" + str(self.card.id) + "] " + self.card.player.Position+"\t" + self.card.getNameWithColor() + " " + str(self.card.overall) + " " + Const.STARS[self.card.star][0] + " " + Const.STYLE[self.card.style]["name"] + " $" + str(self.cost) 
+    return self.user.name + " [" + str(self.card.id) + "] " + self.card.player.Position+"\t" + self.card.getNameWithColor() + " " + str(self.card.overall) + " " + Const.STARS[self.card.star]["star"] + " " + Const.STYLE[self.card.style]["name"] + " $" + str(self.cost) 
     

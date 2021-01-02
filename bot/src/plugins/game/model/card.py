@@ -11,18 +11,23 @@ class Card:
     self.style = style
     self.status = status
     self.ability = {
-      "Heading" : 0,
-      "Long_Shot" : 0,
-      "Finishing" : 0,
-      "Long_Passing" : 0,
-      "Short_Passing" : 0,
-      "Dribbling" : 0,
-      "Tackling" : 0,
-      "Defence" : 0,
-      "Speed" : 0,
-      "IQ" : 0
+      "Heading" : Const.STARS[self.star]["ability"]+int((player.Heading_Accuracy+player.Jumping+player.Balance+player.Strength+Card.tocm(player.Height)-100)/5),
+      "Long_Shot" : Const.STARS[self.star]["ability"]+int((player.Long_Shots+player.Shot_Power)/2),
+      "Finishing" : Const.STARS[self.star]["ability"]+int((player.Finishing*2+player.Shot_Power)/3),
+      "Long_Passing" : Const.STARS[self.star]["ability"]+int(player.Long_Passing),
+      "Short_Passing" : Const.STARS[self.star]["ability"]+int(player.Short_Passing),
+      "Dribbling" : Const.STARS[self.star]["ability"]+int((player.Dribbling+player.Ball_Control)/2),
+      "Tackling" : Const.STARS[self.star]["ability"]+int((player.Sliding_Tackle+player.Standing_Tackle)/2),
+      "Defence" : Const.STARS[self.star]["ability"]+int((player.Defensive_Awareness*2+player.Aggression+player.Interceptions*2)/5),
+      "Speed" : Const.STARS[self.star]["ability"]+int((player.Sprint_Speed+player.Acceleration)/2),
+      "IQ" : Const.STARS[self.star]["ability"]+int(player.Positioning),
+      "GK" : Const.STARS[self.star]["ability"]+int((player.GK_Handling*21+player.GK_Diving*21+player.GK_Positioning*21+player.GK_Reflexes*21+player.Reactions*11+player.GK_Kicking*5)/100)
     }
-    self.overall = self.player.Overall + Const.STARS[self.star][1]
+    self.overall = self.player.Overall + Const.STARS[self.star]["ability"]
+    for ability in Const.STYLE[style].keys():
+      if ability == "name":
+        continue
+      self.ability[ability] += Const.STYLE[style][ability]*self.star
 
   def new(player, user, star = 1, style = 0, id=0, status=False):
     if style == 0:
@@ -52,23 +57,25 @@ class Card:
       status = " (" + Const.STATUS[self.status] + ")"
     else:
       status = ""
-    return self.player.Position+"\t" + self.getNameWithColor() + " " + str(self.overall) + " " + Const.STARS[self.star][0] + " " + Const.STYLE[self.style]["name"] + status
+    return self.player.Position+"\t" + self.getNameWithColor() + " " + str(self.overall) + " " + Const.STARS[self.star]["star"] + " " + Const.STYLE[self.style]["name"] + status
 
   def getNameWithColor(self):
-    overall = self.star + self.player.Overall
-    if overall >= 100:
+    overall = self.star + self.player.Overall - 1
+    if overall >= 97:
       ret = ""
-      colors = ["r", "o", "p", "b", "g"]
+      colors = ["r", "o", "p", "b", "f", "g"]
       letters = list(self.player.Name)
       for i in range(len(letters)):
         ret += "/~"
-        ret += colors[i%5]
+        ret += colors[i%6]
         ret += letters[i]
       ret += "/"
       return ret
 
     ret = "/~"
-    if overall >= 92:
+    if overall >= 94:
+      ret += "f"
+    elif overall >= 92:
       ret += "r"
     elif overall >= 89:
       ret += "o"
@@ -83,3 +90,13 @@ class Card:
     ret += self.player.Name
     ret += "/"
     return ret
+
+  def tocm(height):
+      h = height.split("'")
+      foot = int(h[0])
+      inch = int(h[1])
+      return int((foot*12+inch)*2.54)
+
+  def tokg(weight):
+      w = int(weight.rstrip("lbs"))
+      return int(0.453592*w)

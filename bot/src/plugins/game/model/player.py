@@ -32,7 +32,7 @@ class Player:
         self.Position = data[22]
         self.Jersey_Number = data[23]
         self.Height = data[24]
-        self.Weigh = data[25]
+        self.Weight = data[25]
         self.LS = data[26]
         self.ST = data[27]
         self.RS = data[28]

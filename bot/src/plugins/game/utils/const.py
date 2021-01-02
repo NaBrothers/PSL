@@ -18,16 +18,36 @@ class Const:
     POSITIONS = ["前锋", "中场", "后卫", "门将"]
 
     # 星级
-    STARS = {1: ("★",0),
-             2: ("★×2",1),
-             3: ("★×3",2),
-             4: ("★×4",4),
-             5: ("★×5",6),
-             6: ("★×6",8),
-             7: ("★×7",11),
-             8: ("★×8",14),
-             9: ("★×9",17),
-             10: ("★×10",21),
+    STARS = { 1: {"star" : "★",
+                  "ability" : 0
+              },
+              2: {"star" : "★×2",
+                  "ability" : 1
+              },
+              3: {"star" : "★×3",
+                  "ability" : 2
+              },
+              4: {"star" : "★×4",
+                  "ability" : 4
+              },
+              5: {"star" : "★×5",
+                  "ability" : 6
+              },
+              6: {"star" : "★×6",
+                  "ability" : 8
+              },
+              7: {"star" : "★×7",
+                  "ability" : 11
+              },
+              8: {"star" : "★×8",
+                  "ability" : 14
+              },
+              9: {"star" : "★×9",
+                  "ability" : 17
+              },
+              10: {"star" : "★×10",
+                  "ability" : 21
+              }
     }
 
 
@@ -35,9 +55,11 @@ class Const:
     COLOR = {"w": "gray",
              "g": "green",
              "b": "blue",
-             "p": "purple",
+             "p": "#800080",
              "o": "orange",
-             "r": "red"}
+             "r": "red",
+             "f": "#FF69B4",
+             "x": "#A52A2A"}
 
     # 状态
     STATUS = {0: "",
@@ -48,114 +70,114 @@ class Const:
     STYLE = {
       "sniper": {
         "name" : "狙击手",
-          "盘带" : 3,
-          "射术" : 3
+          "Dribbling" : 3,
+          "Finishing" : 3
       },
       "finisher": {
         "name" : "终结者",
-        "射术" : 3,
-        "头球" : 3
+        "Finishing" : 3,
+        "Heading" : 3
       },
       "deadeye": {
         "name" : "恶魔眼",
-        "短传" : 3,
-        "长传" : 3,
-        "射术" : 3
+        "Short_Passing" : 3,
+        "Long_Passing" : 3,
+        "Finishing" : 3
       },
       "marksman": {
         "name" : "神枪手",
-        "盘带" : 2,
-        "射术" : 2,
-        "头球" : 2
+        "Dribbling" : 2,
+        "Finishing" : 2,
+        "Heading" : 2
       },
       "hawk": {
         "name" : "凤头鹰",
-        "速度" : 2,
-        "射术" : 2,
-        "头球" : 2
+        "Speed" : 2,
+        "Finishing" : 2,
+        "Heading" : 2
       },
       "artist": {
         "name" : "艺术家",
-        "盘带" : 3,
-        "短传" : 3,
-        "长传" : 3
+        "Dribbling" : 3,
+        "Short_Passing" : 3,
+        "Long_Passing" : 3
       },
       "architect": {
         "name" : "建筑师",
-        "短传" : 3,
-        "长传" : 3,
-        "头球" : 3
+        "Short_Passing" : 3,
+        "Long_Passing" : 3,
+        "Heading" : 3
       },
       "powerhous": {
         "name" : "抢球机器",
-        "抢断" : 3,
-        "防守" : 3
+        "Tackling" : 3,
+        "Defence" : 3
       },
       "maestro": {
         "name" : "大师",
-        "盘带" : 2,
-        "短传" : 2,
-        "长传" : 2,
-        "射术" : 2
+        "Dribbling" : 2,
+        "Short_Passing" : 2,
+        "Long_Passing" : 2,
+        "Finishing" : 2
       },
       "engine": {
         "name" : "发动机",
-        "盘带" : 2,
-        "短传" : 2,
-        "长传" : 2,
-        "速度" : 2
+        "Dribbling" : 2,
+        "Short_Passing" : 2,
+        "Long_Passing" : 2,
+        "Speed" : 2
       },
       "sentinal": {
         "name" : "哨兵",
-        "防守" : 3,
-        "头球" : 3
+        "Defence" : 3,
+        "Heading" : 3
       },
       "guardian": {
         "name" : "护卫",
-        "防守" : 3,
-        "盘带" : 3
+        "Defence" : 3,
+        "Dribbling" : 3
       },
       "gladiator": {
         "name" : "斗士",
-        "射术" : 3,
-        "防守" : 3
+        "Finishing" : 3,
+        "Defence" : 3
       },
       "backbone": {
         "name" : "骨干",
-        "防守" : 2,
-        "短传" : 2,
-        "长传" : 2,
-        "头球" : 2
+        "Defence" : 2,
+        "Short_Passing" : 2,
+        "Long_Passing" : 2,
+        "Heading" : 2
       },
       "anchor": {
         "name" : "铁锚",
-        "速度" : 2,
-        "防守" : 2,
-        "头球" : 2
+        "Speed" : 2,
+        "Defence" : 2,
+        "Heading" : 2
       },
       "hunter": {
         "name" : "狩猎者",
-        "射术" : 3,
-        "速度" : 3
+        "Finishing" : 3,
+        "Speed" : 3
       },
       "catalyst": {
         "name" : "催化剂",
-        "短传" : 3,
-        "长传" : 3,
-        "速度" : 3
+        "Short_Passing" : 3,
+        "Long_Passing" : 3,
+        "Speed" : 3
       },
       "shadow": {
         "name" : "暗影",
-        "射术" : 3,
-        "防守" : 3
+        "Finishing" : 3,
+        "Defence" : 3
       },
       "speedster": {
         "name" : "疾速魔",
-        "速度" : 6
+        "Speed" : 6
       },
       "slugger": {
         "name" : "重炮手",
-        "射术" : 3,
-        "远射" : 3
+        "Finishing" : 3,
+        "Long_Shot" : 3
       }
     }
