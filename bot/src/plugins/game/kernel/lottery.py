@@ -35,13 +35,13 @@ async def try_lottery_handler(bot: Bot, event: Event, state: dict):
             await try_lottery.finish(toImage(return_text), **{'at_sender': True})
             return
         if user.money < g_pool[pool]["cost"]:
-            await try_lottery.finish("余额不足", **{"at_sender": True})
+            await try_lottery.finish(toImage("余额不足\n剩余球币：" + str(user.money)), **{"at_sender": True})
             return
             
         if (pool == "十连"):
           ret = try_ten(user, pool)
-        elif (pool == "至尊"):
-          ret = try_nb(user, pool)
+        elif (pool in ["至尊", "鲁尼"]):
+          ret = try_ten_times(user, pool)
         elif pool == "新手":
           if not user.isFirst:
             await try_lottery.finish("你不是新手，抽nm呢", **{"at_sender": True})
@@ -49,7 +49,7 @@ async def try_lottery_handler(bot: Bot, event: Event, state: dict):
           ret = try_newbee(user, pool)
         else:
           ret = try_single(user, pool)
-        ret += "\n剩余球币：" + str(user.money)
+        ret += "剩余球币：" + str(user.money)
         await try_lottery.finish(toImage(ret), **{"at_sender": True})
     else:
         await try_lottery.finish("格式：抽卡 卡包\n" + toImage(return_text), **{'at_sender': True})
@@ -134,11 +134,11 @@ def try_newbee(user, pool):
     user.setIsFirst("false")
     return result
 
-def try_nb(user, pool):
+def try_ten_times(user, pool):
     cards = []
     result = ""
     for i in range(10):
-        card = g_pool["至尊"]["pool"].choice(user)
+        card = g_pool[pool]["pool"].choice(user)
         cards.append(card)
 
     ids = Bag.addToBagMany(user, cards)

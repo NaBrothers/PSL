@@ -20,7 +20,7 @@ class Card:
       "Tackling" : Const.STARS[self.star]["ability"]+int((player.Sliding_Tackle+player.Standing_Tackle)/2),
       "Defence" : Const.STARS[self.star]["ability"]+int((player.Defensive_Awareness*2+player.Aggression+player.Interceptions*2)/5),
       "Speed" : Const.STARS[self.star]["ability"]+int((player.Sprint_Speed+player.Acceleration)/2),
-      "IQ" : Const.STARS[self.star]["ability"]+int(player.Positioning),
+      "IQ" : Const.STARS[self.star]["ability"]+int(player.Composure),
       "GK_Saving" : Const.STARS[self.star]["ability"]+int((player.GK_Handling+player.GK_Diving)/2),
       "GK_Positioning" : Const.STARS[self.star]["ability"]+int(player.GK_Positioning),
       "GK_Reaction" : Const.STARS[self.star]["ability"]+int((player.GK_Reflexes*2+player.Reactions)/3)

@@ -105,7 +105,7 @@ async def buy_card(user, id):
       await transfer.finish("球员已回收" ,**{'at_sender': True})
       return
     if user.money < trans.cost:
-      await transfer.finish("余额不足", **{"at_sender": True})
+      await transfer.finish(toImage("余额不足\n剩余球币：" + str(user.money)), **{"at_sender": True})
       return
     count = cursor.execute("delete from transfer where card = " + id)
     count = cursor.execute("update cards set status = 0, user = " + str(user.qq) + " where id = " + id)

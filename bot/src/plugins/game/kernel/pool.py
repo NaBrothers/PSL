@@ -144,6 +144,21 @@ class GoalkeeperPool(Pool):
         for i in range(count):
             self.pool.append(Player(result[i]))
 
+# 鲁尼卡池
+class RooneyPool(Pool):
+    def init(self):
+        cursor = g_database.cursor()
+        count = cursor.execute("select * from players where name like \"%Rooney%\"")
+        result = cursor.fetchall()
+        cursor.close()
+        for i in range(count):
+            self.pool.append(Player(result[i]))
+    
+    def choice(self,user):
+        player = random.choice(self.pool)
+        card = Card.new(player, user, random.randint(1,10))
+        return card
+
 # 全局卡池
 g_pool = {
   "普通" : {
@@ -189,5 +204,9 @@ g_pool = {
   "新手": {
     "pool": None,
     "cost" : 0
+  },
+  "鲁尼":{
+    "pool":RooneyPool(),
+    "cost":0
   }
 }
