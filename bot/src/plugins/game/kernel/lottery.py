@@ -92,25 +92,25 @@ def try_newbee(user, pool):
         card = g_pool["前锋"]["pool"].choice(user)
         if card.player.Overall > 88:
             floored = True
-        cards.append(Card.new(player, user))
+        cards.append(card)
 
     for i in range(6):
         card = g_pool["中场"]["pool"].choice(user)
         if card.player.Overall > 88:
             floored = True
-        cards.append(Card.new(player, user))
+        cards.append(card)
 
     for i in range(6):
         card = g_pool["后卫"]["pool"].choice(user)
         if card.player.Overall > 88:
             floored = True
-        cards.append(Card.new(player, user))
+        cards.append(card)
 
     for i in range(2):
         card = g_pool["门将"]["pool"].choice(user)
         if card.player.Overall > 88:
             floored = True
-        cards.append(Card.new(player, user))  
+        cards.append(card)
 
     if not floored:
         card = g_pool["巅峰"]["pool"].choice(user)

@@ -43,8 +43,10 @@ async def player_detail_handler(bot: Bot, event: Event, state: dict):
         ret += printAbilityName(card, "头球", "Heading")+"\t" + printAbility(card, "Heading") + \
             "\t" + printAbilityName(card, "球商", "IQ")+"\t" + \
             printAbility(card, "IQ") + "\n"
-        ret += printAbilityName(card, "守门", "GK")+"\t" + \
-            printAbility(card, "GK") + "\n"
+        ret += printAbilityName(card, "GK扑救", "GK_Saving")+"\t" + printAbility(card, "GK_Saving") + "\t" + \
+            printAbilityName(card, "GK站位", "GK_Positioning") + \
+            "\t" + printAbility(card, "GK_Positioning") + "\n"
+        ret += printAbilityName(card, "GK反应" , "GK_Reaction") + "\t" + printAbility(card, "GK_Reaction") + "\n"
         await player_detail.finish(toImage(ret), **{"at_sender": True})
     else:
         await player_detail.finish("格式：球员 ID", **{"at_sender": True})

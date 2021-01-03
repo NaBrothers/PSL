@@ -34,3 +34,13 @@ class User:
     def setIsFirst(self, isFirst):
         self.isFirst = isFirst
         g_database.update("update users set isfirst = " + isFirst + " where qq = " + str(self.qq))
+
+    def getAllUsers():
+        users = []
+        cursor = g_database.cursor()
+        count = cursor.execute("select * from users;")
+        ret = cursor.fetchall()
+        for i in ret:
+          users.append(User(i))
+        cursor.close()
+        return users

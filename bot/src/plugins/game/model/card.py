@@ -11,17 +11,19 @@ class Card:
     self.style = style
     self.status = status
     self.ability = {
-      "Heading" : Const.STARS[self.star]["ability"]+int((player.Heading_Accuracy+player.Jumping+player.Balance+player.Strength+Card.tocm(player.Height)-100)/5),
+      "Heading" : Const.STARS[self.star]["ability"]+int((player.Heading_Accuracy+player.Jumping+player.Strength+Card.tocm(player.Height)-100)/4),
       "Long_Shot" : Const.STARS[self.star]["ability"]+int((player.Long_Shots+player.Shot_Power)/2),
       "Finishing" : Const.STARS[self.star]["ability"]+int((player.Finishing*2+player.Shot_Power)/3),
       "Long_Passing" : Const.STARS[self.star]["ability"]+int(player.Long_Passing),
       "Short_Passing" : Const.STARS[self.star]["ability"]+int(player.Short_Passing),
-      "Dribbling" : Const.STARS[self.star]["ability"]+int((player.Dribbling+player.Ball_Control)/2),
+      "Dribbling" : Const.STARS[self.star]["ability"]+int((player.Dribbling*2+player.Ball_Control*2+player.Balance)/5),
       "Tackling" : Const.STARS[self.star]["ability"]+int((player.Sliding_Tackle+player.Standing_Tackle)/2),
       "Defence" : Const.STARS[self.star]["ability"]+int((player.Defensive_Awareness*2+player.Aggression+player.Interceptions*2)/5),
       "Speed" : Const.STARS[self.star]["ability"]+int((player.Sprint_Speed+player.Acceleration)/2),
       "IQ" : Const.STARS[self.star]["ability"]+int(player.Positioning),
-      "GK" : Const.STARS[self.star]["ability"]+int((player.GK_Handling*21+player.GK_Diving*21+player.GK_Positioning*21+player.GK_Reflexes*21+player.Reactions*11+player.GK_Kicking*5)/100)
+      "GK_Saving" : Const.STARS[self.star]["ability"]+int((player.GK_Handling+player.GK_Diving)/2),
+      "GK_Positioning" : Const.STARS[self.star]["ability"]+int(player.GK_Positioning),
+      "GK_Reaction" : Const.STARS[self.star]["ability"]+int((player.GK_Reflexes*2+player.Reactions)/3)
     }
     self.overall = self.player.Overall + Const.STARS[self.star]["ability"]
     for ability in Const.STYLE[style].keys():

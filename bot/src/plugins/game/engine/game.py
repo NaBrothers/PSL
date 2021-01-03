@@ -16,7 +16,7 @@ class Game:
 
   # 比赛主逻辑
   def start():
-    pass 
+    pass
 
   # 互换攻守方
   def swap():
