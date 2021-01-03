@@ -145,7 +145,7 @@ class Player:
           ret += "b"
         elif self.Overall >= 82:
           ret += "g"
-        elif self.Overall >= 80:
+        else:
           ret += "w"
         ret += self.Name
         ret += "/"

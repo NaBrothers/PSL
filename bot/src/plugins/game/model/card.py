@@ -92,7 +92,7 @@ class Card:
       ret += "b"
     elif overall >= 82:
       ret += "g"
-    elif overall >= 80:
+    else:
       ret += "w"
     ret += self.player.Name
     ret += "/"
