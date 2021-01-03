@@ -58,7 +58,7 @@ def try_single(user, pool):
   card = g_pool[pool]["pool"].choice(user)
   id = Bag.addToBag(user, card)
   user.spend(g_pool[pool]["cost"])
-  return "[" + str(id) + "] " + card.format()
+  return "[" + str(id) + "] " + card.format() + "\n"
 
 def try_ten(user, pool):
     cards = []

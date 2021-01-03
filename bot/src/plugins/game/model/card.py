@@ -26,14 +26,18 @@ class Card:
       "GK_Reaction" : Const.STARS[self.star]["ability"]+int((player.GK_Reflexes*2+player.Reactions)/3)
     }
     self.overall = self.player.Overall + Const.STARS[self.star]["ability"]
-    for ability in Const.STYLE[style].keys():
+    styles = Const.GK_STYLE[style] if self.player.Position in Const.GOALKEEPER else Const.STYLE[style]
+    for ability in styles.keys():
       if ability == "name":
         continue
-      self.ability[ability] += Const.STYLE[style][ability]*self.star
+      self.ability[ability] += styles[ability]*self.star
 
   def new(player, user, star = 1, style = 0, id=0, status=False):
     if style == 0:
-      style = random.choice(list(Const.STYLE.keys()))
+      if player.Position in Const.GOALKEEPER:
+        style = random.choice(list(Const.GK_STYLE.keys()))
+      else:
+        style = random.choice(list(Const.STYLE.keys()))
     return Card(id ,player, user, star, style, status)
 
   def getCardByID(id):
@@ -59,7 +63,8 @@ class Card:
       status = " (" + Const.STATUS[self.status] + ")"
     else:
       status = ""
-    return self.player.Position+"\t" + self.getNameWithColor() + " " + str(self.overall) + " " + Const.STARS[self.star]["star"] + " " + Const.STYLE[self.style]["name"] + status
+    styles = Const.GK_STYLE[self.style] if self.player.Position in Const.GOALKEEPER else Const.STYLE[self.style]
+    return self.player.Position+"\t" + self.getNameWithColor() + " " + str(self.overall) + " " + Const.STARS[self.star]["star"] + " " + styles["name"] + status
 
   def getNameWithColor(self):
     overall = self.star + self.player.Overall - 1

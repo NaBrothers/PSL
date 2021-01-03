@@ -191,3 +191,30 @@ class Const:
         "Long_Shot" : 3
       }
     }
+
+    # GK特性
+    GK_STYLE = {
+      "bronzewall": {
+        "name" : "铜墙",
+          "GK_Saving" : 3,
+          "Long_Passing" : 2
+      },
+      "ironwall": {
+        "name" : "铁壁",
+          "GK_Reaction" : 2,
+          "Speed" : 2,
+          "Long_Passing" : 2
+      },
+      "agilecat": {
+        "name" : "灵猫",
+          "GK_Reaction" : 2,
+          "Speed" : 2,
+          "GK_Positioning" : 2
+      },
+      "gloves": {
+        "name" : "手套",
+          "GK_Reaction" : 2,
+          "GK_Saving" : 2,
+          "Speed" : 2
+      }
+    }

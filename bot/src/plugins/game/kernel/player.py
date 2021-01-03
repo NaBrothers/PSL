@@ -35,7 +35,8 @@ async def player_detail(id):
             str(card.overall) + "\n"
         for i in range(card.star):
             ret += "★"
-        ret += " " + Const.STYLE[card.style]["name"] + "\n"
+        styles = Const.GK_STYLE[card.style] if card.player.Position in Const.GOALKEEPER else Const.STYLE[card.style]
+        ret += " " + styles["name"] + "\n"
         ret += str(card.player.Age) + "岁 " + str(Card.tocm(card.player.Height)
                                                  ) + "cm " + str(Card.tokg(card.player.Weight)) + "kg" + "\n"
         ret += printAbilityName(card, "终结", "Finishing")+"\t" + printAbility(card, "Finishing") + \
@@ -60,11 +61,13 @@ async def player_detail(id):
         await player_menu.finish(toImage(ret), **{"at_sender": True})
 
 def printAbilityName(card, name, ability):
-    if ability in Const.STYLE[card.style].keys():
-        return "/~x" + name + "/"
-    else:
-        return name
-    pass
+    if card.player.Position in Const.GOALKEEPER:
+        if ability in Const.GK_STYLE[card.style].keys():
+          return "/~x" + name + "/"
+    else: 
+        if ability in Const.STYLE[card.style].keys():
+          return "/~x" + name + "/"
+    return name
 
 
 def printAbility(card, ability):
