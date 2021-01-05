@@ -40,8 +40,7 @@ async def player_detail(id):
         str(card.overall) + "\n"
     for i in range(card.star):
         ret += "★"
-    styles = Const.GK_STYLE[card.style] if card.player.Position in Const.GOALKEEPER else Const.STYLE[card.style]
-    ret += " " + styles["name"] + "\n"
+    ret += " " + card.getStyle() + "\n"
     ret += str(card.player.Age) + "岁 " + str(Card.tocm(card.player.Height)
                                              ) + "cm " + str(Card.tokg(card.player.Weight)) + "kg" + "\n"
     ret += printAbilityName(card, "终结", "Finishing")+"\t" + printAbility(card, "Finishing") + \
