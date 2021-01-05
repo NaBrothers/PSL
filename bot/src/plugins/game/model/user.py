@@ -9,6 +9,7 @@ class User:
         self.level = data[3]
         self.money = data[4]
         self.isFirst = data[5]
+        self.formation = data[6]
 
     def format(self):
         return str(self.qq) + " " + self.name + " " + str(self.level) + "级\n" + "球币：" + str(self.money)

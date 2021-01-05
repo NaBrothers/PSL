@@ -5,5 +5,6 @@ create table IF NOT EXISTS `users` (
   `Level` int(11) default null,
   `Money` int(11) default null,
   `isFirst` boolean default true,
+  `Formation` varchar(16) default "442",
   primary key(`ID`)
 ) default charset = utf8;

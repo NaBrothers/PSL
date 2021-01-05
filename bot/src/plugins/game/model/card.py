@@ -64,7 +64,7 @@ class Card:
     else:
       status = ""
     styles = Const.GK_STYLE[self.style] if self.player.Position in Const.GOALKEEPER else Const.STYLE[self.style]
-    return self.player.Position+"\t" + self.getNameWithColor() + " " + str(self.overall) + " " + Const.STARS[self.star]["star"] + " " + styles["name"] + status
+    return self.player.Position.ljust(3)+" " + self.getNameWithColor() + " " + str(self.overall) + " " + Const.STARS[self.star]["star"] + " " + styles["name"] + status
 
   def getNameWithColor(self):
     overall = self.star + self.player.Overall - 1

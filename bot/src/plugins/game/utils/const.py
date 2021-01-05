@@ -218,3 +218,8 @@ class Const:
           "Speed" : 2
       }
     }
+
+    # 阵容
+    FORMATION = {
+      "442" : ["GK", "LB", "LCB", "RCB", "RB", "CDM", "LCM", "RCM", "CAM", "CF", "ST"]
+    }
