@@ -81,8 +81,10 @@ async def auto_update(user):
     midfield_start = guard_start + guard
     forward_start = midfield_start + midfield
     sub_start = 11
-
+    available_cards = set()
     for card in bag.cards:
+        if card.player.ID in available_cards:
+          continue
         if gk == 0 and guard == 0 and midfield == 0 and forward == 0 and sub == 0:
             break
         if card.player.Position in Const.GOALKEEPER and gk > 0:
@@ -105,7 +107,8 @@ async def auto_update(user):
             result[sub_start] = card.id
             sub -= 1
             sub_start += 1
-
+        available_cards.add(card.player.ID)
+  
     cursor = g_database.cursor()
     for i in range(len(result)):
         cursor.execute("update team set card = " + str(
