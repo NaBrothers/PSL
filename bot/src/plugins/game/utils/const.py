@@ -226,3 +226,111 @@ class Const:
         "coordinates" : [(34,100),(14,72),(28,80),(42,80),(56,72),(34,66),(22,52),(44,52),(34,36),(22,20),(44,20)]
       }
     }
+
+    # 真实能力
+    REAL_ABILITY = {
+      "ST" : {
+        "Heading" : 0.16,
+        "Long_Shot" : 0.05,
+        "Finishing" : 0.29,
+        "Long_Passing" : 0,
+        "Short_Passing" : 0.08,
+        "Dribbling" : 0.27,
+        "Tackling" : 0,
+        "Defence" : 0,
+        "Speed" : 0.15
+      },
+      "CF" : {
+        "Heading" : 0.03,
+        "Long_Shot" : 0.06,
+        "Finishing" : 0.17,
+        "Long_Passing" : 0,
+        "Short_Passing" : 0.14,
+        "Dribbling" : 0.45,
+        "Tackling" : 0,
+        "Defence" : 0,
+        "Speed" : 0.15
+      },
+      "LRW" : {
+        "Heading" : 0,
+        "Long_Shot" : 0.06,
+        "Finishing" : 0.15,
+        "Long_Passing" : 0,
+        "Short_Passing" : 0.14,
+        "Dribbling" : 0.45,
+        "Tackling" : 0,
+        "Defence" : 0,
+        "Speed" : 0.2
+      },
+      "LRM" : {
+        "Heading" : 0,
+        "Long_Shot" : 0.07,
+        "Finishing" : 0.125,
+        "Long_Passing" : 0.03,
+        "Short_Passing" : 0.19,
+        "Dribbling" : 0.435,
+        "Tackling" : 0,
+        "Defence" : 0,
+        "Speed" : 0.15
+      },
+      "AM" : {
+        "Heading" : 0,
+        "Long_Shot" : 0.08,
+        "Finishing" : 0.1,
+        "Long_Passing" : 0.06,
+        "Short_Passing" : 0.24,
+        "Dribbling" : 0.42,
+        "Tackling" : 0,
+        "Defence" : 0,
+        "Speed" : 0.1
+      },
+      "CM" : {
+        "Heading" : 0,
+        "Long_Shot" : 0.06,
+        "Finishing" : 0.03,
+        "Long_Passing" : 0.19,
+        "Short_Passing" : 0.25,
+        "Dribbling" : 0.31,
+        "Tackling" : 0.07,
+        "Defence" : 0.07,
+        "Speed" : 0
+      },
+      "DM" : {
+        "Heading" : 0,
+        "Long_Shot" : 0,
+        "Finishing" : 0,
+        "Long_Passing" : 0.13,
+        "Short_Passing" : 0.18,
+        "Dribbling" : 0.13,
+        "Tackling" : 0.22,
+        "Defence" : 0.35,
+        "Speed" : 0
+      },
+      "CB" : {
+        "Heading" : 0.12,
+        "Long_Shot" : 0,
+        "Finishing" : 0,
+        "Long_Passing" : 0,
+        "Short_Passing" : 0.06,
+        "Dribbling" : 0.05,
+        "Tackling" : 0.33,
+        "Defence" : 0.41,
+        "Speed" : 0.02
+      },
+      "LRB" : {
+        "Heading" : 0.05,
+        "Long_Shot" : 0,
+        "Finishing" : 0,
+        "Long_Passing" : 0,
+        "Short_Passing" : 0.09,
+        "Dribbling" : 0.09,
+        "Tackling" : 0.33,
+        "Defence" : 0.27,
+        "Speed" : 0.16
+      },
+      "GK" : {
+        "GK_Saving" : 0.3,
+        "GK_Reaction" : 0.3,
+        "GK_Positioning" : 0.3,
+      }
+    }
