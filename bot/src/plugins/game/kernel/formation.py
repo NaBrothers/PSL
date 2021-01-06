@@ -48,8 +48,12 @@ async def show_team(user):
         if card == None:
             ret += "空缺"
         else:
-            ret += "[" + str(card.id) + "] " + card.getNameWithColor() + " " + str(
-                card.overall) + " " + Const.STARS[card.star]["star"] + " " + card.getStyle()
+            if i <= 10:
+              overall = card.printRealOverall(Const.FORMATION[team.formation]["positions"][i])
+              ret += str(overall).ljust(10) + "  [" + str(card.id) + "] " + card.getNameWithColor() + " "  + Const.STARS[card.star]["star"] + " " + card.getStyle()
+            else:
+              overall = card.overall
+              ret += str(overall).ljust(3) + "  [" + str(card.id) + "] " + card.getNameWithColor() + " "  + Const.STARS[card.star]["star"] + " " + card.getStyle()
         ret += "\n"
         if i == 10:
             ret += "===== 替补 =====\n"

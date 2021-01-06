@@ -110,3 +110,40 @@ class Card:
   def tokg(weight):
       w = int(weight.rstrip("lbs"))
       return int(0.453592*w)
+
+  def getRealOverall(self, position):
+    if position in ["ST", "RS", "LS"]:
+      position = "ST"
+    elif position in ["CF", "LF", "RF"]:
+      position = "CF"
+    elif position in ["RW", "LW"]:
+      position = "LRW"
+    elif position in ["CAM", "RAM", "LAM"]:
+      position = "AM"
+    elif position in ["LM", "RM"]:
+      position = "LRM"
+    elif position in ["CM", "RCM", "LCM"]:
+      position = "CM"
+    elif position in ["CDM", "RDM", "LDM"]:
+      position = "DM"
+    elif position in ["CB", "RCB", "LCB"]:
+      position = "CB"
+    elif position in ["LB", "LWB", "RB", "RWB"]:
+      position = "LRB"
+    elif position in ["GK"]:
+      position = "GK"
+    overall = 0
+    for a in Const.REAL_ABILITY[position].keys():
+      overall += Const.REAL_ABILITY[position][a] * self.ability[a]
+    return int(overall)
+
+  def printRealOverall(self, position):
+    real = self.getRealOverall(position)
+    diff = real - self.overall
+    if diff > 0:
+      return str(real) + "/~r▲" + str(diff)  + "/"
+    elif diff < 0:
+      return str(real) + "/~g▼" + str(-diff)  + "/"
+    else:
+      return str(real) + "/~w" + "　" + "/"
+    
