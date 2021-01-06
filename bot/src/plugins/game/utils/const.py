@@ -329,8 +329,6 @@ class Const:
         "Speed" : 0.16
       },
       "GK" : {
-        "Long_Passing" : 0.05,
-        "Speed" : 0.05,
         "GK_Saving" : 0.3,
         "GK_Reaction" : 0.3,
         "GK_Positioning" : 0.3,
