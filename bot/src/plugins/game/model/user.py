@@ -23,6 +23,16 @@ class User:
             user = User(cursor.fetchone())
         cursor.close()
         return user
+    
+    def getUserById(id):
+        cursor = g_database.cursor()
+        count = cursor.execute("select * from users where ID = " + str(id))
+        if (count == 0):
+            user = None
+        else:
+            user = User(cursor.fetchone())
+        cursor.close()
+        return user
 
     def spend(self, cost):
         self.money -= cost

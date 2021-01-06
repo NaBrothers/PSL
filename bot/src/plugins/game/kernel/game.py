@@ -40,8 +40,8 @@ async def game_matcher_handler(bot: Bot, event: Event, state: dict):
       await game_matcher.finish("找不到此对手", **{"at_sender": True})
       return
     
-    user2 = User.getUserByQQ(int(args[1]))
+    user2 = User.getUserById(int(args[1]))
     game = Game(game_matcher, user1, user2)
     await game_matcher.send("开始比赛", **{"at_sender": True})
-    game.start()
+    await game.start()
   
