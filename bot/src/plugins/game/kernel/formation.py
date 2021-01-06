@@ -39,7 +39,7 @@ async def show_team(user):
     for i, card in enumerate(team.cards):
         #ret += str(i).ljust(2) + "  "
         if i <= 10:
-            ret += Const.FORMATION[team.formation][i].ljust(3) + "  "
+            ret += Const.FORMATION[team.formation]["positions"][i].ljust(3) + "  "
         else:
             if card == None:
                 ret += "无" + "   "
@@ -65,7 +65,7 @@ async def auto_update(user):
     forward = 0
     sub = Formation.PLAYERS_COUNT - 11
     for i in range(11):
-        position = Const.FORMATION[team.formation][i]
+        position = Const.FORMATION[team.formation]["positions"][i]
         if position in Const.GOALKEEPER:
             gk += 1
         elif position in Const.GUARD:

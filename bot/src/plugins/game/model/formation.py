@@ -9,6 +9,7 @@ class Formation():
     self.user = User.getUserByQQ(data[0][1])
     self.cards = [Card.getCardByID(i[2]) for i in data]
     self.formation = self.user.formation
+    self.coordinates = Const.FORMATION[self.formation]["coordinates"]
 
   def getFormation(user):
       cursor = g_database.cursor()

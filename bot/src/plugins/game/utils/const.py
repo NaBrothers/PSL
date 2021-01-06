@@ -221,5 +221,8 @@ class Const:
 
     # 阵容
     FORMATION = {
-      "442" : ["GK", "LB", "LCB", "RCB", "RB", "CDM", "LCM", "RCM", "CAM", "CF", "ST"]
+      "442" : {
+        "positions" : ["GK", "LB", "LCB", "RCB", "RB", "CDM", "LCM", "RCM", "CAM", "CF", "ST"],
+        "coordinates" : [(34,100),(14,72),(28,80),(42,80),(56,72),(34,66),(22,52),(44,52),(34,36),(22,20),(44,20)]
+      }
     }

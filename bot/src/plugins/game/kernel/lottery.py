@@ -147,6 +147,5 @@ def try_ten_times(user, pool):
       result += card.format() + "\n"
     result.rstrip("\n")
     user.spend(g_pool[pool]["cost"])
-    user.setIsFirst("false")
     return result
     
