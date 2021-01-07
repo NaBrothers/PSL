@@ -35,6 +35,8 @@ async def show_team(user):
     ret = ""
     ret += "教练：" + user.name + "\n"
     ret += "阵容：" + team.formation + "\n"
+    total, forward, midfield, guard = team.getAbilities(user)
+    ret += "总能力：" + str(total) + "  前场：" + str(forward) + "  中场：" + str(midfield) + "  后场：" + str(guard) + "\n"
     ret += "===== 主力 =====\n"
     for i, card in enumerate(team.cards):
         #ret += str(i).ljust(2) + "  "
