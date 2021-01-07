@@ -40,13 +40,15 @@ class Player:
 
   # 无球跑动-无球行为
   def off_ball_moving(self, ball_holder, team_mate_in_range):
+    if self in team_mate_in_range:
+      del team_mate_in_range[team_mate_in_range.index(self)]
     if self.position == "GK":
       self.approaching(self.default_x, self.default_y)
     else:
       distance_default = self.get_distance(self.default_x, self.default_y)
       if distance_default > 30:
         self.approaching(self.default_x, self.default_y)
-      if len(team_mate_in_range) > 0 and team_mate_in_range[0] != self:
+      if len(team_mate_in_range) > 0:
         self.go_away(team_mate_in_range[0].x, team_mate_in_range[0].y)
         return
       distance_ball = self.get_distance_player(ball_holder)
@@ -116,8 +118,8 @@ class Player:
     best_choice_player = team_mates[0]
     best_value = sys.maxsize
     for player in team_mates:
-      cur_value = (10 + self.get_distance_player(player) + random.randint(1, 10)) * \
-                  (10 + player.get_distance(Const.WIDTH / 2, 0) + random.randint(1, 10))
+      cur_value = (100 + self.get_distance_player(player) + random.randint(1, 100)) * \
+                  (10 + player.get_distance(Const.WIDTH / 2, 0) + random.randint(1, 100))
       if cur_value < best_value:
         best_value = cur_value
         best_choice_player = player
@@ -138,19 +140,25 @@ class Player:
     efficiency = (def_v - distance) / def_v
     if efficiency <= 0:
       return False
-    rand = random.randint(0, int((tackling * efficiency + ability)*100))
-    if rand < ability:
+    success_rate = self.get_success_rate(tackling * efficiency, ability)
+    rand = random.randint(0, int((success_rate + 1)*100))
+    if rand < 100:
       return False
     else:
       return True
 
   # 扑救-被动触发
   def saving(self, shoot_ability):
-    rand = random.randint(0, int((self.ability["GK_Saving"] + shoot_ability*2)*100))
-    if rand < shoot_ability*200:
+    success_rate = self.get_success_rate(self.ability["GK_Saving"], shoot_ability)
+    rand = random.randint(0, int((success_rate + 1)*100))
+    if rand < 100:
       return False
     else:
       return True
+
+  # 动作成功率
+  def get_success_rate(self, self_ability, opposite_ability):
+    return math.pow(1.1, self_ability - opposite_ability)
 
   # 持球行为选择
   def choose_holding_action_type(self, defence_players_number, shoot_defence_players_number):
@@ -173,12 +181,7 @@ class Player:
     distance = self.get_distance(Const.WIDTH / 2, 0)
     if distance > 45:
       return 0
-    if distance > 20:
-      shoot_ability = self.ability["Long_Shot"]
-    else:
-      shoot_ability = self.ability["Finishing"]
-
-    return shoot_ability*110/((distance*1.7+1)*(distance*2+1)*(4*shoot_defence_players_number+1))
+    return math.pow(0.97, math.pow(distance, 0.5) * shoot_defence_players_number)
 
   # 盘带选择率
   def get_dribbling_rate(self, defence_players_number):
@@ -186,7 +189,7 @@ class Player:
 
   # 传球选择率
   def get_passing_rate(self, defence_players_number):
-    return (self.ability["Long_Passing"] + self.ability["Short_Passing"]) * (defence_players_number + 1) / 30
+    return (self.ability["Long_Passing"] + self.ability["Short_Passing"]) * (defence_players_number + 1) / 40
 
   # 获取射门能力值
   def get_shooting_ability(self, shoot_x):
