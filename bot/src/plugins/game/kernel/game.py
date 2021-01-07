@@ -23,7 +23,8 @@ async def game_matcher_handler(bot: Bot, event: Event, state: dict):
         if user.qq == event.user_id:
           continue
         ret += "[" + str(user.id) + "]\t" + user.name + "\n"
-      ret += "输入“比赛 ID”挑战对手"
+      ret += "输入“比赛 ID”挑战对手\n"
+      ret += "输入“阵容 ID”查看对手阵容"
       await game_matcher.finish(toImage(ret), **{"at_sender": True})
       return
     if not args[1].isdecimal():

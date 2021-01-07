@@ -12,6 +12,7 @@ from game.utils.image import toImage
 get_team = on_startswith(msg="阵容", rule=to_me(), priority=1)
 
 error_text = '''阵容 自动：按能力值自动更新阵容
+阵容 ID：查看其他玩家阵容
 '''
 
 
@@ -24,6 +25,8 @@ async def get_team_handler(bot: Bot, event: Event, state: dict):
     elif len(args) == 2:
         if args[1] == "自动":
             await auto_update(user)
+        elif args[1].isdecimal():
+            await show_others(args[1])
         else:
           await get_team.finish("格式错误！\n" + toImage(error_text), **{'at_sender': True})
     else:
@@ -61,6 +64,11 @@ async def show_team(user):
             ret += "===== 替补 =====\n"
     await get_team.finish("当前阵容：\n" + toImage(ret + error_text), **{'at_sender': True})
 
+async def show_others(id):
+    user = User.getUserById(id)
+    if user == None:
+       await get_team.finish("找不到该玩家！", **{'at_sender': True})
+    await show_team(user)
 
 async def auto_update(user):
     team = Formation.getFormation(user)
