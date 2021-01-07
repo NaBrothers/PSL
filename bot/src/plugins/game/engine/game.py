@@ -232,6 +232,7 @@ class Game:
                   self.away_point += 1
                 self.printCaseWithPlayer(roll_winner, "破门了！！！！")
                 self.swap()
+                self.resetPosition()
                 self.changeBallHolderToOpen()
             else:
               self.changeBallHolder(roll_winner)
