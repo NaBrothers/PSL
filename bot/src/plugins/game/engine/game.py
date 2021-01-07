@@ -62,7 +62,7 @@ class Game:
       self.print_str = ""
       time.sleep(5)
     self.printCase("下半场结束")
-    await self.matcher.finish("终场比分：\n" +"主 " + self.home.coach.name + self.home_point + ":" + self.away_point + self.away.coach.name + " 客")
+    await self.matcher.finish("终场比分：\n" +"主 " + self.home.coach.name + str(self.home_point) + ":" + str(self.away_point) + self.away.coach.name + " 客")
 
 
 
