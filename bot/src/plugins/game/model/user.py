@@ -46,6 +46,10 @@ class User:
         self.isFirst = isFirst
         g_database.update("update users set isfirst = " + isFirst + " where qq = " + str(self.qq))
 
+    def setFormation(self, formation):
+        self.formation = formation
+        g_database.update("update users set formation = " + formation + " where qq = " + str(self.qq))
+
     def getAllUsers():
         users = []
         cursor = g_database.cursor()

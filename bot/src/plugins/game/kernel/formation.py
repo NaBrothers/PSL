@@ -13,6 +13,7 @@ get_team = on_startswith(msg="阵容", rule=to_me(), priority=1)
 
 error_text = '''阵容 自动：按能力值自动更新阵容
 阵容 ID：查看其他玩家阵容
+阵容 更改 阵型：更改其他阵型（支持阵型：442、433）
 '''
 
 
@@ -29,9 +30,19 @@ async def get_team_handler(bot: Bot, event: Event, state: dict):
             await show_others(args[1])
         else:
           await get_team.finish("格式错误！\n" + toImage(error_text), **{'at_sender': True})
+    elif len(args) == 3:
+        if args[1] == "更改" and args[2] in Const.FORMATION.keys():
+            await change_formation(user, args[2])
+        else:
+            await get_team.finish("格式错误！\n" + toImage(error_text), **{'at_sender': True})
     else:
         await get_team.finish("格式错误！\n" + toImage(error_text), **{'at_sender': True})
 
+
+async def change_formation(user, formation):
+    user.setFormation(formation)
+    ret = "更改成功，当前阵容：" + user.formation
+    await get_team.finish(ret, **{'at_sender': True})
 
 async def show_team(user):
     team = Formation.getFormation(user)
