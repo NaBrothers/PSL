@@ -234,8 +234,11 @@ class Game:
                 self.swap()
                 self.resetPosition()
                 self.changeBallHolderToOpen()
+              return
             else:
               self.changeBallHolder(roll_winner)
+              if self.isDefencePlayer(roll_winner):
+                return
 
       self.swapPosition(self.defence)
       # 无球人进行无球跑动
