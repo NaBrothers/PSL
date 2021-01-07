@@ -217,7 +217,7 @@ class Game:
           else:
             distance_goal = roll_winner.get_distance(Const.WIDTH / 2, 0)
             rand = random.randint(0, int(roll_winner.ability["Heading"] + distance_goal * 10))
-            if rand < roll_winner.ability["Heading"]:
+            if rand < roll_winner.ability["Heading"] and distance_goal < 16:
               self.printCaseWithPlayer(roll_winner, "直接头球攻门")
 
               if distance_goal < 25 and \
