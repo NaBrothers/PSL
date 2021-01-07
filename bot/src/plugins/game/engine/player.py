@@ -118,7 +118,7 @@ class Player:
     best_choice_player = team_mates[0]
     best_value = sys.maxsize
     for player in team_mates:
-      cur_value = (100 + self.get_distance_player(player) + random.randint(1, 100)) * \
+      cur_value = (20 + 2 * self.get_distance_player(player) + random.randint(1, 100)) * \
                   (10 + player.get_distance(Const.WIDTH / 2, 0) + random.randint(1, 100))
       if cur_value < best_value:
         best_value = cur_value
@@ -181,7 +181,7 @@ class Player:
     distance = self.get_distance(Const.WIDTH / 2, 0)
     if distance > 45:
       return 0
-    return math.pow(0.97, math.pow(distance, 0.5) * shoot_defence_players_number)
+    return math.pow(0.97, math.pow(distance, 0.4) * shoot_defence_players_number)
 
   # 盘带选择率
   def get_dribbling_rate(self, defence_players_number):
