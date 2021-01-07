@@ -181,7 +181,7 @@ class Player:
     distance = self.get_distance(Const.WIDTH / 2, 0)
     if distance > 45:
       return 0
-    return math.pow(0.97, math.pow(distance, 0.4) * shoot_defence_players_number)
+    return math.pow(0.95, math.pow(distance, 0.7) * shoot_defence_players_number)
 
   # 盘带选择率
   def get_dribbling_rate(self, defence_players_number):
