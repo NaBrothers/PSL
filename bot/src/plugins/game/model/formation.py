@@ -61,3 +61,6 @@ class Formation():
       if guard_count == 0:
         guard_count = 1
       return (total, forward // forward_count, midfield // midfield_count, guard // guard_count)
+
+  def isValid(self):
+    return None not in self.cards
