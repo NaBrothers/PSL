@@ -81,7 +81,7 @@ def try_ten(user, pool):
       result += card.format() + "\n"
 
     user.spend(g_pool[pool]["cost"])
-    return result.rstrip("\n")
+    return result
 
 def try_newbee(user, pool):
     cards = []

@@ -22,3 +22,45 @@ class Formation():
           team = Formation(cursor.fetchall())
       cursor.close()
       return team
+
+  # 返回四个值：总能力，前场能力，中场能力，后场能力
+  def getAbilities(self, user):
+      total = 0
+      forward = 0
+      midfield = 0
+      guard = 0
+      forward_count = 0
+      midfield_count = 0
+      guard_count = 0
+      positions = Const.FORMATION[self.formation]["positions"]
+      for i in range(11):
+        if positions[i] in Const.FORWARD:
+          forward_count += 1 
+        elif positions[i] in Const.MIDFIELD:
+          midfield_count += 1
+        elif positions[i] in Const.GUARD:
+          guard_count += 1
+        elif positions[i] in Const.GOALKEEPER:
+          guard_count += 1
+        if self.cards[i] == None:
+          continue
+        overall = self.cards[i].getRealOverall(positions[i])
+        total += overall
+        if positions[i] in Const.FORWARD:
+          forward += overall
+        elif positions[i] in Const.MIDFIELD:
+          midfield += overall
+        elif positions[i] in Const.GUARD:
+          guard += overall
+        elif positions[i] in Const.GOALKEEPER:
+          guard += overall
+      if forward_count == 0:
+        forward_count = 1
+      if midfield_count == 0:
+        midfield_count = 1
+      if guard_count == 0:
+        guard_count = 1
+      return (total, forward // forward_count, midfield // midfield_count, guard // guard_count)
+
+  def isValid(self):
+    return None not in self.cards
