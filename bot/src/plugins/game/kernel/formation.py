@@ -15,7 +15,7 @@ get_team = on_startswith(msg="阵容", rule=to_me(), priority=1)
 
 error_text = '''阵容 自动：按能力值自动更新阵容
 阵容 ID：查看其他玩家阵容
-阵容 更改 阵型：更改其他阵型（支持阵型：442、433、343）
+阵容 更改 阵型：更改其他阵型（支持阵型：442、433、343、4231、352）
 '''
 
 
@@ -148,15 +148,16 @@ async def auto_update(user):
         if index + 1 < len(overalls):
           heap.put((-overalls[index+1][1],-index-1,overalls[index+1][0],i))
 
-    for n in range(sub):
+    while sub > 0:
       if heap.empty():
         break
       overall, index, position, i = heap.get()
       card = bag.cards[i]
       if card.player.ID in selected_players:
         continue
-      result[11 + n] = card.id
+      result[Formation.PLAYERS_COUNT - sub] = card.id
       selected_players.add(card.player.ID)
+      sub -= 1
 
     cursor = g_database.cursor()
     for i in range(len(result)):
