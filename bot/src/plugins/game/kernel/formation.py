@@ -9,11 +9,13 @@ from game.kernel.account import *
 from game.model.formation import *
 from game.utils.image import toImage
 
+from queue import PriorityQueue
+
 get_team = on_startswith(msg="阵容", rule=to_me(), priority=1)
 
 error_text = '''阵容 自动：按能力值自动更新阵容
 阵容 ID：查看其他玩家阵容
-阵容 更改 阵型：更改其他阵型（支持阵型：442、433）
+阵容 更改 阵型：更改其他阵型（支持阵型：442、433、343）
 '''
 
 
@@ -82,6 +84,90 @@ async def show_others(id):
     await show_team(user)
 
 async def auto_update(user):
+    def getIndexes(positions, position):
+      if position == "ST":
+        position = ["ST", "RS", "LS"]
+      elif position == "CF":
+        position = ["CF", "LF", "RF"]
+      elif position == "LRW":
+        position = ["RW", "LW"]
+      elif position == "AM":
+        position = ["CAM", "RAM", "LAM"]
+      elif position == "LRM":
+        position = ["LM", "RM"]
+      elif position == "CM":
+        position = ["CM", "RCM", "LCM"]
+      elif position == "DM":
+        position = ["CDM", "RDM", "LDM"]
+      elif position == "CB":
+        position = ["CB", "RCB", "LCB"]
+      elif position == "LRB":
+        position = ["LB", "LWB", "RB", "RWB"]
+      elif position == "GK":
+        positon = ["GK"]
+      
+      indexes = []
+      for i in range(len(positions)):
+        if positions[i] in position:
+          indexes.append(i)
+      return indexes
+
+    team = Formation.getFormation(user)
+    bag = Bag.getBag(user)
+    count = 11
+    heap = PriorityQueue()
+    sub = Formation.PLAYERS_COUNT - 11
+    result = [0 for i in range(Formation.PLAYERS_COUNT)]
+    selected_players = set()
+
+    for i, card in enumerate(bag.cards):
+      overalls = card.getOveralls()
+      heap.put((-overalls[0][1], 0, overalls[0][0], i)) # 能力，能力 index，位置，card Index
+
+    while count > 0:
+      if heap.empty():
+        break
+      overall, index, position, i = heap.get()
+      overall = -overall
+      index = -index
+      card = bag.cards[i]
+      if card.player.ID in selected_players:
+        continue
+      indexes = getIndexes(Const.FORMATION[team.formation]["positions"],position)
+      picked = False
+      for n in indexes:
+        if result[n] == 0:
+          result[n] = card.id
+          count -= 1
+          picked = True
+          selected_players.add(card.player.ID)
+          break
+          
+      if not picked:
+        overalls = card.getOveralls()
+        if index + 1 < len(overalls):
+          heap.put((-overalls[index+1][1],-index-1,overalls[index+1][0],i))
+
+    for n in range(sub):
+      if heap.empty():
+        break
+      overall, index, position, i = heap.get()
+      card = bag.cards[i]
+      if card.player.ID in selected_players:
+        continue
+      result[11 + n] = card.id
+      selected_players.add(card.player.ID)
+
+    cursor = g_database.cursor()
+    for i in range(len(result)):
+        cursor.execute("update team set card = " + str(
+            result[i]) + " where user = " + str(user.qq) + " and position = " + str(i))
+    cursor.close()
+
+    await show_team(user)
+
+# 此方法已废弃
+async def auto_update2(user):
     team = Formation.getFormation(user)
     bag = Bag.getBag(user)
     gk = 0

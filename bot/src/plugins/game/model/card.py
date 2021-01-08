@@ -147,3 +147,10 @@ class Card:
     else:
       return str(real) + "/~w" + "　" + "/"
     
+  # 返回(位置，能力)的列表
+  def getOveralls(self):
+    tmp = []
+    for position in Const.REAL_ABILITY.keys():
+      tmp.append((position, self.getRealOverall(position)))
+    tmp.sort(key = lambda x: x[1], reverse=True)
+    return tmp
