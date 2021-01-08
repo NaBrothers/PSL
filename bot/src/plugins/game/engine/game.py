@@ -46,22 +46,24 @@ class Game:
     await self.matcher.send("主 " + self.home.coach.name + ":" + self.away.coach.name + " 客\n比赛开始")
     while self.time < 45 * 60:
       self.oneStep()
+      if self.time > 45 * 60:
+        self.printCase("上半场结束")
       await self.matcher.send(toImage(self.print_str))
       self.print_str = ""
-      time.sleep(5)
-    self.printCase("上半场结束")
+      time.sleep(Const.PRINT_DELAY)
     self.half = "下半时"
     self.time = 0
-    self.resetPosition()
-    if self.offence == self.home:
+    if self.offence is self.home:
       self.swap()
     self.resetPosition()
+    self.changeBallHolderToOpen()
     while self.time < 45 * 60:
       self.oneStep()
+      if self.time > 45 * 60:
+        self.printCase("下半场结束")
       await self.matcher.send(toImage(self.print_str))
       self.print_str = ""
-      time.sleep(5)
-    self.printCase("下半场结束")
+      time.sleep(Const.PRINT_DELAY)
     await self.matcher.finish("终场比分：\n" +"主 " + self.home.coach.name + str(self.home_point) + ":" + str(self.away_point) + self.away.coach.name + " 客")
 
 
@@ -75,7 +77,7 @@ class Game:
       # self.display.display(self.defence, self.offence, self.ball_holder)
       # time.sleep(1)
 
-      self.time += 50
+      self.time += Const.ACTION_DELAY
       if self.time > 45 * 60:
         return
       # 持球人行为
@@ -177,6 +179,7 @@ class Game:
               return
             else:
               def_player.action_flag = True
+          self.ball_holder.action_flag = False
           self.changeBallHolder(passing_aim)
           # passing_aim.action_flag = True
         else:
