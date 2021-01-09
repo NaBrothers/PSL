@@ -32,4 +32,4 @@ class Const:
     ACTION_DELAY = 30
 
     # 打印间隔
-    PRINT_DELAY = 10
+    PRINT_DELAY = 5

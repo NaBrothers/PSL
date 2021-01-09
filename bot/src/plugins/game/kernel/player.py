@@ -43,13 +43,10 @@ async def player_detail(id):
     ret += " " + card.getStyle() + "\n"
     ret += str(card.player.Age) + "岁 " + str(Card.tocm(card.player.Height)
                                              ) + "cm " + str(Card.tokg(card.player.Weight)) + "kg" + "\n"
-    tmp = []
-    for position in Const.REAL_ABILITY.keys():
-      tmp.append((position, card.getRealOverall(position)))
-    tmp.sort(key = lambda x: x[1], reverse=True)
-    ret += tmp[0][0] + "：" + card.printRealOverall(tmp[0][0]) + "\n"
-    ret += tmp[1][0] + "：" + card.printRealOverall(tmp[1][0]) + "\n"
-    ret += tmp[2][0] + "：" + card.printRealOverall(tmp[2][0]) + "\n"
+    overalls = card.getOveralls()
+    ret += overalls[0][0] + "：" + card.printRealOverall(overalls[0][0]) + "\n"
+    ret += overalls[1][0] + "：" + card.printRealOverall(overalls[1][0]) + "\n"
+    ret += overalls[2][0] + "：" + card.printRealOverall(overalls[2][0]) + "\n"
     ret += printAbilityName(card, "终结", "Finishing")+"\t" + printAbility(card, "Finishing") + \
         "\t" + printAbilityName(card, "远射", "Long_Shot")+"\t" + \
         printAbility(card, "Long_Shot") + "\n"

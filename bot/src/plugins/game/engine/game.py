@@ -64,7 +64,7 @@ class Game:
       await self.matcher.send(toImage(self.print_str))
       self.print_str = ""
       time.sleep(Const.PRINT_DELAY)
-    await self.matcher.finish("终场比分：\n" +"主 " + self.home.coach.name + str(self.home_point) + ":" + str(self.away_point) + self.away.coach.name + " 客")
+    await self.matcher.send("终场比分：\n" +"主 " + self.home.coach.name + str(self.home_point) + ":" + str(self.away_point) + self.away.coach.name + " 客")
 
 
 

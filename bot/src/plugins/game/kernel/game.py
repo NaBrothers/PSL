@@ -9,8 +9,13 @@ from game.model.formation import Formation
 from game.utils.database import *
 game_matcher = on_startswith(msg="比赛", rule=to_me(), priority=1)
 
+in_game = False
+
 @game_matcher.handle()
 async def game_matcher_handler(bot: Bot, event: Event, state: dict):
+    global in_game
+    if in_game:
+      await game_matcher.finish("比赛正在进行中！", **{"at_sender": True})
     await check_account(game_matcher, event)
     args = str(event.message).split(" ")
     if len(args) > 2:
@@ -52,5 +57,7 @@ async def game_matcher_handler(bot: Bot, event: Event, state: dict):
       return
     game = Game(game_matcher, user1, user2)
     await game_matcher.send("开始比赛", **{"at_sender": True})
+    in_game = True
     await game.start()
+    in_game = False
   
