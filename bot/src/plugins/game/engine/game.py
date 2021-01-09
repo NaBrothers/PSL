@@ -111,6 +111,13 @@ class Game:
             self.swap()
             self.changeBallHolderToGK()
         else:
+          if shoot_x < Const.LEFT_GOALPOST + 1 or shoot_x > Const.RIGHT_GOALPOST-1:
+            self.printCaseWithPlayer(self.ball_holder, "射向了死角")
+          elif shoot_x < Const.WIDTH/2 +2 and shoot_x > Const.WIDTH/2 -2:
+            self.printCaseWithPlayer(self.ball_holder, "射得太正了")
+          else:
+            self.printCaseWithPlayer(self.ball_holder, "这脚射门质量尚可")
+            
           def_players = self.getWayDefencePlayers(self.ball_holder.x, self.ball_holder.y, shoot_x, 0)
           shoot = self.ball_holder.get_shooting_ability(shoot_x)
           for def_player in def_players:
