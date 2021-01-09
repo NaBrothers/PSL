@@ -124,7 +124,7 @@ class Game:
               self.swap()
               self.changeBallHolder(def_player)
               return
-          if self.getDefenceGK().saving(shoot):
+          if self.getDefenceGK().saving(shoot, self.ball_holder.get_distance(shoot_x, 0), math.fabs(shoot_x-Const.WIDTH/2)):
             self.printCaseWithPlayer(self.getDefenceGK(), "扑住了球")
             self.swap()
             self.changeBallHolderToGK()
