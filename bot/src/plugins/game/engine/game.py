@@ -33,6 +33,10 @@ class Game:
     self.away_point = 0
     # 上下半场
     self.half = "上半时"
+    # 主队控球时间
+    self.home_control = 0
+    # 客队控球时间
+    self.away_control = 0
     # 持球人
     self.ball_holder = self.offence.players[10]
     # gui
@@ -64,7 +68,10 @@ class Game:
       await self.matcher.send(toImage(self.print_str))
       self.print_str = ""
       time.sleep(Const.PRINT_DELAY)
-    await self.matcher.send("终场比分：\n" +"主 " + self.home.coach.name + str(self.home_point) + ":" + str(self.away_point) + self.away.coach.name + " 客")
+    self.print_str += "终场比分：\n" +"主 " + self.home.coach.name + str(self.home_point) + ":" + str(self.away_point) + self.away.coach.name + " 客"
+    self.print_str += "控球率:" + str(int(self.home_control*100/(self.home_control+self.away_control))) + "%:" + str(int(self.away_control*100/(self.home_control+self.away_control))) + "%\n"
+    await self.matcher.send(toImage(self.print_str))
+    # await self.matcher.send("终场比分：\n" +"主 " + self.home.coach.name + str(self.home_point) + ":" + str(self.away_point) + self.away.coach.name + " 客")
 
 
 
@@ -76,7 +83,10 @@ class Game:
       # 打印球员
       # self.display.display(self.defence, self.offence, self.ball_holder)
       # time.sleep(1)
-
+      if self.offense is self.home:
+        self.home_control += Const.ACTION_DELAY
+      else:
+        self.away_control += Const.ACTION_DELAY
       self.time += Const.ACTION_DELAY
       if self.time > 45 * 60:
         return
@@ -100,6 +110,7 @@ class Game:
       if holder_action == "SHOOT":
         shoot_x = self.ball_holder.shooting()
         self.printCaseWithPlayer(self.ball_holder, "选择了射门 射门距离:" + str(int(self.ball_holder.get_distance(shoot_x, 0)))+"米")
+        self.ball_holder.shoots += 1
         if shoot_x < Const.LEFT_GOALPOST or shoot_x > Const.RIGHT_GOALPOST:
           rand = random.randint(1, 10)
           if rand == 1:
@@ -141,6 +152,7 @@ class Game:
           else:
             self.away_point += 1
           self.printCaseWithPlayer(self.ball_holder,  "破门了！！！！")
+          self.ball_holder.goals += 1
           self.swap()
           self.resetPosition()
           self.changeBallHolderToOpen()
@@ -165,9 +177,11 @@ class Game:
             return
           else:
             self.printCaseWithPlayer(self.ball_holder, "过掉了" + def_player.name)
+            self.ball_holder.surpasses += 1
             def_player.action_flag = True
         self.ball_holder.moving(dribble_pos[0], dribble_pos[1])
       elif holder_action == "PASS":
+        self.ball_holder.passes += 1
         passing = self.ball_holder.passing(self.getOffenceTeamMates())
         passing_type = passing[0]
         passing_aim = passing[1]
@@ -186,6 +200,7 @@ class Game:
               return
             else:
               def_player.action_flag = True
+          self.ball_holder.successful_passes += 1
           self.ball_holder.action_flag = False
           self.changeBallHolder(passing_aim)
           # passing_aim.action_flag = True
@@ -225,6 +240,7 @@ class Game:
             self.changeRandomBallHolder()
             return
           else:
+            self.ball_holder.successful_passes += 1
             distance_goal = roll_winner.get_distance(Const.WIDTH / 2, 0)
             rand = random.randint(0, int(roll_winner.ability["Heading"] + distance_goal * 10))
             if rand < roll_winner.ability["Heading"] and distance_goal < 16:

@@ -25,6 +25,11 @@ class Player:
     self.default_x = default_x
     self.default_y = default_y
     self.action_flag = False
+    self.shoots = 0
+    self.goals = 0
+    self.passes = 0
+    self.successful_passes = 0
+    self.surpasses = 0
 
   # def __init__(self, name, position, ability, x, y):
   #   self.name = name
