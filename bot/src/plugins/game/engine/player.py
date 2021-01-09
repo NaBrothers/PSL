@@ -150,7 +150,7 @@ class Player:
   # 扑救-被动触发
   def saving(self, shoot_ability, distance, shoot_place):
     success_rate = self.get_success_rate(self.ability["GK_Saving"], shoot_ability) *\
-      math.pow(distance, 0.6)*self.ability["GK_Reaction"]*math.pow(shoot_ability, -0.5)/40 *\
+      math.pow(distance, 0.6)*self.ability["GK_Reaction"]*math.pow(shoot_ability, -1)/4 *\
       math.pow(1.1, math.pow(self.ability["GK_Positioning"], 1.5)/shoot_ability-shoot_place)*0.65
     rand = random.randint(0, int((success_rate + 1)*100))
     if rand < 100:
