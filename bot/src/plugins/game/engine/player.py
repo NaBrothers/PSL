@@ -26,6 +26,7 @@ class Player:
     self.default_y = default_y
     self.action_flag = False
     self.shoots = 0
+    self.shoots_in_target = 0
     self.goals = 0
     self.passes = 0
     self.successful_passes = 0

@@ -68,8 +68,33 @@ class Game:
       await self.matcher.send(toImage(self.print_str))
       self.print_str = ""
       time.sleep(Const.PRINT_DELAY)
-    self.print_str += "终场比分：\n" +"主 " + self.home.coach.name + str(self.home_point) + ":" + str(self.away_point) + self.away.coach.name + " 客"
-    self.print_str += "控球率:" + str(int(self.home_control*100/(self.home_control+self.away_control))) + "%:" + str(int(self.away_control*100/(self.home_control+self.away_control))) + "%\n"
+    self.print_str += "终场比分：\n" +"主 " + self.home.coach.name + str(self.home_point) + ":" + str(self.away_point) + self.away.coach.name + " 客\n"
+    self.print_str += "控球率：" + str(round(self.home_control*100/(self.home_control+self.away_control),1)) + "%:" + str(round(self.away_control*100/(self.home_control+self.away_control),1)) + "%\n"
+    home_shoots = 0
+    home_shoots_in_target = 0
+    home_goals = 0
+    home_passes = 0
+    home_successful_passes = 0
+    home_surpasses = 0
+    for player in self.home.players:
+      home_shoots += player.shoots
+      home_shoots_in_target += player.shoots_in_target
+      home_goals += player.goals
+      home_passes += player.passes
+      home_successful_passes += player.successful_passes
+      home_surpasses += player.surpasses
+    for player in self.away.players:
+      away_shoots += player.shoots
+      away_shoots_in_target += player.shoots_in_target
+      away_goals += player.goals
+      away_passes += player.passes
+      away_successful_passes += player.successful_passes
+      away_surpasses += player.surpasses
+    self.print_str += "射正数：" + str(home_shoots_in_target) + ":" + str(away_shoots_in_target) + "\n"
+    self.print_str += "射门数：" + str(home_shoots) + ":" + str(away_shoots) + "\n"
+    self.print_str += "传球数：" + str(home_passes) + ":" + str(away_passes) + "\n"
+    self.print_str += "传球成功率：" + str(round(home_successful_passes/home_passes,1)) + "%:" + str(round(away_successful_passes/away_passes,1)) + "%\n"
+    self.print_str += "过人次数：" + str(home_surpasses) + ":" + str(away_surpasses)
     await self.matcher.send(toImage(self.print_str))
     # await self.matcher.send("终场比分：\n" +"主 " + self.home.coach.name + str(self.home_point) + ":" + str(self.away_point) + self.away.coach.name + " 客")
 
@@ -83,7 +108,7 @@ class Game:
       # 打印球员
       # self.display.display(self.defence, self.offence, self.ball_holder)
       # time.sleep(1)
-      if self.offense is self.home:
+      if self.offence is self.home:
         self.home_control += Const.ACTION_DELAY
       else:
         self.away_control += Const.ACTION_DELAY
@@ -122,6 +147,7 @@ class Game:
             self.swap()
             self.changeBallHolderToGK()
         else:
+          self.ball_holder.shoots_in_target += 1
           if shoot_x < Const.LEFT_GOALPOST + 1 or shoot_x > Const.RIGHT_GOALPOST-1:
             self.printCaseWithPlayer(self.ball_holder, "射向了死角")
           elif shoot_x < Const.WIDTH/2 +2 and shoot_x > Const.WIDTH/2 -2:
