@@ -7,6 +7,14 @@ class Team:
     # 教练
     self.coach = user
     self.players = self.getPlayers()
+    self.point = 0
+    self.control = 0
+    self.shoots = 0
+    self.shoots_in_target = 0
+    self.goals = 0
+    self.passes = 0
+    self.successful_passes = 0
+    self.surpasses = 0
 
   # 返回包含Player的列表
   def getPlayers(self):
@@ -20,3 +28,11 @@ class Team:
       players.append(player)
     return players
     
+  def getStats(self):
+    for player in self.players:
+      self.shoots += player.shoots
+      self.shoots_in_target += player.shoots_in_target
+      self.goals += player.goals
+      self.passes += player.passes
+      self.successful_passes += player.successful_passes
+      self.surpasses += player.surpasses
