@@ -13,16 +13,24 @@ test_admin = on_startswith(msg="admin", rule=to_me(), priority=1)
 
 @test_test.handle()
 async def test_handler(bot: Bot, event: Event, state: dict):
+    user = await check_account(test_test,event)
+    if not user.isAdmin:
+        await test_test.finish("没有管理员权限！",  **{'at_sender': True})
     await test_test.finish(toImage(str(event.message).lstrip("测试 ")), **{'at_sender': True})
 
 @test_broadcast.handle()
 async def broadcast_handler(bot: Bot, event: Event, state: dict):
     user = await check_account(test_broadcast,event)
+    if not user.isAdmin:
+      await test_broadcast.finish("没有管理员权限！",  **{'at_sender': True})
     msg = str(event.message).split("广播")[1]
     offline.Offline.broadcast(user, msg)
 
 @test_admin.handle()
 async def admin_handler(bot: Bot, event: Event, state: dict):
+    user = await check_account(test_admin, event)
+    if not user.isAdmin:
+      await test_admin.finish("没有管理员权限！",  **{'at_sender': True})
     cursor = g_database.cursor()
     msg = str(event.message).split("admin")[1]
     try:
