@@ -15,6 +15,7 @@ get_team = on_startswith(msg="阵容", rule=to_me(), priority=1)
 
 error_text = '''阵容 自动：按能力值自动更新阵容
 阵容 ID：查看其他玩家阵容
+阵容 替换 球员1 球员2：替换两名球员
 阵容 更改 阵型：更改其他阵型（支持阵型：442、433、343、4231、352）
 '''
 
@@ -37,9 +38,45 @@ async def get_team_handler(bot: Bot, event: Event, state: dict):
             await change_formation(user, args[2])
         else:
             await get_team.finish("格式错误！\n" + toImage(error_text), **{'at_sender': True})
+    elif len(args) == 4:
+        if args[1] == "替换" and args[2].isdecimal() and args[3].isdecimal():
+            await change_player(user, args[2], args[3])
+        else:
+            await get_team.finish("格式错误！\n" + toImage(error_text), **{'at_sender': True})
     else:
         await get_team.finish("格式错误！\n" + toImage(error_text), **{'at_sender': True})
 
+async def change_player(user, id1, id2):
+    team = Formation.getFormation(user)
+    bag = Bag.getBag(user)
+    bag_ids = [str(x.id) for x in bag.cards]
+
+    if id1 not in bag_ids:
+      await get_team.finish("找不到球员1！", **{'at_sender': True})
+      return
+
+    if id2 not in bag_ids:
+      await get_team.finish("找不到球员2！", **{'at_sender': True})
+      return
+
+    team_ids = [str(x.id) for x in team.cards]
+
+    if id1 not in team_ids and id2 not in team_ids:
+      await get_team.finish("请至少选择一名阵容中的球员！", **{'at_sender': True})
+      return
+
+    cursor = g_database.cursor()
+    if id1 in team_ids and id2 in team_ids:
+        cursor.execute("update team set card = " + "-1" + " where card = " + str(id1))
+        cursor.execute("update team set card = " + str(id1) + " where card = " + str(id2))
+        cursor.execute("update team set card = " + str(id2) + " where card = " + "-1")
+    elif id1 in team_ids:
+        cursor.execute("update team set card = " + str(id2) + " where card = " + str(id1))
+    elif id2 in team_ids:
+        cursor.execute("update team set card = " + str(id1) + " where card = " + str(id2))
+    cursor.close()   
+
+    await get_team.finish("替换成功！", **{'at_sender': True})
 
 async def change_formation(user, formation):
     user.setFormation(formation)
