@@ -65,14 +65,24 @@ async def change_player(user, id1, id2):
       await get_team.finish("请至少选择一名阵容中的球员！", **{'at_sender': True})
       return
 
+    player_ids = [x.player.ID for x in team.cards]
+    card1 = Card.getCardByID(id1)
+    card2 = Card.getCardByID(id2)
+
     cursor = g_database.cursor()
     if id1 in team_ids and id2 in team_ids:
         cursor.execute("update team set card = " + "-1" + " where card = " + str(id1))
         cursor.execute("update team set card = " + str(id1) + " where card = " + str(id2))
         cursor.execute("update team set card = " + str(id2) + " where card = " + "-1")
     elif id1 in team_ids:
+        if card2.player.ID in player_ids:
+          await get_team.finish("阵容中存在同名球员！", **{'at_sender': True})
+          return
         cursor.execute("update team set card = " + str(id2) + " where card = " + str(id1))
     elif id2 in team_ids:
+        if card1.player.ID in player_ids:
+          await get_team.finish("阵容中存在同名球员！", **{'at_sender': True})
+          return
         cursor.execute("update team set card = " + str(id1) + " where card = " + str(id2))
     cursor.close()   
 
