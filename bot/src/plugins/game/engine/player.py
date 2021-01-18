@@ -32,6 +32,7 @@ class Player:
     self.passes = 0
     self.successful_passes = 0
     self.surpasses = 0
+    self.goals_detailed = []
 
   # def __init__(self, name, position, ability, x, y):
   #   self.name = name

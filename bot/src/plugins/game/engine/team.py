@@ -15,6 +15,7 @@ class Team:
     self.passes = 0
     self.successful_passes = 0
     self.surpasses = 0
+    self.goals_detailed = []
 
   # 返回包含Player的列表
   def getPlayers(self):
@@ -37,3 +38,5 @@ class Team:
       self.passes += player.passes
       self.successful_passes += player.successful_passes
       self.surpasses += player.surpasses
+      if player.goals_detailed:
+        self.goals_detailed.append((player.getName(), player.goals_detailed))

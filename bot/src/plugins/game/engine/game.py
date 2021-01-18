@@ -64,15 +64,35 @@ class Game:
         await self.printStats()
 
     async def printStats(self):
+        self.home.getStats()
+        self.away.getStats()
         self.print_str += "终场比分：\n" + "主 " + self.home.coach.name + " " + \
             str(self.home.point) + ":" + str(self.away.point) + \
             " " + self.away.coach.name + " 客\n"
+
+        if self.home.goals_detailed:
+            self.print_str += "主队：\n"
+            for item in self.home.goals_detailed:
+              self.print_str += item[0] + " ("
+              for i in item[1]:
+                self.print_str += str(i) + "\', "
+              self.print_str = self.print_str[:-2]
+              self.print_str += ")\n"
+
+        if self.away.goals_detailed:
+            self.print_str += "客队：\n"
+            for item in self.away.goals_detailed:
+              self.print_str += item[0] + " ("
+              for i in item[1]:
+                self.print_str += str(i) + "\', "
+              self.print_str = self.print_str[:-2]
+              self.print_str += ")\n"
+
         self.print_str += "控球率：" + str(round(self.home.control*100/(self.home.control+self.away.control), 1)) + \
             "%:" + str(round(self.away.control*100 /
                              (self.home.control+self.away.control), 1)) + "%\n"
 
-        self.home.getStats()
-        self.away.getStats()
+        
         self.print_str += "射正数：" + \
             str(self.home.shoots_in_target) + ":" + \
             str(self.away.shoots_in_target) + "\n"
@@ -168,6 +188,7 @@ class Game:
                         self.ball_holder, self.getDefenceGK())
                     self.printCase(case)
                     self.ball_holder.goals += 1
+                    self.ball_holder.goals_detailed.append(self.getTime())
                     self.swap()
                     self.resetPosition()
                     self.changeBallHolderToOpen()
@@ -296,6 +317,8 @@ class Game:
                                 self.offence.point += 1
                                 case = Display.print_goal(
                                     roll_winner, self.getDefenceGK())
+                                roll_winner.goals += 1
+                                roll_winner.goals_detailed.append(self.getTime())
                                 self.printCase(case)
                                 self.swap()
                                 self.resetPosition()
@@ -505,3 +528,9 @@ class Game:
     # 打印球员事件
     def printCaseWithPlayer(self, player, case):
         self.printCase(player.coach + " " + player.getName() + " " + case)
+
+    def getTime(self):
+      if self.half == "上半时":
+        return self.time // 60
+      else:
+        return self.time // 60 + 45
