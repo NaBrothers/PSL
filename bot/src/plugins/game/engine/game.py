@@ -3,6 +3,7 @@ from game.engine.player import Player
 from game.engine.team import Team
 from game.engine.const import Const
 from game.utils.image import toImage
+from game.engine.display import Display
 # from display import Display
 import random
 import math
@@ -38,7 +39,7 @@ class Game:
     # 比赛主逻辑
     async def start(self):
         self.resetPosition()
-        await self.matcher.send("主 " + self.home.coach.name + ":" + self.away.coach.name + " 客\n比赛开始")
+        await self.matcher.send("主 " + self.home.coach.name + " : " + self.away.coach.name + " 客\n比赛开始")
         while self.time < 45 * 60:
             self.oneStep()
             if self.time > 45 * 60:
@@ -60,9 +61,12 @@ class Game:
             self.print_str = ""
             time.sleep(Const.PRINT_DELAY)
 
-        self.print_str += "终场比分：\n" + "主 " + self.home.coach.name + \
+        await self.printStats()
+
+    async def printStats(self):
+        self.print_str += "终场比分：\n" + "主 " + self.home.coach.name + " " + \
             str(self.home.point) + ":" + str(self.away.point) + \
-            self.away.coach.name + " 客\n"
+            " " + self.away.coach.name + " 客\n"
         self.print_str += "控球率：" + str(round(self.home.control*100/(self.home.control+self.away.control), 1)) + \
             "%:" + str(round(self.away.control*100 /
                              (self.home.control+self.away.control), 1)) + "%\n"
@@ -116,27 +120,26 @@ class Game:
             )
             if holder_action == "SHOOT":
                 shoot_x = self.ball_holder.shooting()
-                self.printCaseWithPlayer(
-                    self.ball_holder, "选择了射门 射门距离:" + str(int(self.ball_holder.get_distance(shoot_x, 0)))+"米")
+                distance = int(self.ball_holder.get_distance(shoot_x, 0))
+                if distance >= 20:
+                    case = Display.print_long_shot(self.ball_holder, distance)
+                else:
+                    case = Display.print_short_shot(self.ball_holder, distance)
+                self.printCase(case)
                 self.ball_holder.shoots += 1
                 if shoot_x < Const.LEFT_GOALPOST or shoot_x > Const.RIGHT_GOALPOST:
-                    rand = random.randint(1, 10)
-                    if rand == 1:
-                        self.printCaseWithPlayer(self.ball_holder, "击中了门柱")
-                        self.swap()
-                        self.changeBallHolderToGK()
-                    else:
-                        self.printCaseWithPlayer(self.ball_holder, "射偏了")
-                        self.swap()
-                        self.changeBallHolderToGK()
+                    case = Display.print_miss_shot()
+                    self.printCase(case)
+                    self.swap()
+                    self.changeBallHolderToGK()
                 else:
                     self.ball_holder.shoots_in_target += 1
-                    if shoot_x < Const.LEFT_GOALPOST + 1 or shoot_x > Const.RIGHT_GOALPOST-1:
-                        self.printCaseWithPlayer(self.ball_holder, "射向了死角")
-                    elif shoot_x < Const.WIDTH/2 + 2 and shoot_x > Const.WIDTH/2 - 2:
-                        self.printCaseWithPlayer(self.ball_holder, "射得太正了")
-                    else:
-                        self.printCaseWithPlayer(self.ball_holder, "这脚射门质量尚可")
+                    # if shoot_x < Const.LEFT_GOALPOST + 1 or shoot_x > Const.RIGHT_GOALPOST-1:
+                    #     self.printCaseWithPlayer(self.ball_holder, "射向了死角")
+                    # elif shoot_x < Const.WIDTH/2 + 2 and shoot_x > Const.WIDTH/2 - 2:
+                    #     self.printCaseWithPlayer(self.ball_holder, "射得太正了")
+                    # else:
+                    #     self.printCaseWithPlayer(self.ball_holder, "这脚射门质量尚可")
 
                     def_players = self.getWayDefencePlayers(
                         self.ball_holder.x, self.ball_holder.y, shoot_x, 0)
@@ -149,17 +152,21 @@ class Game:
                             self.ball_holder.x, self.ball_holder.y, Const.WIDTH / 2, 0)
 
                         if def_player.intercepting(shoot, distance):
-                            self.printCaseWithPlayer(def_player, "拦截了射门")
+                            case = Display.print_interception(def_player)
+                            self.printCase(case)
                             self.swap()
                             self.changeBallHolder(def_player)
                             return
                     if self.getDefenceGK().saving(shoot, self.ball_holder.get_distance(shoot_x, 0), math.fabs(shoot_x-Const.WIDTH/2)):
-                        self.printCaseWithPlayer(self.getDefenceGK(), "扑住了球")
+                        case = Display.print_saving(self.getDefenceGK())
+                        self.printCase(case)
                         self.swap()
                         self.changeBallHolderToGK()
                         return
                     self.offence.point += 1
-                    self.printCaseWithPlayer(self.ball_holder,  "破门了！！！！")
+                    case = Display.print_goal(
+                        self.ball_holder, self.getDefenceGK())
+                    self.printCase(case)
                     self.ball_holder.goals += 1
                     self.swap()
                     self.resetPosition()
@@ -170,8 +177,9 @@ class Game:
                     self.ball_holder.x,
                     self.ball_holder.y,
                     5))
-                self.printCaseWithPlayer(
-                    self.ball_holder, "向" + Const.ANGLE[dribble_pos[2]] + "带球")
+                case = Display.print_controlling(
+                    self.ball_holder, Const.ANGLE[dribble_pos[2]])
+                self.printCase(case)
                 def_players = self.getWayDefencePlayers(
                     self.ball_holder.x, self.ball_holder.y, dribble_pos[0], dribble_pos[1])
                 for def_player in def_players:
@@ -182,13 +190,16 @@ class Game:
                         self.ball_holder.x, self.ball_holder.y, dribble_pos[0], dribble_pos[1])
 
                     if def_player.intercepting(self.ball_holder.ability["Dribbling"], distance-def_player.ability["Speed"]/10):
-                        self.printCaseWithPlayer(def_player, "抢下了球")
+                        case = Display.print_tackling(
+                            self.ball_holder, def_player)
+                        self.printCase(case)
                         self.swap()
                         self.changeBallHolder(def_player)
                         return
                     else:
-                        self.printCaseWithPlayer(
-                            self.ball_holder, "过掉了" + def_player.name)
+                        case = Display.print_dribbling(
+                            self.ball_holder, def_player)
+                        self.printCase(case)
                         self.ball_holder.surpasses += 1
                         def_player.action_flag = True
                 self.ball_holder.moving(dribble_pos[0], dribble_pos[1])
@@ -198,8 +209,11 @@ class Game:
                 passing_type = passing[0]
                 passing_aim = passing[1]
                 if passing_type == "ROLLING":
-                    self.printCaseWithPlayer(self.ball_holder, "选择地面传球给"+passing_aim.name+" 传球距离:"+str(
-                        int(self.ball_holder.get_distance_player(passing_aim)))+"米")
+                    distance = self.ball_holder.get_distance_player(
+                        passing_aim)
+                    case = Display.print_short_pass(
+                        self.ball_holder, passing_aim, int(distance))
+                    self.printCase(case)
                     def_players = self.getWayDefencePlayers(
                         self.ball_holder.x, self.ball_holder.y, passing_aim.x, passing_aim.y)
                     for def_player in def_players:
@@ -209,7 +223,9 @@ class Game:
                         distance = def_player.get_distance_line(
                             self.ball_holder.x, self.ball_holder.y, passing_aim.x, passing_aim.y)
                         if def_player.intercepting(self.ball_holder.ability["Short_Passing"], distance):
-                            self.printCaseWithPlayer(def_player, "断下了传球")
+                            case = Display.print_tackling(
+                                self.ball_holder, def_player)
+                            self.printCase(case)
                             self.swap()
                             self.changeBallHolder(def_player)
                             return
@@ -224,8 +240,9 @@ class Game:
                         passing_aim)
                     distance = self.ball_holder.get_distance_player(
                         passing_aim)
-                    self.printCaseWithPlayer(
-                        self.ball_holder, "选择过顶传球给" + passing_aim.name+" 传球距离:"+str(int(distance))+"米")
+                    case = Display.print_long_pass(
+                        self.ball_holder, passing_aim, int(distance))
+                    self.printCase(case)
                     if self.getLastSecondDefencePlayer().y > passing_aim.y and passing_aim.y < Const.LENGTH / 2:
                         self.printCaseWithPlayer(passing_aim, "处在越位位置")
                         self.swap()
@@ -266,18 +283,20 @@ class Game:
                         rand = random.randint(
                             0, int(roll_winner.ability["Heading"] + distance_goal * 10))
                         if rand < roll_winner.ability["Heading"] and distance_goal < 16:
-                            self.printCaseWithPlayer(roll_winner, "直接头球攻门")
-
+                            case = Display.print_high_shot(roll_winner)
+                            self.printCase(case)
                             if distance_goal < 25 and \
                                     random.randint(0, int(5 * self.getDefenceGK().ability["GK"] * (25 - distance_goal))) > 25 * roll_winner.ability["Heading"]:
-                                self.printCaseWithPlayer(
-                                    self.getDefenceGK(), "扑住了球")
+                                case = Display.print_saving(
+                                    self.getDefenceGK())
+                                self.printCase(case)
                                 self.swap()
                                 self.changeBallHolderToGK()
                             else:
                                 self.offence.point += 1
-                                self.printCaseWithPlayer(
-                                    roll_winner, "破门了！！！！")
+                                case = Display.print_goal(
+                                    roll_winner, self.getDefenceGK())
+                                self.printCase(case)
                                 self.swap()
                                 self.resetPosition()
                                 self.changeBallHolderToOpen()
@@ -475,17 +494,14 @@ class Game:
     def printCase(self, case):
         minute = int(self.time / 60)
         second = self.time % 60
-        print("主" + str(self.home.point) + ":" + str(self.away.point) +
-              "客 " + self.half + str(minute) + ":" + str(second) + " " + case)
-        self.print_str += "主" + str(self.home.point) + ":" + str(self.away.point) + \
-            "客 " + self.half + str(minute) + ":" + \
-            str(second) + " " + case + "\n"
+        lines = case.split("\n")
+        for line in lines:
+            print("主" + str(self.home.point) + ":" + str(self.away.point) +
+                  "客 " + self.half + str(minute) + ":" + str(second) + " " + line)
+            self.print_str += "主" + str(self.home.point) + ":" + str(self.away.point) + \
+                "客 " + self.half + str(minute) + ":" + \
+                str(second) + " " + line + "\n"
 
     # 打印球员事件
     def printCaseWithPlayer(self, player, case):
-        if player in self.defence.players:
-            coach = self.defence.coach
-        else:
-            coach = self.offence.coach
-        self.printCase(coach.name + " " + player.position +
-                       " " + player.name + " " + case)
+        self.printCase(player.coach + " " + player.getName() + " " + case)

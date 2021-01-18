@@ -24,7 +24,8 @@ class Team:
       player = Player(formation.cards[i],
                       Const.FORMATION[formation.formation]["positions"][i],
                       formation.coordinates[i][0],
-                      formation.coordinates[i][1])
+                      formation.coordinates[i][1],
+                      self.coach.name)
       players.append(player)
     return players
     

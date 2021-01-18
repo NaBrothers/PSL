@@ -6,7 +6,7 @@ import sys
 
 
 class Player:
-  def __init__(self, card, position, default_x, default_y):
+  def __init__(self, card, position, default_x, default_y, coach):
     """
 
     :param card: 球员卡
@@ -17,6 +17,7 @@ class Player:
     :param action_flag: 行动标记
     """
     self.name = card.getNameWithColor()
+    self.coach = coach
     self.position = position
     # 格式 ability["Short_Passing"] 具体请看Card
     self.ability = card.ability
@@ -252,3 +253,6 @@ class Player:
     if y > Const.LENGTH:
       return Const.LENGTH
     return y
+
+  def getName(self):
+    return self.position + " " + self.name
