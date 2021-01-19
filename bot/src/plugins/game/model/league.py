@@ -47,3 +47,20 @@ class League:
     cursor = g_database.cursor()
     cursor.execute("insert into league (user) values (" + str(qq) + ")")
     cursor.close()
+
+  def getCount():
+    cursor = g_database.cursor()
+    count = cursor.execute("select * from league")
+    cursor.close()
+    return count
+
+  def clearStats():
+    cursor = g_database.cursor()
+    cursor.execute("update cards set appearance = 0")
+    cursor.execute("update cards set goal = 0")
+    cursor.execute("update cards set assist = 0")
+    cursor.execute("update cards set tackle = 0")
+    cursor.execute("update cards set save = 0")
+    cursor.execute("delete from schedule")
+    cursor.close()
+    return count

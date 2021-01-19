@@ -13,6 +13,12 @@ PROJECT_DIR="/home/admin/PSL"
 # 文字模式被风控时可以尝试
 PICTURE_MODE=True
 
+# 联赛球队数
+LEAGUE_COUNT = 3
+
+# 联赛循环数
+LEAGUE_REPEAT = 2
+
 class Config(BaseSettings):
     # Your Config Here
 
