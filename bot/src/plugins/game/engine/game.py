@@ -31,6 +31,8 @@ class Game:
         self.half = "上半时"
         # 持球人
         self.ball_holder = self.offence.players[10]
+        # 助攻人
+        self.assister = None
         # gui
         # self.display = Display()
         # 打印过程
@@ -104,20 +106,20 @@ class Game:
             "%:" + str(round(self.away.control*100 /
                              (self.home.control+self.away.control), 1)) + "%\n"
 
-        self.print_str += "射正数：" + \
+        self.print_str += "射正：" + \
             str(self.home.shoots_in_target) + ":" + \
             str(self.away.shoots_in_target) + "\n"
-        self.print_str += "射门数：" + \
+        self.print_str += "射门：" + \
             str(self.home.shoots) + ":" + str(self.away.shoots) + "\n"
-        self.print_str += "传球数：" + \
+        self.print_str += "传球：" + \
             str(self.home.passes) + ":" + str(self.away.passes) + "\n"
         self.print_str += "传球成功率：" + str(round(self.home.successful_passes*100/self.home.passes, 1)) + "%:" + str(
             round(self.away.successful_passes*100/self.away.passes, 1)) + "%\n"
-        self.print_str += "过人数：" + \
+        self.print_str += "过人：" + \
             str(self.home.dribbles) + ":" + str(self.away.dribbles) + "\n"
-        self.print_str += "抢断数：" + \
+        self.print_str += "抢断：" + \
             str(self.home.tackles) + ":" + str(self.away.tackles) + "\n"
-        self.print_str += "扑救数：" + \
+        self.print_str += "扑救：" + \
             str(self.home.saves) + ":" + str(self.away.saves)
         await self.matcher.send(toImage(self.print_str))
         # await self.matcher.send("终场比分：\n" +"主 " + self.home.coach.name + str(self.home.point) + ":" + str(self.away.point) + self.away.coach.name + " 客")
@@ -202,10 +204,12 @@ class Game:
                         return
                     self.offence.point += 1
                     case = Display.print_goal(
-                        self.ball_holder, gk)
+                        self.ball_holder, gk, self.assister)
                     self.printCase(case)
                     self.ball_holder.goals += 1
                     self.ball_holder.goals_detailed.append(self.getTime())
+                    if self.assister:
+                      self.assister.assists += 1
                     self.swap()
                     self.resetPosition()
                     self.changeBallHolderToOpen()
@@ -273,6 +277,7 @@ class Game:
                             def_player.action_flag = True
                     self.ball_holder.successful_passes += 1
                     self.ball_holder.action_flag = False
+                    self.assister = self.ball_holder
                     self.changeBallHolder(passing_aim)
                     # passing_aim.action_flag = True
                 else:
@@ -318,6 +323,7 @@ class Game:
                         return
                     else:
                         self.ball_holder.successful_passes += 1
+                        self.assister = self.ball_holder
                         distance_goal = roll_winner.get_distance(
                             Const.WIDTH / 2, 0)
                         rand = random.randint(
@@ -336,11 +342,13 @@ class Game:
                             else:
                                 self.offence.point += 1
                                 case = Display.print_goal(
-                                    roll_winner, gk)
+                                    roll_winner, gk, self.assister)
+                                self.printCase(case)
                                 roll_winner.goals += 1
                                 roll_winner.goals_detailed.append(
                                     self.getTime())
-                                self.printCase(case)
+                                if self.assister:
+                                  self.assister.assists += 1
                                 self.swap()
                                 self.resetPosition()
                                 self.changeBallHolderToOpen()
@@ -372,6 +380,7 @@ class Game:
         self.reset_action_flag()
         self.swapPosition(self.offence)
         self.swapPosition(self.defence)
+        self.assister = None
 
     # 攻守坐标转换
     def swapPosition(self, team):

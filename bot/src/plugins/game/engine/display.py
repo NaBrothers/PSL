@@ -157,12 +157,14 @@ class Display:
         string = random.choice(Statement.SHOT_MISS)
         return string
 
-    def print_goal(player, gk):
+    def print_goal(player, gk, assister):
         string1 = random.choice(Statement.SAVING_FAILED)
         string1 = string1.replace("【球员】", gk.coach + " " + gk.getName() + " ")
         string2 = random.choice(Statement.GOAL)
         string2 = string2.replace("【球员】", gk.coach + " " + gk.getName() + " ")
         string3 = player.coach + " " + player.getName() + " 破门了！！！"
+        if assister:
+          string3 += "来自 " + assister.getName() + " 的助攻"
         string = string1 + "\n" + string2 + "\n" + string3
         return string
 
