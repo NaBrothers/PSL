@@ -27,7 +27,9 @@ return_text = '''联赛 比赛：开始下一轮比赛
 async def league_matcher_handler(bot: Bot, event: Event, state: dict):
     user = await check_account(league_matcher, event)
     args = str(event.message).split(" ")
-  
+    if len(args) == 2 and args[1] == "重置":
+        await reset_league(user)
+        return
     count = League.getCount()
     if count < LEAGUE_COUNT:
       await register_league(args, user)
@@ -50,10 +52,9 @@ async def register_league(args, user):
         if count == LEAGUE_COUNT:
           await league_matcher.send("新赛季开始了！", **{"at_sender": True})
           Offline.broadcast(user, "新赛季开始了！")
-          League.clearStats()
           if LEAGUE_COUNT % 2 == 1:
             League.addUser(0)
-        generate_schedule()
+          generate_schedule()
     else:
        await league_matcher.finish(toImage(ret), **{"at_sender": True})
 
@@ -78,16 +79,15 @@ def generate_schedule():
       ring.rotate(1)
     rounds = rounds1 + rounds2
     final_rounds = rounds * LEAGUE_REPEAT
-
     for i in range(len(final_rounds)):
       one_round = final_rounds[i]
       for j in range(len(one_round)):
         pair = one_round[j]
-        if pair[0] != None:
+        if pair[0] is not None:
           home = pair[0].qq
         else:
           home = 0
-        if pair[1] != None:
+        if pair[1] is not None:
           away = pair[1].qq
         else:
           away = 0
@@ -104,12 +104,12 @@ async def start_league(args, user):
         entry = Schedule.getCurrentEntry(user)
         if entry.finished:
           await league_matcher.finish("本轮比赛已完成，请等待下一轮", **{"at_sender": True})
-        await start_game(entry.home, entry.away, 1, entry)
+        await start_game(entry.home, entry.away, 1, entry, user)
     elif len(args) == 2 and args[1] == "比赛":
         entry = Schedule.getCurrentEntry(user)
         if entry.finished:
           await league_matcher.finish("本轮比赛已完成，请等待下一轮", **{"at_sender": True})
-        await start_game(entry.home, entry.away, 2, entry)
+        await start_game(entry.home, entry.away, 2, entry, user)
     elif len(args) == 2 and args[1] == "积分":
         await show_leaderboard()
     elif len(args) == 3 and args[1] == "排名":
@@ -118,6 +118,12 @@ async def start_league(args, user):
         await league_matcher.finish("格式错误！" + toImage(return_text), **{"at_sender": True})
         return
 
+async def reset_league(user):
+  if not user.isAdmin:
+    await league_matcher.finish("没有管理员权限！", **{"at_sender": True})
+  League.clear()
+  await league_matcher.send("重置成功！", **{"at_sender": True})
+  Offline.broadcast(user, "联赛已重置，请报名新赛季！")
 
 async def print_schedule(user):
     schedule = Schedule.getCurrentRound()
@@ -201,7 +207,7 @@ async def show_rank(arg):
     await league_matcher.finish(toImage(ret), **{"at_sender": True})
 
 
-async def start_game(user1, user2, mode, entry):
+async def start_game(user1, user2, mode, entry, cur):
     if g_server.get("in_game") == True:
         await league_matcher.finish("比赛正在进行中！", **{"at_sender": True})
     formation1 = Formation.getFormation(user1)
@@ -216,13 +222,19 @@ async def start_game(user1, user2, mode, entry):
     if mode != 1:
         await league_matcher.send("开始比赛", **{"at_sender": True})
     g_server.set("in_game", True)
-    await game.start(mode)
+    stats = await game.start(mode)
     g_server.set("in_game", False)
 
     update_stats(game, formation1, formation2)
     entry.set("finished", True)
     entry.set("home_goal", game.home.goals)
     entry.set("away_goal", game.away.goals)
+
+    msg = "第" + str(entry.round) + "轮联赛已结束：\n"  +  stats
+    if user1.qq == cur.qq:
+      Offline.send(user2, msg)
+    else:
+      Offline.send(user1, msg)
 
     
 

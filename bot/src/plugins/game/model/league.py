@@ -50,11 +50,12 @@ class League:
 
   def getCount():
     cursor = g_database.cursor()
-    count = cursor.execute("select * from league")
+    cursor.execute("select count(*) from league")
+    count = cursor.fetchone()[0]
     cursor.close()
     return count
 
-  def clearStats():
+  def clear():
     cursor = g_database.cursor()
     cursor.execute("update cards set appearance = 0")
     cursor.execute("update cards set goal = 0")
@@ -62,5 +63,5 @@ class League:
     cursor.execute("update cards set tackle = 0")
     cursor.execute("update cards set save = 0")
     cursor.execute("delete from schedule")
+    cursor.execute("delete from league")
     cursor.close()
-    return count

@@ -69,7 +69,8 @@ class Game:
             if self.mode != Const.MODE_QUICK:
                 time.sleep(Const.PRINT_DELAY)
 
-        await self.printStats()
+        stats = await self.printStats()
+        return stats
 
     async def send(self, str):
         if self.mode == Const.MODE_QUICK:
@@ -121,7 +122,9 @@ class Game:
             str(self.home.tackles) + ":" + str(self.away.tackles) + "\n"
         self.print_str += "扑救：" + \
             str(self.home.saves) + ":" + str(self.away.saves)
-        await self.matcher.send(toImage(self.print_str))
+        msg = toImage(self.print_str)
+        await self.matcher.send(msg)
+        return msg
         # await self.matcher.send("终场比分：\n" +"主 " + self.home.coach.name + str(self.home.point) + ":" + str(self.away.point) + self.away.coach.name + " 客")
 
     # 开始一个回合
