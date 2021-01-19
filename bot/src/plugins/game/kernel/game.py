@@ -4,13 +4,11 @@ from nonebot.adapters.cqhttp import Bot, Event
 from game.utils.image import toImage
 from game.kernel.account import check_account
 from game.engine.game import Game
-from game.engine.const import Const
 from game.model.user import User
 from game.model.formation import Formation
 from game.utils.database import *
+from game.kernel.server import *
 game_matcher = on_startswith(msg="比赛", rule=to_me(), priority=1)
-
-in_game = False
 
 return_text = '''比赛 ID：挑战对手
 比赛 快速 ID：只显示比赛结果
@@ -20,9 +18,8 @@ return_text = '''比赛 ID：挑战对手
 
 @game_matcher.handle()
 async def game_matcher_handler(bot: Bot, event: Event, state: dict):
-    global in_game
-    mode = Const.MODE_NORMAL
-    if in_game:
+    mode = 0
+    if g_server.get("in_game") == True:
         await game_matcher.finish("比赛正在进行中！", **{"at_sender": True})
     await check_account(game_matcher, event)
     args = str(event.message).split(" ")
@@ -38,7 +35,7 @@ async def game_matcher_handler(bot: Bot, event: Event, state: dict):
         return
 
     if len(args) == 3 and args[1] == "快速" and args[2].isdecimal():
-        mode = Const.MODE_QUICK
+        mode = 1
         str_id = args[2]
     elif len(args) == 2 and args[1].isdecimal():
         str_id = args[1]
@@ -66,8 +63,8 @@ async def game_matcher_handler(bot: Bot, event: Event, state: dict):
         await game_matcher.finish("对手阵容不完整！", **{"at_sender": True})
         return
     game = Game(game_matcher, user1, user2)
-    if mode != Const.MODE_NORMAL:
+    if mode != 1:
         await game_matcher.send("开始比赛", **{"at_sender": True})
-    in_game = True
+    g_server.set("in_game", True)
     await game.start(mode)
-    in_game = False
+    g_server.set("in_game", False)
