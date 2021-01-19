@@ -7,6 +7,7 @@ from game.engine.game import Game
 from game.model.user import User
 from game.model.card import Card
 from game.model.formation import Formation
+from game.model.league import League
 from game.utils.database import *
 from game.kernel.server import *
 
@@ -14,6 +15,7 @@ league_matcher = on_startswith(msg="联赛", rule=to_me(), priority=1)
 
 return_text = '''联赛 ID：挑战对手
 联赛 快速 ID：只显示比赛结果
+联赛 积分：查看积分榜
 联赛 排名 类型：查看排行榜（支持类型：进球、助攻、抢断、扑救）
 阵容 ID：查看对手阵容
 '''
@@ -43,11 +45,29 @@ async def league_matcher_handler(bot: Bot, event: Event, state: dict):
     elif len(args) == 2 and args[1].isdecimal():
         str_id = args[1]
         await start_game(event.user_id, str_id, mode)
+    elif len(args) == 2 and args[1] == "积分":
+        await show_leaderboard()
     elif len(args) == 3 and args[1] == "排名":
         await show_rank(args[2])
     else:
         await league_matcher.finish("格式错误！" + toImage(return_text), **{"at_sender": True})
         return
+
+
+async def show_leaderboard():
+    ret =  "======================== 积分榜 ======================\n"
+    ret += "排名  积分  场次    胜   平   负    进球  失球  净胜球       球队\n"
+    league = League.getLeague()
+    if league == None:
+        ret += "空"
+    else:
+        for i, entry in enumerate(league.entries):
+            ret += str("[" + str(i+1) + "]").ljust(4) + "   " + str(entry.score).ljust(2) + "     " + str(entry.appearance).ljust(2) + "    " + str(entry.win).ljust(2) + "   " + str(entry.tie).ljust(2) + "    " + \
+                str(entry.lose).ljust(2) + "    " + str(entry.goal).ljust(2) + "    " + str(entry.lost_goal).ljust(2) + \
+                "    " + str(entry.goal - entry.lost_goal).ljust(2) + \
+                "      " + str("[" + str(entry.user.id) + "]").ljust(2) + " " + entry.user.name + "\n"
+
+    await league_matcher.finish(toImage(ret), **{"at_sender": True})
 
 
 async def show_rank(arg):
@@ -72,8 +92,9 @@ async def show_rank(arg):
         user = User.getUserByQQ(data[i][0])
         card = Card.getCardByID(data[i][1])
         if getattr(card, string) == 0:
-          break
-        ret += str("[" + str(i+1) + "]").ljust(4) + "  " + str(getattr(card, string)) + "个" + "  " + "[" + str(card.id) + "]" + "\t" + card.player.Position + " " + card.getNameWithColor() + " " + user.name + "\n"
+            break
+        ret += str("[" + str(i+1) + "]").ljust(4) + "  " + str(getattr(card, string)).ljust(2) + "  " + "[" + str(
+            card.id) + "]" + "\t" + card.player.Position + " " + card.getNameWithColor() + " " + user.name + "\n"
     cursor.close()
 
     await league_matcher.finish(toImage(ret), **{"at_sender": True})
@@ -139,3 +160,34 @@ def update_stats(game, formation1, formation2):
         card.set("total_assist", card.total_assist + player.assists)
         card.set("total_tackle", card.total_tackle + player.tackles)
         card.set("total_save", card.total_save + player.saves)
+
+    entry1 = League.getLeagueEntryByQQ(formation1.user.qq)
+    if not entry1:
+        League.addUser(formation1.user.qq)
+        entry1 = League.getLeagueEntryByQQ(formation1.user.qq)
+
+    entry2 = League.getLeagueEntryByQQ(formation2.user.qq)
+    if not entry2:
+        League.addUser(formation2.user.qq)
+        entry2 = League.getLeagueEntryByQQ(formation2.user.qq)
+
+    entry1.set("appearance", entry1.appearance + 1)
+    entry2.set("appearance", entry2.appearance + 1)
+    entry1.set("goal", entry1.goal + game.home.goals)
+    entry2.set("goal", entry2.goal + game.away.goals)
+    entry1.set("lost_goal", entry1.lost_goal + game.away.goals)
+    entry2.set("lost_goal", entry2.lost_goal + game.home.goals)
+
+    if game.home.goals > game.away.goals:
+        entry1.set("win", entry1.win + 1)
+        entry2.set("lose", entry2.lose + 1)
+        entry1.set("score", entry1.score + 3)
+    elif game.home.goals < game.away.goals:
+        entry2.set("win", entry2.win + 1)
+        entry1.set("lose", entry1.lose + 1)
+        entry2.set("score", entry2.score + 3)
+    else:
+        entry1.set("tie", entry1.tie + 1)
+        entry2.set("tie", entry2.tie + 1)
+        entry1.set("score", entry1.score + 1)
+        entry2.set("score", entry2.score + 1)
