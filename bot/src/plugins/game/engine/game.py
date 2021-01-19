@@ -36,13 +36,13 @@ class Game:
         # 打印过程
         self.print_str = ""
 
-        self.quick_flag = False
+        self.mode = Const.MODE_NORMAL
 
     # 比赛主逻辑
-    async def start(self, quick_flag):
-        self.quick_flag = quick_flag
+    async def start(self, mode):
+        self.mode = mode
         self.resetPosition()
-        if not self.quick_flag:
+        if self.mode != Const.MODE_QUICK:
           await self.send("主 " + self.home.coach.name + " : " + self.away.coach.name + " 客\n比赛开始")
         while self.time < 45 * 60:
             self.oneStep()
@@ -50,7 +50,7 @@ class Game:
                 self.printCase("上半场结束")
             await self.send(self.print_str)
             self.print_str = ""
-            if not self.quick_flag:
+            if self.mode != Const.MODE_QUICK:
               time.sleep(Const.PRINT_DELAY)
         self.half = "下半时"
         self.time = 0
@@ -64,18 +64,18 @@ class Game:
                 self.printCase("下半场结束")
             await self.send(self.print_str)
             self.print_str = ""
-            if not self.quick_flag:
+            if self.mode != Const.MODE_QUICK:
               time.sleep(Const.PRINT_DELAY)
 
         await self.printStats()
 
     async def send(self, str):
-      if self.quick_flag:
+      if self.mode == Const.MODE_QUICK:
         return
       await self.matcher.send(toImage(str))
 
     async def printStats(self):
-        self.quick_flag = False
+        self.mode = Const.MODE_NORMAL
         self.home.getStats()
         self.away.getStats()
         self.print_str += "终场比分：\n" + "主 " + self.home.coach.name + " " + \

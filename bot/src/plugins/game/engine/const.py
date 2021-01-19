@@ -33,3 +33,8 @@ class Const:
 
     # 打印间隔
     PRINT_DELAY = 5
+
+    # 比赛模式
+    MODE_NORMAL = 0
+    MODE_QUICK = 1
+    MODE_LEAGUE = 2
