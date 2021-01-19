@@ -3,13 +3,23 @@ from game.model.user import *
 from game.model.player import *
 
 class Card:
-  def __init__(self, id, player, user, star, style, status):
+  def __init__(self, id, player, user, star, style, status, appearance, goal, assist, tackle, save, total_appearance, total_goal, total_assist, total_tackle, total_save):
     self.id = id
     self.player = player
     self.user = user
     self.star = star
     self.style = style
     self.status = status
+    self.appearance = appearance
+    self.goal = goal
+    self.assist = assist
+    self.tackle = tackle
+    self.save = save
+    self.total_appearance = total_appearance
+    self.total_goal = total_goal
+    self.total_assist = total_assist
+    self.total_tackle = total_tackle
+    self.total_save = total_save
     self.ability = {
       "Heading" : Const.STARS[self.star]["ability"]+int((player.Heading_Accuracy+player.Jumping+player.Strength+Card.tocm(player.Height)-100)/4),
       "Long_Shot" : Const.STARS[self.star]["ability"]+int((player.Long_Shots+player.Shot_Power)/2),
@@ -38,7 +48,7 @@ class Card:
         style = random.choice(list(Const.GK_STYLE.keys()))
       else:
         style = random.choice(list(Const.STYLE.keys()))
-    return Card(id ,player, user, star, style, status)
+    return Card(id ,player, user, star, style, status, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0)
 
   def getCardByID(id):
         cursor = g_database.cursor()
@@ -53,10 +63,55 @@ class Card:
             star = data[3]
             style = data[4]
             status = data[5]
-            card = Card(id, player, user, star, style, status)
+            appearance = data[6]
+            goal = data[7]
+            assist = data[8]
+            tackle = data[9]
+            save = data[10]
+            total_appearance = data[11]
+            total_goal = data[12]
+            total_assist = data[13]
+            total_tackle = data[14]
+            total_save = data[15]
+            card = Card(id, player, user, star, style, status, appearance, goal, assist, tackle, save, total_appearance, total_goal, total_assist, total_tackle, total_save)
         cursor.close()
         return card
 
+  def getCardByIDMany(ids):
+        cursor = g_database.cursor()
+        cards = []
+        sql = "select * from cards where id in ("
+        for id in ids:
+            sql += str(id)+","
+        sql += "-1)"
+        count = cursor.execute(sql)
+        if count:
+          datas = cursor.fetchall()
+          player_ids = [data[1] for data in datas]
+          players = Player.getPlayerByIDMany(player_ids)
+          user = User.getUserByQQ(datas[0][2])
+          for i,data in enumerate(datas):
+              id = data[0]
+              player = players[i]
+              user = user
+              star = data[3]
+              style = data[4]
+              status = data[5]
+              appearance = data[6]
+              goal = data[7]
+              assist = data[8]
+              tackle = data[9]
+              save = data[10]
+              total_appearance = data[11]
+              total_goal = data[12]
+              total_assist = data[13]
+              total_tackle = data[14]
+              total_save = data[15]
+              card = Card(id, player, user, star, style, status, appearance, goal, assist, tackle, save, total_appearance, total_goal, total_assist, total_tackle, total_save)
+              cards.append(card)
+        
+        cursor.close()
+        return cards
 
   def format(self):
     if self.status != 0:

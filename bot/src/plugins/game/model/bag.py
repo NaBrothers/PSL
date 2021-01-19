@@ -7,12 +7,7 @@ from game.model.card import *
 class Bag:
   def __init__(self, data:list): 
     ids = [i[0] for i in data]
-    players = Player.getPlayerByIDMany([i[1] for i in data])
-    user = data[0][2]
-    stars = [i[3] for i in data]
-    styles = [i[4] for i in data]
-    statuses = [i[5] for i in data]
-    self.cards = [Card(ids[i], players[i], user, stars[i], styles[i], statuses[i]) for i in range(len(data))]
+    self.cards = Card.getCardByIDMany(ids)
     self.cards.sort(key = lambda p : (p.overall, p.player.Name), reverse=True)
 
   def getBag(user):

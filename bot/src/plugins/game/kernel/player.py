@@ -67,6 +67,10 @@ async def player_detail(id):
         "\t" + printAbility(card, "GK_Positioning") + "\n"
     ret += printAbilityName(card, "GK反应", "GK_Reaction") + \
         "\t" + printAbility(card, "GK_Reaction") + "\n"
+    ret += "赛季：\n"
+    ret += "出场 " + str(card.appearance) + " 进球 " + str(card.goal) + " 助攻 " + str(card.assist) + " 抢断 " + str(card.tackle) + " 扑救 " + str(card.save) + "\n" 
+    ret += "生涯：\n"
+    ret += "出场 " + str(card.total_appearance) + " 进球 " + str(card.total_goal) + " 助攻 " + str(card.total_assist) + " 抢断 " + str(card.total_tackle) + " 扑救 " + str(card.total_save) + "\n" 
     await player_menu.finish(toImage(ret), **{"at_sender": True})
 
 
