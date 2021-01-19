@@ -14,7 +14,10 @@ class Team:
     self.goals = 0
     self.passes = 0
     self.successful_passes = 0
-    self.surpasses = 0
+    self.dribbles = 0
+    self.assists = 0
+    self.tackles = 0
+    self.saves = 0
     self.goals_detailed = []
 
   # 返回包含Player的列表
@@ -37,6 +40,9 @@ class Team:
       self.goals += player.goals
       self.passes += player.passes
       self.successful_passes += player.successful_passes
-      self.surpasses += player.surpasses
+      self.dribbles += player.dribbles
+      self.assists += player.assists
+      self.tackles += player.tackles
+      self.saves += player.saves
       if player.goals_detailed:
         self.goals_detailed.append((player.getName(), player.goals_detailed))

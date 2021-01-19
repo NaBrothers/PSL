@@ -12,7 +12,7 @@ game_matcher = on_startswith(msg="比赛", rule=to_me(), priority=1)
 
 return_text = '''比赛 ID：挑战对手
 比赛 快速 ID：只显示比赛结果
-阵容 ID：查看对手阵容"
+阵容 ID：查看对手阵容
 '''
 
 

@@ -43,7 +43,7 @@ class Game:
         self.mode = mode
         self.resetPosition()
         if self.mode != Const.MODE_QUICK:
-          await self.send("主 " + self.home.coach.name + " : " + self.away.coach.name + " 客\n比赛开始")
+            await self.send("主 " + self.home.coach.name + " : " + self.away.coach.name + " 客\n比赛开始")
         while self.time < 45 * 60:
             self.oneStep()
             if self.time > 45 * 60:
@@ -51,7 +51,7 @@ class Game:
             await self.send(self.print_str)
             self.print_str = ""
             if self.mode != Const.MODE_QUICK:
-              time.sleep(Const.PRINT_DELAY)
+                time.sleep(Const.PRINT_DELAY)
         self.half = "下半时"
         self.time = 0
         if self.offence is self.home:
@@ -65,14 +65,14 @@ class Game:
             await self.send(self.print_str)
             self.print_str = ""
             if self.mode != Const.MODE_QUICK:
-              time.sleep(Const.PRINT_DELAY)
+                time.sleep(Const.PRINT_DELAY)
 
         await self.printStats()
 
     async def send(self, str):
-      if self.mode == Const.MODE_QUICK:
-        return
-      await self.matcher.send(toImage(str))
+        if self.mode == Const.MODE_QUICK:
+            return
+        await self.matcher.send(toImage(str))
 
     async def printStats(self):
         self.mode = Const.MODE_NORMAL
@@ -83,28 +83,27 @@ class Game:
             " " + self.away.coach.name + " 客\n"
 
         if self.home.goals_detailed:
-            self.print_str += "主队：\n"
+            self.print_str += "主队进球：\n"
             for item in self.home.goals_detailed:
-              self.print_str += item[0] + " ("
-              for i in item[1]:
-                self.print_str += str(i) + "\', "
-              self.print_str = self.print_str[:-2]
-              self.print_str += ")\n"
+                self.print_str += item[0] + " ("
+                for i in item[1]:
+                    self.print_str += str(i) + "\', "
+                self.print_str = self.print_str[:-2]
+                self.print_str += ")\n"
 
         if self.away.goals_detailed:
-            self.print_str += "客队：\n"
+            self.print_str += "客队进球：\n"
             for item in self.away.goals_detailed:
-              self.print_str += item[0] + " ("
-              for i in item[1]:
-                self.print_str += str(i) + "\', "
-              self.print_str = self.print_str[:-2]
-              self.print_str += ")\n"
+                self.print_str += item[0] + " ("
+                for i in item[1]:
+                    self.print_str += str(i) + "\', "
+                self.print_str = self.print_str[:-2]
+                self.print_str += ")\n"
 
         self.print_str += "控球率：" + str(round(self.home.control*100/(self.home.control+self.away.control), 1)) + \
             "%:" + str(round(self.away.control*100 /
                              (self.home.control+self.away.control), 1)) + "%\n"
 
-        
         self.print_str += "射正数：" + \
             str(self.home.shoots_in_target) + ":" + \
             str(self.away.shoots_in_target) + "\n"
@@ -114,8 +113,12 @@ class Game:
             str(self.home.passes) + ":" + str(self.away.passes) + "\n"
         self.print_str += "传球成功率：" + str(round(self.home.successful_passes*100/self.home.passes, 1)) + "%:" + str(
             round(self.away.successful_passes*100/self.away.passes, 1)) + "%\n"
-        self.print_str += "过人次数：" + \
-            str(self.home.surpasses) + ":" + str(self.away.surpasses)
+        self.print_str += "过人数：" + \
+            str(self.home.dribbles) + ":" + str(self.away.dribbles) + "\n"
+        self.print_str += "抢断数：" + \
+            str(self.home.tackles) + ":" + str(self.away.tackles) + "\n"
+        self.print_str += "扑救数：" + \
+            str(self.home.saves) + ":" + str(self.away.saves)
         await self.matcher.send(toImage(self.print_str))
         # await self.matcher.send("终场比分：\n" +"主 " + self.home.coach.name + str(self.home.point) + ":" + str(self.away.point) + self.away.coach.name + " 客")
 
@@ -189,15 +192,17 @@ class Game:
                             self.swap()
                             self.changeBallHolder(def_player)
                             return
-                    if self.getDefenceGK().saving(shoot, self.ball_holder.get_distance(shoot_x, 0), math.fabs(shoot_x-Const.WIDTH/2)):
-                        case = Display.print_saving(self.getDefenceGK())
+                    gk = self.getDefenceGK()
+                    if gk.saving(shoot, self.ball_holder.get_distance(shoot_x, 0), math.fabs(shoot_x-Const.WIDTH/2)):
+                        case = Display.print_saving(gk)
                         self.printCase(case)
+                        gk.saves += 1
                         self.swap()
                         self.changeBallHolderToGK()
                         return
                     self.offence.point += 1
                     case = Display.print_goal(
-                        self.ball_holder, self.getDefenceGK())
+                        self.ball_holder, gk)
                     self.printCase(case)
                     self.ball_holder.goals += 1
                     self.ball_holder.goals_detailed.append(self.getTime())
@@ -226,6 +231,7 @@ class Game:
                         case = Display.print_tackling(
                             self.ball_holder, def_player)
                         self.printCase(case)
+                        def_player.tackles += 1
                         self.swap()
                         self.changeBallHolder(def_player)
                         return
@@ -233,7 +239,7 @@ class Game:
                         case = Display.print_dribbling(
                             self.ball_holder, def_player)
                         self.printCase(case)
-                        self.ball_holder.surpasses += 1
+                        self.ball_holder.dribbles += 1
                         def_player.action_flag = True
                 self.ball_holder.moving(dribble_pos[0], dribble_pos[1])
             elif holder_action == "PASS":
@@ -259,6 +265,7 @@ class Game:
                             case = Display.print_tackling(
                                 self.ball_holder, def_player)
                             self.printCase(case)
+                            def_player.tackles += 1
                             self.swap()
                             self.changeBallHolder(def_player)
                             return
@@ -318,19 +325,21 @@ class Game:
                         if rand < roll_winner.ability["Heading"] and distance_goal < 16:
                             case = Display.print_high_shot(roll_winner)
                             self.printCase(case)
+                            gk = self.getDefenceGK()
                             if distance_goal < 25 and \
-                                    random.randint(0, int(5 * self.getDefenceGK().ability["GK"] * (25 - distance_goal))) > 25 * roll_winner.ability["Heading"]:
-                                case = Display.print_saving(
-                                    self.getDefenceGK())
+                                    random.randint(0, int(5 * gk.ability["GK"] * (25 - distance_goal))) > 25 * roll_winner.ability["Heading"]:
+                                case = Display.print_saving(gk)
                                 self.printCase(case)
+                                gk.saves += 1
                                 self.swap()
                                 self.changeBallHolderToGK()
                             else:
                                 self.offence.point += 1
                                 case = Display.print_goal(
-                                    roll_winner, self.getDefenceGK())
+                                    roll_winner, gk)
                                 roll_winner.goals += 1
-                                roll_winner.goals_detailed.append(self.getTime())
+                                roll_winner.goals_detailed.append(
+                                    self.getTime())
                                 self.printCase(case)
                                 self.swap()
                                 self.resetPosition()
@@ -542,7 +551,7 @@ class Game:
         self.printCase(player.coach + " " + player.getName() + " " + case)
 
     def getTime(self):
-      if self.half == "上半时":
-        return self.time // 60
-      else:
-        return self.time // 60 + 45
+        if self.half == "上半时":
+            return self.time // 60
+        else:
+            return self.time // 60 + 45
