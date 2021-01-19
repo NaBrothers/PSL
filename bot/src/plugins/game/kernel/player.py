@@ -144,11 +144,19 @@ async def player_upgrade(user, id1, id2):
         await player_menu.finish("强化失败：余额不足" + toImage(ret + "需要球币：" + str(cost) + "\n剩余球币：" + str(user.money)), **{"at_sender": True})
         return
     cursor = g_database.cursor()
-    cursor.execute("update cards set star = " +
-                   str(target_star) + " where id = " + str(card1.id))
+    card1.set("star", target_star)
+    card1.set("appearance", card1.appearance + card2.appearance)
+    card1.set("goal", card1.goal + card2.goal)
+    card1.set("assist", card1.assist + card2.assist)
+    card1.set("tackle", card1.tackle + card2.tackle)
+    card1.set("save", card1.save + card2.save)
+    card1.set("total_appearance", card1.total_appearance + card2.total_appearance)
+    card1.set("total_goal", card1.total_goal + card2.total_goal)
+    card1.set("total_assist", card1.total_assist + card2.total_assist)
+    card1.set("total_tackle", card1.total_tackle + card2.total_tackle)
+    card1.set("total_save", card1.total_save + card2.total_save)
     cursor.execute("delete from cards where id = " + str(card2.id))
     user.spend(cost)
-    card1 = Card.getCardByID(id1)
     ret += "=== 强化结果 ===\n" + \
         "[" + str(card1.id) + "] " + card1.format() + "\n"
     await player_menu.finish("强化成功！" + toImage(ret + "花费球币：" + str(cost) + "\n剩余球币：" + str(user.money)), **{"at_sender": True})

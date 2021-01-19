@@ -50,6 +50,12 @@ class Card:
         style = random.choice(list(Const.STYLE.keys()))
     return Card(id ,player, user, star, style, status, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0)
 
+  def set(self, attr, value):
+      setattr(self, attr, value)
+      cursor = g_database.cursor()
+      count = cursor.execute("update cards set " + attr + " = " + str(value) + " where id = " + str(self.id))
+      cursor.close()
+
   def getCardByID(id):
         cursor = g_database.cursor()
         count = cursor.execute("select * from cards where id = " + str(id))
