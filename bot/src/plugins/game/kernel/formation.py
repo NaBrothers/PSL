@@ -75,12 +75,12 @@ async def change_player(user, id1, id2):
         cursor.execute("update team set card = " + str(id1) + " where card = " + str(id2))
         cursor.execute("update team set card = " + str(id2) + " where card = " + "-1")
     elif id1 in team_ids:
-        if card2.player.ID in player_ids:
+        if card1.player.ID != card2.player.ID and card2.player.ID in player_ids:
           await get_team.finish("阵容中存在同名球员！", **{'at_sender': True})
           return
         cursor.execute("update team set card = " + str(id2) + " where card = " + str(id1))
     elif id2 in team_ids:
-        if card1.player.ID in player_ids:
+        if card1.player.ID != card2.player.ID and card1.player.ID in player_ids:
           await get_team.finish("阵容中存在同名球员！", **{'at_sender': True})
           return
         cursor.execute("update team set card = " + str(id1) + " where card = " + str(id2))
