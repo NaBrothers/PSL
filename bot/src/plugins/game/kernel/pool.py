@@ -18,8 +18,8 @@ class Pool:
       card = Card.new(player, user)
       return card
 
-# 普通卡池
-class NormalPool(Pool):
+# 初级卡池
+class ElementaryPool(Pool):
     def init(self):
         cursor = g_database.cursor()
         count = cursor.execute("select * from players;")
@@ -28,53 +28,10 @@ class NormalPool(Pool):
         for i in range(count):
             self.pool.append(Player(result[i]))
 
-# 球星卡池
-class BetterPool(Pool):
-    def init(self):
-        cursor = g_database.cursor()
-        count = cursor.execute("select * from players where Overall > 83;")
-        result = cursor.fetchall()
-        cursor.close()
-        for i in range(count):
-            self.pool.append(Player(result[i]))
 
-# 巨星卡池
-class VipPool(Pool):
-    def init(self):
-        cursor = g_database.cursor()
-        count = cursor.execute("select * from players where Overall > 86;")
-        result = cursor.fetchall()
-        cursor.close()
-        for i in range(count):
-            self.pool.append(Player(result[i]))
 
-# 巅峰卡池
-class BestPool(Pool):
-    def init(self):
-        cursor = g_database.cursor()
-        count = cursor.execute("select * from players where Overall > 88;")
-        result = cursor.fetchall()
-        cursor.close()
-        for i in range(count):
-            self.pool.append(Player(result[i]))
-
-# 至尊卡池
-class NBPool(Pool):
-    def init(self):
-        cursor = g_database.cursor()
-        count = cursor.execute("select * from players;")
-        result = cursor.fetchall()
-        cursor.close()
-        for i in range(count):
-            self.pool.append(Player(result[i]))
-    
-    def choice(self,user):
-        player = random.choice(self.pool)
-        card = Card.new(player, user, random.randint(1,10))
-        return card
-
-# 前锋卡池
-class ForwardPool(Pool):
+# 初级前锋卡池
+class ElementaryForwardPool(Pool):
     def init(self):
         cursor = g_database.cursor()
         sqlstr = "SELECT * from players where ("
@@ -91,8 +48,8 @@ class ForwardPool(Pool):
         for i in range(count):
             self.pool.append(Player(result[i]))
 
-# 中场卡池
-class MidfieldPool(Pool):
+# 初级中场卡池
+class ElementaryMidfieldPool(Pool):
     def init(self):
         cursor = g_database.cursor()
         sqlstr = "SELECT * from players where ("
@@ -109,8 +66,8 @@ class MidfieldPool(Pool):
         for i in range(count):
             self.pool.append(Player(result[i]))
 
-# 后卫卡池
-class GuardPool(Pool):
+# 初级后卫卡池
+class ElementaryGuardPool(Pool):
     def init(self):
         cursor = g_database.cursor()
         sqlstr = "SELECT * from players where ("
@@ -126,8 +83,8 @@ class GuardPool(Pool):
         cursor.close()
         for i in range(count):
             self.pool.append(Player(result[i]))
-# 门将卡池
-class GoalkeeperPool(Pool):
+# 初级门将卡池
+class ElementaryGoalkeeperPool(Pool):
     def init(self):
         cursor = g_database.cursor()
         sqlstr = "SELECT * from players where ("
@@ -144,69 +101,177 @@ class GoalkeeperPool(Pool):
         for i in range(count):
             self.pool.append(Player(result[i]))
 
-# 鲁尼卡池
-class RooneyPool(Pool):
+# 中级卡池
+class IntermediatePool(Pool):
     def init(self):
         cursor = g_database.cursor()
-        count = cursor.execute("select * from players where name like \"%Rooney%\"")
+        count = cursor.execute("select * from players where Overall > 83;")
         result = cursor.fetchall()
         cursor.close()
         for i in range(count):
             self.pool.append(Player(result[i]))
-    
-    def choice(self,user):
-        player = random.choice(self.pool)
-        card = Card.new(player, user, random.randint(1,10))
-        return card
+
+# 中级前锋卡池
+class IntermediateForwardPool(Pool):
+    def init(self):
+        cursor = g_database.cursor()
+        sqlstr = "SELECT * from players where ("
+        for i in range(len(Const.FORWARD)):
+            if i != 0:
+                sqlstr += " OR "
+            sqlstr += "Position='"
+            sqlstr += Const.FORWARD[i]
+            sqlstr += "'"
+        sqlstr += " and Overall > 83);"
+        count = cursor.execute(sqlstr)
+        result = cursor.fetchall()
+        cursor.close()
+        for i in range(count):
+            self.pool.append(Player(result[i]))
+
+# 中级中场卡池
+class IntermediateMidfieldPool(Pool):
+    def init(self):
+        cursor = g_database.cursor()
+        sqlstr = "SELECT * from players where ("
+        for i in range(len(Const.MIDFIELD)):
+            if i != 0:
+                sqlstr += " OR "
+            sqlstr += "Position='"
+            sqlstr += Const.MIDFIELD[i]
+            sqlstr += "'"
+        sqlstr += " and Overall > 83);"
+        count = cursor.execute(sqlstr)
+        result = cursor.fetchall()
+        cursor.close()
+        for i in range(count):
+            self.pool.append(Player(result[i]))
+
+# 中级后卫卡池
+class IntermediateGuardPool(Pool):
+    def init(self):
+        cursor = g_database.cursor()
+        sqlstr = "SELECT * from players where ("
+        for i in range(len(Const.GUARD)):
+            if i != 0:
+                sqlstr += " OR "
+            sqlstr += "Position='"
+            sqlstr += Const.GUARD[i]
+            sqlstr += "'"
+        sqlstr += " and Overall > 83);"
+        count = cursor.execute(sqlstr)
+        result = cursor.fetchall()
+        cursor.close()
+        for i in range(count):
+            self.pool.append(Player(result[i]))
+
+# 中级门将卡池
+class IntermediateGoalkeeperPool(Pool):
+    def init(self):
+        cursor = g_database.cursor()
+        sqlstr = "SELECT * from players where ("
+        for i in range(len(Const.GOALKEEPER)):
+            if i != 0:
+                sqlstr += " OR "
+            sqlstr += "Position='"
+            sqlstr += Const.GOALKEEPER[i]
+            sqlstr += "'"
+        sqlstr += " and Overall > 83);"
+        count = cursor.execute(sqlstr)
+        result = cursor.fetchall()
+        cursor.close()
+        for i in range(count):
+            self.pool.append(Player(result[i]))
+
+# 高级卡池
+class AdvancedPool(Pool):
+    def init(self):
+        cursor = g_database.cursor()
+        count = cursor.execute("select * from players where Overall > 88;")
+        result = cursor.fetchall()
+        cursor.close()
+        for i in range(count):
+            self.pool.append(Player(result[i]))
 
 # 全局卡池
 g_pool = {
-  "普通" : {
-    "pool": NormalPool(),
-    "cost" : 10
+  "初级" : {
+    "pool":  ElementaryPool(),
+    "name" : "初级球员卡包",
+    "cost" : 400,
+    "ten_cost" : 3800,
+    "visible" : True
   },
-  "球星" : {
-    "pool": BetterPool(),
-    "cost" : 30
+  "初级前锋" : {
+    "pool":  ElementaryForwardPool(),
+    "name" : "初级前锋卡包",
+    "cost" : 750,
+    "ten_cost" : 7125,
+    "visible" : True
   },
-  "巨星" : {
-    "pool": VipPool(),
-    "cost" : 50
+  "初级中场" : {
+    "pool":  ElementaryMidfieldPool(),
+    "name" : "初级中场卡包",
+    "cost" : 750,
+    "ten_cost" : 7125,
+    "visible" : True
   },
-  "巅峰" : {
-    "pool": BestPool(),
-    "cost" : 100
+  "初级后卫" : {
+    "pool":  ElementaryGuardPool(),
+    "name" : "初级后卫卡包",
+    "cost" : 750,
+    "ten_cost" : 7125,
+    "visible" : True
   },
-  "至尊" : {
-    "pool": NBPool(),
-    "cost" : 0
+  "初级门将" : {
+    "pool":  ElementaryGoalkeeperPool(),
+    "name" : "初级门将卡包",
+    "cost" : 750,
+    "ten_cost" : 7125,
+    "visible" : True
   },
-  "前锋": {
-    "pool": ForwardPool(),
-    "cost" : 30
+  "中级" : {
+    "pool":  IntermediatePool(),
+    "name" : "中级球员卡包",
+    "cost" : 1500,
+    "ten_cost" : 14250,
+    "visible" : True
   },
-  "中场": {
-    "pool": MidfieldPool(),
-    "cost" : 30
+  "中级前锋" : {
+    "pool":  IntermediateForwardPool(),
+    "name" : "中级前锋卡包",
+    "cost" : 2800,
+    "visible" : True
   },
-  "后卫": {
-    "pool": GuardPool(),
-    "cost" : 30
+  "中级中场" : {
+    "pool":  IntermediateMidfieldPool(),
+    "name" : "中级中场卡包",
+    "cost" : 2800,
+    "visible" : True
   },
-  "门将": {
-    "pool": GoalkeeperPool(),
-    "cost" : 30
+  "中级后卫" : {
+    "pool":  IntermediateGuardPool(),
+    "name" : "中级后卫卡包",
+    "cost" : 2800,
+    "visible" : True
   },
-  "十连": {
-    "pool": None,
-    "cost" : 200
+  "中级门将" : {
+    "pool":  IntermediateGoalkeeperPool(),
+    "name" : "中级门将卡包",
+    "cost" : 2800,
+    "visible" : True
+  },
+  "高级" : {
+    "pool":  AdvancedPool(),
+    "name" : "高级球员卡包",
+    "cost" : 0,
+    "visible" : False
   },
   "新手": {
     "pool": None,
-    "cost" : 0
+    "name" : "新手限定卡包",
+    "cost" : 0,
+    "visible" : True
   },
-  "鲁尼":{
-    "pool":RooneyPool(),
-    "cost":0
-  }
+  
 }
