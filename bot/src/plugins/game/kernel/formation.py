@@ -188,6 +188,8 @@ async def auto_update(user):
       overalls = card.getOveralls()
       heap.put((-overalls[0][1], 0, overalls[0][0], i)) # 能力，能力 index，位置，card Index
 
+    main_gk = False
+    sub_gk = False
     while count > 0:
       if heap.empty():
         break
@@ -204,20 +206,30 @@ async def auto_update(user):
           result[n] = card.id
           count -= 1
           picked = True
+          if position == "GK":
+            main_gk = True
           selected_players.add(card.player.ID)
           break
           
       if not picked:
         overalls = card.getOveralls()
-        if index + 1 < len(overalls):
+        if main_gk == True and sub_gk == False:
+          sub_gk = card.id
+        elif index + 1 < len(overalls):
           heap.put((-overalls[index+1][1],-index-1,overalls[index+1][0],i))
 
     while sub > 0:
       if heap.empty():
         break
-      overall, index, position, i = heap.get()
-      card = bag.cards[i]
+      if sub_gk > 0:
+        card = Card.getCardByID(sub_gk)
+        sub_gk = -1
+      else:
+        overall, index, position, i = heap.get()
+        card = bag.cards[i]
       if card.player.ID in selected_players:
+        continue
+      if position == "GK" and sub_gk == -1:
         continue
       result[Formation.PLAYERS_COUNT - sub] = card.id
       selected_players.add(card.player.ID)
