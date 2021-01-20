@@ -49,7 +49,7 @@ async def get_team_handler(bot: Bot, event: Event, state: dict):
 async def change_player(user, id1, id2):
     team = Formation.getFormation(user)
     bag = Bag.getBag(user)
-    bag_ids = [str(x.id) for x in bag.cards]
+    bag_ids = [str(x.id) for x in bag.cards if x != None]
 
     if id1 not in bag_ids:
       await get_team.finish("找不到球员1！", **{'at_sender': True})
@@ -59,13 +59,13 @@ async def change_player(user, id1, id2):
       await get_team.finish("找不到球员2！", **{'at_sender': True})
       return
 
-    team_ids = [str(x.id) for x in team.cards]
+    team_ids = [str(x.id) for x in team.cards if x != None]
 
     if id1 not in team_ids and id2 not in team_ids:
       await get_team.finish("请至少选择一名阵容中的球员！", **{'at_sender': True})
       return
 
-    player_ids = [x.player.ID for x in team.cards]
+    player_ids = [x.player.ID for x in team.cards if x != None]
     card1 = Card.getCardByID(id1)
     card2 = Card.getCardByID(id2)
 
@@ -78,12 +78,22 @@ async def change_player(user, id1, id2):
         if card1.player.ID != card2.player.ID and card2.player.ID in player_ids:
           await get_team.finish("阵容中存在同名球员！", **{'at_sender': True})
           return
+        if card2.status != 0:
+          await get_team.finish("替换失败！球员2状态：" + Const.STATUS[card2.status], **{'at_sender': True})
+          return
         cursor.execute("update team set card = " + str(id2) + " where card = " + str(id1))
+        card1.set("status", 0)
+        card2.set("status", 2)
     elif id2 in team_ids:
         if card1.player.ID != card2.player.ID and card1.player.ID in player_ids:
           await get_team.finish("阵容中存在同名球员！", **{'at_sender': True})
           return
+        if card1.status != 0:
+          await get_team.finish("替换失败！球员1状态：" + Const.STATUS[card1.status], **{'at_sender': True})
+          return
         cursor.execute("update team set card = " + str(id1) + " where card = " + str(id2))
+        card1.set("status", 2)
+        card2.set("status", 0)
     cursor.close()   
 
     await get_team.finish("替换成功！", **{'at_sender': True})
@@ -173,6 +183,8 @@ async def auto_update(user):
     selected_players = set()
 
     for i, card in enumerate(bag.cards):
+      if card.status != 0 and card.status != 2:
+        continue
       overalls = card.getOveralls()
       heap.put((-overalls[0][1], 0, overalls[0][0], i)) # 能力，能力 index，位置，card Index
 
@@ -211,11 +223,20 @@ async def auto_update(user):
       selected_players.add(card.player.ID)
       sub -= 1
 
+    for card in team.cards:
+      if card != None:
+        card.set("status", 0)
+
     cursor = g_database.cursor()
     for i in range(len(result)):
         cursor.execute("update team set card = " + str(
             result[i]) + " where user = " + str(user.qq) + " and position = " + str(i))
     cursor.close()
+
+    team = Formation.getFormation(user)
+    for card in team.cards:
+      if card != None:
+        card.set("status", 2)
 
     await show_team(user)
 

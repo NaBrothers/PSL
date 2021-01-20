@@ -45,21 +45,25 @@ async def recycle_cards(user,bag, card_ids):
     cards = Card.getCardByIDMany(card_ids)
     money = 0
     success = []
+    success_str = []
     failed = []
     failed_str = []
     for card in cards:
       if card.status != 0:
         failed.append(str(card.id))
-        failed_str.append(Const.STATUS[card.status] + "：" + card.format() + "\n")
+        failed_str.append(card.format() + "\n")
         continue
       money += card.price // 2
-      card.remove()
       success.append(str(card.id))
+      success_str.append(card.format() + "\n")
+      card.remove()
+      
     for id in card_ids:
       if id not in success and id not in failed:
-        failed_str.append("找不到ID：" + id + "\n")
-    ret = "成功回收" + str(len(success)) + "个球员:\n"
-    for s in success:
+        failed_str.append("找不到ID [" + id + "]\n")
+
+    ret = str(len(success)) + "个球员回收成功:\n"
+    for s in success_str:
       ret += s
     if len(failed_str):
       ret += str(len(failed_str)) + "个球员回收失败：\n"

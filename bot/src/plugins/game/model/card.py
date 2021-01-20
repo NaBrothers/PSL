@@ -42,8 +42,8 @@ class Card:
         continue
       self.ability[ability] += styles[ability]*self.star
     
-    x = self.player.Overall - 79
-    self.price = int(3.1812 * x**3 + 12.782 * x**2 + 442.79 * x + 187.03) * Const.STARS[self.star]["count"]
+    x = self.player.Overall - 74
+    self.price = int(0.0131*x**5 - 0.6118*x**4 + 11.189*x**3 - 55.238*x**2 + 123.16*x - 29.137) * Const.STARS[self.star]["count"]
 
   def new(player, user, star = 1, style = 0, id=0, status=False):
     if style == 0:
