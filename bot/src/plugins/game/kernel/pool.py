@@ -122,7 +122,7 @@ class IntermediateForwardPool(Pool):
             sqlstr += "Position='"
             sqlstr += Const.FORWARD[i]
             sqlstr += "'"
-        sqlstr += " and Overall > 83);"
+        sqlstr += ") and Overall > 83;"
         count = cursor.execute(sqlstr)
         result = cursor.fetchall()
         cursor.close()
@@ -140,7 +140,7 @@ class IntermediateMidfieldPool(Pool):
             sqlstr += "Position='"
             sqlstr += Const.MIDFIELD[i]
             sqlstr += "'"
-        sqlstr += " and Overall > 83);"
+        sqlstr += ") and Overall > 83;"
         count = cursor.execute(sqlstr)
         result = cursor.fetchall()
         cursor.close()
@@ -158,7 +158,7 @@ class IntermediateGuardPool(Pool):
             sqlstr += "Position='"
             sqlstr += Const.GUARD[i]
             sqlstr += "'"
-        sqlstr += " and Overall > 83);"
+        sqlstr += ") and Overall > 83;"
         count = cursor.execute(sqlstr)
         result = cursor.fetchall()
         cursor.close()
@@ -176,7 +176,7 @@ class IntermediateGoalkeeperPool(Pool):
             sqlstr += "Position='"
             sqlstr += Const.GOALKEEPER[i]
             sqlstr += "'"
-        sqlstr += " and Overall > 83);"
+        sqlstr += ") and Overall > 83;"
         count = cursor.execute(sqlstr)
         result = cursor.fetchall()
         cursor.close()
