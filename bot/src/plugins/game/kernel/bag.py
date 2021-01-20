@@ -42,13 +42,17 @@ async def recycle_cards(user,bag, card_ids):
     for id in card_ids:
       if not id.isdecimal():
         await user_bag.finish("格式错误！"+toImage(return_text), **{"at_sender": True})
-    cards = Card.getCardByIDMany(card_ids)
+    cards = [Card.getCardByID(id) for id in card_ids]
     money = 0
     success = []
     success_str = []
     failed = []
     failed_str = []
     for card in cards:
+      if card == None:
+        continue
+      if card.user.qq!= user.qq:
+        continue
       if card.status != 0:
         failed.append(str(card.id))
         failed_str.append(card.format() + "\n")
