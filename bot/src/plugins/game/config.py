@@ -14,7 +14,7 @@ PROJECT_DIR="/home/admin/PSL"
 PICTURE_MODE=True
 
 # 联赛球队数
-LEAGUE_COUNT = 7
+LEAGUE_COUNT = 3
 
 # 联赛循环数
 LEAGUE_REPEAT = 2

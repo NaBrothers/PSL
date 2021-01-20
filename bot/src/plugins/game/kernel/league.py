@@ -13,14 +13,16 @@ from game.kernel.server import *
 from game.model.offline import Offline
 from game.model.schedule import Schedule
 from collections import deque
+import math
 import random
 league_matcher = on_startswith(msg="联赛", rule=to_me(), priority=1)
 
 return_text = '''联赛 比赛：开始下一轮比赛
 联赛 快速：跳过比赛过程
+联赛 赛程：查看赛程
 联赛 积分：查看积分榜
-联赛 排名 类型：查看排行榜（支持类型：进球、助攻、抢断、扑救）
-阵容 ID：查看对手阵容
+联赛 排名 [类型]：查看排行榜（支持类型：进球、助攻、抢断、扑救）
+阵容 [ID]：查看对手阵容
 '''
 
 @league_matcher.handle()
@@ -101,15 +103,13 @@ async def start_league(args, user):
     if len(args) == 1:
         await print_schedule(user)
     elif len(args) == 2 and args[1] == "快速":
-        entry = Schedule.getCurrentEntry(user)
-        if entry.finished:
-          await league_matcher.finish("本轮比赛已完成，请等待下一轮", **{"at_sender": True})
-        await start_game(entry.home, entry.away, 1, entry, user)
+        await start_game(user, 1)
     elif len(args) == 2 and args[1] == "比赛":
-        entry = Schedule.getCurrentEntry(user)
-        if entry.finished:
-          await league_matcher.finish("本轮比赛已完成，请等待下一轮", **{"at_sender": True})
-        await start_game(entry.home, entry.away, 2, entry, user)
+        await start_game(user, 2)
+    elif len(args) == 2 and args[1] == "赛程":
+        await show_schedule("1")
+    elif len(args) == 3 and args[1] == "赛程":
+        await show_schedule(args[2])
     elif len(args) == 2 and args[1] == "积分":
         await show_leaderboard()
     elif len(args) == 3 and args[1] == "排名":
@@ -118,6 +118,49 @@ async def start_league(args, user):
         await league_matcher.finish("格式错误！" + toImage(return_text), **{"at_sender": True})
         return
 
+async def show_schedule(page):
+  if not page.isdecimal():
+      await league_matcher.finish("格式错误！" + toImage(return_text), **{"at_sender": True})
+  schedule = Schedule.getSchedule()
+  num_rounds = schedule.getNumOfRounds()
+  num_games_per_round = len(schedule.entries) // num_rounds
+  ret = []
+  for n in range(num_rounds):
+    ret.append( "=============== 第" + str(n + 1) + "轮 ===============\n")
+    for i in range(num_games_per_round):
+        entry = schedule.entries[n * num_games_per_round + i]
+        tmp = ""
+        if entry.home != None and entry.away != None:
+          home = "[" + str(entry.home.id) + "] " + entry.home.name
+          away = entry.away.name + " [" + str(entry.away.id) + "]"
+          tmp += "主 " + home + " vs " + away + " 客"
+          if entry.finished:
+            tmp += " (" + str(entry.home_goal) + "-" + str(entry.away_goal) + ")\n"
+          else:
+            tmp += "\n"
+        else:
+          if entry.home == None:
+            tmp += "[" + str(entry.away.id) + "] " + entry.away.name + " 轮空\n"
+          else:
+            tmp += "[" + str(entry.home.id) + "] " + entry.home.name + " 轮空\n"
+        ret.append(tmp)
+    ret.append("\n") 
+  total_lines = len(ret)
+  total_page = math.ceil(total_lines / 30)
+  page = int(page)
+  if page > total_page or page <= 0:
+        await league_matcher.finish("页码错误", **{"at_sender": True})
+  result = ""
+  for i in range(30):
+    index = (page - 1) * 30 + i
+    if index >= total_lines:
+        break
+    result += ret[index]
+  result += "\n第" + str(page) + "页 共" + str(total_page) + "页\n"
+  result += "联赛 赛程 [页码]：跳转到指定页"
+  await league_matcher.finish(toImage(result), **{"at_sender": True})
+    
+
 async def reset_league(user):
   if not user.isAdmin:
     await league_matcher.finish("没有管理员权限！", **{"at_sender": True})
@@ -125,27 +168,46 @@ async def reset_league(user):
   await league_matcher.send("重置成功！", **{"at_sender": True})
   Offline.broadcast(user, "联赛已重置，请报名新赛季！")
 
+async def finish_league():
+  ret = "联赛已结束，请管理员重置联赛\n\n"
+  league = League.getLeague()
+  ret += "冠军：" + league.entries[0].user.format() + " " + str(league.entries[0].score) + "分\n"
+  ret += "亚军：" + league.entries[1].user.format() + " " + str(league.entries[1].score) + "分\n"
+  ret += "季军：" + league.entries[2].user.format() + " " + str(league.entries[2].score) + "分\n\n"
+  name = ["金靴","助攻王","抢断王","金手套"]
+  value = ["goal", "assist", "tackle", "save"]
+  cursor = g_database.cursor()
+  for i in range(len(name)):
+    count = cursor.execute("select id from cards order by " + value[i] + " desc, appearance limit 10")
+    id = cursor.fetchone()[0]
+    card = Card.getCardByID(id)
+    ret += name[i] + "：" + "[" + str(card.id) + "]" + " " + card.player.Position + " " + card.getNameWithColor() + " " + card.user.name + " " + str(getattr(card, value[i])) + "个\n"
+  cursor = g_database.cursor()
+  await league_matcher.finish(toImage(ret + "\n" + return_text), **{"at_sender": True})
+
 async def print_schedule(user):
     schedule = Schedule.getCurrentRound()
     if schedule == None:
-      ret = "所有赛程已结束\n"
+      await finish_league()
     else:
       ret = "第" + str(schedule.entries[0].round) + "轮联赛\n"
       ret += "===== 本轮赛程 =====\n"
       for entry in schedule.entries:
-        if entry.home == None:
-          home = "轮空"
-        else:
+        tmp = ""
+        if entry.home != None and entry.away != None:
           home = "[" + str(entry.home.id) + "] " + entry.home.name
-        if entry.away == None:
-          away = "轮空"
-        else:
           away = entry.away.name + " [" + str(entry.away.id) + "]"
-        ret += "主 " + home + " vs " + away + " 客"
-        if entry.home != None and entry.away != None and entry.finished:
-          ret += " (" + str(entry.home_goal) + "-" + str(entry.away_goal) + ")\n"
+          tmp += "主 " + home + " vs " + away + " 客"
+          if entry.finished:
+            tmp += " (" + str(entry.home_goal) + "-" + str(entry.away_goal) + ")\n"
+          else:
+            tmp += "\n"
         else:
-          ret += "\n" 
+          if entry.home == None:
+            tmp += "[" + str(entry.away.id) + "] " + entry.away.name + " 轮空\n"
+          else:
+            tmp += "[" + str(entry.home.id) + "] " + entry.home.name + " 轮空\n"
+        ret += tmp
       ret += "===== 下一比赛 =====\n"
       for entry in schedule.entries:
         if entry.home != None and entry.home.qq == user.qq or entry.away != None and entry.away.qq == user.qq:
@@ -207,7 +269,14 @@ async def show_rank(arg):
     await league_matcher.finish(toImage(ret), **{"at_sender": True})
 
 
-async def start_game(user1, user2, mode, entry, cur):
+async def start_game(user, mode):
+    entry = Schedule.getCurrentEntry(user)
+    if entry == None:
+      await league_matcher.finish("联赛已结束", **{"at_sender": True})
+    if entry.finished:
+      await league_matcher.finish("本轮比赛已完成，请等待下一轮", **{"at_sender": True})
+    user1 = entry.home
+    user2 = entry.away
     if g_server.get("in_game") == True:
         await league_matcher.finish("比赛正在进行中！", **{"at_sender": True})
     formation1 = Formation.getFormation(user1)
@@ -231,7 +300,7 @@ async def start_game(user1, user2, mode, entry, cur):
     entry.set("away_goal", game.away.goals)
 
     msg = "第" + str(entry.round) + "轮联赛已结束：\n"  +  stats
-    if user1.qq == cur.qq:
+    if user1.qq == user.qq:
       Offline.send(user2, msg)
     else:
       Offline.send(user1, msg)

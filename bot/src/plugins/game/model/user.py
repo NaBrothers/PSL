@@ -13,7 +13,7 @@ class User:
         self.isAdmin = data[7]
 
     def format(self):
-        return str(self.qq) + " " + self.name + " " + str(self.level) + "级\n" + "球币：" + str(self.money)
+        return "[" + str(self.id) + "] " + self.name
 
     def getUserByQQ(qq):
         cursor = g_database.cursor()

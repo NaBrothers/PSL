@@ -67,3 +67,7 @@ class Schedule:
     cursor.close()
     entry = Schedule.Entry(data)
     return entry
+
+  def getNumOfRounds(self):
+    rounds = [entry.round for entry in self.entries]
+    return max(rounds)

@@ -35,6 +35,7 @@ async def check_account(matcher, event):
 @user_profile.handle()
 async def user_profile_handler(bot: Bot, event: Event, state: dict):
   user = await check_account(user_profile,event)
-  await user_profile.finish(toImage(user.format()), **{"at_sender": True})
+  ret = str(user.qq) + " " + user.name + " " + str(user.level) + "级\n" + "球币：" + str(user.money)
+  await user_profile.finish(toImage(ret), **{"at_sender": True})
 
 
