@@ -41,6 +41,9 @@ class Card:
       if ability == "name":
         continue
       self.ability[ability] += styles[ability]*self.star
+    
+    x = self.player.Overall - 79
+    self.price = int(3.1812 * x**3 + 12.782 * x**2 + 442.79 * x + 187.03) * Const.STARS[self.star]["count"]
 
   def new(player, user, star = 1, style = 0, id=0, status=False):
     if style == 0:
@@ -124,7 +127,7 @@ class Card:
       status = " (" + Const.STATUS[self.status] + ")"
     else:
       status = ""
-    return self.player.Position.ljust(3)+" " + self.getNameWithColor() + " " + str(self.overall) + " " + Const.STARS[self.star]["star"] + " " + self.getStyle() + " " + status
+    return self.player.Position.ljust(3)+" " + self.getNameWithColor() + " " + str(self.overall) + " " + Const.STARS[self.star]["star"] + " " + self.getStyle() +  " " + self.printPrice() + " " + status
 
   def getStyle(self):
     styles = Const.GK_STYLE[self.style] if self.player.Position in Const.GOALKEEPER else Const.STYLE[self.style]
@@ -207,7 +210,22 @@ class Card:
       return str(real) + "/~g▼" + str(-diff)  + "/"
     else:
       return str(real) + "/~w" + "　" + "/"
-    
+
+  def printPrice(self):
+    return Card.formatPrice(self.price)
+  
+  def formatPrice(price):
+    if price >= 1000000:
+      price = price // 10000
+      return "$" + str(price) + "万"
+    elif price >= 100000:
+      price = format(price/10000, '.1f')
+      return "$" + str(price) + "万"
+    elif price >= 10000:
+      price = format(price/10000, '.2f')
+      return "$" + str(price) + "万"
+    return "$" + str(price)
+
   # 返回(位置，能力)的列表
   def getOveralls(self):
     tmp = []
@@ -215,3 +233,8 @@ class Card:
       tmp.append((position, self.getRealOverall(position)))
     tmp.sort(key = lambda x: x[1], reverse=True)
     return tmp
+
+  def remove(self):
+    cursor = g_database.cursor()
+    cursor.execute("delete from cards where id = " + str(self.id))
+    cursor.close()

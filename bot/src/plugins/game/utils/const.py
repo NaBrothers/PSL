@@ -20,43 +20,53 @@ class Const:
     # 星级
     STARS = { 1: {"star" : "★",
                   "ability" : 0,
-                  "cost" : 0
+                  "cost" : 0,
+                  "count" : 1
               },
               2: {"star" : "★×2",
                   "ability" : 1,
-                  "cost" : 200
+                  "cost" : 200,
+                  "count" : 2
               },
               3: {"star" : "★×3",
                   "ability" : 2,
-                  "cost" : 400
+                  "cost" : 400,
+                  "count" : 3
               },
               4: {"star" : "★×4",
                   "ability" : 4,
-                  "cost" : 600
+                  "cost" : 600,
+                  "count" : 5
               },
               5: {"star" : "★×5",
                   "ability" : 6,
-                  "cost" : 800
+                  "cost" : 800,
+                  "count" : 8
               },
               6: {"star" : "★×6",
                   "ability" : 8,
-                  "cost" : 1000
+                  "cost" : 1000,
+                  "count" : 13
               },
               7: {"star" : "★×7",
                   "ability" : 11,
-                  "cost" : 1200
+                  "cost" : 1200,
+                  "count" : 21
               },
               8: {"star" : "★×8",
                   "ability" : 14,
-                  "cost" : 1400
+                  "cost" : 1400,
+                  "count" : 34
               },
               9: {"star" : "★×9",
                   "ability" : 17,
-                  "cost" : 1600
+                  "cost" : 1600,
+                  "count" : 55
               },
               10: {"star" : "★×10",
                   "ability" : 21,
-                  "cost" : 1800
+                  "cost" : 1800,
+                  "count" : 89
               }
     }
 

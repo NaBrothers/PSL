@@ -100,6 +100,11 @@ async def show_team(user):
     ret += "阵容：" + team.formation + "\n"
     total, forward, midfield, guard = team.getAbilities(user)
     ret += "总能力：" + str(total) + "  前场：" + str(forward) + "  中场：" + str(midfield) + "  后场：" + str(guard) + "\n"
+    total_price = 0
+    for card in team.cards:
+        if card != None:
+          total_price += card.price
+    ret += "总身价：" + Card.formatPrice(total_price) + "\n"
     ret += "===== 主力 =====\n"
     for i, card in enumerate(team.cards):
         #ret += str(i).ljust(2) + "  "

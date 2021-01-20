@@ -42,7 +42,7 @@ async def player_detail(id):
         ret += "★"
     ret += " " + card.getStyle() + "\n"
     ret += str(card.player.Age) + "岁 " + str(Card.tocm(card.player.Height)
-                                             ) + "cm " + str(Card.tokg(card.player.Weight)) + "kg" + "\n"
+                                             ) + "cm " + str(Card.tokg(card.player.Weight)) + "kg" + " 身价 $" + str(card.price) + "\n"
     overalls = card.getOveralls()
     ret += overalls[0][0] + "：" + card.printRealOverall(overalls[0][0]) + "\n"
     ret += overalls[1][0] + "：" + card.printRealOverall(overalls[1][0]) + "\n"
@@ -68,9 +68,11 @@ async def player_detail(id):
     ret += printAbilityName(card, "GK反应", "GK_Reaction") + \
         "\t" + printAbility(card, "GK_Reaction") + "\n"
     ret += "赛季：\n"
-    ret += "出场 " + str(card.appearance) + " 进球 " + str(card.goal) + " 助攻 " + str(card.assist) + " 抢断 " + str(card.tackle) + " 扑救 " + str(card.save) + "\n" 
+    ret += "出场 " + str(card.appearance) + " 进球 " + str(card.goal) + " 助攻 " + str(
+        card.assist) + " 抢断 " + str(card.tackle) + " 扑救 " + str(card.save) + "\n"
     ret += "生涯：\n"
-    ret += "出场 " + str(card.total_appearance) + " 进球 " + str(card.total_goal) + " 助攻 " + str(card.total_assist) + " 抢断 " + str(card.total_tackle) + " 扑救 " + str(card.total_save) + "\n" 
+    ret += "出场 " + str(card.total_appearance) + " 进球 " + str(card.total_goal) + " 助攻 " + str(
+        card.total_assist) + " 抢断 " + str(card.total_tackle) + " 扑救 " + str(card.total_save) + "\n"
     await player_menu.finish(toImage(ret), **{"at_sender": True})
 
 
@@ -145,16 +147,17 @@ async def player_upgrade(user, id1, id2):
         return
     cursor = g_database.cursor()
     card1.set("star", target_star)
-    card1.set("appearance", max(card1.appearance,card2.appearance))
-    card1.set("goal", max(card1.goal , card2.goal))
-    card1.set("assist", max(card1.assist , card2.assist))
-    card1.set("tackle", max(card1.tackle , card2.tackle))
-    card1.set("save", max(card1.save , card2.save))
-    card1.set("total_appearance", max(card1.total_appearance , card2.total_appearance))
-    card1.set("total_goal", max(card1.total_goal , card2.total_goal))
-    card1.set("total_assist", max(card1.total_assist , card2.total_assist))
-    card1.set("total_tackle", max(card1.total_tackle , card2.total_tackle))
-    card1.set("total_save", max(card1.total_save , card2.total_save))
+    card1.set("appearance", max(card1.appearance, card2.appearance))
+    card1.set("goal", max(card1.goal, card2.goal))
+    card1.set("assist", max(card1.assist, card2.assist))
+    card1.set("tackle", max(card1.tackle, card2.tackle))
+    card1.set("save", max(card1.save, card2.save))
+    card1.set("total_appearance", max(
+        card1.total_appearance, card2.total_appearance))
+    card1.set("total_goal", max(card1.total_goal, card2.total_goal))
+    card1.set("total_assist", max(card1.total_assist, card2.total_assist))
+    card1.set("total_tackle", max(card1.total_tackle, card2.total_tackle))
+    card1.set("total_save", max(card1.total_save, card2.total_save))
     cursor.execute("delete from cards where id = " + str(card2.id))
     user.spend(cost)
     ret += "=== 强化结果 ===\n" + \
