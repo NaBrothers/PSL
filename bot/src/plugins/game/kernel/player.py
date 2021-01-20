@@ -41,32 +41,45 @@ async def player_detail(id):
     for i in range(card.star):
         ret += "★"
     ret += " " + card.getStyle() + "\n"
-    ret += str(card.player.Age) + "岁 " + str(Card.tocm(card.player.Height)
-                                             ) + "cm " + str(Card.tokg(card.player.Weight)) + "kg" + " 身价 $" + str(card.price) + "\n"
     overalls = card.getOveralls()
-    ret += overalls[0][0] + "：" + card.printRealOverall(overalls[0][0]) + "\n"
-    ret += overalls[1][0] + "：" + card.printRealOverall(overalls[1][0]) + "\n"
+    ret += overalls[0][0] + "：" + card.printRealOverall(overalls[0][0]) + " "
+    ret += overalls[1][0] + "：" + card.printRealOverall(overalls[1][0]) + " "
     ret += overalls[2][0] + "：" + card.printRealOverall(overalls[2][0]) + "\n"
+
+    ret += str(card.player.Age) + "岁 " + str(Card.tocm(card.player.Height)
+                                             ) + "cm " + str(Card.tokg(card.player.Weight)) + "kg" + " 身价 $" + str(card.price) + "\n\n"
+
+    string = '''     \t\tST\t\t
+     LRW\tCF\tLRW\t
+     \t\tAM\t
+     LRM\tCM\tLRM\t
+     \t\tDM\t
+     LRB\tCB\tLRB\t
+     \t\tGK\t
+'''
+    for overall in overalls:
+      string = string.replace(overall[0], card.printRealOverall(overall[0]))
+    ret += string + "\n"
     ret += printAbilityName(card, "终结", "Finishing")+"\t" + printAbility(card, "Finishing") + \
-        "\t" + printAbilityName(card, "远射", "Long_Shot")+"\t" + \
+        "\t\t" + printAbilityName(card, "远射", "Long_Shot")+"\t" + \
         printAbility(card, "Long_Shot") + "\n"
     ret += printAbilityName(card, "短传", "Short_Passing")+"\t" + printAbility(card, "Short_Passing") + \
-        "\t" + printAbilityName(card, "长传", "Long_Passing")+"\t" + \
+        "\t\t" + printAbilityName(card, "长传", "Long_Passing")+"\t" + \
         printAbility(card, "Long_Passing") + "\n"
     ret += printAbilityName(card, "盘带", "Dribbling")+"\t" + printAbility(card, "Dribbling") + \
-        "\t" + printAbilityName(card, "速度", "Speed")+"\t" + \
+        "\t\t" + printAbilityName(card, "速度", "Speed")+"\t" + \
         printAbility(card, "Speed") + "\n"
     ret += printAbilityName(card, "抢断", "Tackling")+"\t" + printAbility(card, "Tackling") + \
-        "\t" + printAbilityName(card, "防守", "Defence")+"\t" + \
+        "\t\t" + printAbilityName(card, "防守", "Defence")+"\t" + \
         printAbility(card, "Defence") + "\n"
     ret += printAbilityName(card, "头球", "Heading")+"\t" + printAbility(card, "Heading") + \
-        "\t" + printAbilityName(card, "球商", "IQ")+"\t" + \
+        "\t\t" + printAbilityName(card, "球商", "IQ")+"\t" + \
         printAbility(card, "IQ") + "\n"
-    ret += printAbilityName(card, "GK扑救", "GK_Saving")+"\t" + printAbility(card, "GK_Saving") + "\t" + \
+    ret += printAbilityName(card, "GK扑救", "GK_Saving")+"\t" + printAbility(card, "GK_Saving") + "\t\t" + \
         printAbilityName(card, "GK站位", "GK_Positioning") + \
         "\t" + printAbility(card, "GK_Positioning") + "\n"
     ret += printAbilityName(card, "GK反应", "GK_Reaction") + \
-        "\t" + printAbility(card, "GK_Reaction") + "\n"
+        "\t" + printAbility(card, "GK_Reaction") + "\n\n"
     ret += "赛季：\n"
     ret += "出场 " + str(card.appearance) + " 进球 " + str(card.goal) + " 助攻 " + str(
         card.assist) + " 抢断 " + str(card.tackle) + " 扑救 " + str(card.save) + "\n"

@@ -62,7 +62,9 @@ async def recycle_cards(user,bag, card_ids):
       if id not in success and id not in failed:
         failed_str.append("找不到ID [" + id + "]\n")
 
-    ret = str(len(success)) + "个球员回收成功:\n"
+    ret = ""
+    if len(success_str):
+      ret += str(len(success)) + "个球员回收成功:\n"
     for s in success_str:
       ret += s
     if len(failed_str):
