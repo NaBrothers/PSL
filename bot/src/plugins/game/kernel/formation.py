@@ -213,7 +213,7 @@ async def auto_update(user):
           
       if not picked:
         overalls = card.getOveralls()
-        if main_gk == True and sub_gk == False:
+        if main_gk == True and sub_gk == False and position == "GK":
           sub_gk = card.id
         elif index + 1 < len(overalls):
           heap.put((-overalls[index+1][1],-index-1,overalls[index+1][0],i))
@@ -230,6 +230,10 @@ async def auto_update(user):
       if card.player.ID in selected_players:
         continue
       if position == "GK" and sub_gk == -1:
+        # 只有一个替补门将
+        continue
+      if sub == 1 and sub_gk == 0 and position != "GK":
+        # 至少一个替补门将
         continue
       result[Formation.PLAYERS_COUNT - sub] = card.id
       selected_players.add(card.player.ID)
