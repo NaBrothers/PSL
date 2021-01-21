@@ -1,6 +1,5 @@
 # 玩家信息
 from game.utils.database import *
-
 class User:
     def __init__(self, data: list):
         self.id = data[0]

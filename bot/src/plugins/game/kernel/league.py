@@ -8,10 +8,13 @@ from game.model.user import User
 from game.model.card import Card
 from game.model.formation import Formation
 from game.model.league import League
+from game.model.item import Item
 from game.utils.database import *
 from game.kernel.server import *
 from game.model.offline import Offline
 from game.model.schedule import Schedule
+from game.kernel.pool import g_pool
+from game.model.globalAttr import Global
 from collections import deque
 import math
 import random
@@ -22,9 +25,29 @@ return_text = '''联赛 比赛：开始下一轮比赛
 联赛 赛程：查看赛程
 联赛 积分：查看积分榜
 联赛 排名 [类型]：查看排行榜（支持类型：进球、助攻、抢断、扑救）
+联赛 奖励：查看联赛奖励
 阵容 [ID]：查看对手阵容
 '''
 
+award_text = '''赛季奖励：
+===== 日常奖励 =====
+胜利：$2000 + 初级球员卡包*5
+平局：$1500 + 初级球员卡包*5
+失败：$1000 + 初级球员卡包*5
+进球奖励：$100每球（上限$500）
+===== 赛季奖励 =====
+冠军：$14000 + 高级球员卡包*2
+亚军：$13000 + 高级球员卡包*1
+季军：$12000 + 中级球员卡包*2
+殿军：$11000 + 中级球员卡包*1
+其他名次：(15-名次)*1000
+副班长：高级球员卡包*1（安慰奖）
+===== 单项奖励 =====
+金靴：$5000 + 中级球员卡包*2
+助攻王：$5000 + 中级球员卡包*2
+抢断王：$5000 + 中级球员卡包*2
+金手套：$5000 + 中级球员卡包*2
+'''
 @league_matcher.handle()
 async def league_matcher_handler(bot: Bot, event: Event, state: dict):
     user = await check_account(league_matcher, event)
@@ -40,7 +63,8 @@ async def league_matcher_handler(bot: Bot, event: Event, state: dict):
     
 async def register_league(args, user):
     league = League.getLeague()
-    ret = "当前联赛已结束\n球队数量达到" + str(LEAGUE_COUNT) + "时自动开始下一赛季\n输入“联赛 报名”报名联赛\n已报名球队：\n"
+    ret = "当前联赛已结束\n球队数量达到" + str(LEAGUE_COUNT) + "时自动开始下一赛季\n"
+    ret += "输入“联赛 报名”报名联赛\n已报名球队：\n"
     if league != None:
       for entry in league.entries:
           ret += "[" + str(entry.user.id) + "]\t" + entry.user.name + "\n"
@@ -57,6 +81,7 @@ async def register_league(args, user):
           if LEAGUE_COUNT % 2 == 1:
             League.addUser(0)
           generate_schedule()
+          Global.set("league_status", 1)
     else:
        await league_matcher.finish(toImage(ret), **{"at_sender": True})
 
@@ -114,6 +139,8 @@ async def start_league(args, user):
         await show_leaderboard()
     elif len(args) == 3 and args[1] == "排名":
         await show_rank(args[2])
+    elif len(args) == 2 and args[1] == "奖励":
+        await league_matcher.finish(toImage(award_text), **{"at_sender" : True})
     else:
         await league_matcher.finish("格式错误！" + toImage(return_text), **{"at_sender": True})
         return
@@ -165,30 +192,92 @@ async def reset_league(user):
   if not user.isAdmin:
     await league_matcher.finish("没有管理员权限！", **{"at_sender": True})
   League.clear()
+  Global.set("league_status", 0)
   await league_matcher.send("重置成功！", **{"at_sender": True})
   Offline.broadcast(user, "联赛已重置，请报名新赛季！")
 
-async def finish_league():
-  ret = "联赛已结束，请管理员重置联赛\n\n"
+async def finish_league(cur_user):
+  ret = "联赛已结束，奖励已发放，请管理员重置联赛\n\n"
   league = League.getLeague()
   ret += "冠军：" + league.entries[0].user.format() + " " + str(league.entries[0].score) + "分\n"
   ret += "亚军：" + league.entries[1].user.format() + " " + str(league.entries[1].score) + "分\n"
   ret += "季军：" + league.entries[2].user.format() + " " + str(league.entries[2].score) + "分\n\n"
   name = ["金靴","助攻王","抢断王","金手套"]
   value = ["goal", "assist", "tackle", "save"]
+  winners = []
   cursor = g_database.cursor()
   for i in range(len(name)):
     count = cursor.execute("select id from cards order by " + value[i] + " desc, appearance limit 10")
     id = cursor.fetchone()[0]
     card = Card.getCardByID(id)
     ret += name[i] + "：" + "[" + str(card.id) + "]" + " " + card.player.Position + " " + card.getNameWithColor() + " " + card.user.name + " " + str(getattr(card, value[i])) + "个\n"
+    winners.append((card,name[i]))
   cursor = g_database.cursor()
+
+  if Global.get("league_status") == "1":
+    await get_award(league, cur_user, winners)
+
   await league_matcher.finish(toImage(ret + "\n" + return_text), **{"at_sender": True})
+
+async def get_award(league, cur_user, winners):
+  award = {}
+  for i in range(len(league.entries)):
+    text = "赛季已结束，获得以下奖励：\n"
+    text += "===== 第" + str(i+1) + "名 =====\n"
+    user = league.entries[i].user
+    award_money = (14-i)*1000
+    text += "球币：$" + str(award_money) + "\n"
+    user.earn((14-i)*1000)
+    if i == 0:
+      award_card = 3
+      award_count = 2
+      Item.addItem(user, 0, award_card, award_count)
+      text += g_pool[Const.ITEM[0]["item"][award_card]["name"]]["name"] + "*" + str(award_count) + "\n"
+    elif i == 1:
+      award_card = 3
+      award_count = 1
+      Item.addItem(user, 0, award_card, award_count)
+      text += g_pool[Const.ITEM[0]["item"][award_card]["name"]]["name"] + "*" + str(award_count) + "\n"
+    elif i == 2:
+      award_card = 2
+      award_count = 2
+      Item.addItem(user, 0, award_card, award_count)
+      text += g_pool[Const.ITEM[0]["item"][award_card]["name"]]["name"] + "*" + str(award_count) + "\n"
+    elif i == 3:
+      award_card = 2
+      award_count = 1
+      Item.addItem(user, 0, award_card, award_count)
+      text += g_pool[Const.ITEM[0]["item"][award_card]["name"]]["name"] + "*" + str(award_count) + "\n"
+    elif i == len(league.entries) - 1:
+      award_card = 3
+      award_count = 1
+      Item.addItem(user, 0, award_card, award_count)
+      text += g_pool[Const.ITEM[0]["item"][award_card]["name"]]["name"] + "*" + str(award_count) + "（安慰奖）" + "\n"
+    award[user.qq] = text
+
+  for winner,prize in winners:
+      award[winner.user.qq] += "===== " + prize + " =====\n"
+      award_money = 5000
+      winner.user.earn(award_money)
+      award[winner.user.qq] += "球币：$" + str(award_money) + "\n"
+      award_card = 2
+      award_count = 5
+      Item.addItem(winner.user, 0, award_card, award_count)
+      award[winner.user.qq] += g_pool[Const.ITEM[0]["item"][award_card]["name"]]["name"] + "*" + str(award_count) + "\n"
+  
+  await league_matcher.send(toImage(award[cur_user.qq]), **{"at_sender": True})
+  
+  for entry in league.entries:
+    if entry.user.qq == cur_user.qq:
+      continue
+    Offline.send(entry.user, toImage(award[entry.user.qq]))
+
+  Global.set("league_status", "2")
 
 async def print_schedule(user):
     schedule = Schedule.getCurrentRound()
     if schedule == None:
-      await finish_league()
+      await finish_league(user)
     else:
       ret = "第" + str(schedule.entries[0].round) + "轮联赛\n"
       ret += "===== 本轮赛程 =====\n"
@@ -299,11 +388,38 @@ async def start_game(user, mode):
     entry.set("home_goal", game.home.goals)
     entry.set("away_goal", game.away.goals)
 
-    msg = "第" + str(entry.round) + "轮联赛已结束：\n"  +  stats
-    if user1.qq == user.qq:
-      Offline.send(user2, msg)
+    if entry.home_goal > entry.away_goal:
+      home_money = 2000
+      away_money = 1000
+    elif entry.home_goal == entry.away_goal:
+      home_money = 1500
+      away_money = 1500
     else:
-      Offline.send(user1, msg)
+      home_money = 1000
+      away_money = 2000
+
+    home_money += 100 * min(5, entry.home_goal)
+    away_money += 100 * min(5, entry.away_goal)
+
+    entry.home.earn(home_money)
+    entry.away.earn(away_money)
+    
+    award_card = 1
+    award_count = 5
+    Item.addItem(entry.home, 0, award_card, award_count)
+    Item.addItem(entry.away, 0, award_card, award_count)
+
+    home_award = "获得球币：$" + str(home_money) + "，" + g_pool[Const.ITEM[0]["item"][award_card]["name"]]["name"] + "*" + str(award_count)
+    away_award = "获得球币：$" + str(away_money) + "，" + g_pool[Const.ITEM[0]["item"][award_card]["name"]]["name"] + "*" + str(award_count)
+
+    msg = "第" + str(entry.round) + "轮联赛已结束，" 
+    if user1.qq == user.qq:
+      await league_matcher.send(home_award, **{"at_sender": True})
+      Offline.send(user2, msg + away_award + "\n" + stats)
+    else:
+      await league_matcher.send(away_award, **{"at_sender": True})
+      Offline.send(user1, msg + home_award + "\n" + stats)
+      
 
     
 

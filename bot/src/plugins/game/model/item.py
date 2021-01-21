@@ -53,8 +53,15 @@ class Item:
       return None
     return Item(datas)
 
-  def addItem(qq,type,item,count):
-    tp = (0, qq, type, item, count)
+  # 如果存在item，加上count
+  # 如果没有，添加新的item
+  def addItem(user,type,item,num):
+    tp = (0, user.qq, type, item, num)
     cursor = g_database.cursor()
-    cursor.execute("insert into items values " + str(tp))
+    count = cursor.execute("select * from items where user = " + str(user.qq) + " and type = " + str(type) + " and item = " + str(item))
+    if count == 0:
+      cursor.execute("insert into items values " + str(tp))
+    else:
+      old_item = Item.Entry(cursor.fetchone())
+      cursor.execute("update items set count = " + str(old_item.count + num) + " where id = " + str(old_item.id))
     cursor.close()

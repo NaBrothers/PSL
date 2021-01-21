@@ -27,7 +27,7 @@ class League:
 
   def getLeague():
     cursor = g_database.cursor()
-    count = cursor.execute("select * from league")
+    count = cursor.execute("select * from league where user <> 0")
     datas = cursor.fetchall()
     cursor.close()
     if count == 0:
