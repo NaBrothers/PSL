@@ -41,9 +41,8 @@ class Card:
       if ability == "name":
         continue
       self.ability[ability] += styles[ability]*self.star
-    
-    x = self.player.Overall - 74
-    self.price = int(0.0131*x**5 - 0.6118*x**4 + 11.189*x**3 - 55.238*x**2 + 123.16*x - 29.137) * Const.STARS[self.star]["count"]
+  
+    self.price = self.player.price * Const.STARS[self.star]["count"]
 
   def new(player, user, star = 1, style = 0, id=0, status=False):
     if style == 0:

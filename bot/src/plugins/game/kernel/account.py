@@ -3,6 +3,7 @@ from nonebot.rule import to_me
 from nonebot.adapters.cqhttp import Bot, Event
 from game.utils.database import *
 from game.model.user import *
+from game.model.item import Item
 from game.utils.image import toImage
 from game.model.offline import *
 
@@ -15,14 +16,10 @@ async def check_account(matcher, event):
   user = User.getUserByQQ(qq)
   if (user == None):
     # 第一次登陆
-    await matcher.send("欢迎加入游戏！送你一发新手卡包，输入\"抽卡 新手\"获取", **{"at_sender": True})
+    await matcher.send("欢迎加入游戏！送你一发新手卡包，输入\"抽卡 奖励 新手\"获取", **{"at_sender": True})
     await matcher.send("输入\"帮助\"获取游戏菜单", **{"at_sender": True})
-    sql = "insert into users (qq, name, level, money) values (" + str(qq) + ",'" + name + "',0, 0)"
-    cursor = g_database.cursor()
-    cursor.execute(sql)
-    cursor.execute("select * from users where qq = " + str(qq))
-    user = User(cursor.fetchone())
-    cursor.close()
+    user = User.addUser(qq, name)
+    Item.addItem(qq, 0, 0, 1)
 
   # 查询离线消息
   message = Offline.get(user)
