@@ -55,9 +55,8 @@ async def league_matcher_handler(bot: Bot, event: Event, state: dict):
     if len(args) == 4 and args[1] == "重置" and args[2].isdecimal() and args[3].isdecimal():
         await reset_league(user, int(args[2]), int(args[3]))
         return
-    count = League.getCount()
-    league_count = int(Global.get("league_count", LEAGUE_COUNT))
-    if count < league_count:
+    status = Global.get("league_status", 0)
+    if status == 0:
       await register_league(args, user)
     else:
       await start_league(args, user)
@@ -91,7 +90,7 @@ async def register_league(args, user):
 
 
 def generate_schedule():
-    league = League.getLeague()
+    league = League.getLeagueWithNull()
     users = [entry.user for entry in league.entries]
     random.shuffle(users)
     fix = users[0]

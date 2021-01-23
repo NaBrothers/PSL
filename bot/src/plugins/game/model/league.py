@@ -34,6 +34,15 @@ class League:
       return None
     return League(datas)
 
+  def getLeagueWithNull():
+    cursor = g_database.cursor()
+    count = cursor.execute("select * from league")
+    datas = cursor.fetchall()
+    cursor.close()
+    if count == 0:
+      return None
+    return League(datas)
+
   def getLeagueEntryByQQ(qq):
     cursor = g_database.cursor()
     count = cursor.execute("select * from league where user = " + str(qq))
