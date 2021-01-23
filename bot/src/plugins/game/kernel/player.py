@@ -154,7 +154,7 @@ async def player_upgrade(user, id1, id2):
         await player_menu.finish("强化失败：已达到星级上线" + toImage(ret), **{"at_sender": True})
         return
     target_star = max(card1.star, card2.star) + 1
-    cost = Const.STARS[target_star]["cost"]
+    cost = int(max(card1.price, card2.price) * 0.2)
     if cost > user.money:
         await player_menu.finish("强化失败：余额不足" + toImage(ret + "需要球币：" + str(cost) + "\n剩余球币：" + str(user.money)), **{"at_sender": True})
         return

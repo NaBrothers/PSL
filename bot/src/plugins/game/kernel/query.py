@@ -3,6 +3,7 @@ from nonebot.rule import to_me
 from nonebot.adapters.cqhttp import Bot, Event
 from game.utils.database import *
 from game.model.player import *
+from game.model.card import Card
 from game.utils.image import toImage
 from game.kernel.account import check_account
 
@@ -17,7 +18,7 @@ async def query_player_handler(bot: Bot, event: Event, state: dict):
         cursor = g_database.cursor()
         try:
             count = cursor.execute(
-                "select * from players where " + args[1])
+                "select id from cards where player in (select id from players where name like \"%" + args[1] + "%\")")
         except Exception as e:
             await query_player.finish("格式错误", **{"at_sender": True})
             return
@@ -29,11 +30,12 @@ async def query_player_handler(bot: Bot, event: Event, state: dict):
 
         ret = ""
         for i in range(min(20, count)):
-            ret += Player(result[i]).format()
+            card = Card.getCardByID(result[i][0])
+            ret += "[" + str(card.id) + "] " + card.format() + " " + card.user.name
             ret += "\n"
         if (count > 20):
             ret += "共查询到"+str(count)+"个结果，只显示前20条"
 
-        await query_player.finish("查询到以下球员：\n" + toImage(ret), **{"at_sender": True})
+        await query_player.finish("查询到以下球员卡：\n" + toImage(ret), **{"at_sender": True})
     else:
-        await query_player.finish("格式：查询 代码", **{'at_sender': True})
+        await query_player.finish("格式：查询 [球员名]", **{'at_sender': True})
