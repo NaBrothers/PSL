@@ -10,6 +10,8 @@ class Global:
       count = cursor.execute("select value from global where name = \'" + name + "\'")
     ret = cursor.fetchone()[0]
     cursor.close()
+    if ret.isdecimal():
+      return int(ret)
     return ret
 
   def set(name, value):

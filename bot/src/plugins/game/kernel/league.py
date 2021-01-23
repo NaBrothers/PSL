@@ -52,18 +52,22 @@ award_text = '''赛季奖励：
 async def league_matcher_handler(bot: Bot, event: Event, state: dict):
     user = await check_account(league_matcher, event)
     args = str(event.message).split(" ")
-    if len(args) == 2 and args[1] == "重置":
-        await reset_league(user)
+    if len(args) == 4 and args[1] == "重置" and args[2].isdecimal() and args[3].isdecimal():
+        await reset_league(user, int(args[2]), int(args[3]))
         return
     count = League.getCount()
-    if count < LEAGUE_COUNT:
+    league_count = int(Global.get("league_count", LEAGUE_COUNT))
+    if count < league_count:
       await register_league(args, user)
     else:
       await start_league(args, user)
     
 async def register_league(args, user):
     league = League.getLeague()
-    ret = "当前联赛已结束\n球队数量达到" + str(LEAGUE_COUNT) + "时自动开始下一赛季\n"
+    league_count = Global.get("league_count", LEAGUE_COUNT)
+    league_repeat = Global.get("league_repeat", LEAGUE_REPEAT)
+    ret = "当前联赛已结束\n球队数量达到" + str(league_count) + "时自动开始下一赛季\n"
+    ret += "赛程循环数：" + str(league_repeat) + "\n"
     ret += "输入“联赛 报名”报名联赛\n已报名球队：\n"
     if league != None:
       for entry in league.entries:
@@ -75,10 +79,10 @@ async def register_league(args, user):
         League.addUser(user.qq)
         await league_matcher.send("报名成功！", **{"at_sender": True})
         count = League.getCount()
-        if count == LEAGUE_COUNT:
+        if count == league_count:
           await league_matcher.send("新赛季开始了！", **{"at_sender": True})
           Offline.broadcast(user, "新赛季开始了！")
-          if LEAGUE_COUNT % 2 == 1:
+          if league_count % 2 == 1:
             League.addUser(0)
           generate_schedule()
           Global.set("league_status", 1)
@@ -105,7 +109,8 @@ def generate_schedule():
       rounds2.append(reverse_round)
       ring.rotate(1)
     rounds = rounds1 + rounds2
-    final_rounds = rounds * LEAGUE_REPEAT
+    league_repeat = Global.get("league_repeat", LEAGUE_REPEAT)
+    final_rounds = rounds * league_repeat
     for i in range(len(final_rounds)):
       one_round = final_rounds[i]
       for j in range(len(one_round)):
@@ -188,11 +193,13 @@ async def show_schedule(page):
   await league_matcher.finish(toImage(result), **{"at_sender": True})
     
 
-async def reset_league(user):
+async def reset_league(user, count,repeat):
   if not user.isAdmin:
     await league_matcher.finish("没有管理员权限！", **{"at_sender": True})
   League.clear()
   Global.set("league_status", 0)
+  Global.set("league_count", count)
+  Global.set("league_repeat", repeat)
   await league_matcher.send("重置成功！", **{"at_sender": True})
   Offline.broadcast(user, "联赛已重置，请报名新赛季！")
 
@@ -214,7 +221,7 @@ async def finish_league(cur_user):
     winners.append((card,name[i]))
   cursor = g_database.cursor()
 
-  if Global.get("league_status") == "1":
+  if Global.get("league_status") == 1:
     await get_award(league, cur_user, winners)
 
   await league_matcher.finish(toImage(ret + "\n" + return_text), **{"at_sender": True})

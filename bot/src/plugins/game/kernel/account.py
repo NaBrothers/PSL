@@ -19,7 +19,7 @@ async def check_account(matcher, event):
     await matcher.send("欢迎加入游戏！送你一发新手卡包，输入\"抽卡 奖励 新手\"获取", **{"at_sender": True})
     await matcher.send("输入\"帮助\"获取游戏菜单", **{"at_sender": True})
     user = User.addUser(qq, name)
-    Item.addItem(qq, 0, 0, 1)
+    Item.addItem(user, 0, 0, 1)
 
   # 查询离线消息
   message = Offline.get(user)
