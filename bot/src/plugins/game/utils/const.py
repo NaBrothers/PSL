@@ -207,7 +207,7 @@ class Const:
       "bronzewall": {
         "name" : "铜墙",
           "GK_Saving" : 3,
-          "Long_Passing" : 2
+          "Long_Passing" : 3
       },
       "ironwall": {
         "name" : "铁壁",
@@ -256,15 +256,15 @@ class Const:
     # 真实能力
     REAL_ABILITY = {
       "ST" : {
-        "Heading" : 0.16,
-        "Long_Shot" : 0.05,
-        "Finishing" : 0.29,
+        "Heading" : 0.18,
+        "Long_Shot" : 0.1,
+        "Finishing" : 0.30,
         "Long_Passing" : 0,
-        "Short_Passing" : 0.08,
+        "Short_Passing" : 0.05,
         "Dribbling" : 0.27,
         "Tackling" : 0,
         "Defence" : 0,
-        "Speed" : 0.15
+        "Speed" : 0.1
       },
       "CF" : {
         "Heading" : 0.03,

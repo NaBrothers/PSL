@@ -27,10 +27,11 @@ async def query_player_handler(bot: Bot, event: Event, state: dict):
             return
         result = cursor.fetchall()
         cursor.close()
-
+        cards = [Card.getCardByID(result[i][0]) for i in range(min(20, count))]
+        cards.sort(key = lambda p : (p.overall, p.player.Name), reverse=True)
         ret = ""
         for i in range(min(20, count)):
-            card = Card.getCardByID(result[i][0])
+            card = cards[i]
             ret += "[" + str(card.id) + "] " + card.format() + " " + card.user.name
             ret += "\n"
         if (count > 20):
