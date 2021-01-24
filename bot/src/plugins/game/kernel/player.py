@@ -147,7 +147,7 @@ async def player_upgrade(user, id1, id2):
     if card1.player.ID != card2.player.ID:
         await player_menu.finish("强化失败：主卡和副卡球员不匹配" + toImage(ret), **{"at_sender": True})
         return
-    if card1.star != 1 and card2.star != 1 and abs(card1.star - card2.star) != 1:
+    if (card1.star != 1 or card2.star != 1) and abs(card1.star - card2.star) != 1:
         await player_menu.finish("强化失败：主卡和副卡星级不匹配" + toImage(ret), **{"at_sender": True})
         return
     if card1.star == 10 or card2.star == 10:
