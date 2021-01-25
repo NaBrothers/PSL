@@ -237,14 +237,14 @@ g_pool = {
     "pool":  ElementaryGoalkeeperPool(),
     "name" : "初级门将卡包",
     "cost" : 1750,
-    "ten_cost" : 19000,
+    "ten_cost" : 16625,
     "visible" : True
   },
   "中级" : {
     "pool":  IntermediatePool(),
     "name" : "中级球员卡包",
     "cost" : 2500,
-    "ten_cost" : 21250,
+    "ten_cost" : 23750,
     "visible" : True
   },
   "中级前锋" : {

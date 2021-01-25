@@ -188,7 +188,7 @@ class Const:
       },
       "shadow": {
         "name" : "暗影",
-        "Finishing" : 3,
+        "Defence" : 3,
         "Speed" : 3
       },
       "speedster": {

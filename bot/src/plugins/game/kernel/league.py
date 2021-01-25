@@ -21,7 +21,6 @@ import random
 league_matcher = on_startswith(msg="联赛", rule=to_me(), priority=1)
 
 return_text = '''联赛 比赛：开始下一轮比赛
-联赛 快速：跳过比赛过程
 联赛 赛程：查看赛程
 联赛 积分：查看积分榜
 联赛 排名 [类型]：查看排行榜（支持类型：进球、助攻、抢断、扑救）
@@ -131,8 +130,8 @@ def generate_schedule():
 async def start_league(args, user):
     if len(args) == 1:
         await print_schedule(user)
-    elif len(args) == 2 and args[1] == "快速":
-        await start_game(user, 1)
+    # elif len(args) == 2 and args[1] == "快速":
+    #     await start_game(user, 1)
     elif len(args) == 2 and args[1] == "比赛":
         await start_game(user, 2)
     elif len(args) == 2 and args[1] == "赛程":
