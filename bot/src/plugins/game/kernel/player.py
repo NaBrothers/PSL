@@ -10,6 +10,7 @@ from game.kernel.account import check_account
 error_text = '''球员 ID：查看球员详细信息
 球员 强化 主卡ID 副卡ID：升级球员卡，星级加一，保留主卡特性
 球员 比较 ID ID：对比两个球员卡的能力
+球员 锁定 [ID]：锁定球员，不可回收或转会，再次输入可进行解锁
 '''
 
 player_menu = on_startswith(msg="球员", rule=to_me(), priority=1)
@@ -25,9 +26,23 @@ async def player_menu_handler(bot: Bot, event: Event, state: dict):
         await player_compare(args[2], args[3])
     elif len(args) == 2 and args[1].isdecimal():
         await player_detail(args[1])
+    elif len(args) == 3 and args[1] == "锁定" and args[2].isdecimal():
+        await player_lock(args[2])
     else:
         await player_menu.finish("格式错误！\n" + toImage(error_text), **{"at_sender": True})
 
+
+async def player_lock(id):
+    card = Card.getCardByID(id)
+    if card == None:
+        await player_menu.finish("找不到该球员！输入\"背包\"查看拥有的球员卡", **{"at_sender": True})
+    if card.locked == False:
+      card.set("locked", True)
+      await player_menu.finish("球员已锁定", **{"at_sender": True})
+    else:
+      card.set("locked", False)
+      await player_menu.finish("球员已解锁", **{"at_sender": True})
+    
 
 async def player_detail(id):
     card = Card.getCardByID(id)
@@ -175,6 +190,8 @@ async def player_upgrade(user, id1, id2):
     card1.set("total_tackle", card1.total_tackle+ card2.total_tackle)
     card1.set("total_save", card1.total_save+ card2.total_save)
     cursor.execute("delete from cards where id = " + str(card2.id))
+    if card2.status == 2:
+      card1.set("satatus", 2)
     user.spend(cost)
     card1 = Card.getCardByID(card1.id)
     ret += "=== 强化结果 ===\n" + \

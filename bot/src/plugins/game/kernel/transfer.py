@@ -83,6 +83,8 @@ async def sell_card(user, id, cost):
     if card.status != 0:
       await transfer.finish("出售球员失败！状态：" + Const.STATUS[card.status], **{'at_sender': True})
       return
+    if card.locked:
+      await transfer.finish("出售球员失败！状态：已锁定", **{'at_sender': True})
     count = cursor.execute("insert into transfer (user, card, cost) values ( " + str(user.qq) + ", " + str(card.id) + ", " + str(cost) + ");")
     count = cursor.execute("update cards set status = 1 where id = " + str(card.id))
     cursor.close()

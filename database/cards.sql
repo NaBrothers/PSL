@@ -15,5 +15,6 @@ create table IF NOT EXISTS `cards` (
   `Total_Assist` int(11) default 0,
   `Total_Tackle` int(11) default 0,
   `Total_Save` int(11) default 0,
+  `Locked` boolean default False,
   primary key(`id`)
 ) default charset = utf8;

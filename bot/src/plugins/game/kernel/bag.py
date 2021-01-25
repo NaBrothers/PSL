@@ -12,10 +12,11 @@ from game.utils.image import toImage
 
 user_bag = on_startswith(msg="背包", rule=to_me(), priority=1)
 
-return_text = '''背包 页码：跳转到指定页
-背包 查询 球员名：查找同名球员卡
-背包 回收 ID：按身价一半出售给系统，可以同时指明多个ID
-球员 ID：查看详细信息
+return_text = '''背包 [页码]：跳转到指定页
+背包 查询 [球员名]：查找同名球员卡
+背包 回收 [ID]：按身价一半出售给系统，可以同时指明多个ID
+背包 回收 [SQL]：自定义回收（支持字段 id, name, overall, star）
+背包 回收 快速：快速回收白色和绿色的单卡
 '''
 
 @user_bag.handle()
@@ -34,10 +35,38 @@ async def user_bag_handler(bot: Bot, event: Event, state: dict):
             await user_bag.finish("格式错误！"+toImage(return_text), **{"at_sender": True})
             return
     elif arg[1] == "回收":
+      if arg[2].isdecimal():
         await recycle_cards(user,bag, arg[2:])
+      elif len(arg) == 3 and arg[2] == "快速":
+        await recycle_cards_sql(user, bag, "overall < 84 and star = 1")
+      else:
+        msg = str(event.message).split(" ", 2)[2]
+        await recycle_cards_sql(user, bag, msg)
     else:
         await user_bag.finish("格式错误！"+toImage(return_text), **{"at_sender": True})
         
+async def recycle_cards_sql(user, bag, sql):
+    cursor = g_database.cursor()
+    cards_id = []
+    sql.replace("＜", "<")
+    sql.replace("＞", ">")
+    try:
+      cursor.execute("create temporary table bag_temp (id int(11), name varchar(50), overall int(11), star int(11));")
+      for card in bag.cards:
+        cursor.execute("insert into bag_temp values (" + str(card.id) + ", \"" + card.player.Name + "\", " + str(card.overall) + ", "  +str(card.star) + ")")
+      cursor.execute("select id from bag_temp where " + sql)
+      card_ids = cursor.fetchall()
+      card_ids = [str(id[0]) for id in card_ids]
+    except Exception as e:
+      await user_bag.finish("格式错误！"+toImage(return_text), **{"at_sender": True})
+    finally:
+      cursor.execute("drop table bag_temp")
+    cursor.close()
+    if not card_ids:
+      await user_bag.finish("没有匹配到任何球员！", **{"at_sender": True})
+    await recycle_cards(user, bag, card_ids)
+
+
 async def recycle_cards(user,bag, card_ids):
     for id in card_ids:
       if not id.isdecimal():
@@ -53,13 +82,13 @@ async def recycle_cards(user,bag, card_ids):
         continue
       if card.user.qq!= user.qq:
         continue
-      if card.status != 0:
+      if card.status != 0 or card.locked:
         failed.append(str(card.id))
-        failed_str.append(card.format() + "\n")
+        failed_str.append("[" + str(card.id) + "] " + card.format() + "\n")
         continue
       money += card.price // 2
       success.append(str(card.id))
-      success_str.append(card.format() + "\n")
+      success_str.append("[" + str(card.id) + "] " + card.format() + "\n")
       card.remove()
       
     for id in card_ids:

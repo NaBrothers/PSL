@@ -3,7 +3,7 @@ from game.model.user import *
 from game.model.player import *
 
 class Card:
-  def __init__(self, id, player, user, star, style, status, appearance, goal, assist, tackle, save, total_appearance, total_goal, total_assist, total_tackle, total_save):
+  def __init__(self, id, player, user, star, style, status, appearance, goal, assist, tackle, save, total_appearance, total_goal, total_assist, total_tackle, total_save, locked):
     self.id = id
     self.player = player
     self.user = user
@@ -20,6 +20,7 @@ class Card:
     self.total_assist = total_assist
     self.total_tackle = total_tackle
     self.total_save = total_save
+    self.locked = locked
     self.ability = {
       "Heading" : Const.STARS[self.star]["ability"]+int((player.Heading_Accuracy+player.Jumping+player.Strength+Card.tocm(player.Height)-100)/4),
       "Long_Shot" : Const.STARS[self.star]["ability"]+int((player.Long_Shots+player.Shot_Power)/2),
@@ -44,13 +45,13 @@ class Card:
   
     self.price = self.player.price * Const.STARS[self.star]["count"]
 
-  def new(player, user, star = 1, style = 0, id=0, status=False):
+  def new(player, user, star = 1, style = 0, id=0, status=False, locked=False):
     if style == 0:
       if player.Position in Const.GOALKEEPER:
         style = random.choice(list(Const.GK_STYLE.keys()))
       else:
         style = random.choice(list(Const.STYLE.keys()))
-    return Card(id ,player, user, star, style, status, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0)
+    return Card(id ,player, user, star, style, status, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, locked)
 
   def set(self, attr, value):
       setattr(self, attr, value)
@@ -81,7 +82,8 @@ class Card:
             total_assist = data[13]
             total_tackle = data[14]
             total_save = data[15]
-            card = Card(id, player, user, star, style, status, appearance, goal, assist, tackle, save, total_appearance, total_goal, total_assist, total_tackle, total_save)
+            locked = data[16]
+            card = Card(id, player, user, star, style, status, appearance, goal, assist, tackle, save, total_appearance, total_goal, total_assist, total_tackle, total_save, locked)
         cursor.close()
         return card
 
@@ -115,7 +117,8 @@ class Card:
               total_assist = data[13]
               total_tackle = data[14]
               total_save = data[15]
-              card = Card(id, player, user, star, style, status, appearance, goal, assist, tackle, save, total_appearance, total_goal, total_assist, total_tackle, total_save)
+              locked = data[16]
+              card = Card(id, player, user, star, style, status, appearance, goal, assist, tackle, save, total_appearance, total_goal, total_assist, total_tackle, total_save, locked)
               cards.append(card)
         
         cursor.close()
@@ -124,8 +127,11 @@ class Card:
   def format(self):
     if self.status != 0:
       status = " (" + Const.STATUS[self.status] + ")"
+    elif self.locked:
+      status = " (已锁定)"
     else:
       status = ""
+      
     return self.player.Position.ljust(3)+" " + self.getNameWithColor() + " " + str(self.overall) + " " + Const.STARS[self.star]["star"] + " " + self.getStyle() +  " " + self.printPrice() + " " + status
 
   def getStyle(self):
