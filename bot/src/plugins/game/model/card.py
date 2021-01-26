@@ -125,14 +125,16 @@ class Card:
         return cards
 
   def format(self):
+    return self.player.Position.ljust(3)+" " + self.getNameWithColor() + " " + str(self.overall) + " " + Const.STARS[self.star]["star"] + " " + self.getStyle() +  " " + self.printPrice() + " " + self.getStatus()
+
+  def getStatus(self):
     if self.status != 0:
       status = " (" + Const.STATUS[self.status] + ")"
     elif self.locked:
       status = " (已锁定)"
     else:
       status = ""
-      
-    return self.player.Position.ljust(3)+" " + self.getNameWithColor() + " " + str(self.overall) + " " + Const.STARS[self.star]["star"] + " " + self.getStyle() +  " " + self.printPrice() + " " + status
+    return status
 
   def getStyle(self):
     styles = Const.GK_STYLE[self.style] if self.player.Position in Const.GOALKEEPER else Const.STYLE[self.style]

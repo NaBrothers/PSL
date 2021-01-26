@@ -266,7 +266,7 @@ async def get_award(league, cur_user, winners):
       winner.user.earn(award_money)
       award[winner.user.qq] += "球币：$" + str(award_money) + "\n"
       award_card = 2
-      award_count = 5
+      award_count = 2
       Item.addItem(winner.user, 0, award_card, award_count)
       award[winner.user.qq] += g_pool[Const.ITEM[0]["item"][award_card]["name"]]["name"] + "*" + str(award_count) + "\n"
   

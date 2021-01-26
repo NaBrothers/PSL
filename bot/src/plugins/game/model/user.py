@@ -34,12 +34,18 @@ class User:
         return user
 
     def spend(self, cost):
-        self.money -= cost
-        g_database.update("update users set money = " + str(self.money) + " where qq = " + str(self.qq))
+        cursor = g_database.cursor()
+        cursor.execute("update users set money = money - " + str(cost) + " where qq = " + str(self.qq))
+        cursor.execute("select money from users where qq = " + str(self.qq))
+        self.money = cursor.fetchone()[0]
+        cursor.close()
     
     def earn(self, money):
-        self.money += money
-        g_database.update("update users set money = " + str(self.money) + " where qq = " + str(self.qq))
+        cursor = g_database.cursor()
+        cursor.execute("update users set money = money + " + str(money) + " where qq = " + str(self.qq))
+        cursor.execute("select money from users where qq = " + str(self.qq))
+        self.money = cursor.fetchone()[0]
+        cursor.close()
 
     def setFormation(self, formation):
         self.formation = formation

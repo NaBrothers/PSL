@@ -51,7 +51,7 @@ async def player_detail(id):
         return
     # img = getImage("/avatars/" + str(card.player.ID) + ".png")
     ret = ""
-    ret += card.player.Position + " " + card.getNameWithColor() + " " + \
+    ret += "[" + str(card.id) + "] " + card.player.Position + " " + card.getNameWithColor() + " " + \
         str(card.overall) + "\n"
     for i in range(card.star):
         ret += "★"
@@ -190,8 +190,8 @@ async def player_upgrade(user, id1, id2):
     card1.set("total_tackle", card1.total_tackle+ card2.total_tackle)
     card1.set("total_save", card1.total_save+ card2.total_save)
     cursor.execute("delete from cards where id = " + str(card2.id))
-    if card2.status == 2:
-      card1.set("satatus", 2)
+    if card2.locked:
+      card1.set("locked", "True")
     user.spend(cost)
     card1 = Card.getCardByID(card1.id)
     ret += "=== 强化结果 ===\n" + \
