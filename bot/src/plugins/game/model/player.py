@@ -98,6 +98,9 @@ class Player:
         self.GK_Positioning = data[88]
         self.GK_Reflexes = data[89]
 
+        x = self.Overall - 74 if self.Overall >= 80 else 6
+        self.price = int(0.0131*x**5 - 0.6118*x**4 + 11.189*x**3 - 55.238*x**2 + 123.16*x - 29.137)
+
     # 返回一个格式化字符串
     def format(self):
         return self.Position+"\t" + self.getNameWithColor() + " " + str(self.Overall)

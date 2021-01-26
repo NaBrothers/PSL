@@ -6,6 +6,9 @@ from game.utils.avatar import *
 class Server:
   def __init__(self):
     self.start()
+    self.global_dict = {
+      "in_game" : False
+    }
 
   # 服务器启动逻辑
   def start(self):
@@ -20,6 +23,12 @@ class Server:
 
   def close(self):
     logger.info("PSL关闭!")
+
+  def get(self,key):
+    return self.global_dict[key]
+
+  def set(self,key, value):
+    self.global_dict[key] = value
 
 # 全局服务器
 g_server = Server()

@@ -6,7 +6,7 @@ import sys
 
 
 class Player:
-  def __init__(self, card, position, default_x, default_y):
+  def __init__(self, card, position, default_x, default_y, coach):
     """
 
     :param card: 球员卡
@@ -17,6 +17,7 @@ class Player:
     :param action_flag: 行动标记
     """
     self.name = card.getNameWithColor()
+    self.coach = coach
     self.position = position
     # 格式 ability["Short_Passing"] 具体请看Card
     self.ability = card.ability
@@ -25,6 +26,16 @@ class Player:
     self.default_x = default_x
     self.default_y = default_y
     self.action_flag = False
+    self.shoots = 0
+    self.shoots_in_target = 0
+    self.goals = 0
+    self.passes = 0
+    self.successful_passes = 0
+    self.assists = 0
+    self.tackles = 0
+    self.saves = 0
+    self.dribbles = 0
+    self.goals_detailed = []
 
   # def __init__(self, name, position, ability, x, y):
   #   self.name = name
@@ -148,8 +159,10 @@ class Player:
       return True
 
   # 扑救-被动触发
-  def saving(self, shoot_ability):
-    success_rate = self.get_success_rate(self.ability["GK_Saving"], shoot_ability)
+  def saving(self, shoot_ability, distance, shoot_place):
+    success_rate = self.get_success_rate(self.ability["GK_Saving"], shoot_ability) *\
+      math.pow(distance, 0.6)*self.ability["GK_Reaction"]*math.pow(shoot_ability, -1)/4 *\
+      math.pow(1.1, math.pow(self.ability["GK_Positioning"], 1.5)/shoot_ability-shoot_place)*0.65
     rand = random.randint(0, int((success_rate + 1)*100))
     if rand < 100:
       return False
@@ -179,9 +192,9 @@ class Player:
   # 射门选择率
   def get_shooting_rate(self, shoot_defence_players_number):
     distance = self.get_distance(Const.WIDTH / 2, 0)
-    if distance > 45:
+    if distance > 40:
       return 0
-    return math.pow(0.95, math.pow(distance, 0.7) * shoot_defence_players_number)
+    return math.pow(0.99, 0.004 * math.pow(distance, 3) * shoot_defence_players_number)
 
   # 盘带选择率
   def get_dribbling_rate(self, defence_players_number):
@@ -244,3 +257,6 @@ class Player:
     if y > Const.LENGTH:
       return Const.LENGTH
     return y
+
+  def getName(self):
+    return self.position + " " + self.name

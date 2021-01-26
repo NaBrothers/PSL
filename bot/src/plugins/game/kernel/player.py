@@ -10,6 +10,7 @@ from game.kernel.account import check_account
 error_text = '''球员 ID：查看球员详细信息
 球员 强化 主卡ID 副卡ID：升级球员卡，星级加一，保留主卡特性
 球员 比较 ID ID：对比两个球员卡的能力
+球员 锁定 [ID]：锁定球员，不可回收或转会，再次输入可进行解锁
 '''
 
 player_menu = on_startswith(msg="球员", rule=to_me(), priority=1)
@@ -25,9 +26,23 @@ async def player_menu_handler(bot: Bot, event: Event, state: dict):
         await player_compare(args[2], args[3])
     elif len(args) == 2 and args[1].isdecimal():
         await player_detail(args[1])
+    elif len(args) == 3 and args[1] == "锁定" and args[2].isdecimal():
+        await player_lock(args[2])
     else:
         await player_menu.finish("格式错误！\n" + toImage(error_text), **{"at_sender": True})
 
+
+async def player_lock(id):
+    card = Card.getCardByID(id)
+    if card == None:
+        await player_menu.finish("找不到该球员！输入\"背包\"查看拥有的球员卡", **{"at_sender": True})
+    if card.locked == False:
+      card.set("locked", True)
+      await player_menu.finish("球员已锁定", **{"at_sender": True})
+    else:
+      card.set("locked", False)
+      await player_menu.finish("球员已解锁", **{"at_sender": True})
+    
 
 async def player_detail(id):
     card = Card.getCardByID(id)
@@ -36,40 +51,56 @@ async def player_detail(id):
         return
     # img = getImage("/avatars/" + str(card.player.ID) + ".png")
     ret = ""
-    ret += card.player.Position + " " + card.getNameWithColor() + " " + \
+    ret += "[" + str(card.id) + "] " + card.player.Position + " " + card.getNameWithColor() + " " + \
         str(card.overall) + "\n"
     for i in range(card.star):
         ret += "★"
     ret += " " + card.getStyle() + "\n"
+    overalls = card.getOveralls()
+    ret += overalls[0][0] + "：" + card.printRealOverall(overalls[0][0]) + " "
+    ret += overalls[1][0] + "：" + card.printRealOverall(overalls[1][0]) + " "
+    ret += overalls[2][0] + "：" + card.printRealOverall(overalls[2][0]) + "\n"
+
     ret += str(card.player.Age) + "岁 " + str(Card.tocm(card.player.Height)
-                                             ) + "cm " + str(Card.tokg(card.player.Weight)) + "kg" + "\n"
-    tmp = []
-    for position in Const.REAL_ABILITY.keys():
-      tmp.append((position, card.getRealOverall(position)))
-    tmp.sort(key = lambda x: x[1], reverse=True)
-    ret += tmp[0][0] + "：" + card.printRealOverall(tmp[0][0]) + "\n"
-    ret += tmp[1][0] + "：" + card.printRealOverall(tmp[1][0]) + "\n"
-    ret += tmp[2][0] + "：" + card.printRealOverall(tmp[2][0]) + "\n"
+                                             ) + "cm " + str(Card.tokg(card.player.Weight)) + "kg" + " 身价 $" + str(card.price) + "\n\n"
+
+    string = '''     \t\tST\t\t
+     LRW\tCF\tLRW\t
+     \t\tAM\t
+     LRM\tCM\tLRM\t
+     \t\tDM\t
+     LRB\tCB\tLRB\t
+     \t\tGK\t
+'''
+    for overall in overalls:
+      string = string.replace(overall[0], card.printRealOverall(overall[0]))
+    ret += string + "\n"
     ret += printAbilityName(card, "终结", "Finishing")+"\t" + printAbility(card, "Finishing") + \
-        "\t" + printAbilityName(card, "远射", "Long_Shot")+"\t" + \
+        "\t\t" + printAbilityName(card, "远射", "Long_Shot")+"\t" + \
         printAbility(card, "Long_Shot") + "\n"
     ret += printAbilityName(card, "短传", "Short_Passing")+"\t" + printAbility(card, "Short_Passing") + \
-        "\t" + printAbilityName(card, "长传", "Long_Passing")+"\t" + \
+        "\t\t" + printAbilityName(card, "长传", "Long_Passing")+"\t" + \
         printAbility(card, "Long_Passing") + "\n"
     ret += printAbilityName(card, "盘带", "Dribbling")+"\t" + printAbility(card, "Dribbling") + \
-        "\t" + printAbilityName(card, "速度", "Speed")+"\t" + \
+        "\t\t" + printAbilityName(card, "速度", "Speed")+"\t" + \
         printAbility(card, "Speed") + "\n"
     ret += printAbilityName(card, "抢断", "Tackling")+"\t" + printAbility(card, "Tackling") + \
-        "\t" + printAbilityName(card, "防守", "Defence")+"\t" + \
+        "\t\t" + printAbilityName(card, "防守", "Defence")+"\t" + \
         printAbility(card, "Defence") + "\n"
     ret += printAbilityName(card, "头球", "Heading")+"\t" + printAbility(card, "Heading") + \
-        "\t" + printAbilityName(card, "球商", "IQ")+"\t" + \
+        "\t\t" + printAbilityName(card, "球商", "IQ")+"\t" + \
         printAbility(card, "IQ") + "\n"
-    ret += printAbilityName(card, "GK扑救", "GK_Saving")+"\t" + printAbility(card, "GK_Saving") + "\t" + \
+    ret += printAbilityName(card, "GK扑救", "GK_Saving")+"\t" + printAbility(card, "GK_Saving") + "\t\t" + \
         printAbilityName(card, "GK站位", "GK_Positioning") + \
         "\t" + printAbility(card, "GK_Positioning") + "\n"
     ret += printAbilityName(card, "GK反应", "GK_Reaction") + \
-        "\t" + printAbility(card, "GK_Reaction") + "\n"
+        "\t" + printAbility(card, "GK_Reaction") + "\n\n"
+    ret += "赛季：\n"
+    ret += "出场 " + str(card.appearance) + " 进球 " + str(card.goal) + " 助攻 " + str(
+        card.assist) + " 抢断 " + str(card.tackle) + " 扑救 " + str(card.save) + "\n"
+    ret += "生涯：\n"
+    ret += "出场 " + str(card.total_appearance) + " 进球 " + str(card.total_goal) + " 助攻 " + str(
+        card.total_assist) + " 抢断 " + str(card.total_tackle) + " 扑救 " + str(card.total_save) + "\n"
     await player_menu.finish(toImage(ret), **{"at_sender": True})
 
 
@@ -131,23 +162,38 @@ async def player_upgrade(user, id1, id2):
     if card1.player.ID != card2.player.ID:
         await player_menu.finish("强化失败：主卡和副卡球员不匹配" + toImage(ret), **{"at_sender": True})
         return
-    if card1.star != 1 and card2.star != 1 and abs(card1.star - card2.star) != 1:
+    if (card1.star != 1 or card2.star != 1) and abs(card1.star - card2.star) != 1:
         await player_menu.finish("强化失败：主卡和副卡星级不匹配" + toImage(ret), **{"at_sender": True})
         return
     if card1.star == 10 or card2.star == 10:
         await player_menu.finish("强化失败：已达到星级上线" + toImage(ret), **{"at_sender": True})
         return
     target_star = max(card1.star, card2.star) + 1
-    cost = Const.STARS[target_star]["cost"]
+    cost = int(max(card1.price, card2.price) * 0.2)
     if cost > user.money:
         await player_menu.finish("强化失败：余额不足" + toImage(ret + "需要球币：" + str(cost) + "\n剩余球币：" + str(user.money)), **{"at_sender": True})
         return
+    if card1.status != 0 and card1.status != 2:
+        await player_menu.finish("强化失败：主卡状态" + Const.STATUS["card1.status"], **{"at_sender": True})
+    if card2.status != 0 and card2.status != 2:
+        await player_menu.finish("强化失败：副卡状态" + Const.STATUS["card2.status"], **{"at_sender": True})
     cursor = g_database.cursor()
-    cursor.execute("update cards set star = " +
-                   str(target_star) + " where id = " + str(card1.id))
+    card1.set("star", target_star)
+    card1.set("appearance", max(card1.appearance, card2.appearance))
+    card1.set("goal", max(card1.goal, card2.goal))
+    card1.set("assist", max(card1.assist, card2.assist))
+    card1.set("tackle", max(card1.tackle, card2.tackle))
+    card1.set("save", max(card1.save, card2.save))
+    card1.set("total_appearance", card1.total_appearance+ card2.total_appearance)
+    card1.set("total_goal", card1.total_goal+ card2.total_goal)
+    card1.set("total_assist", card1.total_assist+ card2.total_assist)
+    card1.set("total_tackle", card1.total_tackle+ card2.total_tackle)
+    card1.set("total_save", card1.total_save+ card2.total_save)
     cursor.execute("delete from cards where id = " + str(card2.id))
+    if card2.locked:
+      card1.set("locked", "True")
     user.spend(cost)
-    card1 = Card.getCardByID(id1)
+    card1 = Card.getCardByID(card1.id)
     ret += "=== 强化结果 ===\n" + \
         "[" + str(card1.id) + "] " + card1.format() + "\n"
     await player_menu.finish("强化成功！" + toImage(ret + "花费球币：" + str(cost) + "\n剩余球币：" + str(user.money)), **{"at_sender": True})

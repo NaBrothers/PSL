@@ -3,13 +3,24 @@ from game.model.user import *
 from game.model.player import *
 
 class Card:
-  def __init__(self, id, player, user, star, style, status):
+  def __init__(self, id, player, user, star, style, status, appearance, goal, assist, tackle, save, total_appearance, total_goal, total_assist, total_tackle, total_save, locked):
     self.id = id
     self.player = player
     self.user = user
     self.star = star
     self.style = style
     self.status = status
+    self.appearance = appearance
+    self.goal = goal
+    self.assist = assist
+    self.tackle = tackle
+    self.save = save
+    self.total_appearance = total_appearance
+    self.total_goal = total_goal
+    self.total_assist = total_assist
+    self.total_tackle = total_tackle
+    self.total_save = total_save
+    self.locked = locked
     self.ability = {
       "Heading" : Const.STARS[self.star]["ability"]+int((player.Heading_Accuracy+player.Jumping+player.Strength+Card.tocm(player.Height)-100)/4),
       "Long_Shot" : Const.STARS[self.star]["ability"]+int((player.Long_Shots+player.Shot_Power)/2),
@@ -31,14 +42,22 @@ class Card:
       if ability == "name":
         continue
       self.ability[ability] += styles[ability]*self.star
+  
+    self.price = self.player.price * Const.STARS[self.star]["count"]
 
-  def new(player, user, star = 1, style = 0, id=0, status=False):
+  def new(player, user, star = 1, style = 0, id=0, status=False, locked=False):
     if style == 0:
       if player.Position in Const.GOALKEEPER:
         style = random.choice(list(Const.GK_STYLE.keys()))
       else:
         style = random.choice(list(Const.STYLE.keys()))
-    return Card(id ,player, user, star, style, status)
+    return Card(id ,player, user, star, style, status, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, locked)
+
+  def set(self, attr, value):
+      setattr(self, attr, value)
+      cursor = g_database.cursor()
+      count = cursor.execute("update cards set " + attr + " = " + str(value) + " where id = " + str(self.id))
+      cursor.close()
 
   def getCardByID(id):
         cursor = g_database.cursor()
@@ -53,17 +72,69 @@ class Card:
             star = data[3]
             style = data[4]
             status = data[5]
-            card = Card(id, player, user, star, style, status)
+            appearance = data[6]
+            goal = data[7]
+            assist = data[8]
+            tackle = data[9]
+            save = data[10]
+            total_appearance = data[11]
+            total_goal = data[12]
+            total_assist = data[13]
+            total_tackle = data[14]
+            total_save = data[15]
+            locked = data[16]
+            card = Card(id, player, user, star, style, status, appearance, goal, assist, tackle, save, total_appearance, total_goal, total_assist, total_tackle, total_save, locked)
         cursor.close()
         return card
 
+  def getCardByIDMany(ids):
+        cursor = g_database.cursor()
+        cards = []
+        sql = "select * from cards where id in ("
+        for id in ids:
+            sql += str(id)+","
+        sql += "-1)"
+        count = cursor.execute(sql)
+        if count:
+          datas = cursor.fetchall()
+          player_ids = [data[1] for data in datas]
+          players = Player.getPlayerByIDMany(player_ids)
+          user = User.getUserByQQ(datas[0][2])
+          for i,data in enumerate(datas):
+              id = data[0]
+              player = players[i]
+              user = user
+              star = data[3]
+              style = data[4]
+              status = data[5]
+              appearance = data[6]
+              goal = data[7]
+              assist = data[8]
+              tackle = data[9]
+              save = data[10]
+              total_appearance = data[11]
+              total_goal = data[12]
+              total_assist = data[13]
+              total_tackle = data[14]
+              total_save = data[15]
+              locked = data[16]
+              card = Card(id, player, user, star, style, status, appearance, goal, assist, tackle, save, total_appearance, total_goal, total_assist, total_tackle, total_save, locked)
+              cards.append(card)
+        
+        cursor.close()
+        return cards
 
   def format(self):
+    return self.player.Position.ljust(3)+" " + self.getNameWithColor() + " " + str(self.overall) + " " + Const.STARS[self.star]["star"] + " " + self.getStyle() +  " " + self.printPrice() + " " + self.getStatus()
+
+  def getStatus(self):
     if self.status != 0:
       status = " (" + Const.STATUS[self.status] + ")"
+    elif self.locked:
+      status = " (已锁定)"
     else:
       status = ""
-    return self.player.Position.ljust(3)+" " + self.getNameWithColor() + " " + str(self.overall) + " " + Const.STARS[self.star]["star"] + " " + self.getStyle() + " " + status
+    return status
 
   def getStyle(self):
     styles = Const.GK_STYLE[self.style] if self.player.Position in Const.GOALKEEPER else Const.STYLE[self.style]
@@ -146,4 +217,31 @@ class Card:
       return str(real) + "/~g▼" + str(-diff)  + "/"
     else:
       return str(real) + "/~w" + "　" + "/"
-    
+
+  def printPrice(self):
+    return Card.formatPrice(self.price)
+  
+  def formatPrice(price):
+    if price >= 1000000:
+      price = price // 10000
+      return "$" + str(price) + "万"
+    elif price >= 100000:
+      price = format(price/10000, '.1f')
+      return "$" + str(price) + "万"
+    elif price >= 10000:
+      price = format(price/10000, '.2f')
+      return "$" + str(price) + "万"
+    return "$" + str(price)
+
+  # 返回(位置，能力)的列表
+  def getOveralls(self):
+    tmp = []
+    for position in Const.REAL_ABILITY.keys():
+      tmp.append((position, self.getRealOverall(position)))
+    tmp.sort(key = lambda x: x[1], reverse=True)
+    return tmp
+
+  def remove(self):
+    cursor = g_database.cursor()
+    cursor.execute("delete from cards where id = " + str(self.id))
+    cursor.close()

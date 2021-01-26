@@ -17,6 +17,7 @@ class Database:
 
     # 获取一个游标
     def cursor(self):
+      self.db.ping(reconnect=True)
       return self.db.cursor()
 
     # 更新数据库

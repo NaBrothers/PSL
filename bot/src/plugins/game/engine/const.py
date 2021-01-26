@@ -27,3 +27,14 @@ class Const:
         270: "左",
         315: "左前",
     }
+
+    # 比赛动作间隔
+    ACTION_DELAY = 30
+
+    # 打印间隔
+    PRINT_DELAY = 5
+
+    # 比赛模式
+    MODE_NORMAL = 0
+    MODE_QUICK = 1
+    MODE_LEAGUE = 2

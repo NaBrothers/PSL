@@ -20,43 +20,53 @@ class Const:
     # 星级
     STARS = { 1: {"star" : "★",
                   "ability" : 0,
-                  "cost" : 0
+                  "cost" : 0,
+                  "count" : 1
               },
               2: {"star" : "★×2",
                   "ability" : 1,
-                  "cost" : 200
+                  "cost" : 200,
+                  "count" : 2
               },
               3: {"star" : "★×3",
                   "ability" : 2,
-                  "cost" : 400
+                  "cost" : 400,
+                  "count" : 3
               },
               4: {"star" : "★×4",
                   "ability" : 4,
-                  "cost" : 600
+                  "cost" : 600,
+                  "count" : 5
               },
               5: {"star" : "★×5",
                   "ability" : 6,
-                  "cost" : 800
+                  "cost" : 800,
+                  "count" : 8
               },
               6: {"star" : "★×6",
                   "ability" : 8,
-                  "cost" : 1000
+                  "cost" : 1000,
+                  "count" : 13
               },
               7: {"star" : "★×7",
                   "ability" : 11,
-                  "cost" : 1200
+                  "cost" : 1200,
+                  "count" : 21
               },
               8: {"star" : "★×8",
                   "ability" : 14,
-                  "cost" : 1400
+                  "cost" : 1400,
+                  "count" : 34
               },
               9: {"star" : "★×9",
                   "ability" : 17,
-                  "cost" : 1600
+                  "cost" : 1600,
+                  "count" : 55
               },
               10: {"star" : "★×10",
                   "ability" : 21,
-                  "cost" : 1800
+                  "cost" : 1800,
+                  "count" : 89
               }
     }
 
@@ -74,7 +84,8 @@ class Const:
     # 状态
     STATUS = {0: "",
               1: "转会中",
-              2: "比赛中"}
+              2: "阵容中",
+              3: "已锁定"}
 
     # 特性
     STYLE = {
@@ -178,8 +189,8 @@ class Const:
       },
       "shadow": {
         "name" : "暗影",
-        "Finishing" : 3,
-        "Defence" : 3
+        "Defence" : 3,
+        "Speed" : 3
       },
       "speedster": {
         "name" : "疾速魔",
@@ -197,7 +208,7 @@ class Const:
       "bronzewall": {
         "name" : "铜墙",
           "GK_Saving" : 3,
-          "Long_Passing" : 2
+          "Long_Passing" : 3
       },
       "ironwall": {
         "name" : "铁壁",
@@ -223,26 +234,38 @@ class Const:
     FORMATION = {
       "442" : {
         "positions" : ["GK", "LB", "LCB", "RCB", "RB", "CDM", "LCM", "RCM", "CAM", "CF", "ST"],
-        "coordinates" : [(34,100),(14,72),(28,80),(42,80),(56,72),(34,66),(22,52),(44,52),(34,36),(22,20),(44,20)]
+        "coordinates" : [(34,100),(14,72),(28,80),(42,80),(56,72),(34,66),(22,52),(44,52),(34,36),(22,26),(44,20)]
       },
       "433" : {
         "positions" : ["GK", "LB", "LCB", "RCB", "RB", "LCM", "CM", "RCM", "LW", "ST", "RW"],
         "coordinates" : [(34,100),(14,72),(28,80),(42,80),(56,72),(22,52),(34,52),(44,52),(14,20),(34,20),(56,20)]
+      },
+      "343" : {
+        "positions" : ["GK", "LCB", "CB", "RCB", "LM", "LCM", "RCM", "RM", "LW", "ST", "RW"],
+        "coordinates" : [(34,100),(22,80),(34,80),(44,80),(14,52),(28,52),(42,52),(56,52),(14,20),(34,20),(56,20)]
+      },
+      "4231" : {
+        "positions" : ["GK", "LB", "LCB", "RCB", "RB", "LDM", "RDM", "LM", "RM", "CAM", "ST"],
+        "coordinates" : [(34,100),(14,72),(28,80),(42,80),(56,72),(34,66),(44,66),(14,44),(56,44),(34,36),(56,20)]
+      },
+      "352" : {
+        "positions" : ["GK", "LCB", "CB", "RCB", "LDM", "RDM", "LM", "RM", "CAM", "CF", "ST"],
+        "coordinates" : [(34,100),(22,80),(34,80),(44,80),(34,66),(44,66),(14,52),(56,52),(34,36),(22,26),(44,20)]
       }
     }
 
     # 真实能力
     REAL_ABILITY = {
       "ST" : {
-        "Heading" : 0.16,
-        "Long_Shot" : 0.05,
-        "Finishing" : 0.29,
+        "Heading" : 0.18,
+        "Long_Shot" : 0.1,
+        "Finishing" : 0.30,
         "Long_Passing" : 0,
-        "Short_Passing" : 0.08,
+        "Short_Passing" : 0.05,
         "Dribbling" : 0.27,
         "Tackling" : 0,
         "Defence" : 0,
-        "Speed" : 0.15
+        "Speed" : 0.1
       },
       "CF" : {
         "Heading" : 0.03,
@@ -337,4 +360,24 @@ class Const:
         "GK_Reaction" : 0.33,
         "GK_Positioning" : 0.33,
       }
+    }
+
+    ITEM = {
+      0 : {
+        "name" : "卡包",
+        "item" : {
+          0 : {
+            "name" : "新手"
+          },
+          1 : {
+            "name" : "初级"
+          },
+          2 : {
+            "name" : "中级"
+          },
+          3 : {
+            "name" : "高级"
+          },
+        },
+      },
     }
