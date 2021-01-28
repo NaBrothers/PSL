@@ -232,6 +232,8 @@ async def auto_update(user):
       if position == "GK" and sub_gk == -1:
         # 只有一个替补门将
         continue
+      if position == "GK" and sub_gk == False:
+        sub_gk = -1
       if sub == 1 and sub_gk == 0 and position != "GK":
         # 至少一个替补门将
         continue
