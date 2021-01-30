@@ -166,7 +166,7 @@ class Player:
     #   math.pow(1.1, math.pow(self.ability["GK_Positioning"], 1.5)/shoot_ability-shoot_place)*0.65
     success_rate = self.get_success_rate(self.ability["GK_Saving"], shoot_ability) *\
       self.get_success_rate(self.ability["GK_Positioning"]/6, shoot_place*10) *\
-      self.get_success_rate(self.ability["GK_Reaction"]/6 + distance - 30)
+      self.get_success_rate(self.ability["GK_Reaction"]/6 + distance, 30)
     rand = random.randint(0, int((success_rate + 1)*100))
     if rand < 100:
       return False
