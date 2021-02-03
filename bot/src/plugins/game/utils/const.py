@@ -381,3 +381,210 @@ class Const:
         },
       },
     }
+
+    DIFFICULTY = {
+      "简单": {
+        "star" : 1,
+        "award" : {
+          "win" : {
+            "money" : 500,
+            "item" : {
+              0 : {
+                1 : 2,
+              },
+            }
+            
+          },
+          "tie" : {
+            "money" : 250,
+            "item" : {
+              0 : {
+                1 : 1,
+              },
+            }
+            
+          },
+        },
+      },
+      "一般": {
+        "star" : 3,
+        "award" : {
+          "win" : {
+            "money" : 1000,
+            "item" : {
+              0 : {
+                1 : 4,
+              },
+            },
+          },
+          "tie" : {
+            "money" : 500,
+            "item" : {
+              0 : {
+                1 : 2,
+              },
+            }
+            
+          },
+        },
+      },
+      "困难": {
+        "star" : 5,
+        "award" : {
+          "win" : {
+            "money" : 1000,
+            "item" : {
+              0 : {
+                1 : 2,
+                2 : 2,
+              },
+            },
+          },
+          "tie" : {
+            "money" : 500,
+            "item" : {
+              0 : {
+                1 : 1,
+                2 : 1,
+              },
+            },
+          },
+        },
+      },
+      "噩梦": {
+        "star" : 6,
+        "award" : {
+          "win" : {
+            "money" : 1500,
+            "item" : {
+              0 : {
+                2 : 4,
+              },
+            },            
+          },
+          "tie" : {
+            "money" : 750,
+            "item" : {
+              0 : {
+                2 : 2,
+              },
+            },
+          },
+        },
+      },
+      "地狱": {
+        "star" : 7,
+        "award" : {
+          "win" : {
+            "money" : 3000,
+            "item" : {
+              0 : {
+                2 : 2,
+                3 : 1,
+              },
+            },            
+          },
+          "tie" : {
+            "money" : 250,
+            "item" : {
+              0 : {
+                3 : 1,
+              },
+            },            
+          },
+        },
+      },
+      "炼狱": {
+        "star" : 8,
+        "award" : {
+          "win" : {
+            "money" : 5000,
+            "item" : {
+              0 : {
+                3 : 2,
+              },
+            },            
+          },
+          "tie" : {
+            "money" : 2500,
+            "item" : {
+              0 : {
+                3 : 1,
+              },
+            },            
+          },
+        },
+      },
+    }
+
+    NPC_STYLE = {
+      "ST" : "finisher", 
+      "RW" : "deadeye", 
+      "RS" : "finisher", 
+      "LW" : "deadeye", 
+      "CF" : "sniper", 
+      "LS" : "finisher", 
+      "LF" : "sniper", 
+      "RF" : "sniper",
+
+      "RM" : "catalyst", 
+      "LM" : "catalyst", 
+      "LCM" : "artist", 
+      "CM" : "artist", 
+      "CDM" : "powerhous",
+      "CAM" : "maestro", 
+      "RAM" : "maestro", 
+      "RCM" : "artist", 
+      "LDM" : "powerhous", 
+      "LAM" : "maestro", 
+      "RDM" : "powerhous",
+
+      "RB" : "shadow", 
+      "CB" : "powerhous", 
+      "LB" : "shadow", 
+      "RCB" : "powerhous", 
+      "RWB" : "shadow", 
+      "LCB" : "powerhous", 
+      "LWB" : "shadow",
+
+      "GK" : "gloves",
+    }
+
+    NPC = [
+      {
+        "name" : "FC Barcelona",
+        "formation" : "433",
+        "players" : [
+          192448,
+          189332,
+          220440,
+          152729,
+          199564,
+          180206,
+          189511,
+          228702,
+          194765,
+          158023,
+          231443
+        ]
+      },
+      {
+        "name" : "Bayern München",
+        "formation" : "4231",
+        "players" : [
+          167495,
+          234396,
+          197445,
+          212190,
+          226851,
+          209658,
+          212622,
+          206113,
+          222492,
+          189596,
+          188545
+        ]
+      },
+    ]
+
+    TIMES_EVERYDAY = 5

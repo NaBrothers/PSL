@@ -12,7 +12,7 @@ import time
 
 class Game:
 
-    def __init__(self, matcher, user1, user2):
+    def __init__(self, matcher, user1, user2, npc=-1, difficulty=0):
         # bot回调函数
         self.matcher = matcher
         # 当前回合
@@ -22,7 +22,7 @@ class Game:
         # 进攻方
         self.offence = Team(user1)
         # 防守方
-        self.defence = Team(user2)
+        self.defence = Team(user2, npc, difficulty)
         # 主队
         self.home = self.offence
         # 客队

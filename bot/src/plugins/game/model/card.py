@@ -136,6 +136,11 @@ class Card:
       status = ""
     return status
 
+  def printID(self):
+    if self.id == 0:
+      return ""
+    return "[" + str(self.id) + "]"
+
   def getStyle(self):
     styles = Const.GK_STYLE[self.style] if self.player.Position in Const.GOALKEEPER else Const.STYLE[self.style]
     return styles["name"]
