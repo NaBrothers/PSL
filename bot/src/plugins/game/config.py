@@ -4,7 +4,7 @@ from pydantic import BaseSettings
 HOSTNAME="127.0.0.1"
 USERNAME="navi"
 PASSWORD="woshinaiwei"
-DBNAME="bot_debug"
+DBNAME="bot"
 
 # 项目文件夹
 PROJECT_DIR="/home/admin/PSL"

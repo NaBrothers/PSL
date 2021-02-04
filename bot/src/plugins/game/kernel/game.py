@@ -66,5 +66,9 @@ async def game_matcher_handler(bot: Bot, event: Event, state: dict):
     if mode != 1:
         await game_matcher.send("开始比赛", **{"at_sender": True})
     g_server.set("in_game", True)
-    await game.start(mode)
-    g_server.set("in_game", False)
+    try:
+      await game.start(mode)
+    except Exception as e:
+      print(e)
+    finally:
+      g_server.set("in_game", False)
