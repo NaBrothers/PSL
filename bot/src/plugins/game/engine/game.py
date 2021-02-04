@@ -37,7 +37,8 @@ class Game:
         # self.display = Display()
         # 打印过程
         self.print_str = ""
-
+        # 四元组(时间，队伍，进球者，助攻者)
+        self.timeline = []
         self.mode = Const.MODE_NORMAL
 
     # 比赛主逻辑
@@ -81,12 +82,43 @@ class Game:
         self.mode = Const.MODE_NORMAL
         self.home.getStats()
         self.away.getStats()
-        self.print_str += "终场比分：\n" + "主 " + self.home.coach.name + " " + \
+
+        self.print_str += "[终场比分]\n" 
+        self.print_str += "主 " + self.home.coach.name + " " + \
             str(self.home.point) + ":" + str(self.away.point) + \
-            " " + self.away.coach.name + " 客\n"
+            " " + self.away.coach.name + " 客\n\n"
+
+        if self.timeline:
+            self.print_str += "[比赛事件]\n"
+            maxLen = -1
+            for case in self.timeline:
+              if case[1] == self.home:
+                maxLen = max(maxLen,len(case[2].getName()))
+                if case[3] != None:
+                  maxLen = max(maxLen,len(case[3].getName()))
+            maxLen = max(maxLen, 8)
+            print(maxLen)
+            for case in self.timeline:
+                if case[1] == self.home:
+                    self.print_str += case[2].getName().rjust(maxLen) + "  进球"
+                    self.print_str += "  " + str(str(case[0]) + "'").ljust(3)
+                    if case[3] != None:
+                        self.print_str += "\n"
+                        self.print_str += case[3].getName().rjust(maxLen) + "  助攻"
+                else:
+                    self.print_str += "".ljust(maxLen+4) + str(case[0]) + "'  "
+                    self.print_str += "进球  " + case[2].getName()
+                    if case[3] != None:
+                        self.print_str += "\n"
+                        self.print_str += "".ljust(maxLen+9) + "助攻  " + case[3].getName()
+                
+                self.print_str += "\n\n"
+      
+        if self.home.goals_detailed or self.away.goals_detailed:
+            self.print_str += "[进球统计]\n"
 
         if self.home.goals_detailed:
-            self.print_str += "主队进球：\n"
+            self.print_str += "主队：\n"
             for item in self.home.goals_detailed:
                 self.print_str += item[0] + " ("
                 for i in item[1]:
@@ -95,7 +127,7 @@ class Game:
                 self.print_str += ")\n"
 
         if self.away.goals_detailed:
-            self.print_str += "客队进球：\n"
+            self.print_str += "客队：\n"
             for item in self.away.goals_detailed:
                 self.print_str += item[0] + " ("
                 for i in item[1]:
@@ -103,6 +135,10 @@ class Game:
                 self.print_str = self.print_str[:-2]
                 self.print_str += ")\n"
 
+        if self.home.goals_detailed or self.away.goals_detailed:
+            self.print_str += "\n"
+
+        self.print_str += "[数据统计]\n"
         self.print_str += "控球率：" + str(round(self.home.control*100/(self.home.control+self.away.control), 1)) + \
             "%:" + str(round(self.away.control*100 /
                              (self.home.control+self.away.control), 1)) + "%\n"
@@ -213,6 +249,7 @@ class Game:
                     self.ball_holder.goals_detailed.append(self.getTime())
                     if self.assister:
                       self.assister.assists += 1
+                    self.timeline.append((self.getTime(), self.offence, self.ball_holder, self.assister))
                     self.swap()
                     self.resetPosition()
                     self.changeBallHolderToOpen()
@@ -352,6 +389,7 @@ class Game:
                                     self.getTime())
                                 if self.assister:
                                   self.assister.assists += 1
+                                self.timeline.append((self.getTime(), self.offence, self.ball_holder, self.assister))
                                 self.swap()
                                 self.resetPosition()
                                 self.changeBallHolderToOpen()
