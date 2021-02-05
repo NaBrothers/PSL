@@ -96,21 +96,20 @@ class Game:
                 maxLen = max(maxLen,len(case[2].getName()))
                 if case[3] != None:
                   maxLen = max(maxLen,len(case[3].getName()))
-            maxLen = max(maxLen, 8)
-            print(maxLen)
+            maxLen = max(maxLen+2, 8)
             for case in self.timeline:
                 if case[1] == self.home:
-                    self.print_str += case[2].getName().rjust(maxLen) + "  进球"
+                    self.print_str += case[2].getName().rjust(maxLen) + "   ⚽ "
                     self.print_str += "  " + str(str(case[0]) + "'").ljust(3)
                     if case[3] != None:
                         self.print_str += "\n"
-                        self.print_str += case[3].getName().rjust(maxLen) + "  助攻"
+                        self.print_str += str("(" + case[3].getName() + ")").rjust(maxLen)
                 else:
                     self.print_str += "".ljust(maxLen+4) + str(case[0]) + "'  "
-                    self.print_str += "进球  " + case[2].getName()
+                    self.print_str += " ⚽   " + case[2].getName()
                     if case[3] != None:
                         self.print_str += "\n"
-                        self.print_str += "".ljust(maxLen+9) + "助攻  " + case[3].getName()
+                        self.print_str += "".ljust(maxLen+9) + "      (" + case[3].getName() + ")"
                 
                 self.print_str += "\n\n"
       
