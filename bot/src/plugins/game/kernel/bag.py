@@ -15,7 +15,7 @@ user_bag = on_startswith(msg="背包", rule=to_me(), priority=1)
 return_text = '''背包 [页码]：跳转到指定页
 背包 查询 [球员名]：查找同名球员卡
 背包 回收 [ID]：按身价一半出售给系统，可以同时指明多个ID
-背包 回收 [SQL]：自定义回收（支持字段 id, name, overall, star）
+背包 回收 高级 [SQL]：自定义回收（支持字段 id, name, overall, star）
 背包 回收 快速：快速回收白色和绿色的单卡
 '''
 
@@ -34,14 +34,14 @@ async def user_bag_handler(bot: Bot, event: Event, state: dict):
         else:
             await user_bag.finish("格式错误！"+toImage(return_text), **{"at_sender": True})
             return
-    elif arg[1] == "回收":
-      if arg[2].isdecimal():
-        await recycle_cards(user,bag, arg[2:])
-      elif len(arg) == 3 and arg[2] == "快速":
-        await recycle_cards_sql(user, bag, "overall < 84 and star = 1")
-      else:
-        msg = str(event.message).split(" ", 2)[2]
-        await recycle_cards_sql(user, bag, msg)
+    elif len(arg) >= 3 and arg[1] == "回收":  
+        if len(arg) > 3 and arg[2] == "快速":
+            await recycle_cards_sql(user, bag, "overall < 84 and star = 1")
+        elif len(arg) > 3 and arg[2] == "高级":
+            msg = str(event.message).split(" ", 3)[3]
+            await recycle_cards_sql(user, bag, msg)
+        else:
+            await recycle_cards(user,bag, arg[2:])
     else:
         await user_bag.finish("格式错误！"+toImage(return_text), **{"at_sender": True})
         
