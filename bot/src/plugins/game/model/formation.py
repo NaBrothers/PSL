@@ -3,7 +3,7 @@ from game.model.card import Card
 from game.utils.database import *
 
 class Formation():
-  PLAYERS_COUNT = 17
+  PLAYERS_COUNT = 11
 
   def __init__(self, data:list):
     self.user = User.getUserByQQ(data[0][1])

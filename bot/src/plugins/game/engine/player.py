@@ -117,7 +117,7 @@ class Player:
   # 射门-持球行为
   def shooting(self):
     distance = self.get_distance(Const.WIDTH / 2, 0)
-    shoot_ability = self.ability["Finishing"] if distance < 20 else self.ability["Long_Shot"]
+    shoot_ability = self.ability["Finishing"] if distance < 25 else self.ability["Long_Shot"]
     miss_rate = distance/shoot_ability
     miss_rate = miss_rate/(miss_rate + 1)
     random_min = (Const.LEFT_GOALPOST - Const.GOAL_WIDTH * miss_rate / 2) * 100
@@ -211,10 +211,12 @@ class Player:
   # 获取射门能力值
   def get_shooting_ability(self, shoot_x):
     distance = self.get_distance(shoot_x, 0)
-    if distance < 20:
+    if distance <= 20:
       return self.ability["Finishing"]
-    else:
+    elif distance >= 30:
       return self.ability["Long_Shot"]
+    else:
+      return self.ability["Finishing"] * (30 - distance) / 10 + self.ability["Long_Shot"] * (distance - 20) / 10
 
   # 获得传球能力值
   def get_passing_ability(self, player):

@@ -135,8 +135,8 @@ async def show_team(user):
               overall = card.overall
               ret += str(overall).ljust(3) + "  [" + str(card.id) + "] " + card.getNameWithColor() + " "  + Const.STARS[card.star]["star"] + " " + card.getStyle()
         ret += "\n"
-        if i == 10:
-            ret += "===== 替补 =====\n"
+        # if i == 10:
+        #     ret += "===== 替补 =====\n"
     await get_team.finish("当前阵容：\n" + toImage(ret + error_text), **{'at_sender': True})
 
 async def show_others(id):
