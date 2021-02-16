@@ -35,7 +35,7 @@ async def user_bag_handler(bot: Bot, event: Event, state: dict):
             await user_bag.finish("格式错误！"+toImage(return_text), **{"at_sender": True})
             return
     elif len(arg) >= 3 and arg[1] == "回收":  
-        if len(arg) > 3 and arg[2] == "快速":
+        if len(arg) == 3 and arg[2] == "快速":
             await recycle_cards_sql(user, bag, "overall < 84 and star = 1")
         elif len(arg) > 3 and arg[2] == "高级":
             msg = str(event.message).split(" ", 3)[3]

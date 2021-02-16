@@ -45,9 +45,9 @@ async def game_matcher_handler(bot: Bot, event: Event, state: dict):
 
     user1 = User.getUserByQQ(event.user_id)
     formation1 = Formation.getFormation(user1)
-    if str_id == str(user1.id):
-        await game_matcher.finish("请不要挑战自己！", **{"at_sender": True})
-        return
+    # if str_id == str(user1.id):
+    #     await game_matcher.finish("请不要挑战自己！", **{"at_sender": True})
+    #     return
     if not formation1.isValid():
         await game_matcher.finish("阵容不完整！", **{"at_sender": True})
         return
