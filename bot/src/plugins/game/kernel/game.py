@@ -12,6 +12,7 @@ game_matcher = on_startswith(msg="比赛", rule=to_me(), priority=1)
 
 return_text = '''比赛 ID：挑战对手
 比赛 快速 ID：只显示比赛结果
+比赛 十连 ID：挑战十次对手
 阵容 ID：查看对手阵容
 '''
 
@@ -34,8 +35,12 @@ async def game_matcher_handler(bot: Bot, event: Event, state: dict):
         await game_matcher.finish(toImage(ret), **{"at_sender": True})
         return
 
+
     if len(args) == 3 and args[1] == "快速" and args[2].isdecimal():
         mode = 1
+        str_id = args[2]
+    elif len(args) == 3 and args[1] == "十连" and args[2].isdecimal():
+        mode = 3
         str_id = args[2]
     elif len(args) == 2 and args[1].isdecimal():
         str_id = args[1]
@@ -62,13 +67,42 @@ async def game_matcher_handler(bot: Bot, event: Event, state: dict):
     if not formation2.isValid():
         await game_matcher.finish("对手阵容不完整！", **{"at_sender": True})
         return
+
+    
+
+    if mode == 3:
+      g_server.set("in_game", True)
+      ret = "[十连结果]\n"
+      home_goal = 0
+      away_goal = 0
+      win = 0
+      tie = 0
+      lose = 0
+      for i in range(10):
+        game = Game(game_matcher, user1, user2)
+        await game.start(mode)
+        ret += "主 " + game.home.coach.name + " " + str(game.home.goals) + ":" + str(game.away.goals) + " " + game.away.coach.name + " 客\n"
+        home_goal += game.home.goals
+        away_goal += game.away.goals
+        if game.home.goals > game.away.goals:
+          win += 1
+        elif game.home.goals < game.away.goals:
+          lose += 1
+        else:
+          tie += 1
+      ret += "[数据统计]\n"
+      ret += "总比分："  + str(home_goal) + ":" + str(away_goal) + "\n"
+      ret += "赛果：" + str(win) + "胜" + str(tie) + "平" + str(lose) + "负\n"
+      ret += "胜率：" + str(round(win*100/10, 1)) + "%:" + str(round(lose*100/10, 1)) + "%\n"
+      g_server.set("in_game", False)
+      await game_matcher.finish(toImage(ret), **{"at_sender": True})
+
     game = Game(game_matcher, user1, user2)
-    if mode != 1:
-        await game_matcher.send("开始比赛", **{"at_sender": True})
+
     g_server.set("in_game", True)
     try:
-      await game.start(mode)
+        await game.start(mode)
     except Exception as e:
-      print(e)
+        print(e)
     finally:
-      g_server.set("in_game", False)
+        g_server.set("in_game", False)

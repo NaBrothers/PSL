@@ -38,3 +38,4 @@ class Const:
     MODE_NORMAL = 0
     MODE_QUICK = 1
     MODE_LEAGUE = 2
+    MODE_SILENCE = 3

@@ -53,7 +53,7 @@ class Game:
                 self.printCase("上半场结束")
             await self.send(self.print_str)
             self.print_str = ""
-            if self.mode != Const.MODE_QUICK:
+            if self.mode != Const.MODE_QUICK and self.mode != Const.MODE_SILENCE:
                 time.sleep(Const.PRINT_DELAY)
         self.half = "下半时"
         self.time = 0
@@ -67,23 +67,25 @@ class Game:
                 self.printCase("下半场结束")
             await self.send(self.print_str)
             self.print_str = ""
-            if self.mode != Const.MODE_QUICK:
+            if self.mode != Const.MODE_QUICK and self.mode != Const.MODE_SILENCE:
                 time.sleep(Const.PRINT_DELAY)
 
         stats = await self.printStats()
         return stats
 
     async def send(self, str):
-        if self.mode == Const.MODE_QUICK:
+        if self.mode == Const.MODE_QUICK or self.mode == Const.MODE_SILENCE:
             return
         await self.matcher.send(toImage(str))
 
     async def printStats(self):
-        self.mode = Const.MODE_NORMAL
         self.home.getStats()
         self.away.getStats()
 
-        self.print_str += "[终场比分]\n" 
+        if self.mode == Const.MODE_SILENCE:
+            return
+
+        self.print_str += "[终场比分]\n"
         self.print_str += "主 " + self.home.coach.name + " " + \
             str(self.home.point) + ":" + str(self.away.point) + \
             " " + self.away.coach.name + " 客\n\n"
@@ -92,10 +94,10 @@ class Game:
             self.print_str += "[比赛事件]\n"
             maxLen = -1
             for case in self.timeline:
-              if case[1] == self.home:
-                maxLen = max(maxLen,len(case[2].getName()))
-                if case[3] != None:
-                  maxLen = max(maxLen,len(case[3].getName()))
+                if case[1] == self.home:
+                    maxLen = max(maxLen, len(case[2].getName()))
+                    if case[3] != None:
+                        maxLen = max(maxLen, len(case[3].getName()))
             maxLen = max(maxLen+2, 8)
             for case in self.timeline:
                 if case[1] == self.home:
@@ -103,16 +105,18 @@ class Game:
                     self.print_str += "  " + str(str(case[0]) + "'").ljust(3)
                     if case[3] != None:
                         self.print_str += "\n"
-                        self.print_str += str("(" + case[3].getName() + ")").rjust(maxLen)
+                        self.print_str += str("(" +
+                                              case[3].getName() + ")").rjust(maxLen)
                 else:
                     self.print_str += "".ljust(maxLen+4) + str(case[0]) + "'  "
                     self.print_str += " ⚽   " + case[2].getName()
                     if case[3] != None:
                         self.print_str += "\n"
-                        self.print_str += "".ljust(maxLen+9) + "      (" + case[3].getName() + ")"
-                
+                        self.print_str += "".ljust(maxLen+9) + \
+                            "      (" + case[3].getName() + ")"
+
                 self.print_str += "\n\n"
-      
+
         if self.home.goals_detailed or self.away.goals_detailed:
             self.print_str += "[进球统计]\n"
 
@@ -247,8 +251,9 @@ class Game:
                     self.ball_holder.goals += 1
                     self.ball_holder.goals_detailed.append(self.getTime())
                     if self.assister:
-                      self.assister.assists += 1
-                    self.timeline.append((self.getTime(), self.offence, self.ball_holder, self.assister))
+                        self.assister.assists += 1
+                    self.timeline.append(
+                        (self.getTime(), self.offence, self.ball_holder, self.assister))
                     self.swap()
                     self.resetPosition()
                     self.changeBallHolderToOpen()
@@ -367,12 +372,12 @@ class Game:
                             Const.WIDTH / 2, 0)
                         rand = random.randint(
                             0, int(roll_winner.ability["Heading"] + distance_goal * 10))
-                        if rand < roll_winner.ability["Heading"] and distance_goal < 16:
+                        if rand < roll_winner.ability["Heading"] and distance_goal < 25:
                             case = Display.print_high_shot(roll_winner)
                             self.printCase(case)
                             gk = self.getDefenceGK()
                             if distance_goal < 25 and \
-                                    random.randint(0, int(5 * gk.ability["GK"] * (25 - distance_goal))) > 25 * roll_winner.ability["Heading"]:
+                                    random.randint(0, int(5 * gk.ability["GK_Saving"] * (25 - distance_goal))) > 25 * roll_winner.ability["Heading"]:
                                 case = Display.print_saving(gk)
                                 self.printCase(case)
                                 gk.saves += 1
@@ -387,8 +392,9 @@ class Game:
                                 roll_winner.goals_detailed.append(
                                     self.getTime())
                                 if self.assister:
-                                  self.assister.assists += 1
-                                self.timeline.append((self.getTime(), self.offence, self.ball_holder, self.assister))
+                                    self.assister.assists += 1
+                                self.timeline.append(
+                                    (self.getTime(), self.offence, self.ball_holder, self.assister))
                                 self.swap()
                                 self.resetPosition()
                                 self.changeBallHolderToOpen()
@@ -589,8 +595,9 @@ class Game:
         second = self.time % 60
         lines = case.split("\n")
         for line in lines:
-            print("主" + str(self.home.point) + ":" + str(self.away.point) +
-                  "客 " + self.half + str(minute) + ":" + str(second) + " " + line)
+            if self.mode != Const.MODE_QUICK and self.mode != Const.MODE_SILENCE:
+                print("主" + str(self.home.point) + ":" + str(self.away.point) +
+                      "客 " + self.half + str(minute) + ":" + str(second) + " " + line)
             self.print_str += "主" + str(self.home.point) + ":" + str(self.away.point) + \
                 "客 " + self.half + str(minute) + ":" + \
                 str(second) + " " + line + "\n"
