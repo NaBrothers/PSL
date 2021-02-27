@@ -153,7 +153,7 @@ async def player_upgrade(user, id1, id2):
     if card1 == None or card1.user.qq != user.qq:
         await player_menu.finish("找不到主卡！", **{"at_sender": True})
         return
-    if card2 == None or card1.user.qq != user.qq:
+    if card2 == None or card2.user.qq != user.qq:
         await player_menu.finish("找不到副卡！", **{"at_sender": True})
         return
     ret = ""
