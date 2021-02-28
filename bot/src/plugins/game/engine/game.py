@@ -394,7 +394,7 @@ class Game:
                                 if self.assister:
                                     self.assister.assists += 1
                                 self.timeline.append(
-                                    (self.getTime(), self.offence, self.ball_holder, self.assister))
+                                    (self.getTime(), self.offence, roll_winner, self.assister))
                                 self.swap()
                                 self.resetPosition()
                                 self.changeBallHolderToOpen()
