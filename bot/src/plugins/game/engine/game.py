@@ -237,7 +237,7 @@ class Game:
                             self.changeBallHolder(def_player)
                             return
                     gk = self.getDefenceGK()
-                    if gk.saving(shoot, self.ball_holder.get_distance(shoot_x, 0), math.fabs(shoot_x-Const.WIDTH/2)):
+                    if gk.saving(shoot, self.ball_holder.get_distance(shoot_x, 0), math.fabs(shoot_x-Const.WIDTH/2)) and gk.y < self.ball_holder.y:
                         case = Display.print_saving(gk)
                         self.printCase(case)
                         gk.saves += 1
@@ -377,7 +377,8 @@ class Game:
                             self.printCase(case)
                             gk = self.getDefenceGK()
                             if distance_goal < 25 and \
-                                    random.randint(0, int(5 * gk.ability["GK_Saving"] * (25 - distance_goal))) > 25 * roll_winner.ability["Heading"]:
+                                    random.randint(0, int(5 * gk.ability["GK_Saving"] * (25 - distance_goal))) > 25 * roll_winner.ability["Heading"] and \
+                                        gk.y < roll_winner.y:
                                 case = Display.print_saving(gk)
                                 self.printCase(case)
                                 gk.saves += 1
