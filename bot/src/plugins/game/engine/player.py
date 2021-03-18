@@ -17,6 +17,7 @@ class Player:
     :param action_flag: 行动标记
     """
     self.name = card.getNameWithColor()
+    self.card = card
     self.coach = coach
     self.position = position
     # 格式 ability["Short_Passing"] 具体请看Card
@@ -264,5 +265,7 @@ class Player:
       return Const.LENGTH
     return y
 
-  def getName(self):
-    return self.position + " " + self.name
+  def getName(self, color = True):
+    if color:
+      return self.position + " " + self.name
+    return self.card.player.Name
