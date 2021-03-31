@@ -19,6 +19,8 @@ return_text = ""
 async def try_lottery_handler(bot: Bot, event: Event, state: dict):
     user = await check_account(try_lottery,event)
     args = str(event.message).split(" ")
+    if args[0] != "抽卡":
+      return
     global return_text
     return_text = get_award(user)
     if len(args) == 1:
