@@ -35,17 +35,20 @@ award_text = '''赛季奖励：
 失败：$1000 + 初级球员卡包*5
 进球奖励：$100每球（上限$500）
 ===== 赛季奖励 =====
-冠军：$14000 + 高级球员卡包*2
-亚军：$13000 + 高级球员卡包*1
-季军：$12000 + 中级球员卡包*2
-殿军：$11000 + 中级球员卡包*1
-其他名次：(15-名次)*1000
-副班长：高级球员卡包*1（安慰奖）
+冠军：$12000*5 + 高级球员卡包*5 + 中级球员卡包*20
+亚军：$11000*5 + 高级球员卡包*3 + 中级球员卡包*20
+季军：$10000*5 + 高级球员卡包*1 + 中级球员卡包*20
+殿军：$9000*5 + 中级球员卡包*20
+第五名：$8000*5 + 中级球员卡包*15
+第六名：$7000*5 + 中级球员卡包*10
+第七名：$6000*5 + 中级球员卡包*5
+其他名次：(13-名次)*1000*5
+副班长：高级球员卡包*2（安慰奖）
 ===== 单项奖励 =====
-金靴：$5000 + 中级球员卡包*2
-助攻王：$5000 + 中级球员卡包*2
-抢断王：$5000 + 中级球员卡包*2
-金手套：$5000 + 中级球员卡包*2
+金靴：$5000*5 + 中级球员卡包*10
+助攻王：$5000*5 + 中级球员卡包*10
+抢断王：$5000*5 + 中级球员卡包*10
+金手套：$5000*5 + 中级球员卡包*10
 '''
 @league_matcher.handle()
 async def league_matcher_handler(bot: Bot, event: Event, state: dict):
@@ -230,30 +233,60 @@ async def get_award(league, cur_user, winners):
     text = "赛季已结束，获得以下奖励：\n"
     text += "===== 第" + str(i+1) + "名 =====\n"
     user = league.entries[i].user
-    award_money = (14-i)*1000
+    award_money = (12-i)*1000*5
     text += "球币：$" + str(award_money) + "\n"
-    user.earn((14-i)*1000)
+    user.earn((12-i)*1000*5)
     if i == 0:
       award_card = 3
-      award_count = 2
+      award_count = 5
+      Item.addItem(user, 0, award_card, award_count)
+      text += g_pool[Const.ITEM[0]["item"][award_card]["name"]]["name"] + "*" + str(award_count) + "\n"
+      
+      award_card = 2
+      award_count = 20
       Item.addItem(user, 0, award_card, award_count)
       text += g_pool[Const.ITEM[0]["item"][award_card]["name"]]["name"] + "*" + str(award_count) + "\n"
     elif i == 1:
       award_card = 3
-      award_count = 1
+      award_count = 3
+      Item.addItem(user, 0, award_card, award_count)
+      text += g_pool[Const.ITEM[0]["item"][award_card]["name"]]["name"] + "*" + str(award_count) + "\n"
+      
+      award_card = 2
+      award_count = 20
       Item.addItem(user, 0, award_card, award_count)
       text += g_pool[Const.ITEM[0]["item"][award_card]["name"]]["name"] + "*" + str(award_count) + "\n"
     elif i == 2:
+      award_card = 3
+      award_count = 1
+      Item.addItem(user, 0, award_card, award_count)
+      text += g_pool[Const.ITEM[0]["item"][award_card]["name"]]["name"] + "*" + str(award_count) + "\n"
+      
       award_card = 2
-      award_count = 2
+      award_count = 20
       Item.addItem(user, 0, award_card, award_count)
       text += g_pool[Const.ITEM[0]["item"][award_card]["name"]]["name"] + "*" + str(award_count) + "\n"
     elif i == 3:
       award_card = 2
-      award_count = 1
+      award_count = 20
       Item.addItem(user, 0, award_card, award_count)
       text += g_pool[Const.ITEM[0]["item"][award_card]["name"]]["name"] + "*" + str(award_count) + "\n"
-    elif i == len(league.entries) - 1:
+    elif i == 4:
+      award_card = 2
+      award_count = 15
+      Item.addItem(user, 0, award_card, award_count)
+      text += g_pool[Const.ITEM[0]["item"][award_card]["name"]]["name"] + "*" + str(award_count) + "\n"
+    elif i == 5:
+      award_card = 2
+      award_count = 10
+      Item.addItem(user, 0, award_card, award_count)
+      text += g_pool[Const.ITEM[0]["item"][award_card]["name"]]["name"] + "*" + str(award_count) + "\n"
+    elif i == 6:
+      award_card = 2
+      award_count = 5
+      Item.addItem(user, 0, award_card, award_count)
+      text += g_pool[Const.ITEM[0]["item"][award_card]["name"]]["name"] + "*" + str(award_count) + "\n"
+    if i == len(league.entries) - 1:
       award_card = 3
       award_count = 1
       Item.addItem(user, 0, award_card, award_count)
@@ -262,11 +295,11 @@ async def get_award(league, cur_user, winners):
 
   for winner,prize in winners:
       award[winner.user.qq] += "===== " + prize + " =====\n"
-      award_money = 5000
+      award_money = 5000*5
       winner.user.earn(award_money)
       award[winner.user.qq] += "球币：$" + str(award_money) + "\n"
       award_card = 2
-      award_count = 2
+      award_count = 10
       Item.addItem(winner.user, 0, award_card, award_count)
       award[winner.user.qq] += g_pool[Const.ITEM[0]["item"][award_card]["name"]]["name"] + "*" + str(award_count) + "\n"
   

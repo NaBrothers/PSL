@@ -14,9 +14,9 @@ from queue import PriorityQueue
 get_team = on_startswith(msg="阵容", rule=to_me(), priority=1)
 
 error_text = '''阵容 自动：按能力值自动更新阵容
-阵容 ID：查看其他玩家阵容
-阵容 替换 球员1 球员2：替换两名球员
-阵容 更改 阵型：更改其他阵型（支持阵型：442、433、343、4231、352）
+阵容 [ID]：查看其他玩家阵容
+阵容 替换 [球员1] [球员2]：替换两名球员
+阵容 更改 [阵型]：更改其他阵型（442、433、343、4231、352）
 '''
 
 
@@ -135,8 +135,8 @@ async def show_team(user):
               overall = card.overall
               ret += str(overall).ljust(3) + "  [" + str(card.id) + "] " + card.getNameWithColor() + " "  + Const.STARS[card.star]["star"] + " " + card.getStyle()
         ret += "\n"
-        if i == 10:
-            ret += "===== 替补 =====\n"
+        # if i == 10:
+        #     ret += "===== 替补 =====\n"
     await get_team.finish("当前阵容：\n" + toImage(ret + error_text), **{'at_sender': True})
 
 async def show_others(id):

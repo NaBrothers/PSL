@@ -7,7 +7,7 @@ import random
 os.makedirs(PROJECT_DIR + "/cqhttp/data/images/text2image/", exist_ok=True)
 
 class TextToImage:
-  LINE_CHAR_COUNT = 50*2  # 每行最大字符数：30个中文字符(=60英文字符)
+  LINE_CHAR_COUNT = 100*2  # 每行最大字符数：30个中文字符(=60英文字符)
   CHAR_SIZE = 20 # 字号
   TABLE_WIDTH = 4
 
@@ -92,6 +92,22 @@ class TextToImage:
   def toImage(text):
     if text == "":
       return text
+
+    items = text.split("/")
+    for i, item in enumerate(items):
+      if item == "":
+        continue
+      if item[0] == '~' and item[1] == '$':
+        item = item[2:]
+        colors = ["r", "o", "p", "b", "f", "g"]
+        ret = ""
+        for j, char in enumerate(item):
+          ret += "/~"
+          ret += colors[j%6]
+          ret += char
+        items[i] = ret
+    text = "/".join(items)
+
     path = PROJECT_DIR + "/cqhttp/data/images/text2image/"
     filename = str(hash(text)) + ".png"
     

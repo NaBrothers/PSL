@@ -1,30 +1,31 @@
 from game.model.user import User
 from game.model.card import Card
 from game.utils.database import *
+from game.utils.const import Const
+from game.model.player import Player
 
-class Formation():
+class NpcFormation():
   PLAYERS_COUNT = 11
 
-  def __init__(self, data:list):
-    self.user = User.getUserByQQ(data[0][1])
-    self.cards = [Card.getCardByID(i[2]) for i in data]
-    self.formation = self.user.formation
-    self.coordinates = Const.FORMATION[self.formation]["coordinates"]
+  def __init__(self, npc, difficulty):
+    normalized_npc = Const.NPC[npc % len(Const.NPC)]
+    star = Const.DIFFICULTY[difficulty]["star"]
 
-  def getFormation(user):
-      cursor = g_database.cursor()
-      count = cursor.execute("select * from team where user = " + str(user.qq) + " order by position;")
-      if (count == 0):
-          for i in range(Formation.PLAYERS_COUNT):
-            cursor.execute("insert into team (user, card, position) values (" + str(user.qq) + "," + str(0) + "," + str(i) + ");")
-          return Formation.getFormation(user)
-      else:
-          team = Formation(cursor.fetchall())
-      cursor.close()
-      return team
+    self.name = normalized_npc["name"]
+    self.formation = normalized_npc["formation"]
+    self.coordinates = Const.FORMATION[self.formation]["coordinates"]
+    positions = Const.FORMATION[self.formation]["positions"]
+    self.cards = [
+      Card.new(
+        Player.getPlayerByID(normalized_npc["players"][i]),
+        0,
+        star,
+        Const.NPC_STYLE[positions[i]],
+        ) for i in range(0, NpcFormation.PLAYERS_COUNT)
+      ]
 
   # 返回四个值：总能力，前场能力，中场能力，后场能力
-  def getAbilities(self, user):
+  def getAbilities(self):
       total = 0
       forward = 0
       midfield = 0

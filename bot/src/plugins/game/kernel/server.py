@@ -2,6 +2,8 @@ from nonebot.log import logger
 from game.utils.database import *
 from game.config import *
 from game.utils.avatar import *
+from game.utils.date import Date
+
 # 服务器类
 class Server:
   def __init__(self):
@@ -19,6 +21,10 @@ class Server:
       logger.info("当前模式：文字模式")
   
     #download_avatars()
+
+    # 当前日期
+    date = Date.init()
+    logger.info("当前日期：" + date)
     
 
   def close(self):

@@ -17,6 +17,7 @@ class Player:
     :param action_flag: 行动标记
     """
     self.name = card.getNameWithColor()
+    self.card = card
     self.coach = coach
     self.position = position
     # 格式 ability["Short_Passing"] 具体请看Card
@@ -117,8 +118,9 @@ class Player:
   # 射门-持球行为
   def shooting(self):
     distance = self.get_distance(Const.WIDTH / 2, 0)
-    shoot_ability = self.ability["Finishing"] if distance < 20 else self.ability["Long_Shot"]
+    shoot_ability = self.ability["Finishing"] if distance < 25 else self.ability["Long_Shot"]
     miss_rate = distance/shoot_ability
+    miss_rate = miss_rate/(miss_rate + 1)
     random_min = (Const.LEFT_GOALPOST - Const.GOAL_WIDTH * miss_rate / 2) * 100
     random_max = (Const.RIGHT_GOALPOST + Const.GOAL_WIDTH * miss_rate / 2) * 100
     rand = random.randint(int(random_min), int(random_max))
@@ -160,9 +162,12 @@ class Player:
 
   # 扑救-被动触发
   def saving(self, shoot_ability, distance, shoot_place):
+    # success_rate = self.get_success_rate(self.ability["GK_Saving"], shoot_ability) *\
+    #   math.pow(distance, 0.6)*self.ability["GK_Reaction"]*math.pow(shoot_ability, -1)/4 *\
+    #   math.pow(1.1, math.pow(self.ability["GK_Positioning"], 1.5)/shoot_ability-shoot_place)*0.65
     success_rate = self.get_success_rate(self.ability["GK_Saving"], shoot_ability) *\
-      math.pow(distance, 0.6)*self.ability["GK_Reaction"]*math.pow(shoot_ability, -1)/4 *\
-      math.pow(1.1, math.pow(self.ability["GK_Positioning"], 1.5)/shoot_ability-shoot_place)*0.65
+      self.get_success_rate(self.ability["GK_Positioning"]/6, shoot_place*10) *\
+      self.get_success_rate(self.ability["GK_Reaction"]/6 + distance, 30)
     rand = random.randint(0, int((success_rate + 1)*100))
     if rand < 100:
       return False
@@ -207,10 +212,12 @@ class Player:
   # 获取射门能力值
   def get_shooting_ability(self, shoot_x):
     distance = self.get_distance(shoot_x, 0)
-    if distance < 20:
+    if distance <= 20:
       return self.ability["Finishing"]
-    else:
+    elif distance >= 30:
       return self.ability["Long_Shot"]
+    else:
+      return self.ability["Finishing"] * (30 - distance) / 10 + self.ability["Long_Shot"] * (distance - 20) / 10
 
   # 获得传球能力值
   def get_passing_ability(self, player):
@@ -258,5 +265,7 @@ class Player:
       return Const.LENGTH
     return y
 
-  def getName(self):
-    return self.position + " " + self.name
+  def getName(self, color = True):
+    if color:
+      return self.position + " " + self.name
+    return self.card.player.Name

@@ -136,25 +136,21 @@ class Card:
       status = ""
     return status
 
+  def printID(self):
+    if self.id == 0:
+      return ""
+    return "[" + str(self.id) + "]"
+
   def getStyle(self):
     styles = Const.GK_STYLE[self.style] if self.player.Position in Const.GOALKEEPER else Const.STYLE[self.style]
     return styles["name"]
 
   def getNameWithColor(self):
     overall = self.star + self.player.Overall - 1
-    if overall >= 97:
-      ret = ""
-      colors = ["r", "o", "p", "b", "f", "g"]
-      letters = list(self.player.Name)
-      for i in range(len(letters)):
-        ret += "/~"
-        ret += colors[i%6]
-        ret += letters[i]
-      ret += "/"
-      return ret
-
     ret = "/~"
-    if overall >= 94:
+    if overall >= 97:
+      ret += "$"
+    elif overall >= 94:
       ret += "f"
     elif overall >= 92:
       ret += "r"

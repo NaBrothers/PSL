@@ -153,7 +153,7 @@ async def player_upgrade(user, id1, id2):
     if card1 == None or card1.user.qq != user.qq:
         await player_menu.finish("找不到主卡！", **{"at_sender": True})
         return
-    if card2 == None or card1.user.qq != user.qq:
+    if card2 == None or card2.user.qq != user.qq:
         await player_menu.finish("找不到副卡！", **{"at_sender": True})
         return
     ret = ""
@@ -169,7 +169,7 @@ async def player_upgrade(user, id1, id2):
         await player_menu.finish("强化失败：已达到星级上线" + toImage(ret), **{"at_sender": True})
         return
     target_star = max(card1.star, card2.star) + 1
-    cost = int(max(card1.price, card2.price) * 0.2)
+    cost = int(max(card1.price, card2.price) * 0.1)
     if cost > user.money:
         await player_menu.finish("强化失败：余额不足" + toImage(ret + "需要球币：" + str(cost) + "\n剩余球币：" + str(user.money)), **{"at_sender": True})
         return
