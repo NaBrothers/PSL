@@ -3,7 +3,7 @@
 #数据库配置
 HOSTNAME=localhost
 PORT=3306
-USERNAME=navi
+USERNAME=root
 PASSWORD=woshinaiwei
 DBNAME=bot
 
@@ -50,7 +50,10 @@ git checkout 99a68b144b4802d10926bdebf998f3aac8a6f1c9
 go env -w GOPROXY=https://goproxy.cn,direct
 go build -ldflags "-s -w -extldflags '-static'"
 cp ../config.hjson .
+mkdir data
+mkdir data/images
 
+cd ..
 cp -r assets/avatars/ cqhttp/data/images/
 
 echo "====== 完成！请手动配置cqhttp/config.hjson后运行go-cqhttp"
