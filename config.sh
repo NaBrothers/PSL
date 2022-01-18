@@ -22,6 +22,7 @@ pip3 install pymysql
 pip3 install cryptography
 pip3 install requests
 pip3 install pillow
+pip3 install nonebot-adapter-cqhttp
 
 echo "======安装MySQL"
 sudo apt install mysql-server
@@ -49,11 +50,17 @@ cd cqhttp
 git checkout 99a68b144b4802d10926bdebf998f3aac8a6f1c9
 go env -w GOPROXY=https://goproxy.cn,direct
 go build -ldflags "-s -w -extldflags '-static'"
-cp ../config.hjson .
+cp ../config.yml .
 mkdir data
 mkdir data/images
 
 cd ..
 cp -r assets/avatars/ cqhttp/data/images/
 
-echo "====== 完成！请手动配置cqhttp/config.hjson后运行go-cqhttp"
+echo "====== 安装nonebot"
+cd nonebot2
+git checkout 3ea2c27e1799415b27306cf796b1a5ba2323e2c5
+pip3 install .
+cd ..
+
+echo "====== 完成！请手动配置cqhttp/config.yml后运行go-cqhttp"

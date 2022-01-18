@@ -1,3 +1,6 @@
 [submodule "cqhttp"]
 	path = cqhttp
 	url = https://github.com/Mrs4s/go-cqhttp.git
+[submodule "nonebot2"]
+	path = nonebot2
+	url = ./nonebot2
