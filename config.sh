@@ -3,7 +3,7 @@
 #数据库配置
 HOSTNAME=localhost
 PORT=3306
-USERNAME=root
+USERNAME=navi
 PASSWORD=woshinaiwei
 DBNAME=bot
 
@@ -59,7 +59,7 @@ cp -r assets/avatars/ cqhttp/data/images/
 
 echo "====== 安装nonebot"
 cd nonebot2
-git checkout 3ea2c27e1799415b27306cf796b1a5ba2323e2c5
+git checkout 95415659cee9c8db31f457c42dedf6786ef05923 
 pip3 install .
 cd ..
 
