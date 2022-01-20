@@ -29,7 +29,7 @@ class Player:
         self.Body_Type = data[19]
         self.Real_Face = data[20]
         self.Release_Clause = data[21]
-        self.Position = data[22]
+        self.Position = data[22].split(', ')[0]
         self.Jersey_Number = data[23]
         self.Height = data[24]
         self.Weight = data[25]

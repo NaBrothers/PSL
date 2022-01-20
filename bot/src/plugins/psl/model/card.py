@@ -22,7 +22,7 @@ class Card:
     self.total_save = total_save
     self.locked = locked
     self.ability = {
-      "Heading" : Const.STARS[self.star]["ability"]+int((player.Heading_Accuracy+player.Jumping+player.Strength+Card.tocm(player.Height)-100)/4),
+      "Heading" : Const.STARS[self.star]["ability"]+int((player.Heading_Accuracy+player.Jumping+player.Strength+int(player.Height)-100)/4),
       "Long_Shot" : Const.STARS[self.star]["ability"]+int((player.Long_Shots+player.Shot_Power)/2),
       "Finishing" : Const.STARS[self.star]["ability"]+int((player.Finishing*2+player.Shot_Power)/3),
       "Long_Passing" : Const.STARS[self.star]["ability"]+int(player.Long_Passing),

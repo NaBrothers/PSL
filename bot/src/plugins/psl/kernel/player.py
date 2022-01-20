@@ -61,8 +61,7 @@ async def player_detail(id):
     ret += overalls[1][0] + "：" + card.printRealOverall(overalls[1][0]) + " "
     ret += overalls[2][0] + "：" + card.printRealOverall(overalls[2][0]) + "\n"
 
-    ret += str(card.player.Age) + "岁 " + str(Card.tocm(card.player.Height)
-                                             ) + "cm " + str(Card.tokg(card.player.Weight)) + "kg" + " 身价 $" + str(card.price) + "\n\n"
+    ret += str(card.player.Age) + "岁 " + str(card.player.Height) + "cm " + str(card.player.Weight) + "kg" + " 身价 $" + str(card.price) + "\n\n"
 
     string = '''     \t\tST\t\t
      LRW\tCF\tLRW\t
