@@ -22,7 +22,7 @@ pip3 install pymysql
 pip3 install cryptography
 pip3 install requests
 pip3 install pillow
-pip3 install nonebot-adapter-cqhttp
+pip3 install nonebot-adapter-onebot
 
 echo "======安装MySQL"
 sudo apt install mysql-server
@@ -56,11 +56,5 @@ mkdir data/images
 
 cd ..
 cp -r assets/avatars/ cqhttp/data/images/
-
-echo "====== 安装nonebot"
-cd nonebot2
-git checkout 95415659cee9c8db31f457c42dedf6786ef05923 
-pip3 install .
-cd ..
 
 echo "====== 完成！请手动配置cqhttp/config.yml后运行go-cqhttp"
