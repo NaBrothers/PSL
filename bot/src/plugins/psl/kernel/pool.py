@@ -203,6 +203,22 @@ class BestPool(Pool):
         for i in range(count):
             self.pool.append(Player(result[i]))
 
+# 至尊卡池
+class NBPool(Pool):
+    def init(self):
+        cursor = g_database.cursor()
+        count = cursor.execute("select * from players;")
+        result = cursor.fetchall()
+        cursor.close()
+        for i in range(count):
+            self.pool.append(Player(result[i]))
+
+    def choice(self, user):
+      player = random.choice(self.pool)
+      star = random.randint(1, 10)  
+      card = Card.new(player, user, star)
+      return card
+
 # 全局卡池
 g_pool = {
   "初级" : {
@@ -290,5 +306,11 @@ g_pool = {
     "visible" : False,
     "info" : "二十张球员卡（前锋*6，中场*6，后卫*6，门将*2，至少一张能力值89以上）"
   },
-  
+    "至尊": {
+    "pool": NBPool(),
+    "name" : "至尊卡包",
+    "cost" : 0,
+    "ten_cost" : 0,
+    "visible" : False
+  },
 }
