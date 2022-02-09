@@ -161,8 +161,8 @@ class Game:
             str(self.home.tackles) + ":" + str(self.away.tackles) + "\n"
         self.print_str += "扑救：" + \
             str(self.home.saves) + ":" + str(self.away.saves)
-        msg = toImage(self.print_str)
-        await self.matcher.send(msg)
+        msg = self.print_str
+        await self.matcher.send(toImage(msg))
         return msg
         # await self.matcher.send("终场比分：\n" +"主 " + self.home.coach.name + str(self.home.point) + ":" + str(self.away.point) + self.away.coach.name + " 客")
 

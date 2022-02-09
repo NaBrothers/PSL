@@ -9,11 +9,12 @@ class Offline:
     count = cursor.execute("select message from offline where user = " + str(user.qq))
     cursor.close()
     for i in range(count):
-      ret.append(Message(cursor.fetchone()[0]))
+      msg = cursor.fetchone()[0]
+      if len(msg) > 0:
+        ret.append(Message(msg))
     return ret
 
   def send(user, msg):
-    msg = msg.extract_plain_text()
     msg = msg.replace("\\", "\\\\")
     msg = msg.replace("\n", "\\n")
     msg = msg.replace("\t", "\\t")

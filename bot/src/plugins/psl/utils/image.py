@@ -140,11 +140,13 @@ class TextToImage:
     return filename
 
 # 返回一个CQ Image
-def toImage(text):
+def toImage(text, isOffline=False):
   if not PICTURE_MODE:
     return text
   filename = TextToImage.toImage(text)
   ret = "[CQ:image,file=text2image/" + filename + "]"
+  if isOffline:
+    return ret
   return Message(ret)
 
 # path根目录为gohttp/data/images

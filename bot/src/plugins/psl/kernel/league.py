@@ -308,7 +308,7 @@ async def get_award(league, cur_user, winners):
   for entry in league.entries:
     if entry.user.qq == cur_user.qq:
       continue
-    Offline.send(entry.user, toImage(award[entry.user.qq]))
+    Offline.send(entry.user, toImage(award[entry.user.qq], True))
 
   Global.set("league_status", "2")
 
@@ -454,10 +454,10 @@ async def start_game(user, mode):
     msg = "第" + str(entry.round) + "轮联赛已结束，" 
     if user1.qq == user.qq:
       await league_matcher.send(home_award, **{"at_sender": True})
-      Offline.send(user2, msg + away_award + "\n" + stats)
+      Offline.send(user2, msg + away_award + "\n" + toImage(stats, True))
     else:
       await league_matcher.send(away_award, **{"at_sender": True})
-      Offline.send(user1, msg + home_award + "\n" + stats)
+      Offline.send(user1, msg + home_award + "\n" + toImage(stats, True))
       
 
     
