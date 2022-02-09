@@ -71,3 +71,22 @@ class Schedule:
   def getNumOfRounds(self):
     rounds = [entry.round for entry in self.entries]
     return max(rounds)
+
+  def getRecentCondition(user, round):
+    cursor = g_database.cursor()
+    count = cursor.execute("SELECT * FROM schedule where (home = " + str(user.qq) + " or away = " + str(user.qq) + ") and finished = 1 order by id desc limit " + str(round))
+    if count == 0:
+          return ""
+    datas = cursor.fetchall();
+    cursor.close()
+    res = []
+    entries = [Schedule.Entry(data) for data in datas]
+    for entry in entries:
+          if entry.home.qq == user.qq and entry.home_goal > entry.away_goal or entry.away.qq == user.qq and entry.away_goal > entry.home_goal:
+                res.append("/~r胜/")
+          elif entry.home.qq == user.qq and entry.home_goal == entry.away_goal or entry.away.qq == user.qq and entry.away_goal == entry.home_goal:
+                res.append("/~g平/")
+          else:
+                res.append("/~b负/")
+    res.reverse();
+    return "".join(res)

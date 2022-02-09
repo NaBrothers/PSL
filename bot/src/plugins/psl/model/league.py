@@ -1,5 +1,6 @@
 from model.user import User
 from utils.database import *
+from model.schedule import *
 
 class League:
 
@@ -14,6 +15,7 @@ class League:
       self.lose = data[6]
       self.goal = data[7]
       self.lost_goal = data[8]
+      self.condition = ""
 
     def set(self, attr, value):
       setattr(self, attr, value)
@@ -23,6 +25,8 @@ class League:
 
   def __init__(self, datas: list):
       self.entries = [League.Entry(data) for data in datas]
+      for entry in self.entries:
+            entry.condition = Schedule.getRecentCondition(entry.user, 5)
       self.entries.sort(key = lambda e: (-e.score, e.appearance, e.lost_goal - e.goal))
 
   def getLeague():

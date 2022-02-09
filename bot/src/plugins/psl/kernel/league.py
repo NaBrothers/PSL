@@ -347,8 +347,8 @@ async def print_schedule(user):
     await league_matcher.finish(toImage(ret + "\n" + return_text), **{"at_sender": True})
 
 async def show_leaderboard():
-    ret =  "======================== 积分榜 ======================\n"
-    ret += "排名  积分  场次    胜   平   负    进球  失球  净胜球       球队\n"
+    ret =  "============================== 积分榜 =============================\n"
+    ret += "排名  积分  场次    胜   平   负    进球  失球  净胜球      状态         球队\n"
     league = League.getLeague()
     if league == None:
         ret += "空"
@@ -360,8 +360,9 @@ async def show_leaderboard():
               continue
             ret += str("[" + str(i+1-n) + "]").ljust(4) + "   " + str(entry.score).ljust(2) + "     " + str(entry.appearance).ljust(2) + "    " + str(entry.win).ljust(2) + "   " + str(entry.tie).ljust(2) + "    " + \
                 str(entry.lose).ljust(2) + "    " + str(entry.goal).ljust(2) + "    " + str(entry.lost_goal).ljust(2) + \
-                "    " + str(entry.goal - entry.lost_goal).ljust(2) + \
-                "      " + str("[" + str(entry.user.id) + "]").ljust(2) + " " + entry.user.name + "\n"
+                "    " + str(entry.goal - entry.lost_goal).ljust(3) + \
+                "     " + str(entry.condition).ljust(20) + \
+                "     " + str("[" + str(entry.user.id) + "]").ljust(2) + " " + entry.user.name + "\n"
 
     await league_matcher.finish(toImage(ret), **{"at_sender": True})
 
