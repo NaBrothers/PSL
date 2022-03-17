@@ -1,9 +1,10 @@
 from utils.database import *
 from model.user import *
 from model.player import *
+import json
 
 class Card:
-  def __init__(self, id, player, user, star, style, status, appearance, goal, assist, tackle, save, total_appearance, total_goal, total_assist, total_tackle, total_save, locked):
+  def __init__(self, id, player, user, star, style, status, appearance, goal, assist, tackle, save, total_appearance, total_goal, total_assist, total_tackle, total_save, locked, ext_abilities, breach):
     self.id = id
     self.player = player
     self.user = user
@@ -21,6 +22,8 @@ class Card:
     self.total_tackle = total_tackle
     self.total_save = total_save
     self.locked = locked
+    self.ext_abilities = ext_abilities
+    self.breach = breach
     self.ability = {
       "Heading" : Const.STARS[self.star]["ability"]+int((player.Heading_Accuracy+player.Jumping+player.Strength+int(player.Height)-100)/4),
       "Long_Shot" : Const.STARS[self.star]["ability"]+int((player.Long_Shots+player.Shot_Power)/2),
@@ -36,6 +39,12 @@ class Card:
       "GK_Positioning" : Const.STARS[self.star]["ability"]+int(player.GK_Positioning),
       "GK_Reaction" : Const.STARS[self.star]["ability"]+int((player.GK_Reflexes*2+player.Reactions)/3)
     }
+    
+    for ability in self.ability.keys():
+          if ability in self.ext_abilities:
+                self.ability[ability] += int(self.ext_abilities[ability])
+            
+
     self.overall = self.player.Overall + Const.STARS[self.star]["ability"]
     styles = Const.GK_STYLE[style] if self.player.Position in Const.GOALKEEPER else Const.STYLE[style]
     for ability in styles.keys():
@@ -43,7 +52,7 @@ class Card:
         continue
       self.ability[ability] += styles[ability]*self.star
   
-    self.price = self.player.price * Const.STARS[self.star]["count"]
+    self.price = self.player.price * Const.STARS[self.star]["count"] + self.player.price * self.breach
 
   def new(player, user, star = 1, style = 0, id=0, status=False, locked=False):
     if style == 0:
@@ -51,7 +60,7 @@ class Card:
         style = random.choice(list(Const.GK_STYLE.keys()))
       else:
         style = random.choice(list(Const.STYLE.keys()))
-    return Card(id ,player, user, star, style, status, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, locked)
+    return Card(id ,player, user, star, style, status, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, locked, {}, 0)
 
   def set(self, attr, value):
       setattr(self, attr, value)
@@ -83,7 +92,9 @@ class Card:
             total_tackle = data[14]
             total_save = data[15]
             locked = data[16]
-            card = Card(id, player, user, star, style, status, appearance, goal, assist, tackle, save, total_appearance, total_goal, total_assist, total_tackle, total_save, locked)
+            ext_abilities = json.loads(data[17]) if data[17] is not None else {}
+            breach = data[18]
+            card = Card(id, player, user, star, style, status, appearance, goal, assist, tackle, save, total_appearance, total_goal, total_assist, total_tackle, total_save, locked, ext_abilities, breach)
         cursor.close()
         return card
 
@@ -118,14 +129,16 @@ class Card:
               total_tackle = data[14]
               total_save = data[15]
               locked = data[16]
-              card = Card(id, player, user, star, style, status, appearance, goal, assist, tackle, save, total_appearance, total_goal, total_assist, total_tackle, total_save, locked)
+              ext_abilities = json.loads(data[17]) if data[17] is not None else {}
+              breach = data[18]
+              card = Card(id, player, user, star, style, status, appearance, goal, assist, tackle, save, total_appearance, total_goal, total_assist, total_tackle, total_save, locked, ext_abilities, breach)
               cards.append(card)
         
         cursor.close()
         return cards
 
   def format(self):
-    return self.player.Position.ljust(3)+" " + self.getNameWithColor() + " " + str(self.overall) + " " + Const.STARS[self.star]["star"] + " " + self.getStyle() +  " " + self.printPrice() + " " + self.getStatus()
+    return self.player.Position.ljust(3)+" " + self.getNameWithColor() + " " + str(self.overall) + " " + Const.STARS[self.star]["star"] + " ◆+" + str(self.breach)  + " " + self.getStyle() +  " " + self.printPrice() + " " + self.getStatus()
 
   def getStatus(self):
     if self.status != 0:

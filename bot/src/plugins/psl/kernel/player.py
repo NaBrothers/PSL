@@ -55,7 +55,7 @@ async def player_detail(id):
         str(card.overall) + "\n"
     for i in range(card.star):
         ret += "★"
-    ret += " " + card.getStyle() + "\n"
+    ret += " " + " ◆+" + str(card.breach)  + card.getStyle() + "\n"
     overalls = card.getOveralls()
     ret += overalls[0][0] + "：" + card.printRealOverall(overalls[0][0]) + " "
     ret += overalls[1][0] + "：" + card.printRealOverall(overalls[1][0]) + " "
@@ -75,7 +75,7 @@ async def player_detail(id):
       string = string.replace(overall[0], card.printRealOverall(overall[0]))
     ret += string + "\n"
     ret += printAbilityName(card, "终结", "Finishing")+"\t" + printAbility(card, "Finishing") + \
-        "\t\t" + printAbilityName(card, "远射", "Long_Shot")+"\t" + \
+        "\t" + printAbilityName(card, "远射", "Long_Shot")+"\t" + \
         printAbility(card, "Long_Shot") + "\n"
     ret += printAbilityName(card, "短传", "Short_Passing")+"\t" + printAbility(card, "Short_Passing") + \
         "\t\t" + printAbilityName(card, "长传", "Long_Passing")+"\t" + \
@@ -124,26 +124,28 @@ def printAbility(card, ability):
             ret += colors[i % 3]
             ret += letters[i]
         ret += "/"
-        return ret
-
-    ret = "/~"
-    if card.ability[ability] >= 100:
-        ret += "f"
-    elif card.ability[ability] >= 95:
-        ret += "r"
-    elif card.ability[ability] >= 90:
-        ret += "o"
-    elif card.ability[ability] >= 88:
-        ret += "p"
-    elif card.ability[ability] >= 85:
-        ret += "b"
-    elif card.ability[ability] >= 82:
-        ret += "g"
     else:
-        ret += "w"
-    ret += str(card.ability[ability])
-    ret += "/"
-    return ret
+        ret = "/~"
+        if card.ability[ability] >= 100:
+            ret += "f"
+        elif card.ability[ability] >= 95:
+            ret += "r"
+        elif card.ability[ability] >= 90:
+            ret += "o"
+        elif card.ability[ability] >= 88:
+            ret += "p"
+        elif card.ability[ability] >= 85:
+            ret += "b"
+        elif card.ability[ability] >= 82:
+            ret += "g"
+        else:
+            ret += "w"
+        ret += str(card.ability[ability])
+        ret += "/"
+
+    if ability in card.ext_abilities:
+        ret += "/~g(+" + str(card.ext_abilities[ability]) + ")/"
+    return ret.ljust(9)
 
 
 async def player_upgrade(user, id1, id2):

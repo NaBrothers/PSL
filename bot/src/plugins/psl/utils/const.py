@@ -87,6 +87,11 @@ class Const:
               2: "阵容中",
               3: "已锁定"}
 
+    # 能力
+    ABILITIES = ["Heading","Long_Shot","Finishing","Long_Passing","Short_Passing","Dribbling","Tackling","Defence","Speed"]
+
+    GK_ABILITIES = ["GK_Saving","GK_Reaction","GK_Positioning"]
+
     # 特性
     STYLE = {
       "sniper": {
