@@ -65,7 +65,7 @@ class Card:
   def set(self, attr, value):
       setattr(self, attr, value)
       cursor = g_database.cursor()
-      count = cursor.execute("update cards set " + attr + " = " + str(value) + " where id = " + str(self.id))
+      count = cursor.execute("update cards set " + attr + " = '" + str(value) + "' where id = " + str(self.id))
       cursor.close()
 
   def getCardByID(id):

@@ -88,9 +88,26 @@ class Const:
               3: "已锁定"}
 
     # 能力
-    ABILITIES = ["Heading","Long_Shot","Finishing","Long_Passing","Short_Passing","Dribbling","Tackling","Defence","Speed"]
+    ABILITIES =  {
+      "Heading" : "头球",
+      "Long_Shot" : "远射",
+      "Finishing" : "终结",
+      "Long_Passing" : "长传",
+      "Short_Passing" : "短传",
+      "Dribbling" : "盘带",
+      "Tackling" : "抢断",
+      "Defence" : "防守",
+      "Speed" : "速度",
+      "IQ" : "球商",
+    }
 
-    GK_ABILITIES = ["GK_Saving","GK_Reaction","GK_Positioning"]
+    GK_ABILITIES = {
+      "GK_Saving" : "GK扑救",
+      "GK_Positioning" : "GK站位",
+      "GK_Reaction" : "GK反应",
+      "Long_Passing" : "长传",
+      "Speed" : "速度",
+    }
 
     # 特性
     STYLE = {
