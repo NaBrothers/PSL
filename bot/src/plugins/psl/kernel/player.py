@@ -266,7 +266,7 @@ async def player_breach(user, id1, id2):
 
     add_ret = ""
     if additionAmount > 0:
-        add_ret = "\n触发了副卡特性「" + Const.STYLE[card2.style]["name"] +"」的被动，额外提升了/~g" + str(additionAmount) + "/点能力值！"
+        add_ret = "\n触发了副卡特性「" + card2.getStyle() +"」的被动，额外提升了/~g" + str(additionAmount) + "/点能力值！"
 
     ret += "=== 突破结果 ===\n" + "[" + str(card1.id) + "] " + card1.format() + "\n" + \
     "「/~r" + (Const.GK_ABILITIES[randomAbility] if card1.player.Position in Const.GOALKEEPER else Const.ABILITIES[randomAbility]) + "/」提升了/~g" + \
