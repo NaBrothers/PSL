@@ -237,7 +237,8 @@ async def player_breach(user, id1, id2):
     baseAmount = Const.STARS[card2.star]["count"]
     additionAmount = 0
 
-    if randomAbility in Const.STYLE[card2.style].keys():
+    abilities = Const.GK_STYLE[card2.style].keys() if card2.player.Position in Const.GOALKEEPER else Const.STYLE[card2.style].keys()
+    if randomAbility in abilities:
         additionAmount = Const.STARS[card2.star]["ability"]
 
     if randomAbility in card1.ext_abilities:
