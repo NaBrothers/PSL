@@ -5,7 +5,8 @@ from nonebot.adapters.onebot.v11 import Message
 import os
 import random
 
-os.makedirs(PROJECT_DIR + "/cqhttp/data/images/text2image/", exist_ok=True)
+IMAGE_DIR = os.path.join(PROJECT_DIR, "data", "images")
+os.makedirs(os.path.join(IMAGE_DIR, "text2image"), exist_ok=True)
 
 class TextToImage:
   LINE_CHAR_COUNT = 100*2  # 每行最大字符数：30个中文字符(=60英文字符)
@@ -109,7 +110,7 @@ class TextToImage:
         items[i] = ret
     text = "/".join(items)
 
-    path = PROJECT_DIR + "/cqhttp/data/images/text2image/"
+    path = os.path.join(IMAGE_DIR, "text2image") + "/"
     filename = str(hash(text)) + ".png"
     
     if os.path.exists(path + filename):
@@ -144,12 +145,13 @@ def toImage(text, isOffline=False):
   if not PICTURE_MODE:
     return text
   filename = TextToImage.toImage(text)
-  ret = "[CQ:image,file=text2image/" + filename + "]"
+  filepath = os.path.join(IMAGE_DIR, "text2image", filename)
+  ret = "[CQ:image,file=file://" + filepath + "]"
   if isOffline:
     return ret
   return Message(ret)
 
-# path根目录为gohttp/data/images
 def getImage(path):
-  ret = "[CQ:image,file=" + path + "]"
+  filepath = os.path.join(IMAGE_DIR, path)
+  ret = "[CQ:image,file=file://" + filepath + "]"
   return ret

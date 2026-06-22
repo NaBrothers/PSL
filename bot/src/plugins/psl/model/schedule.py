@@ -47,7 +47,7 @@ class Schedule:
 
   def getCurrentRound():
     cursor = g_database.cursor()
-    count = cursor.execute("select round from schedule where finished = false order by round")
+    count = cursor.execute("select round from schedule where finished = 0 order by round")
     if count == 0:
       return None
     cur = cursor.fetchone()[0]
@@ -58,7 +58,7 @@ class Schedule:
 
   def getCurrentEntry(user):
     cursor = g_database.cursor()
-    count = cursor.execute("select round from schedule where finished = false order by round")
+    count = cursor.execute("select round from schedule where finished = 0 order by round")
     if count == 0:
       return None
     cur = cursor.fetchone()[0]

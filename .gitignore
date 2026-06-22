@@ -181,3 +181,9 @@ typings/
 
 # server
 nohup.out
+
+# PSL database
+psl.db
+psl.db-shm
+psl.db-wal
+data/images/
