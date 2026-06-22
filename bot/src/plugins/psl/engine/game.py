@@ -3,7 +3,7 @@ from engine.player import Player
 from engine.team import Team
 from engine.const import Const
 from engine.commentary import CommentaryRenderer, event_player_name, event_target_name, xg_text
-from engine.probability import build_shot_context, expected_threat, pass_success_probability
+from engine.probability import build_shot_context, expected_threat, pass_success_probability, shot_on_target_goal_probability
 from utils.image import toImage
 from engine.display import Display
 # from display import Display
@@ -242,6 +242,12 @@ class Game:
                     case = Display.print_short_shot(self.ball_holder, int(shot.distance))
                 self.printCase(case, "shot", 3, self.ball_holder, xg=shot.raw_xg)
                 self.ball_holder.shoots += 1
+                if shoot_x < Const.LEFT_GOALPOST or shoot_x > Const.RIGHT_GOALPOST:
+                    case = Display.print_miss_shot()
+                    self.printCase(case, "miss", 3, self.ball_holder, xg=shot.raw_xg)
+                    self.swap()
+                    self.changeBallHolderToGK()
+                    return
                 def_players = self.getWayDefencePlayers(
                     self.ball_holder.x, self.ball_holder.y, shoot_x, 0)
                 shoot = self.ball_holder.get_shooting_ability(shoot_x)
@@ -261,19 +267,16 @@ class Game:
                         self.changeBallHolder(def_player)
                         return
                 gk = self.getDefenceGK()
-                if self.rng.random() >= shot.goal_probability:
-                    if shoot_x < Const.LEFT_GOALPOST or shoot_x > Const.RIGHT_GOALPOST:
-                        case = Display.print_miss_shot()
-                        self.printCase(case, "miss", 3, self.ball_holder, xg=shot.raw_xg)
-                    else:
-                        self.ball_holder.shoots_in_target += 1
-                        case = Display.print_saving(gk)
-                        self.printCase(case, "save", 4, self.ball_holder, gk, shot.raw_xg)
-                        gk.saves += 1
+                self.ball_holder.shoots_in_target += 1
+                goal_probability = self.adjust_shot_for_keeper(shot, gk)
+                self.offence.adjusted_xg += shot.on_target_probability * goal_probability - shot.goal_probability
+                if self.rng.random() >= goal_probability:
+                    case = Display.print_saving(gk)
+                    self.printCase(case, "save", 4, self.ball_holder, gk, shot.raw_xg)
+                    gk.saves += 1
                     self.swap()
                     self.changeBallHolderToGK()
                     return
-                self.ball_holder.shoots_in_target += 1
                 self.offence.point += 1
                 case = Display.print_goal(
                     self.ball_holder, gk, self.assister)
@@ -447,7 +450,10 @@ class Game:
                             case = Display.print_high_shot(roll_winner)
                             self.printCase(case, "shot", 3, roll_winner, xg=header_shot.raw_xg)
                             gk = self.getDefenceGK()
-                            if self.rng.random() >= header_shot.goal_probability:
+                            roll_winner.shoots_in_target += 1
+                            goal_probability = self.adjust_shot_for_keeper(header_shot, gk)
+                            self.offence.adjusted_xg += header_shot.on_target_probability * goal_probability - header_shot.goal_probability
+                            if self.rng.random() >= goal_probability:
                                 case = Display.print_saving(gk)
                                 self.printCase(case, "save", 4, roll_winner, gk, header_shot.raw_xg)
                                 gk.saves += 1
@@ -529,6 +535,10 @@ class Game:
             self.offence.big_chances += 1
         self.record_box_touch(shooter)
         return shot.raw_xg
+
+    def adjust_shot_for_keeper(self, shot, keeper):
+        keeper_ability = keeper.ability["GK_Saving"] * 0.45 + keeper.ability["GK_Reaction"] * 0.35 + keeper.ability["GK_Positioning"] * 0.20
+        return shot_on_target_goal_probability(shot.shoot_ability, keeper_ability, shot.raw_xg)
 
     def record_expected_threat(self, player, action_quality=1.0):
         self.offence.xt += expected_threat(player.y, action_quality)

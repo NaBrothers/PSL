@@ -139,6 +139,39 @@ def test_shot_context_is_independent_from_random_shot_location(core_modules, mak
     assert first.on_target_probability == second.on_target_probability
 
 
+def test_keeper_ability_affects_goal_probability(core_modules, make_user, monkeypatch):
+    from conftest import DummyMatcher
+    from test_game_flows import build_full_squad
+
+    formation_kernel = core_modules["kernel.formation"]
+    Game = core_modules["engine.game"].Game
+    EnginePlayer = __import__("engine.player", fromlist=["Player"]).Player
+    EngineConst = __import__("engine.const", fromlist=["Const"]).Const
+    Player = core_modules["model.player"].Player
+    Card = core_modules["model.card"].Card
+
+    user1 = make_user(40501, "keeper-home", money=0)
+    user2 = make_user(40502, "keeper-away", money=0)
+    build_full_squad(core_modules, user1, star=3)
+    build_full_squad(core_modules, user2, star=3)
+
+    async def finish_no_raise(*args, **kwargs):
+        return None
+
+    monkeypatch.setattr(formation_kernel.get_team, "finish", finish_no_raise)
+    asyncio.run(formation_kernel.auto_update(user1))
+    asyncio.run(formation_kernel.auto_update(user2))
+
+    game = Game(DummyMatcher(), user1, user2, seed=444)
+    shot = game.create_shot(game.ball_holder, pressure=1)
+    natural_gk_card = Card.new(Player.getPlayerByID(200389), user2, star=3)
+    striker_card = Card.new(Player.getPlayerByID(158023), user2, star=3)
+    natural_gk = EnginePlayer(natural_gk_card, "GK", EngineConst.WIDTH / 2, EngineConst.LENGTH, user2.name)
+    striker_gk = EnginePlayer(striker_card, "GK", EngineConst.WIDTH / 2, EngineConst.LENGTH, user2.name)
+
+    assert game.adjust_shot_for_keeper(shot, striker_gk) > game.adjust_shot_for_keeper(shot, natural_gk)
+
+
 def test_monte_carlo_smoke_and_strength_signal(core_modules):
     import scripts.simulate_matches as simulator
 

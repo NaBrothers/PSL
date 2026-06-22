@@ -1,6 +1,6 @@
 from model.card import Card
 from engine.const import Const
-from engine.probability import contest_success, logistic_probability, shot_on_target_probability
+from engine.probability import ability_advantage_probability, contest_success, logistic_probability, shot_on_target_probability
 import random
 import math
 import sys
@@ -172,7 +172,8 @@ class Player:
     efficiency = (def_v - distance) / def_v
     if efficiency <= 0:
       return False
-    return contest_success(rng, tackling * efficiency, ability, scale=11, floor=0.02, ceiling=0.88)
+    effective_tackling = tackling * (0.35 + 0.65 * efficiency)
+    return contest_success(rng, effective_tackling, ability, scale=8, floor=0.02, ceiling=0.94)
 
   # 扑救-被动触发
   def saving(self, shoot_ability, distance, shoot_place, rng=None):
@@ -211,7 +212,9 @@ class Player:
     if distance > 40:
       return 0
     pressure = max(1, shoot_defence_players_number + 1)
-    return 0.014 + 0.11 * math.pow(0.985, 0.0052 * math.pow(distance, 2.6) * pressure)
+    shoot_ability = self.ability["Finishing"] if distance < 25 else self.ability["Long_Shot"]
+    ability_factor = 0.65 + ability_advantage_probability(shoot_ability, 82, scale=12, floor=0.0, ceiling=1.0) * 0.75
+    return (0.014 + 0.11 * math.pow(0.985, 0.0052 * math.pow(distance, 2.6) * pressure)) * ability_factor
 
   # 盘带选择率
   def get_dribbling_rate(self, defence_players_number):

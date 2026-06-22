@@ -17,6 +17,10 @@ def contest_success(rng, attack, defence, scale=12.0, floor=0.03, ceiling=0.97):
   return rng.random() < logistic_probability(attack, defence, scale, floor, ceiling)
 
 
+def ability_advantage_probability(attack, defence, scale=9.0, floor=0.03, ceiling=0.97):
+  return logistic_probability(attack, defence, scale, floor, ceiling)
+
+
 @dataclass
 class ShotContext:
   distance: float
@@ -56,10 +60,17 @@ def expected_goals(distance, angle, pressure=0, assist_quality=0, is_header=Fals
 
 def build_shot_context(distance, angle, shoot_ability, pressure=0, assist_quality=0, is_header=False):
   raw_xg = expected_goals(distance, angle, pressure, assist_quality, is_header)
-  finishing_adjustment = clamp(0.75 + logistic_probability(shoot_ability, 84, scale=24, floor=0.0, ceiling=1.0) * 0.55, 0.75, 1.3)
+  finishing_edge = ability_advantage_probability(shoot_ability, 82, scale=12, floor=0.0, ceiling=1.0)
+  finishing_adjustment = clamp(0.65 + finishing_edge * 0.85, 0.65, 1.5)
   goal_probability = clamp(raw_xg * finishing_adjustment, 0.003, 0.45)
   on_target_probability = shot_on_target_probability(distance, shoot_ability, pressure)
   return ShotContext(distance, angle, shoot_ability, pressure, assist_quality, is_header, raw_xg, goal_probability, on_target_probability)
+
+
+def shot_on_target_goal_probability(shoot_ability, keeper_ability, raw_xg):
+  ability_edge = ability_advantage_probability(shoot_ability, keeper_ability, scale=8, floor=0.03, ceiling=0.97)
+  chance_bonus = clamp(raw_xg * 1.6, 0.0, 0.35)
+  return clamp(ability_edge * 0.85 + chance_bonus, 0.02, 0.98)
 
 
 def pass_success_probability(pass_ability, distance, pressure=0, is_long=False):
