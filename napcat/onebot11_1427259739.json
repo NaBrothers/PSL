@@ -1,12 +1,21 @@
 {
   "network": {
-    "reverseWs": {
-      "nonebot": {
+    "httpServers": [],
+    "httpClients": [],
+    "websocketServers": [],
+    "websocketClients": [
+      {
+        "name": "nonebot",
         "enable": true,
         "url": "ws://127.0.0.1:8080/onebot/v11/ws/",
-        "token": ""
+        "messagePostFormat": "array",
+        "reportSelfMessage": false,
+        "reconnectInterval": 5000,
+        "token": "",
+        "debug": false,
+        "heartInterval": 30000
       }
-    }
+    ]
   },
   "musicSignUrl": "",
   "enableLocalFile2Url": false,

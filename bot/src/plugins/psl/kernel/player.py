@@ -6,6 +6,7 @@ from model.user import *
 from model.card import *
 from utils.image import *
 from kernel.account import check_account
+import random
 
 error_text = '''球员 ID：查看球员详细信息
 球员 强化 主卡ID 副卡ID：升级球员卡，星级加一，保留主卡特性
