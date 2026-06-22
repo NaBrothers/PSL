@@ -1,0 +1,14 @@
+{
+  "network": {
+    "reverseWs": {
+      "nonebot": {
+        "enable": true,
+        "url": "ws://127.0.0.1:8080/onebot/v11/ws/",
+        "token": ""
+      }
+    }
+  },
+  "musicSignUrl": "",
+  "enableLocalFile2Url": false,
+  "parseMultMsg": false
+}

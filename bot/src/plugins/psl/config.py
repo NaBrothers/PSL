@@ -1,4 +1,4 @@
-from pydantic import BaseSettings
+from pydantic_settings import BaseSettings
 
 # 数据库
 HOSTNAME="127.0.0.1"

@@ -7,8 +7,10 @@ USERNAME=navi
 PASSWORD=woshinaiwei
 DBNAME=bot
 
+# QQ号配置
+QQ_ACCOUNT=1427259739
 
-echo "====== Required OS: Ubuntu 16.04+"
+echo "====== Required OS: Ubuntu 20.04+"
 
 echo "====== 安装python"
 sudo apt update
@@ -41,20 +43,10 @@ mysql -h${HOSTNAME} -P${PORT} -u${USERNAME} -p${PASSWORD} ${DBNAME} <./database/
 mysql -h${HOSTNAME} -P${PORT} -u${USERNAME} -p${PASSWORD} ${DBNAME} <./database/league.sql
 mysql -h${HOSTNAME} -P${PORT} -u${USERNAME} -p${PASSWORD} ${DBNAME} <./database/team.sql
 mysql -h${HOSTNAME} -P${PORT} -u${USERNAME} -p${PASSWORD} ${DBNAME} <./database/schedule.sql
-echo "======安装golang"
-sudo apt install golang
 
-echo "======安装cqhttp"
-git submodule update --init --recursive
-cd cqhttp
-git checkout 99a68b144b4802d10926bdebf998f3aac8a6f1c9
-go env -w GOPROXY=https://goproxy.cn,direct
-go build -ldflags "-s -w -extldflags '-static'"
-cp ../config.yml .
-mkdir data
-mkdir data/images
+echo "====== 安装 NapCatQQ"
+curl -o napcat.sh https://nclatest.znin.net/NapNeko/NapCat-Installer/main/script/install.sh && bash napcat.sh
 
-cd ..
-cp -r assets/avatars/ cqhttp/data/images/
-
-echo "====== 完成！请手动配置cqhttp/config.yml后运行go-cqhttp"
+echo "====== 完成！"
+echo "请通过 NapCat WebUI 配置反向 WebSocket 地址为 ws://127.0.0.1:8080/onebot/v11/ws/"
+echo "然后运行 python3 bot/bot.py 启动机器人"
