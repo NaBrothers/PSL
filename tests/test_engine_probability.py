@@ -1,4 +1,6 @@
 import asyncio
+import json
+from pathlib import Path
 
 
 def test_probability_helpers_are_bounded_and_monotonic():
@@ -22,8 +24,12 @@ def test_seeded_match_is_reproducible(core_modules, make_user, monkeypatch):
 
     Formation = core_modules["model.formation"].Formation
     formation_kernel = core_modules["kernel.formation"]
-    Game = core_modules["engine.game"].Game
+    game_module = core_modules["engine.game"]
+    Game = game_module.Game
     EngineConst = __import__("engine.const", fromlist=["Const"]).Const
+    EngineConst.PRINT_DELAY = 0
+    monkeypatch.setattr(game_module, "toImage", lambda text: text)
+    EngineConst.PRINT_DELAY = 0
 
     user1 = make_user(40001, "seed-home", money=0)
     user2 = make_user(40002, "seed-away", money=0)
@@ -70,6 +76,7 @@ def test_print_stats_handles_zero_passes(core_modules, make_user):
 
     Game = core_modules["engine.game"].Game
     EngineConst = __import__("engine.const", fromlist=["Const"]).Const
+    EngineConst.PRINT_DELAY = 0
     formation_kernel = core_modules["kernel.formation"]
 
     user1 = make_user(40101, "zero-pass-home", money=0)
@@ -150,3 +157,89 @@ def test_monte_carlo_smoke_and_strength_signal(core_modules):
     assert even["home_xg"] + even["away_xg"] >= 0
     assert even["home_adjusted_xg"] + even["away_adjusted_xg"] >= 0
     assert even["home_xt"] + even["away_xt"] > 0
+
+
+def test_normal_commentary_is_possession_summary_not_action_log(core_modules, make_user, monkeypatch):
+    from conftest import DummyMatcher
+    from test_game_flows import build_full_squad
+
+    formation_kernel = core_modules["kernel.formation"]
+    game_module = core_modules["engine.game"]
+    Game = game_module.Game
+    EngineConst = __import__("engine.const", fromlist=["Const"]).Const
+    EngineConst.PRINT_DELAY = 0
+    monkeypatch.setattr(game_module, "toImage", lambda text: text)
+
+    user1 = make_user(40301, "commentary-home", money=0)
+    user2 = make_user(40302, "commentary-away", money=0)
+    build_full_squad(core_modules, user1, star=3)
+    build_full_squad(core_modules, user2, star=3)
+
+    async def finish_no_raise(*args, **kwargs):
+        return None
+
+    async def run_game():
+        monkeypatch.setattr(formation_kernel.get_team, "finish", finish_no_raise)
+        await formation_kernel.auto_update(user1)
+        await formation_kernel.auto_update(user2)
+        matcher = DummyMatcher()
+        game = Game(matcher, user1, user2, seed=222)
+        await game.start(EngineConst.MODE_NORMAL)
+        process_messages = [str(message) for message, _ in matcher.sent[:-1]]
+        final_message = str(matcher.sent[-1][0])
+        return game, process_messages, final_message
+
+    game, process_messages, final_message = asyncio.run(run_game())
+    assert game.match_events
+    assert process_messages
+    assert sum(message.count("\n") for message in process_messages) < len(game.match_events)
+    assert "[比赛战报]" in final_message
+    assert "[数据统计]" in final_message
+
+
+def test_quick_mode_returns_report_and_stats(core_modules, make_user, monkeypatch):
+    from conftest import DummyMatcher
+    from test_game_flows import build_full_squad
+
+    formation_kernel = core_modules["kernel.formation"]
+    game_module = core_modules["engine.game"]
+    Game = game_module.Game
+    EngineConst = __import__("engine.const", fromlist=["Const"]).Const
+    EngineConst.PRINT_DELAY = 0
+    monkeypatch.setattr(game_module, "toImage", lambda text: text)
+
+    user1 = make_user(40401, "quick-home", money=0)
+    user2 = make_user(40402, "quick-away", money=0)
+    build_full_squad(core_modules, user1, star=3)
+    build_full_squad(core_modules, user2, star=3)
+
+    async def finish_no_raise(*args, **kwargs):
+        return None
+
+    async def run_game():
+        monkeypatch.setattr(formation_kernel.get_team, "finish", finish_no_raise)
+        await formation_kernel.auto_update(user1)
+        await formation_kernel.auto_update(user2)
+        matcher = DummyMatcher()
+        game = Game(matcher, user1, user2, seed=333)
+        await game.start(EngineConst.MODE_QUICK)
+        return matcher
+
+    matcher = asyncio.run(run_game())
+    assert len(matcher.sent) == 1
+    message = str(matcher.sent[0][0])
+    assert "[比赛战报]" in message
+    assert "[数据统计]" in message
+
+
+def test_commentary_templates_have_variants():
+    template_path = Path("bot/src/plugins/psl/engine/templates/commentary.json")
+    data = json.loads(template_path.read_text(encoding="utf-8"))
+    for section in ("routes",):
+        for key, templates in data[section].items():
+            assert len(templates) >= 10, (section, key)
+    for section in ("possession", "report"):
+        for key, templates in data[section].items():
+            assert len(templates) >= 30, (section, key)
+    for key, templates in data["events"].items():
+        assert len(templates) >= 50, ("events", key)

@@ -1,5 +1,9 @@
 import random
 from engine.player import Player
+from engine.commentary import CommentaryRenderer
+
+
+renderer = CommentaryRenderer(random)
 
 
 class Statement:
@@ -264,84 +268,40 @@ class Statement:
 
 class Display:
     def print_short_shot(player, distance):
-        string = random.choice(Statement.SHOT_SHORT)
-        string = string.replace("【球员】", player.coach +
-                                " " + player.getName() + " ")
-        string = string.replace("【距离】", str(distance))
-        return string
+        return renderer.event("short_shot", player=player.coach + " " + player.getName(), distance=distance)
 
     def print_long_shot(player, distance):
-        string = random.choice(Statement.SHOT_LONG)
-        string = string.replace("【球员】", player.coach +
-                                " " + player.getName() + " ")
-        string = string.replace("【距离】", str(distance))
-        return string
+        return renderer.event("long_shot", player=player.coach + " " + player.getName(), distance=distance)
 
     def print_miss_shot():
-        string = random.choice(Statement.SHOT_MISS)
-        return string
+        return renderer.event("miss")
 
     def print_goal(player, gk, assister):
-        string1 = random.choice(Statement.SAVING_FAILED)
-        string1 = string1.replace("【球员】", gk.coach + " " + gk.getName() + " ")
-        string2 = random.choice(Statement.GOAL)
-        string2 = string2.replace("【球员】", gk.coach + " " + gk.getName() + " ")
-        string3 = player.coach + " " + player.getName() + " 破门了！！！"
+        string = renderer.event("goal", player=player.coach + " " + player.getName(), keeper=gk.coach + " " + gk.getName())
         if assister:
-          string3 += "来自 " + assister.getName() + " 的助攻"
-        string = string1 + "\n" + string2 + "\n" + string3
+          string += "，来自 " + assister.getName() + " 的助攻"
         return string
 
     def print_dribbling(offence, defence):
-        string = random.choice(Statement.DRIBBLING)
-        string = string.replace(
-            "【球员1】", offence.coach + " " + offence.getName() + " ")
-        string = string.replace(
-            "【球员2】", defence.coach + " " + defence.getName() + " ")
-        return string
+        return renderer.event("dribble", player=offence.coach + " " + offence.getName(), target=defence.coach + " " + defence.getName())
 
     def print_controlling(player, direction):
-        string = random.choice(Statement.CONTROLLING)
-        string = string.replace("【球员】", player.coach +
-                                " " + player.getName() + " ")
-        string = string.replace("【方位】", direction)
-        return string
+        return renderer.event("carry", player=player.coach + " " + player.getName(), direction=direction)
 
     def print_tackling(offence, defence):
-        string = random.choice(Statement.TACKLING)
-        string = string.replace(
-            "【球员2】", offence.coach + " " + offence.getName() + " ")
-        string = string.replace(
-            "【球员1】", defence.coach + " " + defence.getName() + " ")
-        return string
+        return renderer.event("tackle", player=defence.coach + " " + defence.getName(), target=offence.coach + " " + offence.getName())
 
     def print_saving(gk):
-        string = random.choice(Statement.SAVING)
-        string = string.replace("【球员】", gk.coach + " " + gk.getName() + " ")
-        return string
+        return renderer.event("save", keeper=gk.coach + " " + gk.getName())
 
     def print_interception(player):
-        string = random.choice(Statement.INTERCEPTION)
-        string = string.replace("【球员】", player.coach +
-                                " " + player.getName() + " ")
-        return string
+        return renderer.event("interception", player=player.coach + " " + player.getName())
 
     def print_high_shot(player):
-        string = random.choice(Statement.SHOT_HIGH)
-        string = string.replace("【球员】", player.coach +
-                                " " + player.getName() + " ")
-        return string
+        return renderer.event("high_shot", player=player.coach + " " + player.getName())
 
     def print_short_pass(player1, player2, distance):
-        string = random.choice(Statement.PASS_SHORT)
-        string = string.replace("【球员1】", player1.coach + " " + player1.getName() + " ")
-        string = string.replace("【球员2】", " " +player2.getName() + " ")
-        string = string.replace("【距离】", str(distance))
-        return string
+        return renderer.event("short_pass", player=player1.coach + " " + player1.getName(), target=player2.getName(), distance=distance)
 
     def print_long_pass(player1, player2, distance):
-        string = random.choice(Statement.PASS_LONG)
-        string = string.replace("【球员1】", player1.coach + " " + player1.getName() + " ")
-        string = string.replace("【球员2】", " " +player2.getName() + " ")
-        string = string.replace("【距离】", str(distance))
-        return string
+        return renderer.event("long_pass", player=player1.coach + " " + player1.getName(), target=player2.getName(), distance=distance)

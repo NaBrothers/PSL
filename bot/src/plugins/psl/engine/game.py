@@ -2,6 +2,7 @@ from model.user import User
 from engine.player import Player
 from engine.team import Team
 from engine.const import Const
+from engine.commentary import CommentaryRenderer, event_player_name, event_target_name, xg_text
 from engine.probability import build_shot_context, expected_threat, pass_success_probability
 from utils.image import toImage
 from engine.display import Display
@@ -9,6 +10,20 @@ from engine.display import Display
 import random
 import math
 import time
+from dataclasses import dataclass
+
+
+@dataclass
+class MatchEvent:
+    minute: int
+    event_type: str
+    text: str
+    importance: int = 1
+    team: object = None
+    player: object = None
+    xg: float = 0
+    target: object = None
+    result: str = ""
 
 
 class Game:
@@ -40,8 +55,12 @@ class Game:
         self.print_str = ""
         # 四元组(时间，队伍，进球者，助攻者)
         self.timeline = []
+        self.match_events = []
+        self.current_events = []
+        self.commentary_buffer = []
         self.mode = Const.MODE_NORMAL
         self.rng = rng or random.Random(seed)
+        self.commentary = CommentaryRenderer(self.rng)
         self.possession_action_count = 0
 
     # 比赛主逻辑
@@ -53,6 +72,7 @@ class Game:
         while self.time < 45 * 60:
             self.play_possession()
             if self.time > 45 * 60:
+                self.flush_possession_summary()
                 self.printCase("上半场结束")
             await self.send(self.print_str)
             self.print_str = ""
@@ -67,6 +87,7 @@ class Game:
         while self.time < 45 * 60:
             self.play_possession()
             if self.time > 45 * 60:
+                self.flush_possession_summary()
                 self.printCase("下半场结束")
             await self.send(self.print_str)
             self.print_str = ""
@@ -144,6 +165,10 @@ class Game:
         if self.home.goals_detailed or self.away.goals_detailed:
             self.print_str += "\n"
 
+        report = self.build_match_report()
+        if report:
+            self.print_str += "[比赛战报]\n" + report + "\n"
+
         self.print_str += "[数据统计]\n"
         self.print_str += "控球率：" + str(round(self.home.control*100/(self.home.control+self.away.control), 1)) + \
             "%:" + str(round(self.away.control*100 /
@@ -185,6 +210,7 @@ class Game:
         self.step += 1
         self.offence.possessions += 1
         self.possession_action_count = 0
+        self.current_events = []
         self.reset_action_flag()
         while 1:
             if self.possession_action_count >= 28:
@@ -224,7 +250,7 @@ class Game:
                     case = Display.print_long_shot(self.ball_holder, int(shot.distance))
                 else:
                     case = Display.print_short_shot(self.ball_holder, int(shot.distance))
-                self.printCase(case)
+                self.printCase(case, "shot", 3, self.ball_holder, xg=shot.raw_xg)
                 self.ball_holder.shoots += 1
                 def_players = self.getWayDefencePlayers(
                     self.ball_holder.x, self.ball_holder.y, shoot_x, 0)
@@ -238,7 +264,7 @@ class Game:
 
                     if def_player.intercepting(shoot, distance, self.rng):
                         case = Display.print_interception(def_player)
-                        self.printCase(case)
+                        self.printCase(case, "turnover", 3, def_player)
                         self.swap()
                         self.changeBallHolder(def_player)
                         return
@@ -246,11 +272,11 @@ class Game:
                 if self.rng.random() >= shot.goal_probability:
                     if shoot_x < Const.LEFT_GOALPOST or shoot_x > Const.RIGHT_GOALPOST:
                         case = Display.print_miss_shot()
-                        self.printCase(case)
+                        self.printCase(case, "miss", 3, self.ball_holder, xg=shot.raw_xg)
                     else:
                         self.ball_holder.shoots_in_target += 1
                         case = Display.print_saving(gk)
-                        self.printCase(case)
+                        self.printCase(case, "save", 4, self.ball_holder, gk, shot.raw_xg)
                         gk.saves += 1
                     self.swap()
                     self.changeBallHolderToGK()
@@ -259,7 +285,7 @@ class Game:
                 self.offence.point += 1
                 case = Display.print_goal(
                     self.ball_holder, gk, self.assister)
-                self.printCase(case)
+                self.printCase(case, "goal", 5, self.ball_holder, self.assister, shot.raw_xg)
                 self.ball_holder.goals += 1
                 self.ball_holder.goals_detailed.append(self.getTime())
                 if self.assister:
@@ -277,7 +303,7 @@ class Game:
                     5))
                 case = Display.print_controlling(
                     self.ball_holder, Const.ANGLE[dribble_pos[2]])
-                self.printCase(case)
+                self.printCase(case, "carry", 1, self.ball_holder)
                 def_players = self.getWayDefencePlayers(
                     self.ball_holder.x, self.ball_holder.y, dribble_pos[0], dribble_pos[1])
                 for def_player in def_players:
@@ -290,7 +316,7 @@ class Game:
                     if def_player.intercepting(self.ball_holder.ability["Dribbling"], distance-def_player.ability["Speed"]/10, self.rng):
                         case = Display.print_tackling(
                             self.ball_holder, def_player)
-                        self.printCase(case)
+                        self.printCase(case, "turnover", 3, def_player, self.ball_holder)
                         def_player.tackles += 1
                         self.swap()
                         self.changeBallHolder(def_player)
@@ -298,7 +324,7 @@ class Game:
                     else:
                         case = Display.print_dribbling(
                             self.ball_holder, def_player)
-                        self.printCase(case)
+                        self.printCase(case, "carry", 1, self.ball_holder, def_player)
                         self.ball_holder.dribbles += 1
                         def_player.action_flag = True
                 self.ball_holder.moving(dribble_pos[0], dribble_pos[1])
@@ -313,11 +339,13 @@ class Game:
                         passing_aim)
                     case = Display.print_short_pass(
                         self.ball_holder, passing_aim, int(distance))
-                    self.printCase(case)
+                    pass_event_type = "key_pass" if passing_aim.y <= 25 else "pass"
+                    pass_importance = 2 if pass_event_type == "key_pass" else 1
+                    self.printCase(case, pass_event_type, pass_importance, self.ball_holder, passing_aim)
                     pressure = len(self.getDefencePlayersInArea(self.ball_holder.x, self.ball_holder.y, 10))
                     pass_probability = pass_success_probability(self.ball_holder.ability["Short_Passing"], distance, pressure, False)
                     if self.rng.random() > pass_probability:
-                        self.printCaseWithPlayer(self.ball_holder, "传球失误")
+                        self.printCaseWithPlayer(self.ball_holder, "传球失误", "turnover", 3)
                         self.swap()
                         self.changeRandomBallHolder()
                         return
@@ -332,7 +360,7 @@ class Game:
                         if def_player.intercepting(self.ball_holder.ability["Short_Passing"], distance, self.rng):
                             case = Display.print_tackling(
                                 self.ball_holder, def_player)
-                            self.printCase(case)
+                            self.printCase(case, "turnover", 3, def_player, self.ball_holder)
                             def_player.tackles += 1
                             self.swap()
                             self.changeBallHolder(def_player)
@@ -354,16 +382,18 @@ class Game:
                         passing_aim)
                     case = Display.print_long_pass(
                         self.ball_holder, passing_aim, int(distance))
-                    self.printCase(case)
+                    pass_event_type = "key_pass" if passing_aim.y <= 25 else "long_pass"
+                    pass_importance = 2 if pass_event_type == "key_pass" else 1
+                    self.printCase(case, pass_event_type, pass_importance, self.ball_holder, passing_aim)
                     pressure = len(self.getDefencePlayersInArea(self.ball_holder.x, self.ball_holder.y, 12))
                     pass_probability = pass_success_probability(passing_ability, distance, pressure, True)
                     if self.rng.random() > pass_probability:
-                        self.printCaseWithPlayer(self.ball_holder, "长传失误")
+                        self.printCaseWithPlayer(self.ball_holder, "长传失误", "turnover", 3)
                         self.swap()
                         self.changeRandomBallHolder()
                         return
                     if self.getLastSecondDefencePlayer().y > passing_aim.y and passing_aim.y < Const.LENGTH / 2:
-                        self.printCaseWithPlayer(passing_aim, "处在越位位置")
+                        self.printCaseWithPlayer(passing_aim, "处在越位位置", "turnover", 3)
                         self.swap()
                         self.changeBallHolderToGK()
                         return
@@ -377,7 +407,7 @@ class Game:
                     roll_point_players = self.getPlayersInArea(
                         passing_aim.x, passing_aim.y, 15 * distance / passing_ability)
                     if len(roll_point_players) == 0:
-                        self.printCaseWithPlayer(self.ball_holder, "传球出界")
+                        self.printCaseWithPlayer(self.ball_holder, "传球出界", "turnover", 3)
                         self.swap()
                         self.changeBallHolderToGK()
                         return
@@ -391,7 +421,7 @@ class Game:
                             largest_point = rand
                             roll_winner = player
                     if self.isDefencePlayer(roll_winner):
-                        self.printCaseWithPlayer(roll_winner, "顶到了球")
+                        self.printCaseWithPlayer(roll_winner, "顶到了球", "turnover", 3)
                         self.swap()
                         self.changeRandomBallHolder()
                         return
@@ -409,11 +439,11 @@ class Game:
                             header_shot = self.create_shot(roll_winner, len(self.getDefencePlayersInArea(roll_winner.x, roll_winner.y, 10)), True)
                             self.record_shot_quality(header_shot, roll_winner)
                             case = Display.print_high_shot(roll_winner)
-                            self.printCase(case)
+                            self.printCase(case, "shot", 3, roll_winner, xg=header_shot.raw_xg)
                             gk = self.getDefenceGK()
                             if self.rng.random() >= header_shot.goal_probability:
                                 case = Display.print_saving(gk)
-                                self.printCase(case)
+                                self.printCase(case, "save", 4, roll_winner, gk, header_shot.raw_xg)
                                 gk.saves += 1
                                 self.swap()
                                 self.changeBallHolderToGK()
@@ -421,7 +451,7 @@ class Game:
                                 self.offence.point += 1
                                 case = Display.print_goal(
                                     roll_winner, gk, self.assister)
-                                self.printCase(case)
+                                self.printCase(case, "goal", 5, roll_winner, self.assister, header_shot.raw_xg)
                                 roll_winner.goals += 1
                                 roll_winner.goals_detailed.append(
                                     self.getTime())
@@ -453,6 +483,7 @@ class Game:
     # 互换攻守方
 
     def swap(self):
+        self.flush_possession_summary()
         tmp = self.offence
         self.offence = self.defence
         self.defence = tmp
@@ -659,21 +690,127 @@ class Game:
         return min2_player
 
     # 打印球场事件
-    def printCase(self, case):
+    def printCase(self, case, event_type=None, importance=None, player=None, target=None, xg=0, result=""):
         minute = int(self.time / 60)
         second = self.time % 60
         lines = case.split("\n")
         for line in lines:
-            if self.mode != Const.MODE_QUICK and self.mode != Const.MODE_SILENCE:
-                print("主" + str(self.home.point) + ":" + str(self.away.point) +
-                      "客 " + self.half + str(minute) + ":" + str(second) + " " + line)
-            self.print_str += "主" + str(self.home.point) + ":" + str(self.away.point) + \
-                "客 " + self.half + str(minute) + ":" + \
-                str(second) + " " + line + "\n"
+            self.record_event(line, minute, importance, event_type, player, target, xg, result)
 
     # 打印球员事件
-    def printCaseWithPlayer(self, player, case):
-        self.printCase(player.coach + " " + player.getName() + " " + case)
+    def printCaseWithPlayer(self, player, case, event_type=None, importance=None):
+        self.printCase(player.coach + " " + player.getName() + " " + case, event_type, importance, player)
+
+    def record_event(self, text, minute=None, importance=None, event_type=None, player=None, target=None, xg=0, result=""):
+        if minute is None:
+            minute = self.getTime()
+        if event_type is None or importance is None:
+            event_type, importance = self.classify_event(text)
+        event = MatchEvent(minute, event_type, text, importance, self.offence, player, xg, target, result)
+        self.current_events.append(event)
+        self.match_events.append(event)
+
+    def classify_event(self, text):
+        if "破门" in text or "入网" in text or "进了" in text:
+            return "goal", 5
+        if "扑救" in text or "扑出" in text or "抱住" in text or "挡了出去" in text:
+            return "save", 4
+        if "射门" in text or "打门" in text or "攻门" in text or "怒射" in text:
+            return "shot", 3
+        if "偏" in text or "横梁" in text or "立柱" in text or "打歪" in text:
+            return "miss", 3
+        if "拦" in text or "断" in text or "铲" in text or "顶到了球" in text:
+            return "turnover", 3
+        if "失误" in text or "出界" in text or "越位" in text:
+            return "turnover", 3
+        if "长传" in text or "传中" in text:
+            return "long_pass", 2
+        if "传" in text:
+            return "pass", 1
+        if "带球" in text or "过掉" in text or "推进" in text or "切入" in text:
+            return "carry", 1
+        return "other", 1
+
+    def flush_possession_summary(self):
+        if not self.current_events:
+            return
+        summary = self.summarize_possession(self.current_events)
+        self.current_events = []
+        if not summary:
+            return
+        minute = self.getTime()
+        line = str(minute) + "' " + summary
+        if self.mode == Const.MODE_NORMAL:
+            self.print_str += line + "\n"
+
+    def summarize_possession(self, events):
+        team_name = self.offence.coach.name
+        result = self.find_result_event(events)
+        route = self.describe_route(events)
+        if result:
+            key = result.event_type if result.event_type in ("goal", "save", "miss", "turnover") else "quiet"
+            return self.commentary.possession(
+                key,
+                team=team_name,
+                route=route,
+                player=event_player_name(result),
+                target=event_target_name(result),
+                xg_text=xg_text(result.xg),
+            )
+        passes = len([event for event in events if event.event_type in ("pass", "long_pass")])
+        carries = len([event for event in events if event.event_type == "carry"])
+        if passes + carries < 4:
+            return ""
+        if any(event.event_type == "long_pass" for event in events):
+            return self.commentary.possession("quiet", route=self.commentary.route("long_pass", team=team_name))
+        if carries >= 2:
+            return self.commentary.possession("quiet", route=self.commentary.route("carry", team=team_name))
+        return self.commentary.possession("quiet", route=self.commentary.route("pass", team=team_name))
+
+    def find_result_event(self, events):
+        for event in reversed(events):
+            if event.event_type in ("goal", "save", "miss", "turnover"):
+                return event
+        for event in reversed(events):
+            if event.event_type == "shot":
+                return event
+        return None
+
+    def describe_route(self, events):
+        long_passes = len([event for event in events if event.event_type == "long_pass"])
+        key_passes = len([event for event in events if event.event_type == "key_pass"])
+        carries = len([event for event in events if event.event_type == "carry"])
+        passes = len([event for event in events if event.event_type == "pass"])
+        if key_passes:
+            return self.commentary.route("key_pass", team=self.offence.coach.name)
+        if long_passes:
+            return self.commentary.route("long_pass", team=self.offence.coach.name)
+        if carries >= 2:
+            return self.commentary.route("carry", team=self.offence.coach.name)
+        if passes >= 5:
+            return self.commentary.route("pass", team=self.offence.coach.name)
+        if passes:
+            return self.commentary.route("pass", team=self.offence.coach.name)
+        return self.commentary.route("default", team=self.offence.coach.name)
+
+    def build_match_report(self):
+        selected = [event for event in self.match_events if event.importance >= 3]
+        if not selected:
+            return self.commentary.report("quiet") + "\n"
+        selected = selected[-8:]
+        lines = []
+        for event in selected:
+            if event.event_type == "goal":
+                lines.append(self.commentary.report("goal", minute=event.minute, player=event_player_name(event), xg_text=xg_text(event.xg)))
+            elif event.event_type == "save":
+                lines.append(self.commentary.report("save", minute=event.minute, player=event_player_name(event), target=event_target_name(event), xg_text=xg_text(event.xg)))
+            elif event.event_type == "miss":
+                lines.append(self.commentary.report("miss", minute=event.minute, player=event_player_name(event), xg_text=xg_text(event.xg)))
+            elif event.event_type == "turnover":
+                lines.append(self.commentary.report("turnover", minute=event.minute, player=event_player_name(event, "防守球员")))
+            else:
+                lines.append(str(event.minute) + "' " + event.text)
+        return "\n".join(lines) + "\n"
 
     def getTime(self):
         if self.half == "上半时":
