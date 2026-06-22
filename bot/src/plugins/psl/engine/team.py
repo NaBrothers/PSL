@@ -63,6 +63,16 @@ class Team:
     return players
     
   def getStats(self):
+    self.shoots = 0
+    self.shoots_in_target = 0
+    self.goals = 0
+    self.passes = 0
+    self.successful_passes = 0
+    self.dribbles = 0
+    self.assists = 0
+    self.tackles = 0
+    self.saves = 0
+    self.goals_detailed = []
     for player in self.players:
       self.shoots += player.shoots
       self.shoots_in_target += player.shoots_in_target

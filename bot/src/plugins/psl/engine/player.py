@@ -1,5 +1,6 @@
 from model.card import Card
 from engine.const import Const
+from engine.probability import contest_success, logistic_probability, shot_on_target_probability
 import random
 import math
 import sys
@@ -51,7 +52,8 @@ class Player:
 
 
   # 无球跑动-无球行为
-  def off_ball_moving(self, ball_holder, team_mate_in_range):
+  def off_ball_moving(self, ball_holder, team_mate_in_range, rng=None):
+    rng = rng or random
     if self in team_mate_in_range:
       del team_mate_in_range[team_mate_in_range.index(self)]
     if self.position == "GK":
@@ -61,10 +63,10 @@ class Player:
       if distance_default > 30:
         self.approaching(self.default_x, self.default_y)
       if len(team_mate_in_range) > 0:
-        self.go_away(team_mate_in_range[0].x, team_mate_in_range[0].y)
+        self.go_away(team_mate_in_range[0].x, team_mate_in_range[0].y, rng)
         return
       distance_ball = self.get_distance_player(ball_holder)
-      rand = random.randint(0, int(distance_default * 100 + distance_ball * 100))
+      rand = rng.randint(0, int(distance_default * 100 + distance_ball * 100))
       if rand < distance_default * 100:
         self.approaching(self.default_x, self.default_y)
       else:
@@ -86,10 +88,11 @@ class Player:
       self.moving(aim_x, aim_y)
 
   # 远离指定点-无球行为
-  def go_away(self, x, y):
+  def go_away(self, x, y, rng=None):
+    rng = rng or random
     distance = self.get_distance(x, y)
     if distance == 0:
-      rand = random.randint(0, 360)
+      rand = rng.randint(0, 360)
       aim_x = self.x + self.ability["Speed"] * math.cos(rand * math.pi / 180) / 10
       aim_y = self.x + self.ability["Speed"] * math.sin(rand * math.pi / 180) / 10
     else:
@@ -116,23 +119,28 @@ class Player:
            best_angle
 
   # 射门-持球行为
-  def shooting(self):
+  def shooting(self, pressure=0, rng=None):
+    rng = rng or random
     distance = self.get_distance(Const.WIDTH / 2, 0)
     shoot_ability = self.ability["Finishing"] if distance < 25 else self.ability["Long_Shot"]
-    miss_rate = distance/shoot_ability
-    miss_rate = miss_rate/(miss_rate + 1)
-    random_min = (Const.LEFT_GOALPOST - Const.GOAL_WIDTH * miss_rate / 2) * 100
-    random_max = (Const.RIGHT_GOALPOST + Const.GOAL_WIDTH * miss_rate / 2) * 100
-    rand = random.randint(int(random_min), int(random_max))
-    return rand / 100
+    on_target = rng.random() < shot_on_target_probability(distance, shoot_ability, pressure)
+    if on_target:
+      random_min = Const.LEFT_GOALPOST * 100
+      random_max = Const.RIGHT_GOALPOST * 100
+    else:
+      miss_width = Const.GOAL_WIDTH * (0.5 + distance / max(shoot_ability, 1))
+      random_min = (Const.LEFT_GOALPOST - miss_width) * 100
+      random_max = (Const.RIGHT_GOALPOST + miss_width) * 100
+    return rng.randint(int(random_min), int(random_max)) / 100
 
   # 选择传球目标-持球行为
-  def passing(self, team_mates: list):
+  def passing(self, team_mates: list, rng=None):
+    rng = rng or random
     best_choice_player = team_mates[0]
     best_value = sys.maxsize
     for player in team_mates:
-      cur_value = (20 + 2 * self.get_distance_player(player) + random.randint(1, 100)) * \
-                  (10 + player.get_distance(Const.WIDTH / 2, 0) + random.randint(1, 100))
+      cur_value = (20 + 2 * self.get_distance_player(player) + rng.randint(1, 100)) * \
+                  (10 + player.get_distance(Const.WIDTH / 2, 0) + rng.randint(1, 100))
       if cur_value < best_value:
         best_value = cur_value
         best_choice_player = player
@@ -145,7 +153,8 @@ class Player:
 
 
   # 拦截-被动触发
-  def intercepting(self, ability, distance):
+  def intercepting(self, ability, distance, rng=None):
+    rng = rng or random
     if distance < 0:
       distance = 0
     tackling = self.ability["Tackling"]
@@ -153,42 +162,34 @@ class Player:
     efficiency = (def_v - distance) / def_v
     if efficiency <= 0:
       return False
-    success_rate = self.get_success_rate(tackling * efficiency, ability)
-    rand = random.randint(0, int((success_rate + 1)*100))
-    if rand < 100:
-      return False
-    else:
-      return True
+    return contest_success(rng, tackling * efficiency, ability, scale=11, floor=0.02, ceiling=0.88)
 
   # 扑救-被动触发
-  def saving(self, shoot_ability, distance, shoot_place):
+  def saving(self, shoot_ability, distance, shoot_place, rng=None):
+    rng = rng or random
     # success_rate = self.get_success_rate(self.ability["GK_Saving"], shoot_ability) *\
     #   math.pow(distance, 0.6)*self.ability["GK_Reaction"]*math.pow(shoot_ability, -1)/4 *\
     #   math.pow(1.1, math.pow(self.ability["GK_Positioning"], 1.5)/shoot_ability-shoot_place)*0.65
-    success_rate = self.get_success_rate(self.ability["GK_Saving"], shoot_ability) *\
-      self.get_success_rate(self.ability["GK_Positioning"]/6, shoot_place*10) *\
-      self.get_success_rate(self.ability["GK_Reaction"]/6 + distance, 30)
-    rand = random.randint(0, int((success_rate + 1)*100))
-    if rand < 100:
-      return False
-    else:
-      return True
+    gk_ability = self.ability["GK_Saving"] * 0.55 + self.ability["GK_Reaction"] * 0.3 + self.ability["GK_Positioning"] * 0.15
+    goal_probability = logistic_probability(shoot_ability - distance * 0.7 + shoot_place * 1.5, gk_ability, scale=14, floor=0.03, ceiling=0.85)
+    return rng.random() >= goal_probability
 
   # 动作成功率
   def get_success_rate(self, self_ability, opposite_ability):
     return math.pow(1.1, self_ability - opposite_ability)
 
   # 持球行为选择
-  def choose_holding_action_type(self, defence_players_number, shoot_defence_players_number):
+  def choose_holding_action_type(self, defence_players_number, shoot_defence_players_number, rng=None):
+    rng = rng or random
     shoot_rate_factor = self.get_shooting_rate(shoot_defence_players_number) * 100
     if shoot_rate_factor > 0:
-      rand = random.randint(0, 100)
+      rand = rng.randint(0, 100)
       if rand < shoot_rate_factor:
         return "SHOOT"
     dribbling_rate_factor = self.get_dribbling_rate(defence_players_number) * 100
     passing_rate_factor = self.get_passing_rate(defence_players_number) * 100
     sum_rate_factor = dribbling_rate_factor + passing_rate_factor
-    rand = random.randint(0, int(sum_rate_factor))
+    rand = rng.randint(0, int(sum_rate_factor))
     if rand < dribbling_rate_factor and self.get_distance(self.default_x, self.default_y) < 25:
       return "DRIBBLE"
     else:

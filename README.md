@@ -52,3 +52,9 @@ python3 bot/bot.py
 ```
 python3 -m pytest tests -q
 ```
+
+批量模拟比赛用于检查引擎数值平衡：
+
+```
+python3 scripts/simulate_matches.py --matches 100 --seed 1 --home-star 3 --away-star 3
+```

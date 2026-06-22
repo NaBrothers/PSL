@@ -2,6 +2,7 @@ from model.user import User
 from engine.player import Player
 from engine.team import Team
 from engine.const import Const
+from engine.probability import contest_success
 from utils.image import toImage
 from engine.display import Display
 # from display import Display
@@ -12,7 +13,7 @@ import time
 
 class Game:
 
-    def __init__(self, matcher, user1, user2, npc=-1, difficulty=0):
+    def __init__(self, matcher, user1, user2, npc=-1, difficulty=0, seed=None, rng=None):
         # bot回调函数
         self.matcher = matcher
         # 当前回合
@@ -40,6 +41,7 @@ class Game:
         # 四元组(时间，队伍，进球者，助攻者)
         self.timeline = []
         self.mode = Const.MODE_NORMAL
+        self.rng = rng or random.Random(seed)
 
     # 比赛主逻辑
     async def start(self, mode):
@@ -153,8 +155,9 @@ class Game:
             str(self.home.shoots) + ":" + str(self.away.shoots) + "\n"
         self.print_str += "传球：" + \
             str(self.home.passes) + ":" + str(self.away.passes) + "\n"
-        self.print_str += "传球成功率：" + str(round(self.home.successful_passes*100/self.home.passes, 1)) + "%:" + str(
-            round(self.away.successful_passes*100/self.away.passes, 1)) + "%\n"
+        home_pass_rate = 0 if self.home.passes == 0 else round(self.home.successful_passes*100/self.home.passes, 1)
+        away_pass_rate = 0 if self.away.passes == 0 else round(self.away.successful_passes*100/self.away.passes, 1)
+        self.print_str += "传球成功率：" + str(home_pass_rate) + "%:" + str(away_pass_rate) + "%\n"
         self.print_str += "过人：" + \
             str(self.home.dribbles) + ":" + str(self.away.dribbles) + "\n"
         self.print_str += "抢断：" + \
@@ -195,10 +198,11 @@ class Game:
             # 持球人行为选择
             holder_action = self.ball_holder.choose_holding_action_type(
                 defence_players_number,
-                shoot_defence_players_number
+                shoot_defence_players_number,
+                self.rng
             )
             if holder_action == "SHOOT":
-                shoot_x = self.ball_holder.shooting()
+                shoot_x = self.ball_holder.shooting(shoot_defence_players_number, self.rng)
                 distance = int(self.ball_holder.get_distance(shoot_x, 0))
                 if distance >= 20:
                     case = Display.print_long_shot(self.ball_holder, distance)
@@ -230,14 +234,14 @@ class Game:
                         distance = def_player.get_distance_line(
                             self.ball_holder.x, self.ball_holder.y, Const.WIDTH / 2, 0)
 
-                        if def_player.intercepting(shoot, distance):
+                        if def_player.intercepting(shoot, distance, self.rng):
                             case = Display.print_interception(def_player)
                             self.printCase(case)
                             self.swap()
                             self.changeBallHolder(def_player)
                             return
                     gk = self.getDefenceGK()
-                    if gk.saving(shoot, self.ball_holder.get_distance(shoot_x, 0), math.fabs(shoot_x-Const.WIDTH/2)) and gk.y < self.ball_holder.y:
+                    if gk.saving(shoot, self.ball_holder.get_distance(shoot_x, 0), math.fabs(shoot_x-Const.WIDTH/2), self.rng) and gk.y < self.ball_holder.y:
                         case = Display.print_saving(gk)
                         self.printCase(case)
                         gk.saves += 1
@@ -275,7 +279,7 @@ class Game:
                     distance = def_player.get_distance_line(
                         self.ball_holder.x, self.ball_holder.y, dribble_pos[0], dribble_pos[1])
 
-                    if def_player.intercepting(self.ball_holder.ability["Dribbling"], distance-def_player.ability["Speed"]/10):
+                    if def_player.intercepting(self.ball_holder.ability["Dribbling"], distance-def_player.ability["Speed"]/10, self.rng):
                         case = Display.print_tackling(
                             self.ball_holder, def_player)
                         self.printCase(case)
@@ -292,7 +296,7 @@ class Game:
                 self.ball_holder.moving(dribble_pos[0], dribble_pos[1])
             elif holder_action == "PASS":
                 self.ball_holder.passes += 1
-                passing = self.ball_holder.passing(self.getOffenceTeamMates())
+                passing = self.ball_holder.passing(self.getOffenceTeamMates(), self.rng)
                 passing_type = passing[0]
                 passing_aim = passing[1]
                 if passing_type == "ROLLING":
@@ -309,7 +313,7 @@ class Game:
                         # 计算防守球员到球路的距离
                         distance = def_player.get_distance_line(
                             self.ball_holder.x, self.ball_holder.y, passing_aim.x, passing_aim.y)
-                        if def_player.intercepting(self.ball_holder.ability["Short_Passing"], distance):
+                        if def_player.intercepting(self.ball_holder.ability["Short_Passing"], distance, self.rng):
                             case = Display.print_tackling(
                                 self.ball_holder, def_player)
                             self.printCase(case)
@@ -356,7 +360,7 @@ class Game:
                     for player in roll_point_players:
                         random_max = int(
                             player.ability["Heading"] * 100 / (player.get_distance_player(passing_aim) + 1))
-                        rand = random.randint(0, random_max)
+                        rand = self.rng.randint(0, random_max)
                         if rand > largest_point:
                             largest_point = rand
                             roll_winner = player
@@ -370,14 +374,14 @@ class Game:
                         self.assister = self.ball_holder
                         distance_goal = roll_winner.get_distance(
                             Const.WIDTH / 2, 0)
-                        rand = random.randint(
+                        rand = self.rng.randint(
                             0, int(roll_winner.ability["Heading"] + distance_goal * 10))
                         if rand < roll_winner.ability["Heading"] and distance_goal < 25:
                             case = Display.print_high_shot(roll_winner)
                             self.printCase(case)
                             gk = self.getDefenceGK()
                             if distance_goal < 25 and \
-                                    random.randint(0, int(5 * gk.ability["GK_Saving"] * (25 - distance_goal))) > 25 * roll_winner.ability["Heading"] and \
+                                    contest_success(self.rng, gk.ability["GK_Saving"] * (25 - distance_goal) / 5, roll_winner.ability["Heading"], scale=16, floor=0.05, ceiling=0.9) and \
                                         gk.y < roll_winner.y:
                                 case = Display.print_saving(gk)
                                 self.printCase(case)
@@ -411,7 +415,7 @@ class Game:
                 if player.action_flag or player == self.ball_holder:
                     continue
                 player.off_ball_moving(
-                    self.ball_holder, self.getOffencePlayersInArea(player.x, player.y, 10))
+                    self.ball_holder, self.getOffencePlayersInArea(player.x, player.y, 10), self.rng)
             self.swapPosition(self.defence)
             # for player in self.defence.players:
             #   print(player.name + " " + str(int(player.x)) + " " + str(int(player.y)))
@@ -455,7 +459,7 @@ class Game:
 
     # 随机转换持球人
     def changeRandomBallHolder(self):
-        player = self.offence.players[random.randint(0, 10)]
+        player = self.offence.players[self.rng.randint(0, 10)]
         self.changeBallHolder(player)
 
     # 转换持球人为门将
