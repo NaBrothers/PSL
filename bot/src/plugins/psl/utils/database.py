@@ -54,7 +54,7 @@ class SQLiteCursor:
 class Database:
 
     def __init__(self):
-        self.db_path = os.path.join(PROJECT_DIR, "psl.db")
+        self.db_path = os.environ.get("PSL_DB_PATH", os.path.join(PROJECT_DIR, "psl.db"))
         self.db = sqlite3.connect(self.db_path, check_same_thread=False)
         self.db.execute("PRAGMA journal_mode=WAL")
         self.db.execute("PRAGMA foreign_keys=ON")

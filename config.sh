@@ -3,7 +3,7 @@
 echo "====== Required OS: Ubuntu 20.04+ / macOS"
 
 echo "====== 安装 Python 依赖库"
-pip3 install nonebot2[fastapi] nonebot-adapter-onebot pydantic-settings requests pillow
+pip3 install nonebot2[fastapi] nonebot-adapter-onebot pydantic-settings requests pillow pytest
 
 echo "====== 初始化 SQLite 数据库"
 python3 database/init_db.py

@@ -301,6 +301,11 @@ def import_players(conn):
     print(f"Imported {len(rows)} players successfully")
 
 
+def initialize_database(conn):
+    conn.executescript(SCHEMAS)
+    import_players(conn)
+
+
 def main():
     if os.path.exists(DB_PATH):
         if "--force" not in sys.argv:
@@ -311,8 +316,7 @@ def main():
 
     print(f"Creating database at {DB_PATH}")
     conn = sqlite3.connect(DB_PATH)
-    conn.executescript(SCHEMAS)
-    import_players(conn)
+    initialize_database(conn)
     conn.close()
     print("Done!")
 
