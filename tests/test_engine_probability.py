@@ -243,3 +243,5 @@ def test_commentary_templates_have_variants():
             assert len(templates) >= 30, (section, key)
     for key, templates in data["events"].items():
         assert len(templates) >= 50, ("events", key)
+        openings = {template.split("，")[0] for template in templates}
+        assert len(openings) >= 10, ("events", key)
