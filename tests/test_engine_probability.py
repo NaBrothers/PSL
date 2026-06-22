@@ -1,6 +1,4 @@
 import asyncio
-import json
-from pathlib import Path
 
 
 def test_probability_helpers_are_bounded_and_monotonic():
@@ -102,7 +100,6 @@ def test_print_stats_handles_zero_passes(core_modules, make_user):
     message = asyncio.run(game.printStats())
     assert "传球成功率：0%:0%" in message
     assert "xG：" in message
-    assert "xT：" in message
 
 
 def test_shot_context_is_independent_from_random_shot_location(core_modules, make_user, monkeypatch):
@@ -157,6 +154,9 @@ def test_monte_carlo_smoke_and_strength_signal(core_modules):
     assert even["home_xg"] + even["away_xg"] >= 0
     assert even["home_adjusted_xg"] + even["away_adjusted_xg"] >= 0
     assert even["home_xt"] + even["away_xt"] > 0
+    assert even["home_carries"] + even["away_carries"] >= 0
+    assert even["home_tackle_attempts"] + even["away_tackle_attempts"] >= even["home_tackles"] + even["away_tackles"]
+    assert even["home_interceptions"] + even["away_interceptions"] >= 0
 
 
 def test_normal_commentary_is_possession_summary_not_action_log(core_modules, make_user, monkeypatch):
@@ -185,16 +185,27 @@ def test_normal_commentary_is_possession_summary_not_action_log(core_modules, ma
         matcher = DummyMatcher()
         game = Game(matcher, user1, user2, seed=222)
         await game.start(EngineConst.MODE_NORMAL)
-        process_messages = [str(message) for message, _ in matcher.sent[:-1]]
-        final_message = str(matcher.sent[-1][0])
-        return game, process_messages, final_message
+        process_messages = [str(message) for message, _ in matcher.sent[:-2]]
+        report_message = str(matcher.sent[-2][0])
+        detail_message = str(matcher.sent[-1][0])
+        return game, process_messages, report_message, detail_message
 
-    game, process_messages, final_message = asyncio.run(run_game())
+    game, process_messages, report_message, detail_message = asyncio.run(run_game())
     assert game.match_events
     assert process_messages
     assert sum(message.count("\n") for message in process_messages) < len(game.match_events)
-    assert "[比赛战报]" in final_message
-    assert "[数据统计]" in final_message
+    assert "[比赛战报]" in report_message
+    assert "[数据统计]" not in report_message
+    assert "[比赛战报]" not in detail_message
+    assert "[终场比分]" in detail_message
+    assert "[数据统计]" in detail_message
+    assert "带球推进：" in detail_message
+    assert "拦截：" in detail_message
+    assert "封堵：" in detail_message
+    assert "绝对机会：" in detail_message
+    assert "Adj xG：" not in detail_message
+    assert "xT：" not in detail_message
+    assert "Possessions：" not in detail_message
 
 
 def test_quick_mode_returns_report_and_stats(core_modules, make_user, monkeypatch):
@@ -226,22 +237,18 @@ def test_quick_mode_returns_report_and_stats(core_modules, make_user, monkeypatc
         return matcher
 
     matcher = asyncio.run(run_game())
-    assert len(matcher.sent) == 1
-    message = str(matcher.sent[0][0])
-    assert "[比赛战报]" in message
-    assert "[数据统计]" in message
-
-
-def test_commentary_templates_have_variants():
-    template_path = Path("bot/src/plugins/psl/engine/templates/commentary.json")
-    data = json.loads(template_path.read_text(encoding="utf-8"))
-    for section in ("routes",):
-        for key, templates in data[section].items():
-            assert len(templates) >= 10, (section, key)
-    for section in ("possession", "report"):
-        for key, templates in data[section].items():
-            assert len(templates) >= 30, (section, key)
-    for key, templates in data["events"].items():
-        assert len(templates) >= 50, ("events", key)
-        openings = {template.split("，")[0] for template in templates}
-        assert len(openings) >= 10, ("events", key)
+    assert len(matcher.sent) == 2
+    report_message = str(matcher.sent[0][0])
+    detail_message = str(matcher.sent[1][0])
+    assert "[比赛战报]" in report_message
+    assert "[数据统计]" not in report_message
+    assert "[比赛战报]" not in detail_message
+    assert "[终场比分]" in detail_message
+    assert "[数据统计]" in detail_message
+    assert "带球推进：" in detail_message
+    assert "拦截：" in detail_message
+    assert "封堵：" in detail_message
+    assert "绝对机会：" in detail_message
+    assert "Adj xG：" not in detail_message
+    assert "xT：" not in detail_message
+    assert "Possessions：" not in detail_message

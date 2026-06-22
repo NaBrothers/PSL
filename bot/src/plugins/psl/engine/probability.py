@@ -33,7 +33,7 @@ class ShotContext:
 def shot_on_target_probability(distance, shoot_ability, pressure=0):
   angle_factor = clamp(1.0 - distance / 38.0, 0.02, 0.55)
   ability_factor = logistic_probability(shoot_ability, 96 + pressure * 5, scale=20, floor=0.04, ceiling=0.48)
-  return clamp(angle_factor * 0.22 + ability_factor * 0.14 - pressure * 0.045, 0.02, 0.38)
+  return clamp(angle_factor * 0.28 + ability_factor * 0.18 - pressure * 0.04, 0.025, 0.45)
 
 
 def shot_goal_probability(shoot_ability, gk_ability, distance, shoot_place):

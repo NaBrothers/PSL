@@ -31,8 +31,13 @@ class Team:
     self.passes = 0
     self.successful_passes = 0
     self.dribbles = 0
+    self.carries = 0
+    self.progressive_carries = 0
     self.assists = 0
     self.tackles = 0
+    self.tackle_attempts = 0
+    self.interceptions = 0
+    self.blocks = 0
     self.saves = 0
     self.xg = 0
     self.adjusted_xg = 0
@@ -76,8 +81,13 @@ class Team:
     self.passes = 0
     self.successful_passes = 0
     self.dribbles = 0
+    self.carries = 0
+    self.progressive_carries = 0
     self.assists = 0
     self.tackles = 0
+    self.tackle_attempts = 0
+    self.interceptions = 0
+    self.blocks = 0
     self.saves = 0
     self.goals_detailed = []
     for player in self.players:
@@ -87,8 +97,13 @@ class Team:
       self.passes += player.passes
       self.successful_passes += player.successful_passes
       self.dribbles += player.dribbles
+      self.carries += player.carries
+      self.progressive_carries += player.progressive_carries
       self.assists += player.assists
       self.tackles += player.tackles
+      self.tackle_attempts += player.tackle_attempts
+      self.interceptions += player.interceptions
+      self.blocks += player.blocks
       self.saves += player.saves
       if player.goals_detailed:
         self.goals_detailed.append((player.getName(), player.goals_detailed))

@@ -77,8 +77,16 @@ async def run_matches(count, seed, home_star, away_star):
     "away_successful_passes": 0,
     "home_dribbles": 0,
     "away_dribbles": 0,
+    "home_carries": 0,
+    "away_carries": 0,
     "home_tackles": 0,
     "away_tackles": 0,
+    "home_tackle_attempts": 0,
+    "away_tackle_attempts": 0,
+    "home_interceptions": 0,
+    "away_interceptions": 0,
+    "home_blocks": 0,
+    "away_blocks": 0,
     "home_saves": 0,
     "away_saves": 0,
     "home_control": 0,
@@ -115,8 +123,16 @@ async def run_matches(count, seed, home_star, away_star):
     result["away_successful_passes"] += game.away.successful_passes
     result["home_dribbles"] += game.home.dribbles
     result["away_dribbles"] += game.away.dribbles
+    result["home_carries"] += game.home.carries
+    result["away_carries"] += game.away.carries
     result["home_tackles"] += game.home.tackles
     result["away_tackles"] += game.away.tackles
+    result["home_tackle_attempts"] += game.home.tackle_attempts
+    result["away_tackle_attempts"] += game.away.tackle_attempts
+    result["home_interceptions"] += game.home.interceptions
+    result["away_interceptions"] += game.away.interceptions
+    result["home_blocks"] += game.home.blocks
+    result["away_blocks"] += game.away.blocks
     result["home_saves"] += game.home.saves
     result["away_saves"] += game.away.saves
     result["home_control"] += game.home.control
@@ -159,7 +175,11 @@ def print_report(result):
   print("avg_passes:", round(result["home_passes"] / matches, 2), "-", round(result["away_passes"] / matches, 2))
   print("pass_success_pct:", round(home_pass_rate, 1), "-", round(away_pass_rate, 1))
   print("avg_dribbles:", round(result["home_dribbles"] / matches, 2), "-", round(result["away_dribbles"] / matches, 2))
+  print("avg_carries:", round(result["home_carries"] / matches, 2), "-", round(result["away_carries"] / matches, 2))
   print("avg_tackles:", round(result["home_tackles"] / matches, 2), "-", round(result["away_tackles"] / matches, 2))
+  print("avg_tackle_attempts:", round(result["home_tackle_attempts"] / matches, 2), "-", round(result["away_tackle_attempts"] / matches, 2))
+  print("avg_interceptions:", round(result["home_interceptions"] / matches, 2), "-", round(result["away_interceptions"] / matches, 2))
+  print("avg_blocks:", round(result["home_blocks"] / matches, 2), "-", round(result["away_blocks"] / matches, 2))
   print("avg_saves:", round(result["home_saves"] / matches, 2), "-", round(result["away_saves"] / matches, 2))
   print("control_pct:", round(home_control, 1), "-", round(away_control, 1))
   print("avg_xg:", round(result["home_xg"] / matches, 2), "-", round(result["away_xg"] / matches, 2))

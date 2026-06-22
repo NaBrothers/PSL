@@ -35,8 +35,13 @@ class Player:
     self.successful_passes = 0
     self.assists = 0
     self.tackles = 0
+    self.tackle_attempts = 0
+    self.interceptions = 0
+    self.blocks = 0
     self.saves = 0
     self.dribbles = 0
+    self.carries = 0
+    self.progressive_carries = 0
     self.goals_detailed = []
 
   # def __init__(self, name, position, ability, x, y):

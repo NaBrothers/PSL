@@ -62,6 +62,7 @@ class Game:
         self.rng = rng or random.Random(seed)
         self.commentary = CommentaryRenderer(self.rng)
         self.possession_action_count = 0
+        self.possession_box_touches = 0
 
     # 比赛主逻辑
     async def start(self, mode):
@@ -109,13 +110,17 @@ class Game:
         if self.mode == Const.MODE_SILENCE:
             return
 
-        self.print_str += "[终场比分]\n"
-        self.print_str += "主 " + self.home.coach.name + " " + \
+        report = self.build_match_report()
+        if report:
+            await self.matcher.send(toImage("[比赛战报]\n" + report))
+
+        detail_msg = "[终场比分]\n"
+        detail_msg += "主 " + self.home.coach.name + " " + \
             str(self.home.point) + ":" + str(self.away.point) + \
             " " + self.away.coach.name + " 客\n\n"
 
         if self.timeline:
-            self.print_str += "[比赛事件]\n"
+            detail_msg += "[比赛事件]\n"
             maxLen = -1
             for case in self.timeline:
                 if case[1] == self.home:
@@ -125,81 +130,65 @@ class Game:
             maxLen = max(maxLen+2, 8)
             for case in self.timeline:
                 if case[1] == self.home:
-                    self.print_str += case[2].getName().rjust(maxLen) + "   ⚽ "
-                    self.print_str += "  " + str(str(case[0]) + "'").ljust(3)
+                    detail_msg += case[2].getName().rjust(maxLen) + "   ⚽ "
+                    detail_msg += "  " + str(str(case[0]) + "'").ljust(3)
                     if case[3] != None:
-                        self.print_str += "\n"
-                        self.print_str += str("(" +
-                                              case[3].getName() + ")").rjust(maxLen)
+                        detail_msg += "\n"
+                        detail_msg += str("(" + case[3].getName() + ")").rjust(maxLen)
                 else:
-                    self.print_str += "".ljust(maxLen+4) + str(case[0]) + "'  "
-                    self.print_str += " ⚽   " + case[2].getName()
+                    detail_msg += "".ljust(maxLen+4) + str(case[0]) + "'  "
+                    detail_msg += " ⚽   " + case[2].getName()
                     if case[3] != None:
-                        self.print_str += "\n"
-                        self.print_str += "".ljust(maxLen+9) + \
-                            "      (" + case[3].getName() + ")"
+                        detail_msg += "\n"
+                        detail_msg += "".ljust(maxLen+9) + "      (" + case[3].getName() + ")"
 
-                self.print_str += "\n\n"
+                detail_msg += "\n\n"
 
         if self.home.goals_detailed or self.away.goals_detailed:
-            self.print_str += "[进球统计]\n"
+            detail_msg += "[进球统计]\n"
 
         if self.home.goals_detailed:
-            self.print_str += "主队：\n"
+            detail_msg += "主队：\n"
             for item in self.home.goals_detailed:
-                self.print_str += item[0] + " ("
+                detail_msg += item[0] + " ("
                 for i in item[1]:
-                    self.print_str += str(i) + "\', "
-                self.print_str = self.print_str[:-2]
-                self.print_str += ")\n"
+                    detail_msg += str(i) + "', "
+                detail_msg = detail_msg[:-2]
+                detail_msg += ")\n"
 
         if self.away.goals_detailed:
-            self.print_str += "客队：\n"
+            detail_msg += "客队：\n"
             for item in self.away.goals_detailed:
-                self.print_str += item[0] + " ("
+                detail_msg += item[0] + " ("
                 for i in item[1]:
-                    self.print_str += str(i) + "\', "
-                self.print_str = self.print_str[:-2]
-                self.print_str += ")\n"
+                    detail_msg += str(i) + "', "
+                detail_msg = detail_msg[:-2]
+                detail_msg += ")\n"
 
         if self.home.goals_detailed or self.away.goals_detailed:
-            self.print_str += "\n"
+            detail_msg += "\n"
 
-        report = self.build_match_report()
-        if report:
-            self.print_str += "[比赛战报]\n" + report + "\n"
-
-        self.print_str += "[数据统计]\n"
-        self.print_str += "控球率：" + str(round(self.home.control*100/(self.home.control+self.away.control), 1)) + \
-            "%:" + str(round(self.away.control*100 /
-                             (self.home.control+self.away.control), 1)) + "%\n"
-
-        self.print_str += "射正：" + \
-            str(self.home.shoots_in_target) + ":" + \
-            str(self.away.shoots_in_target) + "\n"
-        self.print_str += "射门：" + \
-            str(self.home.shoots) + ":" + str(self.away.shoots) + "\n"
-        self.print_str += "传球：" + \
-            str(self.home.passes) + ":" + str(self.away.passes) + "\n"
+        detail_msg += "[数据统计]\n"
+        detail_msg += "控球率：" + str(round(self.home.control*100/(self.home.control+self.away.control), 1)) + \
+            "%:" + str(round(self.away.control*100 / (self.home.control+self.away.control), 1)) + "%\n"
+        detail_msg += "射正：" + str(self.home.shoots_in_target) + ":" + str(self.away.shoots_in_target) + "\n"
+        detail_msg += "射门：" + str(self.home.shoots) + ":" + str(self.away.shoots) + "\n"
+        detail_msg += "传球：" + str(self.home.passes) + ":" + str(self.away.passes) + "\n"
         home_pass_rate = 0 if self.home.passes == 0 else round(self.home.successful_passes*100/self.home.passes, 1)
         away_pass_rate = 0 if self.away.passes == 0 else round(self.away.successful_passes*100/self.away.passes, 1)
-        self.print_str += "传球成功率：" + str(home_pass_rate) + "%:" + str(away_pass_rate) + "%\n"
-        self.print_str += "过人：" + \
-            str(self.home.dribbles) + ":" + str(self.away.dribbles) + "\n"
-        self.print_str += "抢断：" + \
-            str(self.home.tackles) + ":" + str(self.away.tackles) + "\n"
-        self.print_str += "扑救：" + \
-            str(self.home.saves) + ":" + str(self.away.saves) + "\n"
-        self.print_str += "xG：" + str(round(self.home.xg, 2)) + ":" + str(round(self.away.xg, 2)) + "\n"
-        self.print_str += "Adj xG：" + str(round(self.home.adjusted_xg, 2)) + ":" + str(round(self.away.adjusted_xg, 2)) + "\n"
-        self.print_str += "xT：" + str(round(self.home.xt, 2)) + ":" + str(round(self.away.xt, 2)) + "\n"
-        self.print_str += "关键传球：" + str(self.home.key_passes) + ":" + str(self.away.key_passes) + "\n"
-        self.print_str += "禁区触球：" + str(self.home.box_touches) + ":" + str(self.away.box_touches) + "\n"
-        self.print_str += "高质量机会：" + str(self.home.big_chances) + ":" + str(self.away.big_chances)
-        msg = self.print_str
-        await self.matcher.send(toImage(msg))
-        return msg
-        # await self.matcher.send("终场比分：\n" +"主 " + self.home.coach.name + str(self.home.point) + ":" + str(self.away.point) + self.away.coach.name + " 客")
+        detail_msg += "传球成功率：" + str(home_pass_rate) + "%:" + str(away_pass_rate) + "%\n"
+        detail_msg += "过人：" + str(self.home.dribbles) + ":" + str(self.away.dribbles) + "\n"
+        detail_msg += "带球推进：" + str(self.home.carries) + ":" + str(self.away.carries) + "\n"
+        detail_msg += "抢断：" + str(self.home.tackles) + ":" + str(self.away.tackles) + "\n"
+        detail_msg += "拦截：" + str(self.home.interceptions) + ":" + str(self.away.interceptions) + "\n"
+        detail_msg += "封堵：" + str(self.home.blocks) + ":" + str(self.away.blocks) + "\n"
+        detail_msg += "扑救：" + str(self.home.saves) + ":" + str(self.away.saves) + "\n"
+        detail_msg += "xG：" + str(round(self.home.xg, 2)) + ":" + str(round(self.away.xg, 2)) + "\n"
+        detail_msg += "关键传球：" + str(self.home.key_passes) + ":" + str(self.away.key_passes) + "\n"
+        detail_msg += "禁区触球：" + str(self.home.box_touches) + ":" + str(self.away.box_touches) + "\n"
+        detail_msg += "绝对机会：" + str(self.home.big_chances) + ":" + str(self.away.big_chances)
+        await self.matcher.send(toImage(detail_msg))
+        return detail_msg
 
     # 开始一个回合
 
@@ -210,6 +199,7 @@ class Game:
         self.step += 1
         self.offence.possessions += 1
         self.possession_action_count = 0
+        self.possession_box_touches = 0
         self.current_events = []
         self.reset_action_flag()
         while 1:
@@ -258,6 +248,8 @@ class Game:
                 for def_player in def_players:
                     if def_player.position == "GK":
                         continue
+                    def_player.blocks += 1
+                    def_player.interceptions += 1
                     # 计算防守球员到球路的距离
                     distance = def_player.get_distance_line(
                         self.ball_holder.x, self.ball_holder.y, Const.WIDTH / 2, 0)
@@ -309,6 +301,7 @@ class Game:
                 for def_player in def_players:
                     if def_player.position == "GK":
                         continue
+                    def_player.tackle_attempts += 1
                     # 计算防守球员到球路的距离
                     distance = def_player.get_distance_line(
                         self.ball_holder.x, self.ball_holder.y, dribble_pos[0], dribble_pos[1])
@@ -327,7 +320,13 @@ class Game:
                         self.printCase(case, "carry", 1, self.ball_holder, def_player)
                         self.ball_holder.dribbles += 1
                         def_player.action_flag = True
+                carry_progress = max(0, self.ball_holder.y - dribble_pos[1])
                 self.ball_holder.moving(dribble_pos[0], dribble_pos[1])
+                if carry_progress >= 5:
+                    self.ball_holder.carries += 1
+                if carry_progress >= 12:
+                    self.ball_holder.progressive_carries += 1
+                self.record_box_touch(self.ball_holder)
                 self.record_expected_threat(self.ball_holder, 0.8)
             elif holder_action == "PASS":
                 self.ball_holder.passes += 1
@@ -354,6 +353,8 @@ class Game:
                     for def_player in def_players:
                         if def_player.position == "GK":
                             continue
+                        def_player.tackle_attempts += 1
+                        def_player.interceptions += 1
                         # 计算防守球员到球路的距离
                         distance = def_player.get_distance_line(
                             self.ball_holder.x, self.ball_holder.y, passing_aim.x, passing_aim.y)
@@ -374,6 +375,7 @@ class Game:
                         self.offence.key_passes += 1
                     self.record_expected_threat(passing_aim, self.ball_holder.ability["Short_Passing"] / 100)
                     self.changeBallHolder(passing_aim)
+                    self.record_box_touch(passing_aim)
                     # passing_aim.action_flag = True
                 else:
                     passing_ability = self.ball_holder.get_passing_ability(
@@ -402,6 +404,8 @@ class Game:
                             continue
                         if player.get_distance_player(passing_aim) < 15 * distance / passing_ability + player.ability["Speed"] / 10\
                                 and not player.action_flag:
+                            if self.isDefencePlayer(player):
+                                player.tackle_attempts += 1
                             player.approaching(passing_aim.x, passing_aim.y)
                             player.action_flag = True
                     roll_point_players = self.getPlayersInArea(
@@ -431,6 +435,7 @@ class Game:
                         if passing_aim.y <= 25:
                             self.offence.key_passes += 1
                         self.record_expected_threat(passing_aim, passing_ability / 100)
+                        self.record_box_touch(roll_winner)
                         distance_goal = roll_winner.get_distance(
                             Const.WIDTH / 2, 0)
                         rand = self.rng.randint(
@@ -438,6 +443,7 @@ class Game:
                         if rand < roll_winner.ability["Heading"] and distance_goal < 25:
                             header_shot = self.create_shot(roll_winner, len(self.getDefencePlayersInArea(roll_winner.x, roll_winner.y, 10)), True)
                             self.record_shot_quality(header_shot, roll_winner)
+                            self.record_box_touch(roll_winner)
                             case = Display.print_high_shot(roll_winner)
                             self.printCase(case, "shot", 3, roll_winner, xg=header_shot.raw_xg)
                             gk = self.getDefenceGK()
@@ -519,14 +525,18 @@ class Game:
     def record_shot_quality(self, shot, shooter):
         self.offence.xg += shot.raw_xg
         self.offence.adjusted_xg += shot.goal_probability
-        if shot.raw_xg >= 0.25:
+        if shot.raw_xg >= 0.15 or shot.goal_probability >= 0.18:
             self.offence.big_chances += 1
-        if shooter.y <= 16.5:
-            self.offence.box_touches += 1
+        self.record_box_touch(shooter)
         return shot.raw_xg
 
     def record_expected_threat(self, player, action_quality=1.0):
         self.offence.xt += expected_threat(player.y, action_quality)
+
+    def record_box_touch(self, player):
+        if player.y <= 16.5 and self.possession_box_touches < 1:
+            self.offence.box_touches += 1
+            self.possession_box_touches += 1
 
     # 攻守坐标转换
     def swapPosition(self, team):
