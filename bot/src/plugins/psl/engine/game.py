@@ -2,7 +2,7 @@ from model.user import User
 from engine.player import Player
 from engine.team import Team
 from engine.const import Const
-from engine.probability import contest_success
+from engine.probability import build_shot_context, expected_threat, pass_success_probability
 from utils.image import toImage
 from engine.display import Display
 # from display import Display
@@ -42,6 +42,7 @@ class Game:
         self.timeline = []
         self.mode = Const.MODE_NORMAL
         self.rng = rng or random.Random(seed)
+        self.possession_action_count = 0
 
     # 比赛主逻辑
     async def start(self, mode):
@@ -50,7 +51,7 @@ class Game:
         if self.mode != Const.MODE_QUICK:
             await self.send("主 " + self.home.coach.name + " : " + self.away.coach.name + " 客\n比赛开始")
         while self.time < 45 * 60:
-            self.oneStep()
+            self.play_possession()
             if self.time > 45 * 60:
                 self.printCase("上半场结束")
             await self.send(self.print_str)
@@ -64,7 +65,7 @@ class Game:
         self.resetPosition()
         self.changeBallHolderToOpen()
         while self.time < 45 * 60:
-            self.oneStep()
+            self.play_possession()
             if self.time > 45 * 60:
                 self.printCase("下半场结束")
             await self.send(self.print_str)
@@ -163,7 +164,13 @@ class Game:
         self.print_str += "抢断：" + \
             str(self.home.tackles) + ":" + str(self.away.tackles) + "\n"
         self.print_str += "扑救：" + \
-            str(self.home.saves) + ":" + str(self.away.saves)
+            str(self.home.saves) + ":" + str(self.away.saves) + "\n"
+        self.print_str += "xG：" + str(round(self.home.xg, 2)) + ":" + str(round(self.away.xg, 2)) + "\n"
+        self.print_str += "Adj xG：" + str(round(self.home.adjusted_xg, 2)) + ":" + str(round(self.away.adjusted_xg, 2)) + "\n"
+        self.print_str += "xT：" + str(round(self.home.xt, 2)) + ":" + str(round(self.away.xt, 2)) + "\n"
+        self.print_str += "关键传球：" + str(self.home.key_passes) + ":" + str(self.away.key_passes) + "\n"
+        self.print_str += "禁区触球：" + str(self.home.box_touches) + ":" + str(self.away.box_touches) + "\n"
+        self.print_str += "高质量机会：" + str(self.home.big_chances) + ":" + str(self.away.big_chances)
         msg = self.print_str
         await self.matcher.send(toImage(msg))
         return msg
@@ -172,16 +179,24 @@ class Game:
     # 开始一个回合
 
     def oneStep(self):
+        self.play_possession()
+
+    def play_possession(self):
         self.step += 1
+        self.offence.possessions += 1
+        self.possession_action_count = 0
         self.reset_action_flag()
         while 1:
-            # 打印球员
-            # self.display.display(self.defence, self.offence, self.ball_holder)
-            # time.sleep(1)
-            self.offence.control += Const.ACTION_DELAY
-            self.time += Const.ACTION_DELAY
+            if self.possession_action_count >= 28:
+                self.swap()
+                self.changeRandomBallHolder()
+                return
+            action_time = self.get_action_duration()
+            self.offence.control += action_time
+            self.time += action_time
             if self.time > 45 * 60:
                 return
+            self.possession_action_count += 1
             # 持球人行为
             self.ball_holder.action_flag = True
             # 持球人观测防守球员数量
@@ -202,65 +217,58 @@ class Game:
                 self.rng
             )
             if holder_action == "SHOOT":
-                shoot_x = self.ball_holder.shooting(shoot_defence_players_number, self.rng)
-                distance = int(self.ball_holder.get_distance(shoot_x, 0))
-                if distance >= 20:
-                    case = Display.print_long_shot(self.ball_holder, distance)
+                shot = self.create_shot(self.ball_holder, shoot_defence_players_number)
+                shoot_x = self.ball_holder.shooting(shot.on_target_probability, self.rng)
+                self.record_shot_quality(shot, self.ball_holder)
+                if shot.distance >= 20:
+                    case = Display.print_long_shot(self.ball_holder, int(shot.distance))
                 else:
-                    case = Display.print_short_shot(self.ball_holder, distance)
+                    case = Display.print_short_shot(self.ball_holder, int(shot.distance))
                 self.printCase(case)
                 self.ball_holder.shoots += 1
-                if shoot_x < Const.LEFT_GOALPOST or shoot_x > Const.RIGHT_GOALPOST:
-                    case = Display.print_miss_shot()
-                    self.printCase(case)
-                    self.swap()
-                    self.changeBallHolderToGK()
-                else:
-                    self.ball_holder.shoots_in_target += 1
-                    # if shoot_x < Const.LEFT_GOALPOST + 1 or shoot_x > Const.RIGHT_GOALPOST-1:
-                    #     self.printCaseWithPlayer(self.ball_holder, "射向了死角")
-                    # elif shoot_x < Const.WIDTH/2 + 2 and shoot_x > Const.WIDTH/2 - 2:
-                    #     self.printCaseWithPlayer(self.ball_holder, "射得太正了")
-                    # else:
-                    #     self.printCaseWithPlayer(self.ball_holder, "这脚射门质量尚可")
+                def_players = self.getWayDefencePlayers(
+                    self.ball_holder.x, self.ball_holder.y, shoot_x, 0)
+                shoot = self.ball_holder.get_shooting_ability(shoot_x)
+                for def_player in def_players:
+                    if def_player.position == "GK":
+                        continue
+                    # 计算防守球员到球路的距离
+                    distance = def_player.get_distance_line(
+                        self.ball_holder.x, self.ball_holder.y, Const.WIDTH / 2, 0)
 
-                    def_players = self.getWayDefencePlayers(
-                        self.ball_holder.x, self.ball_holder.y, shoot_x, 0)
-                    shoot = self.ball_holder.get_shooting_ability(shoot_x)
-                    for def_player in def_players:
-                        if def_player.position == "GK":
-                            continue
-                        # 计算防守球员到球路的距离
-                        distance = def_player.get_distance_line(
-                            self.ball_holder.x, self.ball_holder.y, Const.WIDTH / 2, 0)
-
-                        if def_player.intercepting(shoot, distance, self.rng):
-                            case = Display.print_interception(def_player)
-                            self.printCase(case)
-                            self.swap()
-                            self.changeBallHolder(def_player)
-                            return
-                    gk = self.getDefenceGK()
-                    if gk.saving(shoot, self.ball_holder.get_distance(shoot_x, 0), math.fabs(shoot_x-Const.WIDTH/2), self.rng) and gk.y < self.ball_holder.y:
+                    if def_player.intercepting(shoot, distance, self.rng):
+                        case = Display.print_interception(def_player)
+                        self.printCase(case)
+                        self.swap()
+                        self.changeBallHolder(def_player)
+                        return
+                gk = self.getDefenceGK()
+                if self.rng.random() >= shot.goal_probability:
+                    if shoot_x < Const.LEFT_GOALPOST or shoot_x > Const.RIGHT_GOALPOST:
+                        case = Display.print_miss_shot()
+                        self.printCase(case)
+                    else:
+                        self.ball_holder.shoots_in_target += 1
                         case = Display.print_saving(gk)
                         self.printCase(case)
                         gk.saves += 1
-                        self.swap()
-                        self.changeBallHolderToGK()
-                        return
-                    self.offence.point += 1
-                    case = Display.print_goal(
-                        self.ball_holder, gk, self.assister)
-                    self.printCase(case)
-                    self.ball_holder.goals += 1
-                    self.ball_holder.goals_detailed.append(self.getTime())
-                    if self.assister:
-                        self.assister.assists += 1
-                    self.timeline.append(
-                        (self.getTime(), self.offence, self.ball_holder, self.assister))
                     self.swap()
-                    self.resetPosition()
-                    self.changeBallHolderToOpen()
+                    self.changeBallHolderToGK()
+                    return
+                self.ball_holder.shoots_in_target += 1
+                self.offence.point += 1
+                case = Display.print_goal(
+                    self.ball_holder, gk, self.assister)
+                self.printCase(case)
+                self.ball_holder.goals += 1
+                self.ball_holder.goals_detailed.append(self.getTime())
+                if self.assister:
+                    self.assister.assists += 1
+                self.timeline.append(
+                    (self.getTime(), self.offence, self.ball_holder, self.assister))
+                self.swap()
+                self.resetPosition()
+                self.changeBallHolderToOpen()
                 return
             elif holder_action == "DRIBBLE":
                 dribble_pos = self.ball_holder.dribbling(self.getDefencePlayersInArea(
@@ -294,6 +302,7 @@ class Game:
                         self.ball_holder.dribbles += 1
                         def_player.action_flag = True
                 self.ball_holder.moving(dribble_pos[0], dribble_pos[1])
+                self.record_expected_threat(self.ball_holder, 0.8)
             elif holder_action == "PASS":
                 self.ball_holder.passes += 1
                 passing = self.ball_holder.passing(self.getOffenceTeamMates(), self.rng)
@@ -305,6 +314,13 @@ class Game:
                     case = Display.print_short_pass(
                         self.ball_holder, passing_aim, int(distance))
                     self.printCase(case)
+                    pressure = len(self.getDefencePlayersInArea(self.ball_holder.x, self.ball_holder.y, 10))
+                    pass_probability = pass_success_probability(self.ball_holder.ability["Short_Passing"], distance, pressure, False)
+                    if self.rng.random() > pass_probability:
+                        self.printCaseWithPlayer(self.ball_holder, "传球失误")
+                        self.swap()
+                        self.changeRandomBallHolder()
+                        return
                     def_players = self.getWayDefencePlayers(
                         self.ball_holder.x, self.ball_holder.y, passing_aim.x, passing_aim.y)
                     for def_player in def_players:
@@ -326,6 +342,9 @@ class Game:
                     self.ball_holder.successful_passes += 1
                     self.ball_holder.action_flag = False
                     self.assister = self.ball_holder
+                    if passing_aim.y <= 25:
+                        self.offence.key_passes += 1
+                    self.record_expected_threat(passing_aim, self.ball_holder.ability["Short_Passing"] / 100)
                     self.changeBallHolder(passing_aim)
                     # passing_aim.action_flag = True
                 else:
@@ -336,6 +355,13 @@ class Game:
                     case = Display.print_long_pass(
                         self.ball_holder, passing_aim, int(distance))
                     self.printCase(case)
+                    pressure = len(self.getDefencePlayersInArea(self.ball_holder.x, self.ball_holder.y, 12))
+                    pass_probability = pass_success_probability(passing_ability, distance, pressure, True)
+                    if self.rng.random() > pass_probability:
+                        self.printCaseWithPlayer(self.ball_holder, "长传失误")
+                        self.swap()
+                        self.changeRandomBallHolder()
+                        return
                     if self.getLastSecondDefencePlayer().y > passing_aim.y and passing_aim.y < Const.LENGTH / 2:
                         self.printCaseWithPlayer(passing_aim, "处在越位位置")
                         self.swap()
@@ -372,17 +398,20 @@ class Game:
                     else:
                         self.ball_holder.successful_passes += 1
                         self.assister = self.ball_holder
+                        if passing_aim.y <= 25:
+                            self.offence.key_passes += 1
+                        self.record_expected_threat(passing_aim, passing_ability / 100)
                         distance_goal = roll_winner.get_distance(
                             Const.WIDTH / 2, 0)
                         rand = self.rng.randint(
                             0, int(roll_winner.ability["Heading"] + distance_goal * 10))
                         if rand < roll_winner.ability["Heading"] and distance_goal < 25:
+                            header_shot = self.create_shot(roll_winner, len(self.getDefencePlayersInArea(roll_winner.x, roll_winner.y, 10)), True)
+                            self.record_shot_quality(header_shot, roll_winner)
                             case = Display.print_high_shot(roll_winner)
                             self.printCase(case)
                             gk = self.getDefenceGK()
-                            if distance_goal < 25 and \
-                                    contest_success(self.rng, gk.ability["GK_Saving"] * (25 - distance_goal) / 5, roll_winner.ability["Heading"], scale=16, floor=0.05, ceiling=0.9) and \
-                                        gk.y < roll_winner.y:
+                            if self.rng.random() >= header_shot.goal_probability:
                                 case = Display.print_saving(gk)
                                 self.printCase(case)
                                 gk.saves += 1
@@ -432,6 +461,41 @@ class Game:
         self.swapPosition(self.offence)
         self.swapPosition(self.defence)
         self.assister = None
+        self.possession_action_count = 0
+
+    def get_action_duration(self):
+        y = self.ball_holder.y
+        if self.possession_action_count <= 1 and y > Const.LENGTH * 0.62:
+            return self.rng.randint(3, 8)
+        if y > Const.LENGTH * 0.62:
+            return self.rng.randint(5, 12)
+        if y > Const.LENGTH * 0.32:
+            return self.rng.randint(4, 10)
+        return self.rng.randint(3, 8)
+
+    def get_shot_angle(self, x, y):
+        left = math.atan2(Const.LEFT_GOALPOST - x, max(y, 1))
+        right = math.atan2(Const.RIGHT_GOALPOST - x, max(y, 1))
+        return abs(right - left) * 180 / math.pi
+
+    def create_shot(self, shooter, pressure, is_header=False):
+        distance = shooter.get_distance(Const.WIDTH / 2, 0)
+        angle = self.get_shot_angle(shooter.x, shooter.y)
+        shoot_ability = shooter.get_shooting_ability(Const.WIDTH / 2) if not is_header else shooter.ability["Heading"]
+        assist_quality = 0 if self.assister is None else self.assister.get_passing_ability(shooter) / 100
+        return build_shot_context(distance, angle, shoot_ability, pressure, assist_quality, is_header)
+
+    def record_shot_quality(self, shot, shooter):
+        self.offence.xg += shot.raw_xg
+        self.offence.adjusted_xg += shot.goal_probability
+        if shot.raw_xg >= 0.25:
+            self.offence.big_chances += 1
+        if shooter.y <= 16.5:
+            self.offence.box_touches += 1
+        return shot.raw_xg
+
+    def record_expected_threat(self, player, action_quality=1.0):
+        self.offence.xt += expected_threat(player.y, action_quality)
 
     # 攻守坐标转换
     def swapPosition(self, team):

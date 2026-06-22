@@ -119,19 +119,24 @@ class Player:
            best_angle
 
   # 射门-持球行为
-  def shooting(self, pressure=0, rng=None):
+  def shooting(self, on_target_probability, rng=None):
     rng = rng or random
     distance = self.get_distance(Const.WIDTH / 2, 0)
     shoot_ability = self.ability["Finishing"] if distance < 25 else self.ability["Long_Shot"]
-    on_target = rng.random() < shot_on_target_probability(distance, shoot_ability, pressure)
+    on_target = rng.random() < on_target_probability
     if on_target:
       random_min = Const.LEFT_GOALPOST * 100
       random_max = Const.RIGHT_GOALPOST * 100
+      return rng.randint(int(random_min), int(random_max)) / 100
     else:
       miss_width = Const.GOAL_WIDTH * (0.5 + distance / max(shoot_ability, 1))
-      random_min = (Const.LEFT_GOALPOST - miss_width) * 100
-      random_max = (Const.RIGHT_GOALPOST + miss_width) * 100
-    return rng.randint(int(random_min), int(random_max)) / 100
+      if rng.random() < 0.5:
+        random_min = (Const.LEFT_GOALPOST - miss_width) * 100
+        random_max = Const.LEFT_GOALPOST * 100 - 1
+      else:
+        random_min = Const.RIGHT_GOALPOST * 100 + 1
+        random_max = (Const.RIGHT_GOALPOST + miss_width) * 100
+      return rng.randint(int(random_min), int(random_max)) / 100
 
   # 选择传球目标-持球行为
   def passing(self, team_mates: list, rng=None):
@@ -200,7 +205,8 @@ class Player:
     distance = self.get_distance(Const.WIDTH / 2, 0)
     if distance > 40:
       return 0
-    return math.pow(0.99, 0.004 * math.pow(distance, 3) * shoot_defence_players_number)
+    pressure = max(1, shoot_defence_players_number + 1)
+    return 0.014 + 0.11 * math.pow(0.985, 0.0052 * math.pow(distance, 2.6) * pressure)
 
   # 盘带选择率
   def get_dribbling_rate(self, defence_players_number):

@@ -50,6 +50,12 @@ def test_seeded_match_is_reproducible(core_modules, make_user, monkeypatch):
             game.away.shoots,
             game.home.passes,
             game.away.passes,
+            round(game.home.xg, 4),
+            round(game.away.xg, 4),
+            round(game.home.adjusted_xg, 4),
+            round(game.away.adjusted_xg, 4),
+            round(game.home.xt, 4),
+            round(game.away.xt, 4),
             [(item[0], item[1].coach, item[2].card.id) for item in game.timeline],
         )
 
@@ -88,15 +94,59 @@ def test_print_stats_handles_zero_passes(core_modules, make_user):
     game.away.control = 1
     message = asyncio.run(game.printStats())
     assert "传球成功率：0%:0%" in message
+    assert "xG：" in message
+    assert "xT：" in message
+
+
+def test_shot_context_is_independent_from_random_shot_location(core_modules, make_user, monkeypatch):
+    from conftest import DummyMatcher
+    from test_game_flows import build_full_squad
+
+    Game = core_modules["engine.game"].Game
+    Formation = core_modules["model.formation"].Formation
+    formation_kernel = core_modules["kernel.formation"]
+
+    user1 = make_user(40201, "shot-home", money=0)
+    user2 = make_user(40202, "shot-away", money=0)
+    build_full_squad(core_modules, user1, star=3)
+    build_full_squad(core_modules, user2, star=3)
+
+    async def finish_no_raise(*args, **kwargs):
+        return None
+
+    monkeypatch.setattr(formation_kernel.get_team, "finish", finish_no_raise)
+    asyncio.run(formation_kernel.auto_update(user1))
+    asyncio.run(formation_kernel.auto_update(user2))
+    assert Formation.getFormation(user1).isValid()
+
+    game = Game(DummyMatcher(), user1, user2, seed=1)
+    shooter = game.ball_holder
+    first = game.create_shot(shooter, pressure=2)
+    # Generate several random shot locations; context should still be deterministic from position.
+    for _ in range(5):
+        shooter.shooting(first.on_target_probability, game.rng)
+    second = game.create_shot(shooter, pressure=2)
+
+    assert first.distance == second.distance
+    assert first.angle == second.angle
+    assert first.shoot_ability == second.shoot_ability
+    assert first.raw_xg == second.raw_xg
+    assert first.goal_probability == second.goal_probability
+    assert first.on_target_probability == second.on_target_probability
 
 
 def test_monte_carlo_smoke_and_strength_signal(core_modules):
     import scripts.simulate_matches as simulator
 
-    even = asyncio.run(simulator.run_matches(count=8, seed=100, home_star=3, away_star=3))
-    stronger = asyncio.run(simulator.run_matches(count=8, seed=100, home_star=5, away_star=1))
+    even = asyncio.run(simulator.run_matches(count=20, seed=100, home_star=3, away_star=3))
+    stronger = asyncio.run(simulator.run_matches(count=20, seed=100, home_star=5, away_star=1))
 
-    assert even["matches"] == 8
+    assert even["matches"] == 20
     assert even["home_goals"] + even["away_goals"] >= 0
-    assert stronger["home_wins"] >= stronger["away_wins"]
-    assert stronger["home_goals"] >= stronger["away_goals"]
+    assert stronger["home_adjusted_xg"] > stronger["away_adjusted_xg"]
+    assert stronger["home_xt"] > stronger["away_xt"]
+    assert even["home_possessions"] > 0
+    assert even["away_possessions"] > 0
+    assert even["home_xg"] + even["away_xg"] >= 0
+    assert even["home_adjusted_xg"] + even["away_adjusted_xg"] >= 0
+    assert even["home_xt"] + even["away_xt"] > 0

@@ -69,8 +69,34 @@ async def run_matches(count, seed, home_star, away_star):
     "away_goals": 0,
     "home_shots": 0,
     "away_shots": 0,
+    "home_shots_on_target": 0,
+    "away_shots_on_target": 0,
     "home_passes": 0,
     "away_passes": 0,
+    "home_successful_passes": 0,
+    "away_successful_passes": 0,
+    "home_dribbles": 0,
+    "away_dribbles": 0,
+    "home_tackles": 0,
+    "away_tackles": 0,
+    "home_saves": 0,
+    "away_saves": 0,
+    "home_control": 0,
+    "away_control": 0,
+    "home_xg": 0,
+    "away_xg": 0,
+    "home_adjusted_xg": 0,
+    "away_adjusted_xg": 0,
+    "home_xt": 0,
+    "away_xt": 0,
+    "home_key_passes": 0,
+    "away_key_passes": 0,
+    "home_box_touches": 0,
+    "away_box_touches": 0,
+    "home_big_chances": 0,
+    "away_big_chances": 0,
+    "home_possessions": 0,
+    "away_possessions": 0,
   }
   for index in range(count):
     game = Game(DummyMatcher(), home, away, seed=seed + index)
@@ -81,8 +107,34 @@ async def run_matches(count, seed, home_star, away_star):
     result["away_goals"] += game.away.point
     result["home_shots"] += game.home.shoots
     result["away_shots"] += game.away.shoots
+    result["home_shots_on_target"] += game.home.shoots_in_target
+    result["away_shots_on_target"] += game.away.shoots_in_target
     result["home_passes"] += game.home.passes
     result["away_passes"] += game.away.passes
+    result["home_successful_passes"] += game.home.successful_passes
+    result["away_successful_passes"] += game.away.successful_passes
+    result["home_dribbles"] += game.home.dribbles
+    result["away_dribbles"] += game.away.dribbles
+    result["home_tackles"] += game.home.tackles
+    result["away_tackles"] += game.away.tackles
+    result["home_saves"] += game.home.saves
+    result["away_saves"] += game.away.saves
+    result["home_control"] += game.home.control
+    result["away_control"] += game.away.control
+    result["home_xg"] += game.home.xg
+    result["away_xg"] += game.away.xg
+    result["home_adjusted_xg"] += game.home.adjusted_xg
+    result["away_adjusted_xg"] += game.away.adjusted_xg
+    result["home_xt"] += game.home.xt
+    result["away_xt"] += game.away.xt
+    result["home_key_passes"] += game.home.key_passes
+    result["away_key_passes"] += game.away.key_passes
+    result["home_box_touches"] += game.home.box_touches
+    result["away_box_touches"] += game.away.box_touches
+    result["home_big_chances"] += game.home.big_chances
+    result["away_big_chances"] += game.away.big_chances
+    result["home_possessions"] += game.home.possessions
+    result["away_possessions"] += game.away.possessions
     if game.home.point > game.away.point:
       result["home_wins"] += 1
     elif game.home.point == game.away.point:
@@ -94,11 +146,29 @@ async def run_matches(count, seed, home_star, away_star):
 
 def print_report(result):
   matches = result["matches"]
+  home_pass_rate = 0 if result["home_passes"] == 0 else result["home_successful_passes"] * 100 / result["home_passes"]
+  away_pass_rate = 0 if result["away_passes"] == 0 else result["away_successful_passes"] * 100 / result["away_passes"]
+  total_control = result["home_control"] + result["away_control"]
+  home_control = 0 if total_control == 0 else result["home_control"] * 100 / total_control
+  away_control = 0 if total_control == 0 else result["away_control"] * 100 / total_control
   print("matches:", matches)
   print("home_wins:", result["home_wins"], "draws:", result["draws"], "away_wins:", result["away_wins"])
   print("avg_score:", round(result["home_goals"] / matches, 2), "-", round(result["away_goals"] / matches, 2))
   print("avg_shots:", round(result["home_shots"] / matches, 2), "-", round(result["away_shots"] / matches, 2))
+  print("avg_shots_on_target:", round(result["home_shots_on_target"] / matches, 2), "-", round(result["away_shots_on_target"] / matches, 2))
   print("avg_passes:", round(result["home_passes"] / matches, 2), "-", round(result["away_passes"] / matches, 2))
+  print("pass_success_pct:", round(home_pass_rate, 1), "-", round(away_pass_rate, 1))
+  print("avg_dribbles:", round(result["home_dribbles"] / matches, 2), "-", round(result["away_dribbles"] / matches, 2))
+  print("avg_tackles:", round(result["home_tackles"] / matches, 2), "-", round(result["away_tackles"] / matches, 2))
+  print("avg_saves:", round(result["home_saves"] / matches, 2), "-", round(result["away_saves"] / matches, 2))
+  print("control_pct:", round(home_control, 1), "-", round(away_control, 1))
+  print("avg_xg:", round(result["home_xg"] / matches, 2), "-", round(result["away_xg"] / matches, 2))
+  print("avg_adjusted_xg:", round(result["home_adjusted_xg"] / matches, 2), "-", round(result["away_adjusted_xg"] / matches, 2))
+  print("avg_xt:", round(result["home_xt"] / matches, 2), "-", round(result["away_xt"] / matches, 2))
+  print("avg_key_passes:", round(result["home_key_passes"] / matches, 2), "-", round(result["away_key_passes"] / matches, 2))
+  print("avg_box_touches:", round(result["home_box_touches"] / matches, 2), "-", round(result["away_box_touches"] / matches, 2))
+  print("avg_big_chances:", round(result["home_big_chances"] / matches, 2), "-", round(result["away_big_chances"] / matches, 2))
+  print("avg_possessions:", round(result["home_possessions"] / matches, 2), "-", round(result["away_possessions"] / matches, 2))
 
 
 def main():

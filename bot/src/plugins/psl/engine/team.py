@@ -34,6 +34,13 @@ class Team:
     self.assists = 0
     self.tackles = 0
     self.saves = 0
+    self.xg = 0
+    self.adjusted_xg = 0
+    self.xt = 0
+    self.key_passes = 0
+    self.box_touches = 0
+    self.big_chances = 0
+    self.possessions = 0
     self.goals_detailed = []
 
   # 返回包含NpcPlayer的列表
