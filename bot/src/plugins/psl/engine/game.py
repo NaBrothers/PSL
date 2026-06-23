@@ -108,7 +108,10 @@ class Game:
         self.last_broadcast_time = self.time
         if not lines:
             return
-        msg = "\n".join(lines)
+        minutes = self.time // 60
+        seconds = self.time % 60
+        header = "主" + str(self.home.point) + ":" + str(self.away.point) + "客 " + self.half + str(minutes) + ":" + str(seconds) + " " + self.home.coach.name + " : " + self.away.coach.name
+        msg = header + "\n" + "\n".join(lines)
         await self.send(msg)
         time.sleep(Const.PRINT_DELAY)
 
