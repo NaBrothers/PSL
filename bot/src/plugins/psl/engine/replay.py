@@ -41,6 +41,8 @@ class ReplayRecorder:
         })
 
     def record_frame(self, game, ball_flight=None, event_text=None, pause_ms=None, cut=False):
+        if hasattr(game, "prepare_replay_frame"):
+            game.prepare_replay_frame()
         half = 1 if game.half == "上半时" else 2
         holder_idx, holder_team = self._find_ball_holder(game)
         frame = {
