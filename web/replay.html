@@ -1,0 +1,326 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="UTF-8">
+<title>PSL Match Replay</title>
+<style>
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body { background: #1a1a2e; color: #eee; font-family: -apple-system, sans-serif; display: flex; flex-direction: column; align-items: center; height: 100vh; padding: 16px; }
+h1 { font-size: 18px; margin-bottom: 8px; color: #aaa; }
+#info { font-size: 14px; margin-bottom: 8px; color: #888; }
+#score-bar { font-size: 28px; font-weight: bold; margin-bottom: 8px; }
+#score-bar .home-score { color: #4fc3f7; }
+#score-bar .away-score { color: #ef5350; }
+canvas { border-radius: 8px; box-shadow: 0 4px 24px rgba(0,0,0,0.5); }
+#controls { margin-top: 12px; display: flex; align-items: center; gap: 12px; }
+#controls button { background: #333; color: #eee; border: none; border-radius: 4px; padding: 6px 14px; cursor: pointer; font-size: 14px; }
+#controls button:hover { background: #555; }
+#controls button.active { background: #4fc3f7; color: #111; }
+#progress { width: 500px; height: 6px; cursor: pointer; }
+#time-display { font-size: 13px; color: #aaa; min-width: 80px; text-align: center; }
+#event-bar { margin-top: 8px; font-size: 13px; color: #ffca28; min-height: 20px; max-width: 700px; text-align: center; }
+#file-select { margin-bottom: 12px; }
+#file-select select { background: #333; color: #eee; border: 1px solid #555; border-radius: 4px; padding: 4px 8px; font-size: 13px; }
+</style>
+</head>
+<body>
+<h1>PSL Match Replay</h1>
+<div id="file-select"><select id="replay-list"><option value="">Loading replays...</option></select></div>
+<div id="score-bar"><span class="home-score">0</span> : <span class="away-score">0</span></div>
+<div id="info"></div>
+<canvas id="field" width="680" height="440"></canvas>
+<div id="controls">
+  <button id="btn-prev">◀</button>
+  <button id="btn-play">▶</button>
+  <button id="btn-next">▶▶</button>
+  <input type="range" id="progress" min="0" max="100" value="0">
+  <span id="time-display">0:00</span>
+  <button id="btn-1x" class="active">1x</button>
+  <button id="btn-2x">2x</button>
+  <button id="btn-4x">4x</button>
+</div>
+<div id="event-bar"></div>
+
+<script>
+const FIELD_W = 680, FIELD_H = 440;
+const PITCH_W = 68, PITCH_H = 105;
+const SCALE_X = FIELD_W / PITCH_W;
+const SCALE_Y = FIELD_H / PITCH_H;
+const PLAYER_RADIUS = 8;
+const BALL_RADIUS = 5;
+
+let frames = [];
+let events = [];
+let header = null;
+let currentFrame = 0;
+let playing = false;
+let speed = 1;
+let animId = null;
+let lastRenderTime = 0;
+let interpProgress = 0;
+
+const canvas = document.getElementById('field');
+const ctx = canvas.getContext('2d');
+
+function toScreen(x, y) {
+  return [x * SCALE_X, y * SCALE_Y];
+}
+
+function drawField() {
+  ctx.fillStyle = '#2d5a27';
+  ctx.fillRect(0, 0, FIELD_W, FIELD_H);
+
+  ctx.strokeStyle = 'rgba(255,255,255,0.4)';
+  ctx.lineWidth = 1.5;
+
+  // Outline
+  ctx.strokeRect(4, 4, FIELD_W - 8, FIELD_H - 8);
+  // Center line
+  ctx.beginPath();
+  ctx.moveTo(4, FIELD_H / 2);
+  ctx.lineTo(FIELD_W - 4, FIELD_H / 2);
+  ctx.stroke();
+  // Center circle
+  ctx.beginPath();
+  ctx.arc(FIELD_W / 2, FIELD_H / 2, 9.15 * SCALE_X, 0, Math.PI * 2);
+  ctx.stroke();
+
+  // Penalty areas
+  const penW = 40.32 * SCALE_X, penH = 16.5 * SCALE_Y;
+  const penX = (FIELD_W - penW) / 2;
+  ctx.strokeRect(penX, 4, penW, penH);
+  ctx.strokeRect(penX, FIELD_H - 4 - penH, penW, penH);
+
+  // Goals
+  const goalW = 7.32 * SCALE_X, goalH = 4;
+  const goalX = (FIELD_W - goalW) / 2;
+  ctx.fillStyle = 'rgba(255,255,255,0.6)';
+  ctx.fillRect(goalX, 0, goalW, goalH);
+  ctx.fillRect(goalX, FIELD_H - goalH, goalW, goalH);
+}
+
+function drawPlayer(x, y, color, name, isHighlighted) {
+  const [sx, sy] = toScreen(x, y);
+  ctx.beginPath();
+  ctx.arc(sx, sy, PLAYER_RADIUS, 0, Math.PI * 2);
+  ctx.fillStyle = color;
+  ctx.fill();
+  if (isHighlighted) {
+    ctx.strokeStyle = '#fff';
+    ctx.lineWidth = 2;
+    ctx.stroke();
+  }
+  ctx.fillStyle = 'rgba(255,255,255,0.85)';
+  ctx.font = '9px sans-serif';
+  ctx.textAlign = 'center';
+  ctx.fillText(name, sx, sy - PLAYER_RADIUS - 2);
+}
+
+function drawBall(x, y) {
+  const [sx, sy] = toScreen(x, y);
+  ctx.beginPath();
+  ctx.arc(sx, sy, BALL_RADIUS, 0, Math.PI * 2);
+  ctx.fillStyle = '#fff';
+  ctx.fill();
+  ctx.strokeStyle = '#000';
+  ctx.lineWidth = 1;
+  ctx.stroke();
+}
+
+function drawTrajectory(from_xy, target_xy, color) {
+  if (!from_xy || !target_xy) return;
+  const [fx, fy] = toScreen(from_xy[0], from_xy[1]);
+  const [tx, ty] = toScreen(target_xy[0], target_xy[1]);
+  ctx.beginPath();
+  ctx.moveTo(fx, fy);
+  ctx.lineTo(tx, ty);
+  ctx.strokeStyle = color;
+  ctx.lineWidth = 2;
+  ctx.setLineDash([4, 4]);
+  ctx.stroke();
+  ctx.setLineDash([]);
+  // Arrow head
+  const angle = Math.atan2(ty - fy, tx - fx);
+  ctx.beginPath();
+  ctx.moveTo(tx, ty);
+  ctx.lineTo(tx - 8 * Math.cos(angle - 0.4), ty - 8 * Math.sin(angle - 0.4));
+  ctx.lineTo(tx - 8 * Math.cos(angle + 0.4), ty - 8 * Math.sin(angle + 0.4));
+  ctx.closePath();
+  ctx.fillStyle = color;
+  ctx.fill();
+}
+
+function lerp(a, b, t) { return a + (b - a) * t; }
+
+function getInterpolatedPositions(frameIdx, t) {
+  const cur = frames[frameIdx];
+  if (frameIdx >= frames.length - 1 || t <= 0) return { home: cur.home, away: cur.away };
+  const next = frames[frameIdx + 1];
+  const home = cur.home.map((pos, i) => [lerp(pos[0], next.home[i][0], t), lerp(pos[1], next.home[i][1], t)]);
+  const away = cur.away.map((pos, i) => [lerp(pos[0], next.away[i][0], t), lerp(pos[1], next.away[i][1], t)]);
+  return { home, away };
+}
+
+function render(interpT = 0) {
+  if (!header || frames.length === 0) return;
+  const frame = frames[currentFrame];
+  const { home, away } = getInterpolatedPositions(currentFrame, interpT);
+
+  drawField();
+
+  // Draw players
+  for (let i = 0; i < home.length; i++) {
+    const isBallHolder = frame.ball_team === 'home' && frame.ball_holder === i;
+    drawPlayer(home[i][0], home[i][1], '#4fc3f7', header.home.players[i].pos, isBallHolder);
+  }
+  for (let i = 0; i < away.length; i++) {
+    const isBallHolder = frame.ball_team === 'away' && frame.ball_holder === i;
+    drawPlayer(away[i][0], away[i][1], '#ef5350', header.away.players[i].pos, isBallHolder);
+  }
+
+  // Draw ball
+  let ballX, ballY;
+  if (frame.ball_team === 'home' && frame.ball_holder !== null) {
+    ballX = home[frame.ball_holder][0];
+    ballY = home[frame.ball_holder][1];
+  } else if (frame.ball_team === 'away' && frame.ball_holder !== null) {
+    ballX = away[frame.ball_holder][0];
+    ballY = away[frame.ball_holder][1];
+  } else {
+    ballX = PITCH_W / 2; ballY = PITCH_H / 2;
+  }
+  drawBall(ballX, ballY);
+
+  // Draw recent event trajectories
+  const frameT = frame.t;
+  const recentEvents = events.filter(e => e.t >= frameT - 3 && e.t <= frameT + 1);
+  for (const ev of recentEvents) {
+    if (ev.from_xy && ev.target_xy) {
+      const color = ev.event === 'goal' ? '#ffca28' : ev.event === 'shot' ? '#ff7043' : 'rgba(255,255,255,0.5)';
+      drawTrajectory(ev.from_xy, ev.target_xy, color);
+    }
+  }
+
+  // Update UI
+  const mins = Math.floor(frame.t / 60);
+  const secs = frame.t % 60;
+  document.getElementById('time-display').textContent = `${frame.half === 1 ? '' : '45+'}${mins}:${String(secs).padStart(2, '0')}`;
+  document.getElementById('progress').value = currentFrame;
+  document.querySelector('.home-score').textContent = frame.score[0];
+  document.querySelector('.away-score').textContent = frame.score[1];
+
+  // Show recent event text
+  const eventText = recentEvents.filter(e => ['shot', 'goal', 'save', 'miss'].includes(e.event)).map(e => e.event).join(' | ');
+  document.getElementById('event-bar').textContent = eventText ? `⚡ ${eventText.toUpperCase()}` : '';
+}
+
+function getFrameInterval(idx) {
+  if (idx >= frames.length - 1) return 500;
+  const dt = (frames[idx + 1].t - frames[idx].t) * 1000 / speed;
+  return Math.max(100, Math.min(2000, dt));
+}
+
+function playLoop(timestamp) {
+  if (!playing) return;
+  if (!lastRenderTime) lastRenderTime = timestamp;
+  const elapsed = timestamp - lastRenderTime;
+  const interval = getFrameInterval(currentFrame);
+
+  interpProgress = Math.min(elapsed / interval, 1);
+  render(interpProgress);
+
+  if (elapsed >= interval) {
+    lastRenderTime = timestamp;
+    interpProgress = 0;
+    if (currentFrame < frames.length - 1) {
+      currentFrame++;
+    } else {
+      playing = false;
+      document.getElementById('btn-play').textContent = '▶';
+      render(0);
+      return;
+    }
+  }
+  animId = requestAnimationFrame(playLoop);
+}
+
+function togglePlay() {
+  playing = !playing;
+  document.getElementById('btn-play').textContent = playing ? '⏸' : '▶';
+  if (playing) {
+    lastRenderTime = 0;
+    animId = requestAnimationFrame(playLoop);
+  } else if (animId) {
+    cancelAnimationFrame(animId);
+  }
+}
+
+function setSpeed(s) {
+  speed = s;
+  document.querySelectorAll('#controls button[id^=btn-]').forEach(b => {
+    if (b.id.endsWith('x')) b.classList.remove('active');
+  });
+  document.getElementById(`btn-${s}x`).classList.add('active');
+}
+
+async function loadReplay(url) {
+  const resp = await fetch(url);
+  const text = await resp.text();
+  const lines = text.trim().split('\n').map(l => JSON.parse(l));
+
+  header = null; frames = []; events = [];
+  for (const line of lines) {
+    if (line.type === 'header') header = line;
+    else if (line.type === 'frame') frames.push(line);
+    else if (line.type === 'event') events.push(line);
+  }
+
+  if (!header || frames.length === 0) { alert('Invalid replay file'); return; }
+
+  currentFrame = 0;
+  playing = false;
+  document.getElementById('progress').max = frames.length - 1;
+  document.getElementById('info').textContent = `${header.home.name} vs ${header.away.name} | ${frames.length} frames | ${events.length} events`;
+  render(0);
+}
+
+async function loadReplayList() {
+  const select = document.getElementById('replay-list');
+  try {
+    const resp = await fetch('/replays/');
+    const text = await resp.text();
+    const parser = new DOMParser();
+    const doc = parser.parseFromString(text, 'text/html');
+    const links = [...doc.querySelectorAll('a')].map(a => a.getAttribute('href')).filter(h => h && h.endsWith('.jsonl'));
+    select.innerHTML = '<option value="">Select a replay...</option>';
+    for (const link of links.reverse()) {
+      const name = decodeURIComponent(link.replace(/^\.\//, ''));
+      select.innerHTML += `<option value="/replays/${name}">${name}</option>`;
+    }
+  } catch (e) {
+    select.innerHTML = '<option value="">No replays found (start server with replays dir)</option>';
+  }
+}
+
+// Event listeners
+document.getElementById('btn-play').addEventListener('click', togglePlay);
+document.getElementById('btn-prev').addEventListener('click', () => { if (currentFrame > 0) { currentFrame--; render(0); } });
+document.getElementById('btn-next').addEventListener('click', () => { if (currentFrame < frames.length - 1) { currentFrame++; render(0); } });
+document.getElementById('progress').addEventListener('input', (e) => { currentFrame = parseInt(e.target.value); render(0); });
+document.getElementById('btn-1x').addEventListener('click', () => setSpeed(1));
+document.getElementById('btn-2x').addEventListener('click', () => setSpeed(2));
+document.getElementById('btn-4x').addEventListener('click', () => setSpeed(4));
+document.getElementById('replay-list').addEventListener('change', (e) => { if (e.target.value) loadReplay(e.target.value); });
+
+document.addEventListener('keydown', (e) => {
+  if (e.code === 'Space') { e.preventDefault(); togglePlay(); }
+  if (e.code === 'ArrowLeft') { if (currentFrame > 0) { currentFrame--; render(0); } }
+  if (e.code === 'ArrowRight') { if (currentFrame < frames.length - 1) { currentFrame++; render(0); } }
+});
+
+// Init
+drawField();
+loadReplayList();
+</script>
+</body>
+</html>

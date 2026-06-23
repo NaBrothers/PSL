@@ -768,6 +768,18 @@ class Game:
         self.current_events.append(event)
         self.match_events.append(event)
 
+        if hasattr(self, 'recorder') and event_type in ("shot", "goal", "save", "miss", "turnover", "carry", "key_pass", "long_pass"):
+            target_xy = None
+            from_xy = None
+            if event_type in ("shot", "miss", "goal"):
+                target_xy = [Const.WIDTH / 2, 0]
+                if player:
+                    from_xy = [player.x, player.y]
+            elif event_type in ("long_pass", "key_pass") and target:
+                from_xy = [player.x, player.y] if player else None
+                target_xy = [target.x, target.y]
+            self.recorder.record_event(self, event_type, player=player, target=target, target_xy=target_xy, from_xy=from_xy)
+
     def classify_event(self, text):
         if "破门" in text or "入网" in text or "进了" in text:
             return "goal", 5
@@ -979,11 +991,22 @@ class Game:
 
     def run_simulation(self):
         """Run the full match simulation without any IO. Returns MatchResult."""
+        from engine.replay import ReplayRecorder
+        import os
+        import time as time_mod
+
         self.mode = Const.MODE_SILENCE
+        self.recorder = ReplayRecorder()
+        self.recorder.record_header(self.home, self.away,
+            self.home.coach.formation if hasattr(self.home.coach, 'formation') else "442",
+            self.away.coach.formation if hasattr(self.away.coach, 'formation') else "442")
+
         self.resetPosition()
+        self.recorder.record_frame(self)
         self.last_broadcast_time = 0
         while self.time < 45 * 60:
             self.play_possession()
+            self.recorder.record_frame(self)
             if self.time > 45 * 60:
                 self.flush_possession_summary()
 
@@ -994,12 +1017,25 @@ class Game:
             self.swap()
         self.resetPosition()
         self.changeBallHolderToOpen()
+        self.recorder.record_frame(self)
         while self.time < 45 * 60:
             self.play_possession()
+            self.recorder.record_frame(self)
             if self.time > 45 * 60:
                 self.flush_possession_summary()
 
-        return self.to_result()
+        result = self.to_result()
+
+        replay_dir = os.path.join(os.environ.get("PSL_PROJECT_DIR", os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))))), "data", "replays")
+        ts = time_mod.strftime("%Y%m%d_%H%M%S")
+        score = f"{self.home.point}-{self.away.point}"
+        filename = f"{ts}_{self.home.coach.name}_{self.away.coach.name}_{score}.jsonl"
+        filepath = os.path.join(replay_dir, filename)
+        self.recorder.save(filepath)
+        ReplayRecorder.cleanup(replay_dir, max_files=100)
+        result.replay_path = filepath
+
+        return result
 
     def to_result(self) -> MatchResult:
         """Convert internal game state to a pure MatchResult data object."""

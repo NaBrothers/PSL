@@ -64,3 +64,4 @@ class MatchResult:
     away_stats: TeamStats
     events: List[MatchEvent] = field(default_factory=list)
     timeline: List[GoalRecord] = field(default_factory=list)
+    replay_path: Optional[str] = None
