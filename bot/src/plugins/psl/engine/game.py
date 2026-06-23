@@ -674,29 +674,49 @@ class Game:
             self.recorder.record_frame(self)
 
     def arrange_goal_kick_shape(self):
+        left_goal_kick = self.offence is self.home
+        def mirror_y(y):
+            return y if left_goal_kick else Const.LENGTH - y
+
+        offence_y = {
+            "GK": 5,
+            "LB": 18, "LCB": 16, "CB": 16, "RCB": 16, "RB": 18,
+            "CDM": 28, "LDM": 30, "RDM": 30,
+            "LCM": 38, "CM": 38, "RCM": 38,
+            "LM": 42, "RM": 42, "CAM": 48,
+            "LW": 56, "CF": 58, "ST": 60, "RW": 56,
+        }
+        defence_y = {
+            "GK": 100,
+            "LB": 58, "LCB": 58, "CB": 58, "RCB": 58, "RB": 58,
+            "CDM": 44, "LDM": 44, "RDM": 44,
+            "LCM": 42, "CM": 42, "RCM": 42,
+            "LM": 40, "RM": 40, "CAM": 38,
+            "LW": 33, "CF": 31, "ST": 31, "RW": 33,
+        }
         for player in self.offence.players:
-            if player.position == "GK":
-                player.x = Const.WIDTH / 2
-                player.y = Const.LENGTH - 5
-            elif player.position in ("LB", "LCB", "CB", "RCB", "RB"):
-                player.x = player.default_x
-                player.y = 88 if player.position in ("LB", "RB") else 93
-            elif "M" in player.position or "DM" in player.position:
-                player.x = player.default_x
-                player.y = 72
-            else:
-                player.x = player.default_x
-                player.y = 54
+            y = offence_y.get(player.position, 42)
+            self.set_player_absolute(player, player.default_x, mirror_y(y))
         for player in self.defence.players:
-            player.x = self.shape_x(player, defending=True)
-            if player.position == "GK":
-                player.y = 8
-            elif player.position in ("LB", "LCB", "CB", "RCB", "RB"):
-                player.y = 46
-            elif "M" in player.position or "DM" in player.position:
-                player.y = 64
+            x = Const.WIDTH - player.default_x
+            y = defence_y.get(player.position, 42)
+            self.set_player_absolute(player, x, mirror_y(y))
+
+    def set_player_absolute(self, player, abs_x, abs_y):
+        if player in self.home.players:
+            if self.offence is self.home:
+                player.x = abs_x
+                player.y = Const.LENGTH - abs_y
             else:
-                player.y = 70
+                player.x = Const.WIDTH - abs_x
+                player.y = abs_y
+        else:
+            if self.offence is self.home:
+                player.x = abs_x
+                player.y = Const.LENGTH - abs_y
+            else:
+                player.x = Const.WIDTH - abs_x
+                player.y = abs_y
 
     def choose_goal_kick_target(self):
         short_targets = [p for p in self.offence.players if p.position in ("LB", "LCB", "CB", "RCB", "RB")]
