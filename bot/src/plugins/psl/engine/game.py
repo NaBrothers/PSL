@@ -769,17 +769,25 @@ class Game:
         minute = self.getTime()
         key_events = [ev for ev in self.current_events if ev.importance >= 4]
         minor_events = [ev for ev in self.current_events if ev.importance == 3]
-        sampled = []
+        sampled_minor = []
         for ev in minor_events:
             if ev.event_type in ("shot", "miss"):
-                sampled.append(ev)
+                sampled_minor.append(ev)
             elif self.rng.random() < 0.4:
-                sampled.append(ev)
-        highlight_events = key_events + sampled
+                sampled_minor.append(ev)
+        # 抽样一些普通动作（传球/带球/过人）让播报更生动
+        flavor_events = [ev for ev in self.current_events if ev.importance <= 2 and ev.event_type in ("pass", "long_pass", "key_pass", "carry")]
+        sampled_flavor = []
+        if flavor_events:
+            count = min(2, len(flavor_events))
+            sampled_flavor = self.rng.sample(flavor_events, count)
+        highlight_events = key_events + sampled_minor
         summary = self.summarize_possession(self.current_events)
         self.current_events = []
         lines = []
-        if highlight_events:
+        if highlight_events or sampled_flavor:
+            for ev in sampled_flavor:
+                lines.append(str(ev.minute) + "' " + ev.text)
             for ev in highlight_events:
                 lines.append(str(ev.minute) + "' " + ev.text)
             if summary:
