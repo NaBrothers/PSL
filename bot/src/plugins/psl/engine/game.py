@@ -259,6 +259,7 @@ class Game:
             self.possession_action_count += 1
             # 持球人行为
             self.ball_holder.action_flag = True
+            self.keep_offence_players_onside()
             if self.goal_kick_pending and self.ball_holder.position == "GK":
                 self.play_goal_kick()
                 return
@@ -1089,38 +1090,6 @@ class Game:
             if player.position == "GK":
                 continue
             player.y = self.keep_onside_y(player, player.y, offside_line)
-
-    def prepare_replay_frame(self):
-        if self.ball_holder in self.offence.players:
-            self.keep_offence_players_onside()
-            self.keep_offence_players_visually_onside()
-
-    def keep_offence_players_visually_onside(self):
-        if not hasattr(self, 'recorder'):
-            return
-        side = "home" if self.offence is self.home else "away"
-        opp = self.away if self.offence is self.home else self.home
-        holder_abs = self.recorder._player_to_absolute(self, self.ball_holder)
-        opp_ys = sorted(self.recorder._player_to_absolute(self, player)[1] for player in opp.players)
-        if len(opp_ys) < 2:
-            return
-        low_line = opp_ys[1]
-        high_line = opp_ys[-2]
-        attacking_high = holder_abs[1] > Const.LENGTH / 2
-        for player in self.offence.players:
-            if player is self.ball_holder or player.position == "GK":
-                continue
-            if player.position not in ("ST", "CF", "LW", "RW", "CAM", "LM", "RM"):
-                continue
-            abs_x, abs_y = self.recorder._player_to_absolute(self, player)
-            if attacking_high:
-                limit = max(holder_abs[1], high_line) - 1.2
-                if abs_y > limit:
-                    self.set_player_absolute(player, abs_x, limit)
-            else:
-                limit = min(holder_abs[1], low_line) + 1.2
-                if abs_y < limit:
-                    self.set_player_absolute(player, abs_x, limit)
 
     # 随机转换持球人
     def changeRandomBallHolder(self, target=None, target_abs=None):
