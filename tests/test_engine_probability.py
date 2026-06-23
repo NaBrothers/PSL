@@ -178,6 +178,43 @@ def test_goal_kick_setup_and_gk_distribution(core_modules, make_user, monkeypatc
         if p.position != "GK" and 24 <= p.x <= 44 and p.y >= 88.5
     ]
     assert defenders_in_box == []
+    own_defenders = [p for p in game.offence.players if p.position in ("LB", "LCB", "CB", "RCB", "RB")]
+    opposition_forwards = [p for p in game.defence.players if p.position in ("ST", "CF", "LW", "RW", "CAM")]
+    assert max(p.y for p in own_defenders) > max(p.y for p in opposition_forwards)
+
+
+def test_goal_kick_shape_uses_formation_depth(core_modules, make_user, monkeypatch):
+    from conftest import DummyMatcher
+    from test_game_flows import build_full_squad
+
+    formation_kernel = core_modules["kernel.formation"]
+    Game = core_modules["engine.game"].Game
+
+    user1 = make_user(40361, "goal-kick-352", money=0)
+    user2 = make_user(40362, "goal-kick-433", money=0)
+    user1.setFormation("352")
+    user2.setFormation("433")
+    build_full_squad(core_modules, user1, star=3)
+    build_full_squad(core_modules, user2, star=3)
+
+    async def finish_no_raise(*args, **kwargs):
+        return None
+
+    monkeypatch.setattr(formation_kernel.get_team, "finish", finish_no_raise)
+    asyncio.run(formation_kernel.auto_update(user1))
+    asyncio.run(formation_kernel.auto_update(user2))
+
+    game = Game(DummyMatcher(), user1, user2, seed=40361)
+    game.resetPosition()
+    game.changeBallHolderToGK()
+    game.arrange_goal_kick_shape()
+
+    defenders = [p for p in game.offence.players if p.position in ("LCB", "CB", "RCB")]
+    wing_mids = [p for p in game.offence.players if p.position in ("LM", "RM")]
+    forwards = [p for p in game.offence.players if p.position in ("CF", "ST")]
+    assert len(defenders) == 3
+    assert min(p.y for p in defenders) > max(p.y for p in wing_mids)
+    assert min(p.y for p in wing_mids) > max(p.y for p in forwards)
 
 
 def test_offside_is_limited_to_advanced_receivers(core_modules, make_user, monkeypatch):

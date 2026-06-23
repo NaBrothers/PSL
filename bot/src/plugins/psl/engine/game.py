@@ -678,29 +678,41 @@ class Game:
         def mirror_y(y):
             return y if left_goal_kick else Const.LENGTH - y
 
-        offence_y = {
-            "GK": 5,
-            "LB": 18, "LCB": 16, "CB": 16, "RCB": 16, "RB": 18,
-            "CDM": 28, "LDM": 30, "RDM": 30,
-            "LCM": 38, "CM": 38, "RCM": 38,
-            "LM": 42, "RM": 42, "CAM": 48,
-            "LW": 56, "CF": 58, "ST": 60, "RW": 56,
-        }
-        defence_y = {
-            "GK": 100,
-            "LB": 58, "LCB": 58, "CB": 58, "RCB": 58, "RB": 58,
-            "CDM": 44, "LDM": 44, "RDM": 44,
-            "LCM": 42, "CM": 42, "RCM": 42,
-            "LM": 40, "RM": 40, "CAM": 38,
-            "LW": 33, "CF": 31, "ST": 31, "RW": 33,
-        }
         for player in self.offence.players:
-            y = offence_y.get(player.position, 42)
+            y = self.set_piece_y(player, attacking=True, phase="goal_kick")
             self.set_player_absolute(player, player.default_x, mirror_y(y))
         for player in self.defence.players:
             x = Const.WIDTH - player.default_x
-            y = defence_y.get(player.position, 42)
+            y = self.set_piece_y(player, attacking=False, phase="goal_kick")
             self.set_player_absolute(player, x, mirror_y(y))
+
+    def set_piece_y(self, player, attacking, phase):
+        source_y = player.default_y
+        if phase != "goal_kick":
+            return self.shape_y(player, defending=not attacking)
+        if player.position == "GK":
+            return 5 if attacking else 100
+        if attacking:
+            if source_y >= 70:
+                return self.remap(source_y, 70, 100, 18, 5)
+            if source_y >= 50:
+                return self.remap(source_y, 50, 70, 42, 26)
+            if source_y >= 32:
+                return self.remap(source_y, 32, 50, 50, 42)
+            return self.remap(source_y, 20, 32, 60, 50)
+        if source_y >= 70:
+            return self.remap(source_y, 70, 100, 58, 100)
+        if source_y >= 50:
+            return self.remap(source_y, 50, 70, 44, 58)
+        if source_y >= 32:
+            return self.remap(source_y, 32, 50, 38, 44)
+        return self.remap(source_y, 20, 32, 31, 36)
+
+    def remap(self, value, src_min, src_max, dst_min, dst_max):
+        if src_max == src_min:
+            return dst_min
+        ratio = self.clamp((value - src_min) / (src_max - src_min), 0, 1)
+        return dst_min + (dst_max - dst_min) * ratio
 
     def set_player_absolute(self, player, abs_x, abs_y):
         if player in self.home.players:
