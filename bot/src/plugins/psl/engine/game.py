@@ -787,7 +787,7 @@ class Game:
     def offensive_shape_advance(self, player):
         progress = Const.LENGTH - self.ball_holder.y
         if player.position in ("LB", "LCB", "CB", "RCB", "RB"):
-            factor, cap = 0.26, 26
+            factor, cap = 0.42, 42
         elif "DM" in player.position or player.position == "CDM":
             factor, cap = 0.38, 34
         elif player.position in ("LCM", "CM", "RCM", "LM", "RM"):
