@@ -744,7 +744,7 @@ class Game:
         if player.position == "GK":
             self.move_player_towards_home(player, max_drift=4, defending=False)
             return
-        advance = self.offensive_shape_advance()
+        advance = self.offensive_shape_advance(player)
         support_y = self.clamp(
             self.shape_y(player, defending=False) - advance,
             self.attack_min_y(player, offside_line),
@@ -784,9 +784,19 @@ class Game:
         target_x, target_y = self.apply_positioning_noise(player, target_x, target_y, defending=True)
         player.approaching(target_x, target_y)
 
-    def offensive_shape_advance(self):
+    def offensive_shape_advance(self, player):
         progress = Const.LENGTH - self.ball_holder.y
-        return self.clamp(progress * 0.62, 0, 54)
+        if player.position in ("LB", "LCB", "CB", "RCB", "RB"):
+            factor, cap = 0.26, 26
+        elif "DM" in player.position or player.position == "CDM":
+            factor, cap = 0.38, 34
+        elif player.position in ("LCM", "CM", "RCM", "LM", "RM"):
+            factor, cap = 0.48, 42
+        elif player.position == "CAM":
+            factor, cap = 0.58, 50
+        else:
+            factor, cap = 0.68, 58
+        return self.clamp(progress * factor, 0, cap)
 
     def choose_defensive_presser(self):
         candidates = [p for p in self.defence.players if p.position != "GK"]
@@ -929,12 +939,12 @@ class Game:
 
     def defensive_depth_offset(self, player):
         if player.position in ("LB", "LCB", "CB", "RCB", "RB"):
-            return 10
+            return 18
         if "DM" in player.position or player.position == "CDM":
-            return 2
+            return 8
         if "M" in player.position:
-            return -6
-        return -14
+            return -4
+        return -18
 
     def defensive_shift_factor(self, player):
         if player.position in ("LB", "LCB", "CB", "RCB", "RB"):
