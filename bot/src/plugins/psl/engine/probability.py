@@ -69,8 +69,8 @@ def build_shot_context(distance, angle, shoot_ability, pressure=0, assist_qualit
 
 def shot_on_target_goal_probability(shoot_ability, keeper_ability, raw_xg):
   ability_edge = ability_advantage_probability(shoot_ability, keeper_ability, scale=8, floor=0.03, ceiling=0.97)
-  chance_bonus = clamp(raw_xg * 1.35, 0.0, 0.30)
-  return clamp(ability_edge * 0.76 + chance_bonus, 0.02, 0.94)
+  chance_bonus = clamp(raw_xg * 1.20, 0.0, 0.27)
+  return clamp(ability_edge * 0.70 + chance_bonus, 0.02, 0.90)
 
 
 def pass_success_probability(pass_ability, distance, pressure=0, is_long=False):

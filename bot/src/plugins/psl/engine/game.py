@@ -403,7 +403,10 @@ class Game:
                 self.record_expected_threat(self.ball_holder, 0.8)
             elif holder_action == "PASS":
                 self.ball_holder.passes += 1
-                pass_targets = self.getOffenceTeamMates() if self.should_attempt_risky_line_pass() else self.get_available_pass_targets()
+                risky_line_pass = self.should_attempt_risky_line_pass()
+                if risky_line_pass:
+                    self.trigger_early_run()
+                pass_targets = self.getOffenceTeamMates() if risky_line_pass else self.get_available_pass_targets()
                 passing = self.ball_holder.passing(pass_targets, self.rng, self.build_pass_lane_bias(pass_targets))
                 passing_type = passing[0]
                 passing_aim = passing[1]
@@ -1179,9 +1182,21 @@ class Game:
     def should_attempt_risky_line_pass(self):
         if self.ball_holder.y >= 55:
             return False
-        if not any(self.is_offside(self.ball_holder, player) for player in self.getOffenceTeamMates()):
+        if not any(player.position in ("ST", "CF", "LW", "RW", "CAM") for player in self.getOffenceTeamMates()):
             return False
-        return self.rng.random() < 0.22
+        return self.rng.random() < 0.12
+
+    def trigger_early_run(self):
+        runners = [
+            player for player in self.getOffenceTeamMates()
+            if player.position in ("ST", "CF", "LW", "RW", "CAM") and player.y < 48
+        ]
+        if not runners:
+            return
+        runner = min(runners, key=lambda p: p.get_distance(Const.WIDTH / 2, 0) - p.ability.get("Speed", 80) / 20)
+        line = min(self.ball_holder.y, self.getLastSecondDefencePlayer().y)
+        target_y = max(5, line - (2.0 + (100 - runner.ability.get("IQ", 80)) / 35))
+        runner.approaching(runner.x, target_y)
 
     # 判断是否为守方球员
     def isDefencePlayer(self, player):
