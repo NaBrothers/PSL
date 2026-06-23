@@ -17,8 +17,11 @@ from dataclasses import dataclass
 class MatchEvent:
     minute: int
     second: int
+    seq: int
     event_type: str
     text: str
+    home_score: int = 0
+    away_score: int = 0
     importance: int = 1
     team: object = None
     player: object = None
@@ -53,6 +56,7 @@ class Game:
         self.broadcast_buffer = []
         self.last_broadcast_time = 0
         self.broadcast_has_goal = False
+        self.event_seq = 0
 
     async def start(self, mode):
         self.mode = mode
@@ -90,7 +94,7 @@ class Game:
         await self.matcher.send(toImage(str))
 
     def event_prefix(self, ev):
-        return "主" + str(self.home.point) + ":" + str(self.away.point) + "客 " + self.half + str(ev.minute) + ":" + str(ev.second)
+        return "主" + str(ev.home_score) + ":" + str(ev.away_score) + "客 " + self.half + str(ev.minute) + ":" + str(ev.second)
 
     def broadcast_goal(self, scorer):
         score = str(self.home.point) + ":" + str(self.away.point)
@@ -297,10 +301,10 @@ class Game:
                     self.swap()
                     self.changeBallHolderToGK()
                     return
-                self.offence.point += 1
                 case = Display.print_goal(
                     self.ball_holder, gk, self.assister)
                 self.printCase(case, "goal", 5, self.ball_holder, self.assister, shot.raw_xg)
+                self.offence.point += 1
                 scorer = self.ball_holder
                 self.ball_holder.goals += 1
                 self.ball_holder.goals_detailed.append(self.getTime())
@@ -482,10 +486,10 @@ class Game:
                                 self.swap()
                                 self.changeBallHolderToGK()
                             else:
-                                self.offence.point += 1
                                 case = Display.print_goal(
                                     roll_winner, gk, self.assister)
                                 self.printCase(case, "goal", 5, roll_winner, self.assister, header_shot.raw_xg)
+                                self.offence.point += 1
                                 scorer = roll_winner
                                 roll_winner.goals += 1
                                 roll_winner.goals_detailed.append(
@@ -747,9 +751,10 @@ class Game:
         if minute is None:
             minute = self.getTime()
         second = self.time % 60
+        self.event_seq += 1
         if event_type is None or importance is None:
             event_type, importance = self.classify_event(text)
-        event = MatchEvent(minute, second, event_type, text, importance, self.offence, player, xg, target, result)
+        event = MatchEvent(minute, second, self.event_seq, event_type, text, self.home.point, self.away.point, importance, self.offence, player, xg, target, result)
         self.current_events.append(event)
         self.match_events.append(event)
 
@@ -800,8 +805,8 @@ class Game:
         highlight_events = key_events + sampled_minor
         summary = self.summarize_possession(self.current_events)
         self.current_events = []
-        # 合并所有要输出的事件并按时间排序
-        all_events = sorted(sampled_flavor + highlight_events, key=lambda ev: (ev.minute, ev.second))
+        # 合并所有要输出的事件并按原始顺序排序
+        all_events = sorted(sampled_flavor + highlight_events, key=lambda ev: ev.seq)
         lines = []
         if all_events:
             for ev in all_events:
