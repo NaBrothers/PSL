@@ -22,9 +22,8 @@ class Bag:
 
   def addToBag(user, card):
       cursor = g_database.cursor()
-      count = cursor.execute("insert into cards (user, player, star, style) values (" + str(user.qq) + "," + str(card.player.ID)+ "," + str(card.star) + ",\"" + card.style +"\")")
-      count = cursor.execute("SELECT LAST_INSERT_ID()")
-      id = cursor.fetchone()[0]
+      cursor.execute("insert into cards (user, player, star, style) values (" + str(user.qq) + "," + str(card.player.ID)+ "," + str(card.star) + ",'" + card.style +"')")
+      id = cursor.lastrowid
       cursor.close()
       return id
 
@@ -32,9 +31,7 @@ class Bag:
       cursor = g_database.cursor()
       ids = []
       for card in cards:
-        count = cursor.execute("insert into cards (user, player, star, style) values (" + str(user.qq) + "," + str(card.player.ID)+ "," + str(card.star) + ",\"" + card.style +"\")")
-        count = cursor.execute("SELECT LAST_INSERT_ID()")
-        ids.append(cursor.fetchone()[0])
+        cursor.execute("insert into cards (user, player, star, style) values (" + str(user.qq) + "," + str(card.player.ID)+ "," + str(card.star) + ",'" + card.style +"')")
+        ids.append(cursor.lastrowid)
       cursor.close()
       return ids
-    

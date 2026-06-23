@@ -2,6 +2,7 @@ from utils.database import *
 from model.user import *
 from model.player import *
 import json
+import random
 
 class Card:
   def __init__(self, id, player, user, star, style, status, appearance, goal, assist, tackle, save, total_appearance, total_goal, total_assist, total_tackle, total_save, locked, ext_abilities, breach):

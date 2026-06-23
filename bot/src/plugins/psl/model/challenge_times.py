@@ -16,12 +16,10 @@ class ChallengeTimes:
         if cur_date != old_date:
           Global.set("date", cur_date)
           cursor.execute("update challenge_times set timesleft = " + str(Const.TIMES_EVERYDAY))
-          count = cursor.execute("select * from challenge_times where User = " + str(user.qq))
-        else:
-          count = cursor.execute("select * from challenge_times where User = " + str(user.qq))
-          if count == 0:
-              cursor.execute("insert into challenge_times (User, TimesLeft) values (" + str(user.qq) + "," + str(Const.TIMES_EVERYDAY) + ")")
-              cursor.execute("select * from challenge_times where User = " + str(user.qq))
+        count = cursor.execute("select * from challenge_times where User = " + str(user.qq))
+        if count == 0:
+          cursor.execute("insert into challenge_times (User, TimesLeft) values (" + str(user.qq) + "," + str(Const.TIMES_EVERYDAY) + ")")
+          cursor.execute("select * from challenge_times where User = " + str(user.qq))
         cursor.close()
         return ChallengeTimes(cursor.fetchone())
 

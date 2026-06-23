@@ -26,7 +26,8 @@ class League:
   def __init__(self, datas: list):
       self.entries = [League.Entry(data) for data in datas]
       for entry in self.entries:
-            entry.condition = Schedule.getRecentCondition(entry.user, 5)
+            if entry.user is not None:
+              entry.condition = Schedule.getRecentCondition(entry.user, 5)
       self.entries.sort(key = lambda e: (-e.score, e.appearance, e.lost_goal - e.goal))
 
   def getLeague():
