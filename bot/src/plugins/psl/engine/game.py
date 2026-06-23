@@ -60,6 +60,7 @@ class Game:
         self.broadcast_has_goal = False
         self.event_seq = 0
         self._movement_tick = 0
+        self.goal_kick_pending = False
 
     async def start(self, mode):
         self.mode = mode
@@ -259,6 +260,9 @@ class Game:
             action_frame = self.recorder.record_frame(self) if hasattr(self, 'recorder') else None
             # 持球人行为
             self.ball_holder.action_flag = True
+            if self.goal_kick_pending and self.ball_holder.position == "GK":
+                self.play_goal_kick(action_frame)
+                return
             # 持球人观测防守球员数量
             defence_players = self.getDefencePlayersInArea(
                 self.ball_holder.x,
@@ -278,6 +282,8 @@ class Game:
                 self.rng,
                 shot_context
             )
+            if self.ball_holder.position == "GK":
+                holder_action = "PASS"
             if holder_action == "SHOOT":
                 shot = shot_context
                 shoot_x = self.ball_holder.shooting(shot.on_target_probability, self.rng)
@@ -646,6 +652,60 @@ class Game:
         self.run_off_ball_movement()
         self.recorder.record_frame(self, pause_ms=1400)
 
+    def play_goal_kick(self, action_frame=None):
+        self.goal_kick_pending = False
+        self.arrange_goal_kick_shape()
+        if hasattr(self, 'recorder'):
+            self.recorder.record_frame(self, event_text="GOAL_KICK_SETUP", pause_ms=900)
+        self.ball_holder.passes += 1
+        target = self.choose_goal_kick_target()
+        distance = self.ball_holder.get_distance_player(target)
+        event_type = "long_pass" if distance > 36 else "pass"
+        case = Display.print_long_pass(self.ball_holder, target, int(distance)) if distance > 36 else Display.print_short_pass(self.ball_holder, target, int(distance))
+        self.printCase(case, event_type, 2 if event_type == "long_pass" else 1, self.ball_holder, target)
+        self.ball_holder.successful_passes += 1
+        self.assister = None
+        if hasattr(self, 'recorder') and self.recorder:
+            flight = self.recorder.make_pass_flight(self, self.ball_holder, target)
+            if action_frame is not None:
+                action_frame["ball_flight"] = flight
+        self.changeBallHolder(target)
+        self.run_off_ball_movement()
+        if hasattr(self, 'recorder'):
+            self.recorder.record_frame(self, event_text="GOAL_KICK", pause_ms=800)
+
+    def arrange_goal_kick_shape(self):
+        for player in self.offence.players:
+            if player.position == "GK":
+                player.x = Const.WIDTH / 2
+                player.y = Const.LENGTH - 5
+            elif player.position in ("LB", "LCB", "CB", "RCB", "RB"):
+                player.x = player.default_x
+                player.y = self.clamp(player.default_y + 10, 72, 94)
+            elif "M" in player.position or "DM" in player.position:
+                player.x = player.default_x
+                player.y = self.clamp(player.default_y + 12, 55, 76)
+            else:
+                player.x = player.default_x
+                player.y = self.clamp(player.default_y + 26, 45, 58)
+        for player in self.defence.players:
+            player.x = self.shape_x(player, defending=True)
+            if player.position == "GK":
+                player.y = 5
+            elif player.position in ("LB", "LCB", "CB", "RCB", "RB"):
+                player.y = 28
+            elif "M" in player.position or "DM" in player.position:
+                player.y = 42
+            else:
+                player.y = 50
+
+    def choose_goal_kick_target(self):
+        short_targets = [p for p in self.offence.players if p.position in ("LB", "LCB", "CB", "RCB", "RB")]
+        long_targets = [p for p in self.offence.players if p.position in ("ST", "CF", "LW", "RW", "CAM")]
+        if short_targets and (not long_targets or self.rng.random() < 0.72):
+            return min(short_targets, key=lambda p: self.ball_holder.get_distance_player(p) - p.ability["Short_Passing"] / 20)
+        return min(long_targets or self.getOffenceTeamMates(), key=lambda p: self.ball_holder.get_distance_player(p) - p.ability["Heading"] / 10)
+
     def move_offence_player(self, player, offside_line):
         if player.position == "GK":
             self.move_player_towards_home(player, max_drift=4, defending=False)
@@ -994,6 +1054,7 @@ class Game:
     def changeBallHolderToGK(self):
         player = self.offence.players[0]
         self.changeBallHolder(player)
+        self.goal_kick_pending = True
 
     # 转换持球人为开球人
     def changeBallHolderToOpen(self):

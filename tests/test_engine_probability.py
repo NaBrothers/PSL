@@ -139,6 +139,47 @@ def test_shot_context_is_independent_from_random_shot_location(core_modules, mak
     assert first.on_target_probability == second.on_target_probability
 
 
+def test_goal_kick_setup_and_gk_distribution(core_modules, make_user, monkeypatch):
+    from conftest import DummyMatcher
+    from test_game_flows import build_full_squad
+
+    formation_kernel = core_modules["kernel.formation"]
+    Game = core_modules["engine.game"].Game
+
+    user1 = make_user(40351, "goal-kick-home", money=0)
+    user2 = make_user(40352, "goal-kick-away", money=0)
+    build_full_squad(core_modules, user1, star=3)
+    build_full_squad(core_modules, user2, star=3)
+
+    async def finish_no_raise(*args, **kwargs):
+        return None
+
+    monkeypatch.setattr(formation_kernel.get_team, "finish", finish_no_raise)
+    asyncio.run(formation_kernel.auto_update(user1))
+    asyncio.run(formation_kernel.auto_update(user2))
+
+    game = Game(DummyMatcher(), user1, user2, seed=40351)
+    game.resetPosition()
+    game.changeBallHolderToGK()
+    assert game.goal_kick_pending
+
+    game.current_events = []
+    game.match_events = []
+    game.play_possession()
+
+    assert not game.goal_kick_pending
+    assert game.ball_holder.position in ("LB", "LCB", "CB", "RCB", "RB", "ST", "CF", "LW", "RW", "CAM")
+    gk_events = [ev for ev in game.match_events if ev.player and ev.player.position == "GK"]
+    assert any(ev.event_type in ("pass", "long_pass") for ev in gk_events)
+    assert not any(ev.event_type in ("carry", "shot", "goal", "miss", "save") for ev in gk_events)
+
+    defenders_in_box = [
+        p for p in game.defence.players
+        if p.position != "GK" and 24 <= p.x <= 44 and p.y >= 88.5
+    ]
+    assert defenders_in_box == []
+
+
 def test_offside_is_limited_to_advanced_receivers(core_modules, make_user, monkeypatch):
     from conftest import DummyMatcher
     from test_game_flows import build_full_squad
