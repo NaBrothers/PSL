@@ -680,11 +680,10 @@ class Game:
 
         for player in self.offence.players:
             y = self.set_piece_y(player, attacking=True, phase="goal_kick")
-            self.set_player_absolute(player, player.default_x, mirror_y(y))
+            self.set_player_absolute(player, self.team_shape_abs_x(player), mirror_y(y))
         for player in self.defence.players:
-            x = Const.WIDTH - player.default_x
             y = self.set_piece_y(player, attacking=False, phase="goal_kick")
-            self.set_player_absolute(player, x, mirror_y(y))
+            self.set_player_absolute(player, self.team_shape_abs_x(player), mirror_y(y))
 
     def set_piece_y(self, player, attacking, phase):
         source_y = player.default_y
@@ -713,6 +712,9 @@ class Game:
             return dst_min
         ratio = self.clamp((value - src_min) / (src_max - src_min), 0, 1)
         return dst_min + (dst_max - dst_min) * ratio
+
+    def team_shape_abs_x(self, player):
+        return player.default_x if player in self.home.players else Const.WIDTH - player.default_x
 
     def set_player_absolute(self, player, abs_x, abs_y):
         if player in self.home.players:
