@@ -193,24 +193,33 @@ class Game:
             detail_msg += "\n"
 
         detail_msg += "[数据统计]\n"
-        detail_msg += "控球率：" + str(round(self.home.control*100/(self.home.control+self.away.control), 1)) + \
-            "%:" + str(round(self.away.control*100 / (self.home.control+self.away.control), 1)) + "%\n"
-        detail_msg += "射正：" + str(self.home.shoots_in_target) + ":" + str(self.away.shoots_in_target) + "\n"
-        detail_msg += "射门：" + str(self.home.shoots) + ":" + str(self.away.shoots) + "\n"
-        detail_msg += "传球：" + str(self.home.passes) + ":" + str(self.away.passes) + "\n"
-        home_pass_rate = 0 if self.home.passes == 0 else round(self.home.successful_passes*100/self.home.passes, 1)
-        away_pass_rate = 0 if self.away.passes == 0 else round(self.away.successful_passes*100/self.away.passes, 1)
-        detail_msg += "传球成功率：" + str(home_pass_rate) + "%:" + str(away_pass_rate) + "%\n"
-        detail_msg += "过人：" + str(self.home.dribbles) + ":" + str(self.away.dribbles) + "\n"
-        detail_msg += "带球推进：" + str(self.home.carries) + ":" + str(self.away.carries) + "\n"
-        detail_msg += "抢断：" + str(self.home.tackles) + ":" + str(self.away.tackles) + "\n"
-        detail_msg += "拦截：" + str(self.home.interceptions) + ":" + str(self.away.interceptions) + "\n"
-        detail_msg += "封堵：" + str(self.home.blocks) + ":" + str(self.away.blocks) + "\n"
-        detail_msg += "扑救：" + str(self.home.saves) + ":" + str(self.away.saves) + "\n"
-        detail_msg += "xG：" + str(round(self.home.xg, 2)) + ":" + str(round(self.away.xg, 2)) + "\n"
-        detail_msg += "关键传球：" + str(self.home.key_passes) + ":" + str(self.away.key_passes) + "\n"
-        detail_msg += "禁区触球：" + str(self.home.box_touches) + ":" + str(self.away.box_touches) + "\n"
-        detail_msg += "绝对机会：" + str(self.home.big_chances) + ":" + str(self.away.big_chances)
+        total_control = self.home.control + self.away.control
+        home_ctrl = str(round(self.home.control*100/total_control, 1)) + "%"
+        away_ctrl = str(round(self.away.control*100/total_control, 1)) + "%"
+        home_pass_rate = "0%" if self.home.passes == 0 else str(round(self.home.successful_passes*100/self.home.passes, 1)) + "%"
+        away_pass_rate = "0%" if self.away.passes == 0 else str(round(self.away.successful_passes*100/self.away.passes, 1)) + "%"
+        stats = [
+            (home_ctrl, "控球率", away_ctrl),
+            (str(self.home.shoots_in_target), "射正", str(self.away.shoots_in_target)),
+            (str(self.home.shoots), "射门", str(self.away.shoots)),
+            (str(self.home.passes), "传球", str(self.away.passes)),
+            (home_pass_rate, "传球成功率", away_pass_rate),
+            (str(self.home.dribbles), "过人", str(self.away.dribbles)),
+            (str(self.home.carries), "带球推进", str(self.away.carries)),
+            (str(self.home.tackles), "抢断", str(self.away.tackles)),
+            (str(self.home.interceptions), "拦截", str(self.away.interceptions)),
+            (str(self.home.blocks), "封堵", str(self.away.blocks)),
+            (str(self.home.saves), "扑救", str(self.away.saves)),
+            (str(round(self.home.xg, 2)), "xG", str(round(self.away.xg, 2))),
+            (str(self.home.key_passes), "关键传球", str(self.away.key_passes)),
+            (str(self.home.box_touches), "禁区触球", str(self.away.box_touches)),
+            (str(self.home.big_chances), "绝对机会", str(self.away.big_chances)),
+        ]
+        label_width = max(len(s[1]) for s in stats) + 2
+        val_width = 8
+        for home_val, label, away_val in stats:
+            line = home_val.rjust(val_width) + "  " + label.center(label_width) + "  " + away_val.ljust(val_width)
+            detail_msg += line + "\n"
         await self.matcher.send(toImage(detail_msg))
         return detail_msg
 

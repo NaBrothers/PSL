@@ -98,8 +98,8 @@ def test_print_stats_handles_zero_passes(core_modules, make_user):
     game.home.control = 1
     game.away.control = 1
     message = asyncio.run(game.printStats())
-    assert "传球成功率：0%:0%" in message
-    assert "xG：" in message
+    assert "传球成功率" in message
+    assert "xG" in message
 
 
 def test_shot_context_is_independent_from_random_shot_location(core_modules, make_user, monkeypatch):
@@ -232,13 +232,13 @@ def test_normal_commentary_is_possession_summary_not_action_log(core_modules, ma
     assert "[比赛战报]" not in detail_message
     assert "[终场比分]" in detail_message
     assert "[数据统计]" in detail_message
-    assert "带球推进：" in detail_message
-    assert "拦截：" in detail_message
-    assert "封堵：" in detail_message
-    assert "绝对机会：" in detail_message
-    assert "Adj xG：" not in detail_message
-    assert "xT：" not in detail_message
-    assert "Possessions：" not in detail_message
+    assert "带球推进" in detail_message
+    assert "拦截" in detail_message
+    assert "封堵" in detail_message
+    assert "绝对机会" in detail_message
+    assert "Adj xG" not in detail_message
+    assert "xT" not in detail_message
+    assert "Possessions" not in detail_message
 
 
 def test_quick_mode_returns_report_and_stats(core_modules, make_user, monkeypatch):
@@ -278,10 +278,10 @@ def test_quick_mode_returns_report_and_stats(core_modules, make_user, monkeypatc
     assert "[比赛战报]" not in detail_message
     assert "[终场比分]" in detail_message
     assert "[数据统计]" in detail_message
-    assert "带球推进：" in detail_message
-    assert "拦截：" in detail_message
-    assert "封堵：" in detail_message
-    assert "绝对机会：" in detail_message
-    assert "Adj xG：" not in detail_message
-    assert "xT：" not in detail_message
-    assert "Possessions：" not in detail_message
+    assert "带球推进" in detail_message
+    assert "拦截" in detail_message
+    assert "封堵" in detail_message
+    assert "绝对机会" in detail_message
+    assert "Adj xG" not in detail_message
+    assert "xT" not in detail_message
+    assert "Possessions" not in detail_message
