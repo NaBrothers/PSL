@@ -2,7 +2,7 @@ from model.user import User
 from engine.player import Player
 from engine.team import Team
 from engine.const import Const
-from engine.commentary import CommentaryRenderer, event_player_name, event_target_name, xg_text
+from engine.commentary import CommentaryRenderer, event_player_name, event_target_name
 from engine.probability import build_shot_context, expected_threat, pass_success_probability, shot_on_target_goal_probability
 from utils.image import toImage
 from engine.display import Display
@@ -28,59 +28,47 @@ class MatchEvent:
 
 class Game:
 
+    BROADCAST_INTERVAL = 270
+
     def __init__(self, matcher, user1, user2, npc=-1, difficulty=0, seed=None, rng=None):
-        # bot回调函数
         self.matcher = matcher
-        # 当前回合
         self.step = 0
-        # 当前时间
         self.time = 0
-        # 进攻方
         self.offence = Team(user1)
-        # 防守方
         self.defence = Team(user2, npc, difficulty)
-        # 主队
         self.home = self.offence
-        # 客队
         self.away = self.defence
-        # 上下半场
         self.half = "上半时"
-        # 持球人
         self.ball_holder = self.offence.players[10]
-        # 助攻人
         self.assister = None
-        # gui
-        # self.display = Display()
-        # 打印过程
-        self.print_str = ""
-        # 四元组(时间，队伍，进球者，助攻者)
         self.timeline = []
         self.match_events = []
         self.current_events = []
-        self.commentary_buffer = []
         self.mode = Const.MODE_NORMAL
         self.rng = rng or random.Random(seed)
         self.commentary = CommentaryRenderer(self.rng)
         self.possession_action_count = 0
         self.possession_box_touches = 0
+        self.broadcast_buffer = []
+        self.last_broadcast_time = 0
+        self.broadcast_has_goal = False
 
-    # 比赛主逻辑
     async def start(self, mode):
         self.mode = mode
         self.resetPosition()
         if self.mode != Const.MODE_QUICK:
             await self.send("主 " + self.home.coach.name + " : " + self.away.coach.name + " 客\n比赛开始")
+        self.last_broadcast_time = 0
         while self.time < 45 * 60:
             self.play_possession()
             if self.time > 45 * 60:
                 self.flush_possession_summary()
-                self.printCase("上半场结束")
-            await self.send(self.print_str)
-            self.print_str = ""
-            if self.mode != Const.MODE_QUICK and self.mode != Const.MODE_SILENCE:
-                time.sleep(Const.PRINT_DELAY)
+            await self.maybe_broadcast()
+        await self.flush_broadcast("上半场结束")
+
         self.half = "下半时"
         self.time = 0
+        self.last_broadcast_time = 0
         if self.offence is self.home:
             self.swap()
         self.resetPosition()
@@ -89,11 +77,8 @@ class Game:
             self.play_possession()
             if self.time > 45 * 60:
                 self.flush_possession_summary()
-                self.printCase("下半场结束")
-            await self.send(self.print_str)
-            self.print_str = ""
-            if self.mode != Const.MODE_QUICK and self.mode != Const.MODE_SILENCE:
-                time.sleep(Const.PRINT_DELAY)
+            await self.maybe_broadcast()
+        await self.flush_broadcast("下半场结束")
 
         stats = await self.printStats()
         return stats
@@ -102,6 +87,30 @@ class Game:
         if self.mode == Const.MODE_QUICK or self.mode == Const.MODE_SILENCE:
             return
         await self.matcher.send(toImage(str))
+
+    async def maybe_broadcast(self):
+        if self.mode == Const.MODE_QUICK or self.mode == Const.MODE_SILENCE:
+            return
+        elapsed = self.time - self.last_broadcast_time
+        if self.broadcast_has_goal or elapsed >= self.BROADCAST_INTERVAL:
+            await self.flush_broadcast()
+
+    async def flush_broadcast(self, footer=None):
+        if self.mode == Const.MODE_QUICK or self.mode == Const.MODE_SILENCE:
+            self.broadcast_buffer = []
+            self.broadcast_has_goal = False
+            return
+        lines = list(self.broadcast_buffer)
+        if footer:
+            lines.append(footer)
+        self.broadcast_buffer = []
+        self.broadcast_has_goal = False
+        self.last_broadcast_time = self.time
+        if not lines:
+            return
+        msg = "\n".join(lines)
+        await self.send(msg)
+        time.sleep(Const.PRINT_DELAY)
 
     async def printStats(self):
         self.home.getStats()
@@ -709,10 +718,8 @@ class Game:
                 min2_player = player
         return min2_player
 
-    # 打印球场事件
     def printCase(self, case, event_type=None, importance=None, player=None, target=None, xg=0, result=""):
-        minute = int(self.time / 60)
-        second = self.time % 60
+        minute = self.getTime()
         lines = case.split("\n")
         for line in lines:
             self.record_event(line, minute, importance, event_type, player, target, xg, result)
@@ -754,14 +761,35 @@ class Game:
     def flush_possession_summary(self):
         if not self.current_events:
             return
-        summary = self.summarize_possession(self.current_events)
-        self.current_events = []
-        if not summary:
+        if any(ev.event_type == "goal" for ev in self.current_events):
+            self.broadcast_has_goal = True
+        if self.mode != Const.MODE_NORMAL:
+            self.current_events = []
             return
         minute = self.getTime()
-        line = str(minute) + "' " + summary
-        if self.mode == Const.MODE_NORMAL:
-            self.print_str += line + "\n"
+        key_events = [ev for ev in self.current_events if ev.importance >= 4]
+        minor_events = [ev for ev in self.current_events if ev.importance == 3]
+        sampled = []
+        for ev in minor_events:
+            if ev.event_type in ("shot", "miss"):
+                sampled.append(ev)
+            elif self.rng.random() < 0.4:
+                sampled.append(ev)
+        highlight_events = key_events + sampled
+        summary = self.summarize_possession(self.current_events)
+        self.current_events = []
+        lines = []
+        if highlight_events:
+            for ev in highlight_events:
+                lines.append(str(ev.minute) + "' " + ev.text)
+            if summary:
+                lines.append(str(minute) + "' " + summary)
+        elif summary:
+            lines.append(str(minute) + "' " + summary)
+        else:
+            return
+        for line in lines:
+            self.broadcast_buffer.append(line)
 
     def summarize_possession(self, events):
         team_name = self.offence.coach.name
@@ -775,7 +803,7 @@ class Game:
                 route=route,
                 player=event_player_name(result),
                 target=event_target_name(result),
-                xg_text=xg_text(result.xg),
+                xg_text=self.commentary.xg_text(result.xg),
             )
         passes = len([event for event in events if event.event_type in ("pass", "long_pass")])
         carries = len([event for event in events if event.event_type == "carry"])
@@ -814,23 +842,92 @@ class Game:
         return self.commentary.route("default", team=self.offence.coach.name)
 
     def build_match_report(self):
-        selected = [event for event in self.match_events if event.importance >= 3]
-        if not selected:
-            return self.commentary.report("quiet") + "\n"
-        selected = selected[-8:]
-        lines = []
-        for event in selected:
-            if event.event_type == "goal":
-                lines.append(self.commentary.report("goal", minute=event.minute, player=event_player_name(event), xg_text=xg_text(event.xg)))
-            elif event.event_type == "save":
-                lines.append(self.commentary.report("save", minute=event.minute, player=event_player_name(event), target=event_target_name(event), xg_text=xg_text(event.xg)))
-            elif event.event_type == "miss":
-                lines.append(self.commentary.report("miss", minute=event.minute, player=event_player_name(event), xg_text=xg_text(event.xg)))
-            elif event.event_type == "turnover":
-                lines.append(self.commentary.report("turnover", minute=event.minute, player=event_player_name(event, "防守球员")))
+        home = self.home
+        away = self.away
+        home_name = home.coach.name
+        away_name = away.coach.name
+        total_control = home.control + away.control
+        home_ctrl = round(home.control * 100 / total_control, 1) if total_control else 50
+        away_ctrl = round(away.control * 100 / total_control, 1) if total_control else 50
+        score = f"{home.point}:{away.point}"
+
+        paragraphs = []
+
+        # 比赛结果
+        if home.point == away.point:
+            key = "result_draw_0" if home.point == 0 else "result_draw"
+        elif home.point > away.point:
+            diff = home.point - away.point
+            key = "result_home_big_win" if diff >= 3 else ("result_home_win_2" if diff == 2 else "result_home_win_1")
+        else:
+            diff = away.point - home.point
+            key = "result_away_big_win" if diff >= 3 else ("result_away_win_2" if diff == 2 else "result_away_win_1")
+        paragraphs.append(self.commentary.render("narrative", key, home=home_name, away=away_name, score=score))
+
+        # 控球和场面
+        shots = f"{home.shoots}:{away.shoots}"
+        sot = f"{home.shoots_in_target}:{away.shoots_in_target}"
+        if home_ctrl > 55:
+            paragraphs.append(self.commentary.render("narrative", "control_dominant",
+                dominant=home_name, other=away_name, ctrl=str(home_ctrl), shots=shots, sot=sot))
+        elif away_ctrl > 55:
+            paragraphs.append(self.commentary.render("narrative", "control_dominant",
+                dominant=away_name, other=home_name, ctrl=str(away_ctrl), shots=shots, sot=sot))
+        else:
+            paragraphs.append(self.commentary.render("narrative", "control_balanced",
+                home_ctrl=str(home_ctrl), away_ctrl=str(away_ctrl), shots=shots, sot=sot))
+
+        # 进球叙述
+        goals = [(ev.minute, ev) for ev in self.match_events if ev.event_type == "goal"]
+        if goals:
+            parts = []
+            for minute, ev in goals:
+                scorer = event_player_name(ev)
+                if ev.target:
+                    parts.append(self.commentary.render("narrative", "goal_desc",
+                        minute=str(minute), scorer=scorer, assister=ev.target.getName()))
+                else:
+                    parts.append(self.commentary.render("narrative", "goal_desc_solo",
+                        minute=str(minute), scorer=scorer))
+            paragraphs.append(" ".join(parts))
+        else:
+            shots_total = home.shoots + away.shoots
+            if shots_total > 20:
+                paragraphs.append(self.commentary.render("narrative", "goals_none_many_shots", total_shots=str(shots_total)))
             else:
-                lines.append(str(event.minute) + "' " + event.text)
-        return "\n".join(lines) + "\n"
+                paragraphs.append(self.commentary.render("narrative", "goals_none_few_shots"))
+
+        # 门将表现
+        saves_events = [ev for ev in self.match_events if ev.event_type == "save"]
+        if saves_events:
+            keeper_saves = {}
+            for ev in saves_events:
+                if ev.target:
+                    name = ev.target.getName()
+                    keeper_saves[name] = keeper_saves.get(name, 0) + 1
+                elif ev.player:
+                    name = ev.player.getName()
+                    keeper_saves[name] = keeper_saves.get(name, 0) + 1
+            if keeper_saves:
+                best_keeper = max(keeper_saves, key=keeper_saves.get)
+                best_saves = keeper_saves[best_keeper]
+                if best_saves >= 3:
+                    paragraphs.append(self.commentary.render("narrative", "keeper_heroic", keeper=best_keeper, saves=str(best_saves)))
+
+        # xG 对比
+        home_xg = round(home.xg, 2)
+        away_xg = round(away.xg, 2)
+        if home_xg + away_xg > 0:
+            if home.point > home_xg + 0.5:
+                paragraphs.append(self.commentary.render("narrative", "xg_overperform_home", home=home_name, away=away_name, home_xg=str(home_xg), away_xg=str(away_xg)))
+            elif away.point > away_xg + 0.5:
+                paragraphs.append(self.commentary.render("narrative", "xg_overperform_away", home=home_name, away=away_name, home_xg=str(home_xg), away_xg=str(away_xg)))
+            elif home_xg > home.point + 0.8:
+                paragraphs.append(self.commentary.render("narrative", "xg_underperform_home", home=home_name, away=away_name, home_xg=str(home_xg), away_xg=str(away_xg)))
+            elif away_xg > away.point + 0.8:
+                paragraphs.append(self.commentary.render("narrative", "xg_underperform_away", home=home_name, away=away_name, home_xg=str(home_xg), away_xg=str(away_xg)))
+
+        return "\n".join(paragraphs)
 
     def getTime(self):
         if self.half == "上半时":

@@ -39,20 +39,29 @@ class CommentaryRenderer:
   def event(self, key, **context):
     return self.render("events", key, **context)
 
+  def xg_text(self, value):
+    if not value:
+      return ""
+    if value >= 0.35:
+      quality = self.render("xg_quality", "very_high")
+    elif value >= 0.20:
+      quality = self.render("xg_quality", "high")
+    elif value >= 0.10:
+      quality = self.render("xg_quality", "medium")
+    elif value >= 0.05:
+      quality = self.render("xg_quality", "low")
+    else:
+      quality = self.render("xg_quality", "very_low")
+    return quality + "（xG " + format(value, ".2f") + "）"
+
 
 def event_player_name(event, fallback="进攻球员"):
   if event.player is None:
     return fallback
-  return event.player.getName(False)
+  return event.player.getName()
 
 
 def event_target_name(event, fallback="门将"):
   if event.target is None:
     return fallback
-  return event.target.getName(False)
-
-
-def xg_text(value):
-  if not value:
-    return ""
-  return "，xG " + format(value, ".2f")
+  return event.target.getName()

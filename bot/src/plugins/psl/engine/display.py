@@ -279,6 +279,7 @@ class Display:
     def print_goal(player, gk, assister):
         string = renderer.event("goal", player=player.coach + " " + player.getName(), keeper=gk.coach + " " + gk.getName())
         if assister:
+          string = string.rstrip("。，.、")
           string += "，来自 " + assister.getName() + " 的助攻"
         return string
 
