@@ -16,6 +16,7 @@ from dataclasses import dataclass
 @dataclass
 class MatchEvent:
     minute: int
+    second: int
     event_type: str
     text: str
     importance: int = 1
@@ -88,6 +89,9 @@ class Game:
             return
         await self.matcher.send(toImage(str))
 
+    def event_prefix(self, ev):
+        return "主" + str(self.home.point) + ":" + str(self.away.point) + "客 " + self.half + str(ev.minute) + ":" + str(ev.second)
+
     async def maybe_broadcast(self):
         if self.mode == Const.MODE_QUICK or self.mode == Const.MODE_SILENCE:
             return
@@ -108,10 +112,7 @@ class Game:
         self.last_broadcast_time = self.time
         if not lines:
             return
-        minutes = self.time // 60
-        seconds = self.time % 60
-        header = "主" + str(self.home.point) + ":" + str(self.away.point) + "客 " + self.half + str(minutes) + ":" + str(seconds) + " " + self.home.coach.name + " : " + self.away.coach.name
-        msg = header + "\n" + "\n".join(lines)
+        msg = "\n".join(lines)
         await self.send(msg)
         time.sleep(Const.PRINT_DELAY)
 
@@ -734,9 +735,10 @@ class Game:
     def record_event(self, text, minute=None, importance=None, event_type=None, player=None, target=None, xg=0, result=""):
         if minute is None:
             minute = self.getTime()
+        second = self.time % 60
         if event_type is None or importance is None:
             event_type, importance = self.classify_event(text)
-        event = MatchEvent(minute, event_type, text, importance, self.offence, player, xg, target, result)
+        event = MatchEvent(minute, second, event_type, text, importance, self.offence, player, xg, target, result)
         self.current_events.append(event)
         self.match_events.append(event)
 
@@ -790,13 +792,15 @@ class Game:
         lines = []
         if highlight_events or sampled_flavor:
             for ev in sampled_flavor:
-                lines.append(str(ev.minute) + "' " + ev.text)
+                lines.append(self.event_prefix(ev) + " " + ev.text)
             for ev in highlight_events:
-                lines.append(str(ev.minute) + "' " + ev.text)
+                lines.append(self.event_prefix(ev) + " " + ev.text)
             if summary:
-                lines.append(str(minute) + "' " + summary)
+                prefix = "主" + str(self.home.point) + ":" + str(self.away.point) + "客 " + self.half + str(minute) + ":" + str(self.time % 60)
+                lines.append(prefix + " " + summary)
         elif summary:
-            lines.append(str(minute) + "' " + summary)
+            prefix = "主" + str(self.home.point) + ":" + str(self.away.point) + "客 " + self.half + str(minute) + ":" + str(self.time % 60)
+            lines.append(prefix + " " + summary)
         else:
             return
         for line in lines:
