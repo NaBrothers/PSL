@@ -257,12 +257,12 @@ class Game:
             if self.time > 45 * 60:
                 return
             self.possession_action_count += 1
-            action_frame = self.recorder.record_frame(self) if hasattr(self, 'recorder') else None
             # 持球人行为
             self.ball_holder.action_flag = True
             if self.goal_kick_pending and self.ball_holder.position == "GK":
-                self.play_goal_kick(action_frame)
+                self.play_goal_kick()
                 return
+            action_frame = self.recorder.record_frame(self) if hasattr(self, 'recorder') else None
             # 持球人观测防守球员数量
             defence_players = self.getDefencePlayersInArea(
                 self.ball_holder.x,
@@ -652,7 +652,7 @@ class Game:
         self.run_off_ball_movement()
         self.recorder.record_frame(self, pause_ms=1400)
 
-    def play_goal_kick(self, action_frame=None):
+    def play_goal_kick(self):
         self.goal_kick_pending = False
         self.arrange_goal_kick_shape()
         if hasattr(self, 'recorder'):
@@ -667,12 +667,11 @@ class Game:
         self.assister = None
         if hasattr(self, 'recorder') and self.recorder:
             flight = self.recorder.make_pass_flight(self, self.ball_holder, target)
-            if action_frame is not None:
-                action_frame["ball_flight"] = flight
+            self.recorder.record_frame(self, ball_flight=flight, event_text="GOAL_KICK", pause_ms=800)
         self.changeBallHolder(target)
         self.run_off_ball_movement()
         if hasattr(self, 'recorder'):
-            self.recorder.record_frame(self, event_text="GOAL_KICK", pause_ms=800)
+            self.recorder.record_frame(self)
 
     def arrange_goal_kick_shape(self):
         for player in self.offence.players:
@@ -691,13 +690,14 @@ class Game:
         for player in self.defence.players:
             player.x = self.shape_x(player, defending=True)
             if player.position == "GK":
-                player.y = 5
+                player.y = 8
             elif player.position in ("LB", "LCB", "CB", "RCB", "RB"):
-                player.y = 28
+                player.y = 58
             elif "M" in player.position or "DM" in player.position:
-                player.y = 42
+                player.y = 70
             else:
-                player.y = 50
+                player.y = 82
+            player.y = min(player.y, 87)
 
     def choose_goal_kick_target(self):
         short_targets = [p for p in self.offence.players if p.position in ("LB", "LCB", "CB", "RCB", "RB")]
@@ -724,6 +724,7 @@ class Game:
         if player.get_distance(self.ball_holder.x, self.ball_holder.y) < 8:
             support_x = self.clamp(player.x + (player.x - self.ball_holder.x), self.lane_min_x(player, defending=False), self.lane_max_x(player, defending=False))
         support_x, support_y = self.apply_positioning_noise(player, support_x, support_y, defending=False)
+        support_y = self.keep_onside_y(player, support_y, offside_line)
         player.approaching(support_x, support_y)
 
     def move_defence_player(self, player, presser=None, cover=None):
@@ -828,7 +829,7 @@ class Game:
             if player.position == "GK":
                 continue
             player.x = self.clamp(player.x, self.lane_min_x(player, defending=False), self.lane_max_x(player, defending=False))
-            player.y = self.clamp(player.y, self.attack_min_y(player, offside_line), self.attack_max_y(player))
+            player.y = self.keep_onside_y(player, player.y, offside_line)
         emergency = self.is_defensive_danger()
         for player in self.defence.players:
             if player.position == "GK":
@@ -842,6 +843,16 @@ class Game:
     def shape_y(self, player, defending=False):
         y = Const.LENGTH - (Const.LENGTH - player.default_y) / 2
         return Const.LENGTH - y if defending else y
+
+    def keep_onside_y(self, player, y, offside_line):
+        y = self.clamp(y, self.attack_min_y(player, offside_line), self.attack_max_y(player))
+        if player is self.ball_holder or player.position == "GK":
+            return y
+        if offside_line is None or offside_line >= Const.LENGTH / 2:
+            return y
+        if player.position in ("ST", "CF", "LW", "RW", "CAM", "LM", "RM"):
+            return max(y, min(self.ball_holder.y, offside_line) + 1.2)
+        return y
 
     def attack_min_y(self, player, offside_line=None):
         offside_floor = 0
