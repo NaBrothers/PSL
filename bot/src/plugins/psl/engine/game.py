@@ -59,6 +59,7 @@ class Game:
         self.last_broadcast_time = 0
         self.broadcast_has_goal = False
         self.event_seq = 0
+        self._movement_tick = 0
 
     async def start(self, mode):
         self.mode = mode
@@ -395,7 +396,8 @@ class Game:
                 self.record_expected_threat(self.ball_holder, 0.8)
             elif holder_action == "PASS":
                 self.ball_holder.passes += 1
-                passing = self.ball_holder.passing(self.get_available_pass_targets(), self.rng)
+                pass_targets = self.getOffenceTeamMates() if self.should_attempt_risky_line_pass() else self.get_available_pass_targets()
+                passing = self.ball_holder.passing(pass_targets, self.rng, self.build_pass_lane_bias(pass_targets))
                 passing_type = passing[0]
                 passing_aim = passing[1]
                 if passing_type == "ROLLING":
@@ -624,7 +626,10 @@ class Game:
         self.possession_action_count = 0
 
     def run_off_ball_movement(self):
+        self._movement_tick += 1
         offside_line = self.get_offside_line_y()
+        presser = self.choose_defensive_presser()
+        cover = self.choose_defensive_cover(presser)
         for player in self.offence.players:
             if player.action_flag or player == self.ball_holder:
                 continue
@@ -632,7 +637,7 @@ class Game:
         for player in self.defence.players:
             if player.action_flag or player == self.ball_holder:
                 continue
-            self.move_defence_player(player)
+            self.move_defence_player(player, presser, cover)
         self.keep_shape_bounds()
 
     def record_transition_frame(self):
@@ -643,54 +648,140 @@ class Game:
 
     def move_offence_player(self, player, offside_line):
         if player.position == "GK":
-            self.move_player_towards_home(player, max_drift=4)
+            self.move_player_towards_home(player, max_drift=4, defending=False)
             return
+        advance = self.offensive_shape_advance()
         support_y = self.clamp(
-            self.ball_holder.y + (player.default_y - self.ball_holder.default_y) * 0.35,
+            self.shape_y(player, defending=False) - advance,
             self.attack_min_y(player, offside_line),
             self.attack_max_y(player),
         )
         support_x = self.clamp(
-            player.default_x + (self.ball_holder.x - Const.WIDTH / 2) * 0.25,
-            self.lane_min_x(player),
-            self.lane_max_x(player),
+            self.shape_x(player, defending=False) + (self.ball_holder.x - Const.WIDTH / 2) * 0.25,
+            self.lane_min_x(player, defending=False),
+            self.lane_max_x(player, defending=False),
         )
         if player.get_distance(self.ball_holder.x, self.ball_holder.y) < 8:
-            support_x = self.clamp(player.x + (player.x - self.ball_holder.x), self.lane_min_x(player), self.lane_max_x(player))
+            support_x = self.clamp(player.x + (player.x - self.ball_holder.x), self.lane_min_x(player, defending=False), self.lane_max_x(player, defending=False))
+        support_x, support_y = self.apply_positioning_noise(player, support_x, support_y, defending=False)
         player.approaching(support_x, support_y)
 
-    def move_defence_player(self, player):
+    def move_defence_player(self, player, presser=None, cover=None):
         if player.position == "GK":
-            self.move_player_towards_home(player, max_drift=3)
+            self.move_player_towards_home(player, max_drift=3, defending=True)
+            return
+        if player is presser:
+            self.move_defensive_presser(player)
+            return
+        if player is cover:
+            self.move_defensive_cover(player, presser)
             return
         target_y = self.clamp(
-            self.ball_holder.y + self.defensive_depth_offset(player),
+            self.ball_holder.y - self.defensive_depth_offset(player),
             self.defence_min_y(player),
             self.defence_max_y(player),
         )
         target_x = self.clamp(
-            player.default_x + (self.ball_holder.x - Const.WIDTH / 2) * self.defensive_shift_factor(player),
-            self.lane_min_x(player),
-            self.lane_max_x(player),
+            self.defensive_target_x(player),
+            self.lane_min_x(player, defending=True, emergency=self.is_defensive_danger()),
+            self.lane_max_x(player, defending=True, emergency=self.is_defensive_danger()),
         )
+        target_x, target_y = self.apply_positioning_noise(player, target_x, target_y, defending=True)
         player.approaching(target_x, target_y)
 
-    def move_player_towards_home(self, player, max_drift):
-        if player.get_distance(player.default_x, player.default_y) > max_drift:
-            player.approaching(player.default_x, player.default_y)
+    def offensive_shape_advance(self):
+        progress = Const.LENGTH - self.ball_holder.y
+        return self.clamp(progress * 0.62, 0, 54)
+
+    def choose_defensive_presser(self):
+        candidates = [p for p in self.defence.players if p.position != "GK"]
+        if not candidates:
+            return None
+        urgency = 0
+        if self.ball_holder.y <= 18:
+            urgency = 1.0
+        elif self.ball_holder.y <= 32:
+            urgency = 0.58
+        elif self.ball_holder.y <= 48:
+            urgency = 0.30
+        else:
+            urgency = 0.12
+        if urgency < 0.5 and self.rng.random() > urgency:
+            return None
+        return min(candidates, key=lambda p: p.get_distance_player(self.ball_holder) - p.ability["IQ"] / 18)
+
+    def choose_defensive_cover(self, presser):
+        if presser is None:
+            return None
+        candidates = [p for p in self.defence.players if p is not presser and p.position != "GK"]
+        if not candidates:
+            return None
+        return min(candidates, key=lambda p: p.get_distance_player(presser) - p.ability["Defence"] / 20)
+
+    def move_defensive_presser(self, player):
+        pressure_gap = 4.5 if self.ball_holder.y <= 24 else 6.5
+        dx = player.x - self.ball_holder.x
+        dy = player.y - self.ball_holder.y
+        distance = math.hypot(dx, dy) or 1
+        target_x = self.ball_holder.x + dx / distance * pressure_gap
+        target_y = self.ball_holder.y + dy / distance * pressure_gap
+        player.approaching(
+            self.clamp(target_x, self.lane_min_x(player, defending=True, emergency=True), self.lane_max_x(player, defending=True, emergency=True)),
+            self.clamp(target_y, self.defence_min_y(player), self.defence_max_y(player)),
+        )
+
+    def move_defensive_cover(self, player, presser):
+        target_x = (self.ball_holder.x + presser.x) / 2
+        target_y = self.ball_holder.y - 10
+        player.approaching(
+            self.clamp(target_x, self.lane_min_x(player, defending=True, emergency=True), self.lane_max_x(player, defending=True, emergency=True)),
+            self.clamp(target_y, self.defence_min_y(player), self.defence_max_y(player)),
+        )
+
+    def apply_positioning_noise(self, player, target_x, target_y, defending=False):
+        iq = player.ability.get("IQ", 80)
+        jitter = self.clamp((105 - iq) / 18, 0.4, 3.2)
+        phase = (self._movement_tick + self.player_index(player) * 3) * 0.7
+        target_x += math.sin(phase) * jitter
+        target_y += math.cos(phase * 0.7) * jitter
+        return (
+            self.clamp(target_x, self.lane_min_x(player, defending), self.lane_max_x(player, defending)),
+            target_y,
+        )
+
+    def player_index(self, player):
+        for team in (self.home, self.away):
+            for index, item in enumerate(team.players):
+                if item is player:
+                    return index
+        return 0
+
+    def move_player_towards_home(self, player, max_drift, defending=False):
+        home_x = self.shape_x(player, defending)
+        home_y = self.shape_y(player, defending)
+        if player.get_distance(home_x, home_y) > max_drift:
+            player.approaching(home_x, home_y)
 
     def keep_shape_bounds(self):
         offside_line = self.get_offside_line_y()
         for player in self.offence.players:
             if player.position == "GK":
                 continue
-            player.x = self.clamp(player.x, self.lane_min_x(player), self.lane_max_x(player))
+            player.x = self.clamp(player.x, self.lane_min_x(player, defending=False), self.lane_max_x(player, defending=False))
             player.y = self.clamp(player.y, self.attack_min_y(player, offside_line), self.attack_max_y(player))
+        emergency = self.is_defensive_danger()
         for player in self.defence.players:
             if player.position == "GK":
                 continue
-            player.x = self.clamp(player.x, self.lane_min_x(player), self.lane_max_x(player))
+            player.x = self.clamp(player.x, self.lane_min_x(player, defending=True, emergency=emergency), self.lane_max_x(player, defending=True, emergency=emergency))
             player.y = self.clamp(player.y, self.defence_min_y(player), self.defence_max_y(player))
+
+    def shape_x(self, player, defending=False):
+        return Const.WIDTH - player.default_x if defending else player.default_x
+
+    def shape_y(self, player, defending=False):
+        y = Const.LENGTH - (Const.LENGTH - player.default_y) / 2
+        return Const.LENGTH - y if defending else y
 
     def attack_min_y(self, player, offside_line=None):
         offside_floor = 0
@@ -733,12 +824,12 @@ class Game:
 
     def defensive_depth_offset(self, player):
         if player.position in ("LB", "LCB", "CB", "RCB", "RB"):
-            return 12
+            return 10
         if "DM" in player.position or player.position == "CDM":
-            return 18
+            return 2
         if "M" in player.position:
-            return 24
-        return 30
+            return -6
+        return -14
 
     def defensive_shift_factor(self, player):
         if player.position in ("LB", "LCB", "CB", "RCB", "RB"):
@@ -747,19 +838,41 @@ class Game:
             return 0.45
         return 0.55
 
-    def lane_min_x(self, player):
-        if "L" in player.position:
-            return 4
-        if "R" in player.position:
-            return 40
-        return 20
+    def defensive_target_x(self, player):
+        base = self.shape_x(player, defending=True)
+        ball_shift = (self.ball_holder.x - Const.WIDTH / 2) * self.defensive_shift_factor(player)
+        if not self.is_defensive_danger():
+            return base + ball_shift
+        if player.position in ("LB", "RB"):
+            is_ball_side = (self.ball_holder.x < Const.WIDTH / 2 and base < Const.WIDTH / 2) or \
+                           (self.ball_holder.x >= Const.WIDTH / 2 and base >= Const.WIDTH / 2)
+            if is_ball_side:
+                return base + (self.ball_holder.x - base) * 0.55
+            return Const.WIDTH / 2 + (base - Const.WIDTH / 2) * 0.35
+        if player.position in ("LCB", "CB", "RCB"):
+            return Const.WIDTH / 2 + (base - Const.WIDTH / 2) * 0.45
+        return base + ball_shift * 0.7
 
-    def lane_max_x(self, player):
-        if "L" in player.position:
-            return 28
-        if "R" in player.position:
-            return 64
-        return 48
+    def is_defensive_danger(self):
+        return self.ball_holder.y <= 34
+
+    def lane_min_x(self, player, defending=False, emergency=False):
+        center = self.shape_x(player, defending)
+        if defending and emergency and player.position in ("LB", "RB"):
+            center = Const.WIDTH / 2 + (center - Const.WIDTH / 2) * 0.28
+        width = 10 if player.position in ("GK", "CB", "CDM", "CM", "CAM", "ST", "CF") else 12
+        if defending and emergency:
+            width += 8
+        return self.clamp(center - width, 0, Const.WIDTH)
+
+    def lane_max_x(self, player, defending=False, emergency=False):
+        center = self.shape_x(player, defending)
+        if defending and emergency and player.position in ("LB", "RB"):
+            center = Const.WIDTH / 2 + (center - Const.WIDTH / 2) * 0.28
+        width = 10 if player.position in ("GK", "CB", "CDM", "CM", "CAM", "ST", "CF") else 12
+        if defending and emergency:
+            width += 8
+        return self.clamp(center + width, 0, Const.WIDTH)
 
     def clamp(self, value, minimum, maximum):
         return max(minimum, min(maximum, value))
@@ -812,13 +925,13 @@ class Game:
     def is_offside(self, passer, receiver):
         if receiver.position == "GK":
             return False
-        if receiver.y >= 35:
+        if receiver.y >= 48:
             return False
         if receiver.y >= passer.y:
             return False
         if receiver.y >= self.ball_holder.y:
             return False
-        return receiver.y < self.getLastSecondDefencePlayer().y - 1.0
+        return receiver.y < self.getLastSecondDefencePlayer().y - 0.2
 
     def choose_pass_interceptor(self, start_x, start_y, end_x, end_y, max_distance):
         candidates = self.getWayDefencePlayers(start_x, start_y, end_x, end_y)
@@ -899,12 +1012,49 @@ class Game:
         team_mates = self.getOffenceTeamMates()
         onside = [player for player in team_mates if not self.is_offside(self.ball_holder, player)]
         if onside:
-            safe = [player for player in onside if player.y >= 35 or player.y >= self.getLastSecondDefencePlayer().y + 1.5]
+            safe = [player for player in onside if player.y >= 48 or player.y >= self.getLastSecondDefencePlayer().y + 0.8]
             if safe:
                 return safe
         if onside:
             return onside
         return team_mates
+
+    def build_pass_lane_bias(self, targets):
+        bias = {}
+        holder_lane = self.pitch_lane(self.ball_holder.x)
+        central_crowd = len(self.getPlayersInArea(self.ball_holder.x, self.ball_holder.y, 14))
+        for player in targets:
+            factor = 1.0
+            lane = self.pitch_lane(player.x)
+            if central_crowd >= 5 and lane != "center":
+                factor *= 0.62
+            if holder_lane == "center" and lane != "center" and self.ball_holder.y <= 62:
+                factor *= 0.72
+            if holder_lane != "center":
+                if lane == holder_lane:
+                    factor *= 0.78
+                elif lane != "center":
+                    factor *= 0.70
+            if player.position in ("LB", "RB", "LM", "RM", "LW", "RW") and self.ball_holder.y <= 58:
+                factor *= 0.72
+            if lane == "center" and self.ball_holder.y <= 34 and player.y <= 24:
+                factor *= 0.82
+            bias[player] = factor
+        return bias
+
+    def pitch_lane(self, x):
+        if x < Const.WIDTH / 3:
+            return "left"
+        if x > Const.WIDTH * 2 / 3:
+            return "right"
+        return "center"
+
+    def should_attempt_risky_line_pass(self):
+        if self.ball_holder.y >= 55:
+            return False
+        if not any(self.is_offside(self.ball_holder, player) for player in self.getOffenceTeamMates()):
+            return False
+        return self.rng.random() < 0.22
 
     # 判断是否为守方球员
     def isDefencePlayer(self, player):

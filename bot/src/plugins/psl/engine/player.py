@@ -144,14 +144,16 @@ class Player:
       return rng.randint(int(random_min), int(random_max)) / 100
 
   # 选择传球目标-持球行为
-  def passing(self, team_mates: list, rng=None):
+  def passing(self, team_mates: list, rng=None, lane_bias=None):
     rng = rng or random
+    lane_bias = lane_bias or {}
     best_choice_player = team_mates[0]
     best_value = sys.maxsize
     for player in team_mates:
       distance = self.get_distance_player(player)
       cur_value = (20 + 4 * distance + rng.randint(1, 80)) * \
                   (10 + player.get_distance(Const.WIDTH / 2, 0) + rng.randint(1, 100))
+      cur_value *= lane_bias.get(player, 1.0)
       if cur_value < best_value:
         best_value = cur_value
         best_choice_player = player
@@ -217,28 +219,41 @@ class Player:
     pressure = max(1, shoot_defence_players_number + 1)
     shoot_ability = self.ability["Finishing"] if distance < 25 else self.ability["Long_Shot"]
     ability_factor = 0.65 + ability_advantage_probability(shoot_ability, 82, scale=12, floor=0.0, ceiling=1.0) * 0.75
-    return (0.014 + 0.11 * math.pow(0.985, 0.0052 * math.pow(distance, 2.6) * pressure)) * ability_factor
+    distance_curve = math.pow(0.982, 0.0065 * math.pow(distance, 2.65) * pressure)
+    if distance <= 18:
+      base = 0.080 + 0.34 * distance_curve
+    elif distance <= 26:
+      base = 0.075 + 0.34 * distance_curve
+    else:
+      base = 0.030 + 0.18 * distance_curve
+    return base * ability_factor
 
   def get_opportunity_shooting_rate(self, shot_context):
     rate = 0
     if shot_context.raw_xg >= 0.20:
-      rate = 0.42
+      rate = 0.86
     elif shot_context.raw_xg >= 0.15:
-      rate = 0.34
+      rate = 0.74
     elif shot_context.raw_xg >= 0.10:
-      rate = 0.23
+      rate = 0.56
     elif shot_context.raw_xg >= 0.07:
-      rate = 0.14
+      rate = 0.38
     elif shot_context.distance <= 18:
-      rate = 0.09
+      rate = 0.28
+    elif shot_context.distance <= 25:
+      rate = 0.20
     if shot_context.distance <= 10:
-      rate = max(rate, 0.48)
+      rate = max(rate, 0.90)
     elif shot_context.distance <= 14:
-      rate = max(rate, 0.36)
+      rate = max(rate, 0.78)
     if shot_context.angle >= 35:
       rate += 0.05
+    if shot_context.distance >= 24:
+      rate *= 0.72
+    elif shot_context.distance >= 18:
+      rate *= 0.84
     pressure_penalty = min(0.22, shot_context.pressure * 0.04)
-    return max(0, min(0.54, rate - pressure_penalty))
+    return max(0, min(0.88, rate - pressure_penalty))
 
   # 盘带选择率
   def get_dribbling_rate(self, defence_players_number):

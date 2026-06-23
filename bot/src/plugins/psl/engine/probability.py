@@ -35,9 +35,9 @@ class ShotContext:
 
 
 def shot_on_target_probability(distance, shoot_ability, pressure=0):
-  angle_factor = clamp(1.0 - distance / 38.0, 0.02, 0.55)
-  ability_factor = logistic_probability(shoot_ability, 96 + pressure * 5, scale=20, floor=0.04, ceiling=0.48)
-  return clamp(angle_factor * 0.28 + ability_factor * 0.18 - pressure * 0.04, 0.025, 0.45)
+  distance_factor = clamp(1.0 - distance / 42.0, 0.04, 0.72)
+  ability_factor = logistic_probability(shoot_ability, 88 + pressure * 4, scale=18, floor=0.12, ceiling=0.72)
+  return clamp(distance_factor * 0.40 + ability_factor * 0.36 - pressure * 0.03, 0.08, 0.68)
 
 
 def shot_goal_probability(shoot_ability, gk_ability, distance, shoot_place):
@@ -69,8 +69,8 @@ def build_shot_context(distance, angle, shoot_ability, pressure=0, assist_qualit
 
 def shot_on_target_goal_probability(shoot_ability, keeper_ability, raw_xg):
   ability_edge = ability_advantage_probability(shoot_ability, keeper_ability, scale=8, floor=0.03, ceiling=0.97)
-  chance_bonus = clamp(raw_xg * 1.6, 0.0, 0.35)
-  return clamp(ability_edge * 0.85 + chance_bonus, 0.02, 0.98)
+  chance_bonus = clamp(raw_xg * 1.35, 0.0, 0.30)
+  return clamp(ability_edge * 0.76 + chance_bonus, 0.02, 0.94)
 
 
 def pass_success_probability(pass_ability, distance, pressure=0, is_long=False):
