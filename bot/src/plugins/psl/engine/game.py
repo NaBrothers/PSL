@@ -92,6 +92,13 @@ class Game:
     def event_prefix(self, ev):
         return "主" + str(self.home.point) + ":" + str(self.away.point) + "客 " + self.half + str(ev.minute) + ":" + str(ev.second)
 
+    def broadcast_goal(self, scorer):
+        score = str(self.home.point) + ":" + str(self.away.point)
+        team = self.offence.coach.name
+        text = self.commentary.render("narrative", "goal_celebration", scorer=scorer.getName(False), team=team, score=score)
+        prefix = "主" + score + "客 " + self.half + str(self.time // 60) + ":" + str(self.time % 60)
+        self.broadcast_buffer.append(prefix + " /~$" + text + "/")
+
     async def maybe_broadcast(self):
         if self.mode == Const.MODE_QUICK or self.mode == Const.MODE_SILENCE:
             return
@@ -294,6 +301,7 @@ class Game:
                 case = Display.print_goal(
                     self.ball_holder, gk, self.assister)
                 self.printCase(case, "goal", 5, self.ball_holder, self.assister, shot.raw_xg)
+                self.broadcast_goal(self.ball_holder)
                 self.ball_holder.goals += 1
                 self.ball_holder.goals_detailed.append(self.getTime())
                 if self.assister:
@@ -477,6 +485,7 @@ class Game:
                                 case = Display.print_goal(
                                     roll_winner, gk, self.assister)
                                 self.printCase(case, "goal", 5, roll_winner, self.assister, header_shot.raw_xg)
+                                self.broadcast_goal(roll_winner)
                                 roll_winner.goals += 1
                                 roll_winner.goals_detailed.append(
                                     self.getTime())
