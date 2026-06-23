@@ -301,7 +301,7 @@ class Game:
                 case = Display.print_goal(
                     self.ball_holder, gk, self.assister)
                 self.printCase(case, "goal", 5, self.ball_holder, self.assister, shot.raw_xg)
-                self.broadcast_goal(self.ball_holder)
+                scorer = self.ball_holder
                 self.ball_holder.goals += 1
                 self.ball_holder.goals_detailed.append(self.getTime())
                 if self.assister:
@@ -309,6 +309,7 @@ class Game:
                 self.timeline.append(
                     (self.getTime(), self.offence, self.ball_holder, self.assister))
                 self.swap()
+                self.broadcast_goal(scorer)
                 self.resetPosition()
                 self.changeBallHolderToOpen()
                 return
@@ -485,7 +486,7 @@ class Game:
                                 case = Display.print_goal(
                                     roll_winner, gk, self.assister)
                                 self.printCase(case, "goal", 5, roll_winner, self.assister, header_shot.raw_xg)
-                                self.broadcast_goal(roll_winner)
+                                scorer = roll_winner
                                 roll_winner.goals += 1
                                 roll_winner.goals_detailed.append(
                                     self.getTime())
@@ -494,6 +495,7 @@ class Game:
                                 self.timeline.append(
                                     (self.getTime(), self.offence, roll_winner, self.assister))
                                 self.swap()
+                                self.broadcast_goal(scorer)
                                 self.resetPosition()
                                 self.changeBallHolderToOpen()
                             return
@@ -798,13 +800,14 @@ class Game:
         highlight_events = key_events + sampled_minor
         summary = self.summarize_possession(self.current_events)
         self.current_events = []
+        # 合并所有要输出的事件并按时间排序
+        all_events = sorted(sampled_flavor + highlight_events, key=lambda ev: (ev.minute, ev.second))
         lines = []
-        if highlight_events or sampled_flavor:
-            for ev in sampled_flavor:
+        if all_events:
+            for ev in all_events:
                 lines.append(self.event_prefix(ev) + " " + ev.text)
-            for ev in highlight_events:
-                lines.append(self.event_prefix(ev) + " " + ev.text)
-            if summary:
+            # 有重要事件时不再重复输出possession总结，避免和事件detail重复
+            if not highlight_events and summary:
                 prefix = "主" + str(self.home.point) + ":" + str(self.away.point) + "客 " + self.half + str(minute) + ":" + str(self.time % 60)
                 lines.append(prefix + " " + summary)
         elif summary:
