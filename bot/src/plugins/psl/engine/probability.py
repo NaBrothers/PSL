@@ -74,10 +74,10 @@ def shot_on_target_goal_probability(shoot_ability, keeper_ability, raw_xg):
 
 
 def pass_success_probability(pass_ability, distance, pressure=0, is_long=False):
-  base = logistic_probability(pass_ability, 48 + pressure * 1.5, scale=18, floor=0.82, ceiling=0.99)
-  distance_penalty = distance * (0.001 if is_long else 0.00035)
-  long_penalty = 0.015 if is_long else 0.0
-  return clamp(base - distance_penalty - long_penalty, 0.72, 0.99)
+  base = logistic_probability(pass_ability, 47 + pressure * 1.0, scale=18, floor=0.84, ceiling=0.993)
+  distance_penalty = distance * (0.0007 if is_long else 0.00025)
+  long_penalty = 0.01 if is_long else 0.0
+  return clamp(base - distance_penalty - long_penalty, 0.78, 0.993)
 
 
 def expected_threat(y, action_quality=1.0):

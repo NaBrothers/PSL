@@ -269,14 +269,16 @@ class Game:
             # 射门路线球员数量
             shoot_defence_players_number = len(
                 self.getShootDefencePlayers(self.ball_holder.x, self.ball_holder.y))
+            shot_context = self.create_shot(self.ball_holder, shoot_defence_players_number)
             # 持球人行为选择
             holder_action = self.ball_holder.choose_holding_action_type(
                 defence_players_number,
                 shoot_defence_players_number,
-                self.rng
+                self.rng,
+                shot_context
             )
             if holder_action == "SHOOT":
-                shot = self.create_shot(self.ball_holder, shoot_defence_players_number)
+                shot = shot_context
                 shoot_x = self.ball_holder.shooting(shot.on_target_probability, self.rng)
                 self.record_shot_quality(shot, self.ball_holder)
                 if shot.distance >= 20:
@@ -393,7 +395,7 @@ class Game:
                 self.record_expected_threat(self.ball_holder, 0.8)
             elif holder_action == "PASS":
                 self.ball_holder.passes += 1
-                passing = self.ball_holder.passing(self.getOffenceTeamMates(), self.rng)
+                passing = self.ball_holder.passing(self.get_available_pass_targets(), self.rng)
                 passing_type = passing[0]
                 passing_aim = passing[1]
                 if passing_type == "ROLLING":
@@ -404,6 +406,14 @@ class Game:
                     pass_event_type = "key_pass" if passing_aim.y <= 25 else "pass"
                     pass_importance = 2 if pass_event_type == "key_pass" else 1
                     self.printCase(case, pass_event_type, pass_importance, self.ball_holder, passing_aim)
+                    if self.is_offside(self.ball_holder, passing_aim):
+                        self.printCaseWithPlayer(passing_aim, "处在越位位置", "turnover", 3)
+                        if action_frame is not None and hasattr(self, 'recorder'):
+                            action_frame["ball_flight"] = self.recorder.make_pass_flight(self, self.ball_holder, passing_aim)
+                        self.swap()
+                        self.changeBallHolderToGK()
+                        self.record_transition_frame()
+                        return
                     pressure = len(self.getDefencePlayersInArea(self.ball_holder.x, self.ball_holder.y, 10))
                     pass_probability = pass_success_probability(self.ball_holder.ability["Short_Passing"], distance, pressure, False)
                     if self.rng.random() > pass_probability:
@@ -468,6 +478,14 @@ class Game:
                     pass_event_type = "key_pass" if passing_aim.y <= 25 else "long_pass"
                     pass_importance = 2 if pass_event_type == "key_pass" else 1
                     self.printCase(case, pass_event_type, pass_importance, self.ball_holder, passing_aim)
+                    if self.is_offside(self.ball_holder, passing_aim):
+                        self.printCaseWithPlayer(passing_aim, "处在越位位置", "turnover", 3)
+                        if action_frame is not None and hasattr(self, 'recorder'):
+                            action_frame["ball_flight"] = self.recorder.make_pass_flight(self, self.ball_holder, passing_aim)
+                        self.swap()
+                        self.changeBallHolderToGK()
+                        self.record_transition_frame()
+                        return
                     pressure = len(self.getDefencePlayersInArea(self.ball_holder.x, self.ball_holder.y, 12))
                     pass_probability = pass_success_probability(passing_ability, distance, pressure, True)
                     if self.rng.random() > pass_probability:
@@ -484,14 +502,6 @@ class Game:
                             if action_frame is not None and action_frame.get("ball_flight") and hasattr(self, 'recorder'):
                                 action_frame["ball_flight"]["path"].append(self.recorder._player_to_absolute(self, self.ball_holder))
                                 action_frame["ball_flight"]["to"] = action_frame["ball_flight"]["path"][-1]
-                        self.record_transition_frame()
-                        return
-                    if self.getLastSecondDefencePlayer().y > passing_aim.y and passing_aim.y < Const.LENGTH / 2:
-                        self.printCaseWithPlayer(passing_aim, "处在越位位置", "turnover", 3)
-                        if action_frame is not None and hasattr(self, 'recorder'):
-                            action_frame["ball_flight"] = self.recorder.make_pass_flight(self, self.ball_holder, passing_aim)
-                        self.swap()
-                        self.changeBallHolderToGK()
                         self.record_transition_frame()
                         return
                     for player in self.defence.players + self.offence.players:
@@ -597,6 +607,7 @@ class Game:
 
             if action_frame is not None and action_frame.get("ball_flight", {}).get("type") == "pass":
                 action_frame["ball_flight"]["to"] = self.recorder._player_to_absolute(self, self.ball_holder)
+            self.reset_action_flag()
 
     # 互换攻守方
 
@@ -613,19 +624,145 @@ class Game:
         self.possession_action_count = 0
 
     def run_off_ball_movement(self):
-        self.swapPosition(self.defence)
-        for player in self.defence.players + self.offence.players:
+        offside_line = self.get_offside_line_y()
+        for player in self.offence.players:
             if player.action_flag or player == self.ball_holder:
                 continue
-            player.off_ball_moving(
-                self.ball_holder, self.getOffencePlayersInArea(player.x, player.y, 10), self.rng)
-        self.swapPosition(self.defence)
+            self.move_offence_player(player, offside_line)
+        for player in self.defence.players:
+            if player.action_flag or player == self.ball_holder:
+                continue
+            self.move_defence_player(player)
+        self.keep_shape_bounds()
 
     def record_transition_frame(self):
         if not hasattr(self, 'recorder'):
             return
         self.run_off_ball_movement()
         self.recorder.record_frame(self, pause_ms=1400)
+
+    def move_offence_player(self, player, offside_line):
+        if player.position == "GK":
+            self.move_player_towards_home(player, max_drift=4)
+            return
+        support_y = self.clamp(
+            self.ball_holder.y + (player.default_y - self.ball_holder.default_y) * 0.35,
+            self.attack_min_y(player, offside_line),
+            self.attack_max_y(player),
+        )
+        support_x = self.clamp(
+            player.default_x + (self.ball_holder.x - Const.WIDTH / 2) * 0.25,
+            self.lane_min_x(player),
+            self.lane_max_x(player),
+        )
+        if player.get_distance(self.ball_holder.x, self.ball_holder.y) < 8:
+            support_x = self.clamp(player.x + (player.x - self.ball_holder.x), self.lane_min_x(player), self.lane_max_x(player))
+        player.approaching(support_x, support_y)
+
+    def move_defence_player(self, player):
+        if player.position == "GK":
+            self.move_player_towards_home(player, max_drift=3)
+            return
+        target_y = self.clamp(
+            self.ball_holder.y + self.defensive_depth_offset(player),
+            self.defence_min_y(player),
+            self.defence_max_y(player),
+        )
+        target_x = self.clamp(
+            player.default_x + (self.ball_holder.x - Const.WIDTH / 2) * self.defensive_shift_factor(player),
+            self.lane_min_x(player),
+            self.lane_max_x(player),
+        )
+        player.approaching(target_x, target_y)
+
+    def move_player_towards_home(self, player, max_drift):
+        if player.get_distance(player.default_x, player.default_y) > max_drift:
+            player.approaching(player.default_x, player.default_y)
+
+    def keep_shape_bounds(self):
+        offside_line = self.get_offside_line_y()
+        for player in self.offence.players:
+            if player.position == "GK":
+                continue
+            player.x = self.clamp(player.x, self.lane_min_x(player), self.lane_max_x(player))
+            player.y = self.clamp(player.y, self.attack_min_y(player, offside_line), self.attack_max_y(player))
+        for player in self.defence.players:
+            if player.position == "GK":
+                continue
+            player.x = self.clamp(player.x, self.lane_min_x(player), self.lane_max_x(player))
+            player.y = self.clamp(player.y, self.defence_min_y(player), self.defence_max_y(player))
+
+    def attack_min_y(self, player, offside_line=None):
+        offside_floor = 0
+        if offside_line is not None and offside_line < Const.LENGTH / 2:
+            offside_floor = min(self.ball_holder.y, offside_line) + 0.8
+        if player.position in ("ST", "CF", "LW", "RW"):
+            return max(8, offside_floor)
+        if player.position in ("CAM", "LM", "RM"):
+            return max(18, offside_floor)
+        if "M" in player.position or "DM" in player.position:
+            return 30
+        return 48
+
+    def attack_max_y(self, player):
+        if player.position in ("ST", "CF", "LW", "RW"):
+            return 70
+        if player.position in ("CAM", "LM", "RM"):
+            return 78
+        if "M" in player.position or "DM" in player.position:
+            return 88
+        return 92
+
+    def defence_min_y(self, player):
+        if player.position in ("LB", "LCB", "CB", "RCB", "RB"):
+            return 12
+        if "DM" in player.position or player.position == "CDM":
+            return 24
+        if "M" in player.position:
+            return 34
+        return 44
+
+    def defence_max_y(self, player):
+        if player.position in ("LB", "LCB", "CB", "RCB", "RB"):
+            return 78
+        if "DM" in player.position or player.position == "CDM":
+            return 82
+        if "M" in player.position:
+            return 90
+        return 96
+
+    def defensive_depth_offset(self, player):
+        if player.position in ("LB", "LCB", "CB", "RCB", "RB"):
+            return 12
+        if "DM" in player.position or player.position == "CDM":
+            return 18
+        if "M" in player.position:
+            return 24
+        return 30
+
+    def defensive_shift_factor(self, player):
+        if player.position in ("LB", "LCB", "CB", "RCB", "RB"):
+            return 0.35
+        if "M" in player.position:
+            return 0.45
+        return 0.55
+
+    def lane_min_x(self, player):
+        if "L" in player.position:
+            return 4
+        if "R" in player.position:
+            return 40
+        return 20
+
+    def lane_max_x(self, player):
+        if "L" in player.position:
+            return 28
+        if "R" in player.position:
+            return 64
+        return 48
+
+    def clamp(self, value, minimum, maximum):
+        return max(minimum, min(maximum, value))
 
     def get_action_duration(self):
         y = self.ball_holder.y
@@ -668,6 +805,20 @@ class Game:
         if player.y <= 16.5 and self.possession_box_touches < 1:
             self.offence.box_touches += 1
             self.possession_box_touches += 1
+
+    def get_offside_line_y(self):
+        return min(self.getLastSecondDefencePlayer().y, self.ball_holder.y)
+
+    def is_offside(self, passer, receiver):
+        if receiver.position == "GK":
+            return False
+        if receiver.y >= 35:
+            return False
+        if receiver.y >= passer.y:
+            return False
+        if receiver.y >= self.ball_holder.y:
+            return False
+        return receiver.y < self.getLastSecondDefencePlayer().y - 1.0
 
     def choose_pass_interceptor(self, start_x, start_y, end_x, end_y, max_distance):
         candidates = self.getWayDefencePlayers(start_x, start_y, end_x, end_y)
@@ -743,6 +894,17 @@ class Game:
             if offence_player != self.ball_holder:
                 offence_team_mates.append(offence_player)
         return offence_team_mates
+
+    def get_available_pass_targets(self):
+        team_mates = self.getOffenceTeamMates()
+        onside = [player for player in team_mates if not self.is_offside(self.ball_holder, player)]
+        if onside:
+            safe = [player for player in onside if player.y >= 35 or player.y >= self.getLastSecondDefencePlayer().y + 1.5]
+            if safe:
+                return safe
+        if onside:
+            return onside
+        return team_mates
 
     # 判断是否为守方球员
     def isDefencePlayer(self, player):
@@ -1005,6 +1167,7 @@ class Game:
         score = f"{home.point}:{away.point}"
 
         paragraphs = []
+        paragraphs.append(f"{home_name} 与 {away_name} 战成 {score}。")
 
         # 比赛结果
         if home.point == away.point:
