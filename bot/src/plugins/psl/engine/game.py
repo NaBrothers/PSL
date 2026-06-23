@@ -680,24 +680,23 @@ class Game:
                 player.y = Const.LENGTH - 5
             elif player.position in ("LB", "LCB", "CB", "RCB", "RB"):
                 player.x = player.default_x
-                player.y = self.clamp(player.default_y + 10, 72, 94)
+                player.y = 88 if player.position in ("LB", "RB") else 93
             elif "M" in player.position or "DM" in player.position:
                 player.x = player.default_x
-                player.y = self.clamp(player.default_y + 12, 55, 76)
+                player.y = 72
             else:
                 player.x = player.default_x
-                player.y = self.clamp(player.default_y + 26, 45, 58)
+                player.y = 54
         for player in self.defence.players:
             player.x = self.shape_x(player, defending=True)
             if player.position == "GK":
                 player.y = 8
             elif player.position in ("LB", "LCB", "CB", "RCB", "RB"):
-                player.y = 58
+                player.y = 46
             elif "M" in player.position or "DM" in player.position:
-                player.y = 70
+                player.y = 64
             else:
-                player.y = 82
-            player.y = min(player.y, 87)
+                player.y = 70
 
     def choose_goal_kick_target(self):
         short_targets = [p for p in self.offence.players if p.position in ("LB", "LCB", "CB", "RCB", "RB")]
