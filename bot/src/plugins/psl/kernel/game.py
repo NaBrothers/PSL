@@ -6,6 +6,8 @@ from kernel.account import check_account
 from engine.game import Game
 from model.user import User
 from model.formation import Formation
+from model.globalAttr import Global
+from utils.replay_server import replay_url
 from utils.database import *
 from kernel.server import *
 game_matcher = on_startswith(msg="比赛", rule=to_me(), priority=1)
@@ -131,6 +133,10 @@ async def game_matcher_handler(bot: Bot, event: Event):
     g_server.set("in_game", True)
     try:
         await game.start(mode)
+        base_url = Global.get("replay_base_url", "http://122.51.203.110:8888")
+        url = replay_url(base_url, getattr(game, "replay_path", ""))
+        if url:
+            await game_matcher.send("比赛回放：" + url, **{"at_sender": True})
     except Exception as e:
         print(e)
     finally:

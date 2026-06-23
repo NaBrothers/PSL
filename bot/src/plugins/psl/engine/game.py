@@ -8,6 +8,7 @@ from engine.types import MatchResult, TeamStats, GoalRecord
 from engine.types import MatchEvent as PureMatchEvent
 from utils.image import toImage
 from engine.display import Display
+from config import PROJECT_DIR
 import random
 import math
 import time
@@ -61,7 +62,11 @@ class Game:
 
     async def start(self, mode):
         self.mode = mode
+        if self.mode in (Const.MODE_NORMAL, Const.MODE_QUICK):
+            self.init_replay_recorder()
         self.resetPosition()
+        if hasattr(self, 'recorder'):
+            self.recorder.record_frame(self)
         if self.mode != Const.MODE_QUICK:
             await self.send("主 " + self.home.coach.name + " : " + self.away.coach.name + " 客\n比赛开始")
         self.last_broadcast_time = 0
@@ -79,6 +84,8 @@ class Game:
             self.swap()
         self.resetPosition()
         self.changeBallHolderToOpen()
+        if hasattr(self, 'recorder'):
+            self.recorder.record_frame(self)
         while self.time < 45 * 60:
             self.play_possession()
             if self.time > 45 * 60:
@@ -87,6 +94,7 @@ class Game:
         await self.flush_broadcast("下半场结束")
 
         stats = await self.printStats()
+        self.replay_path = self.save_replay() if hasattr(self, 'recorder') else ""
         return stats
 
     async def send(self, str):
@@ -247,6 +255,7 @@ class Game:
             if self.time > 45 * 60:
                 return
             self.possession_action_count += 1
+            action_frame = self.recorder.record_frame(self) if hasattr(self, 'recorder') else None
             # 持球人行为
             self.ball_holder.action_flag = True
             # 持球人观测防守球员数量
@@ -276,11 +285,16 @@ class Game:
                     case = Display.print_short_shot(self.ball_holder, int(shot.distance))
                 self.printCase(case, "shot", 3, self.ball_holder, xg=shot.raw_xg)
                 self.ball_holder.shoots += 1
-                if shoot_x < Const.LEFT_GOALPOST or shoot_x > Const.RIGHT_GOALPOST:
+                on_target = Const.LEFT_GOALPOST <= shoot_x <= Const.RIGHT_GOALPOST
+                if not on_target:
                     case = Display.print_miss_shot()
                     self.printCase(case, "miss", 3, self.ball_holder, xg=shot.raw_xg)
+                    if hasattr(self, 'recorder'):
+                        flight = self.recorder.make_ball_flight(self, self.ball_holder, [shoot_x, 0], "shot", on_target=False)
+                        self.recorder.record_frame(self, ball_flight=flight, event_text="MISS", pause_ms=1200)
                     self.swap()
                     self.changeBallHolderToGK()
+                    self.record_transition_frame()
                     return
                 def_players = self.getWayDefencePlayers(
                     self.ball_holder.x, self.ball_holder.y, shoot_x, 0)
@@ -290,7 +304,6 @@ class Game:
                         continue
                     def_player.blocks += 1
                     def_player.interceptions += 1
-                    # 计算防守球员到球路的距离
                     distance = def_player.get_distance_line(
                         self.ball_holder.x, self.ball_holder.y, Const.WIDTH / 2, 0)
 
@@ -299,6 +312,7 @@ class Game:
                         self.printCase(case, "turnover", 3, def_player)
                         self.swap()
                         self.changeBallHolder(def_player)
+                        self.record_transition_frame()
                         return
                 gk = self.getDefenceGK()
                 self.ball_holder.shoots_in_target += 1
@@ -308,8 +322,12 @@ class Game:
                     case = Display.print_saving(gk)
                     self.printCase(case, "save", 4, self.ball_holder, gk, shot.raw_xg)
                     gk.saves += 1
+                    if hasattr(self, 'recorder'):
+                        flight = self.recorder.make_ball_flight(self, self.ball_holder, [shoot_x, 0], "shot", on_target=True)
+                        self.recorder.record_frame(self, ball_flight=flight, event_text="SAVE", pause_ms=1200)
                     self.swap()
                     self.changeBallHolderToGK()
+                    self.record_transition_frame()
                     return
                 case = Display.print_goal(
                     self.ball_holder, gk, self.assister)
@@ -322,10 +340,15 @@ class Game:
                     self.assister.assists += 1
                 self.timeline.append(
                     (self.getTime(), self.offence, self.ball_holder, self.assister))
+                if hasattr(self, 'recorder'):
+                    flight = self.recorder.make_ball_flight(self, self.ball_holder, [shoot_x, 0], "shot", on_target=True)
+                    self.recorder.record_frame(self, ball_flight=flight, event_text="GOAL", pause_ms=1500)
                 self.swap()
                 self.broadcast_goal(scorer)
                 self.resetPosition()
                 self.changeBallHolderToOpen()
+                if hasattr(self, 'recorder'):
+                    self.recorder.record_frame(self, cut=True)
                 return
             elif holder_action == "DRIBBLE":
                 dribble_pos = self.ball_holder.dribbling(self.getDefencePlayersInArea(
@@ -352,6 +375,7 @@ class Game:
                         def_player.tackles += 1
                         self.swap()
                         self.changeBallHolder(def_player)
+                        self.record_transition_frame()
                         return
                     else:
                         case = Display.print_dribbling(
@@ -384,8 +408,19 @@ class Game:
                     pass_probability = pass_success_probability(self.ball_holder.ability["Short_Passing"], distance, pressure, False)
                     if self.rng.random() > pass_probability:
                         self.printCaseWithPlayer(self.ball_holder, "传球失误", "turnover", 3)
+                        interceptor = self.choose_pass_interceptor(self.ball_holder.x, self.ball_holder.y, passing_aim.x, passing_aim.y, 5)
+                        passer = self.ball_holder
+                        if action_frame is not None and hasattr(self, 'recorder'):
+                            action_frame["ball_flight"] = self.make_broken_pass_flight(action_frame, passer, passing_aim, interceptor)
                         self.swap()
-                        self.changeRandomBallHolder()
+                        if interceptor is not None:
+                            self.changeBallHolder(interceptor)
+                        else:
+                            self.changeRandomBallHolder(target=passing_aim)
+                            if action_frame is not None and action_frame.get("ball_flight") and hasattr(self, 'recorder'):
+                                action_frame["ball_flight"]["path"].append(self.recorder._player_to_absolute(self, self.ball_holder))
+                                action_frame["ball_flight"]["to"] = action_frame["ball_flight"]["path"][-1]
+                        self.record_transition_frame()
                         return
                     def_players = self.getWayDefencePlayers(
                         self.ball_holder.x, self.ball_holder.y, passing_aim.x, passing_aim.y)
@@ -402,8 +437,11 @@ class Game:
                                 self.ball_holder, def_player)
                             self.printCase(case, "turnover", 3, def_player, self.ball_holder)
                             def_player.tackles += 1
+                            if action_frame is not None and hasattr(self, 'recorder'):
+                                action_frame["ball_flight"] = self.recorder.make_pass_flight(self, self.ball_holder, def_player)
                             self.swap()
                             self.changeBallHolder(def_player)
+                            self.record_transition_frame()
                             return
                         else:
                             def_player.action_flag = True
@@ -413,6 +451,10 @@ class Game:
                     if passing_aim.y <= 25:
                         self.offence.key_passes += 1
                     self.record_expected_threat(passing_aim, self.ball_holder.ability["Short_Passing"] / 100)
+                    if hasattr(self, 'recorder') and self.recorder:
+                        flight = self.recorder.make_pass_flight(self, self.ball_holder, passing_aim)
+                        if action_frame is not None:
+                            action_frame["ball_flight"] = flight
                     self.changeBallHolder(passing_aim)
                     self.record_box_touch(passing_aim)
                     # passing_aim.action_flag = True
@@ -430,13 +472,27 @@ class Game:
                     pass_probability = pass_success_probability(passing_ability, distance, pressure, True)
                     if self.rng.random() > pass_probability:
                         self.printCaseWithPlayer(self.ball_holder, "长传失误", "turnover", 3)
+                        interceptor = self.choose_pass_interceptor(self.ball_holder.x, self.ball_holder.y, passing_aim.x, passing_aim.y, 8)
+                        passer = self.ball_holder
+                        if action_frame is not None and hasattr(self, 'recorder'):
+                            action_frame["ball_flight"] = self.make_broken_pass_flight(action_frame, passer, passing_aim, interceptor)
                         self.swap()
-                        self.changeRandomBallHolder()
+                        if interceptor is not None:
+                            self.changeBallHolder(interceptor)
+                        else:
+                            self.changeRandomBallHolder(target=passing_aim)
+                            if action_frame is not None and action_frame.get("ball_flight") and hasattr(self, 'recorder'):
+                                action_frame["ball_flight"]["path"].append(self.recorder._player_to_absolute(self, self.ball_holder))
+                                action_frame["ball_flight"]["to"] = action_frame["ball_flight"]["path"][-1]
+                        self.record_transition_frame()
                         return
                     if self.getLastSecondDefencePlayer().y > passing_aim.y and passing_aim.y < Const.LENGTH / 2:
                         self.printCaseWithPlayer(passing_aim, "处在越位位置", "turnover", 3)
+                        if action_frame is not None and hasattr(self, 'recorder'):
+                            action_frame["ball_flight"] = self.recorder.make_pass_flight(self, self.ball_holder, passing_aim)
                         self.swap()
                         self.changeBallHolderToGK()
+                        self.record_transition_frame()
                         return
                     for player in self.defence.players + self.offence.players:
                         if player.position == "GK":
@@ -451,8 +507,11 @@ class Game:
                         passing_aim.x, passing_aim.y, 15 * distance / passing_ability)
                     if len(roll_point_players) == 0:
                         self.printCaseWithPlayer(self.ball_holder, "传球出界", "turnover", 3)
+                        if action_frame is not None and hasattr(self, 'recorder'):
+                            action_frame["ball_flight"] = self.recorder.make_ball_flight(self, self.ball_holder, [passing_aim.x, passing_aim.y], "pass")
                         self.swap()
                         self.changeBallHolderToGK()
+                        self.record_transition_frame()
                         return
                     roll_winner = roll_point_players[0]
                     largest_point = -1
@@ -465,8 +524,11 @@ class Game:
                             roll_winner = player
                     if self.isDefencePlayer(roll_winner):
                         self.printCaseWithPlayer(roll_winner, "顶到了球", "turnover", 3)
+                        if action_frame is not None and hasattr(self, 'recorder'):
+                            action_frame["ball_flight"] = self.recorder.make_pass_flight(self, self.ball_holder, roll_winner)
                         self.swap()
-                        self.changeRandomBallHolder()
+                        self.changeBallHolder(roll_winner)
+                        self.record_transition_frame()
                         return
                     else:
                         self.ball_holder.successful_passes += 1
@@ -475,6 +537,10 @@ class Game:
                             self.offence.key_passes += 1
                         self.record_expected_threat(passing_aim, passing_ability / 100)
                         self.record_box_touch(roll_winner)
+                        if hasattr(self, 'recorder') and self.recorder:
+                            flight = self.recorder.make_pass_flight(self, self.ball_holder, roll_winner)
+                            if action_frame is not None:
+                                action_frame["ball_flight"] = flight
                         distance_goal = roll_winner.get_distance(
                             Const.WIDTH / 2, 0)
                         rand = self.rng.randint(
@@ -493,8 +559,12 @@ class Game:
                                 case = Display.print_saving(gk)
                                 self.printCase(case, "save", 4, roll_winner, gk, header_shot.raw_xg)
                                 gk.saves += 1
+                                if hasattr(self, 'recorder'):
+                                    flight = self.recorder.make_ball_flight(self, roll_winner, [Const.WIDTH / 2, 0], "shot", on_target=True)
+                                    self.recorder.record_frame(self, ball_flight=flight, event_text="SAVE", pause_ms=1200)
                                 self.swap()
                                 self.changeBallHolderToGK()
+                                self.record_transition_frame()
                             else:
                                 case = Display.print_goal(
                                     roll_winner, gk, self.assister)
@@ -508,27 +578,25 @@ class Game:
                                     self.assister.assists += 1
                                 self.timeline.append(
                                     (self.getTime(), self.offence, roll_winner, self.assister))
+                                if hasattr(self, 'recorder'):
+                                    flight = self.recorder.make_ball_flight(self, roll_winner, [Const.WIDTH / 2, 0], "shot", on_target=True)
+                                    self.recorder.record_frame(self, ball_flight=flight, event_text="GOAL", pause_ms=1500)
                                 self.swap()
                                 self.broadcast_goal(scorer)
                                 self.resetPosition()
                                 self.changeBallHolderToOpen()
+                                if hasattr(self, 'recorder'):
+                                    self.recorder.record_frame(self, cut=True)
                             return
                         else:
                             self.changeBallHolder(roll_winner)
                             if self.isDefencePlayer(roll_winner):
                                 return
 
-            self.swapPosition(self.defence)
-            # 无球人进行无球跑动
-            for player in self.defence.players + self.offence.players:
-                if player.action_flag or player == self.ball_holder:
-                    continue
-                player.off_ball_moving(
-                    self.ball_holder, self.getOffencePlayersInArea(player.x, player.y, 10), self.rng)
-            self.swapPosition(self.defence)
-            # for player in self.defence.players:
-            #   print(player.name + " " + str(int(player.x)) + " " + str(int(player.y)))
-            # print("足球坐标：" + str(int(self.ball_holder.x)) + " " + str(int(self.ball_holder.y)))
+            self.run_off_ball_movement()
+
+            if action_frame is not None and action_frame.get("ball_flight", {}).get("type") == "pass":
+                action_frame["ball_flight"]["to"] = self.recorder._player_to_absolute(self, self.ball_holder)
 
     # 互换攻守方
 
@@ -543,6 +611,21 @@ class Game:
         self.swapPosition(self.defence)
         self.assister = None
         self.possession_action_count = 0
+
+    def run_off_ball_movement(self):
+        self.swapPosition(self.defence)
+        for player in self.defence.players + self.offence.players:
+            if player.action_flag or player == self.ball_holder:
+                continue
+            player.off_ball_moving(
+                self.ball_holder, self.getOffencePlayersInArea(player.x, player.y, 10), self.rng)
+        self.swapPosition(self.defence)
+
+    def record_transition_frame(self):
+        if not hasattr(self, 'recorder'):
+            return
+        self.run_off_ball_movement()
+        self.recorder.record_frame(self, pause_ms=1400)
 
     def get_action_duration(self):
         y = self.ball_holder.y
@@ -586,6 +669,26 @@ class Game:
             self.offence.box_touches += 1
             self.possession_box_touches += 1
 
+    def choose_pass_interceptor(self, start_x, start_y, end_x, end_y, max_distance):
+        candidates = self.getWayDefencePlayers(start_x, start_y, end_x, end_y)
+        if not candidates:
+            return None
+        nearest = min(candidates, key=lambda p: p.get_distance_line(start_x, start_y, end_x, end_y))
+        if nearest.get_distance_line(start_x, start_y, end_x, end_y) <= max_distance:
+            return nearest
+        return None
+
+    def make_broken_pass_flight(self, action_frame, passer, target, interceptor=None):
+        if action_frame is None or not hasattr(self, 'recorder'):
+            return None
+        first = self.recorder.make_ball_flight(self, passer, [target.x, target.y], "pass")
+        if interceptor is not None:
+            first["to"] = self.recorder._player_to_absolute(self, interceptor)
+            first["path"] = [first["from"], first["to"]]
+            return first
+        first["path"] = [first["from"], first["to"]]
+        return first
+
     # 攻守坐标转换
     def swapPosition(self, team):
         for player in team.players:
@@ -611,8 +714,16 @@ class Game:
         # self.printCaseWithPlayer(player, "接到了球")
 
     # 随机转换持球人
-    def changeRandomBallHolder(self):
-        player = self.offence.players[self.rng.randint(0, 10)]
+    def changeRandomBallHolder(self, target=None, target_abs=None):
+        if target_abs is not None and hasattr(self, 'recorder'):
+            player = min(self.offence.players, key=lambda p: math.hypot(
+                self.recorder._player_to_absolute(self, p)[0] - target_abs[0],
+                self.recorder._player_to_absolute(self, p)[1] - target_abs[1]
+            ))
+        elif target is not None:
+            player = min(self.offence.players, key=lambda p: p.get_distance(target.x, target.y))
+        else:
+            player = self.offence.players[self.rng.randint(0, 10)]
         self.changeBallHolder(player)
 
     # 转换持球人为门将
@@ -767,18 +878,6 @@ class Game:
         event = MatchEvent(minute, second, self.event_seq, event_type, text, self.home.point, self.away.point, importance, self.offence, player, xg, target, result)
         self.current_events.append(event)
         self.match_events.append(event)
-
-        if hasattr(self, 'recorder') and event_type in ("shot", "goal", "save", "miss", "turnover", "carry", "key_pass", "long_pass"):
-            target_xy = None
-            from_xy = None
-            if event_type in ("shot", "miss", "goal"):
-                target_xy = [Const.WIDTH / 2, 0]
-                if player:
-                    from_xy = [player.x, player.y]
-            elif event_type in ("long_pass", "key_pass") and target:
-                from_xy = [player.x, player.y] if player else None
-                target_xy = [target.x, target.y]
-            self.recorder.record_event(self, event_type, player=player, target=target, target_xy=target_xy, from_xy=from_xy)
 
     def classify_event(self, text):
         if "破门" in text or "入网" in text or "进了" in text:
@@ -989,24 +1088,45 @@ class Game:
         else:
             return self.time // 60 + 45
 
-    def run_simulation(self):
-        """Run the full match simulation without any IO. Returns MatchResult."""
+    def init_replay_recorder(self):
+        from engine.replay import ReplayRecorder
+
+        self.recorder = ReplayRecorder()
+        self.recorder.record_header(
+            self.home,
+            self.away,
+            self.home.coach.formation if hasattr(self.home.coach, 'formation') else "442",
+            self.away.coach.formation if hasattr(self.away.coach, 'formation') else "442",
+        )
+
+    def save_replay(self):
         from engine.replay import ReplayRecorder
         import os
         import time as time_mod
 
+        if not hasattr(self, 'recorder') or self.recorder is None:
+            return ""
+        replay_dir = os.path.join(os.environ.get("PSL_PROJECT_DIR", PROJECT_DIR), "data", "replays")
+        ts = time_mod.strftime("%Y%m%d_%H%M%S")
+        score = f"{self.home.point}-{self.away.point}"
+        home_name = self.home.coach.name.replace(" ", "_")
+        away_name = self.away.coach.name.replace(" ", "_")
+        filename = f"{ts}_{home_name}_{away_name}_{score}.jsonl"
+        filepath = os.path.join(replay_dir, filename)
+        self.recorder.save(filepath)
+        ReplayRecorder.cleanup(replay_dir, max_files=100)
+        return filepath
+
+    def run_simulation(self):
+        """Run the full match simulation without any IO. Returns MatchResult."""
         self.mode = Const.MODE_SILENCE
-        self.recorder = ReplayRecorder()
-        self.recorder.record_header(self.home, self.away,
-            self.home.coach.formation if hasattr(self.home.coach, 'formation') else "442",
-            self.away.coach.formation if hasattr(self.away.coach, 'formation') else "442")
+        self.init_replay_recorder()
 
         self.resetPosition()
         self.recorder.record_frame(self)
         self.last_broadcast_time = 0
         while self.time < 45 * 60:
             self.play_possession()
-            self.recorder.record_frame(self)
             if self.time > 45 * 60:
                 self.flush_possession_summary()
 
@@ -1020,19 +1140,12 @@ class Game:
         self.recorder.record_frame(self)
         while self.time < 45 * 60:
             self.play_possession()
-            self.recorder.record_frame(self)
             if self.time > 45 * 60:
                 self.flush_possession_summary()
 
         result = self.to_result()
 
-        replay_dir = os.path.join(os.environ.get("PSL_PROJECT_DIR", os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))))), "data", "replays")
-        ts = time_mod.strftime("%Y%m%d_%H%M%S")
-        score = f"{self.home.point}-{self.away.point}"
-        filename = f"{ts}_{self.home.coach.name}_{self.away.coach.name}_{score}.jsonl"
-        filepath = os.path.join(replay_dir, filename)
-        self.recorder.save(filepath)
-        ReplayRecorder.cleanup(replay_dir, max_files=100)
+        filepath = self.save_replay()
         result.replay_path = filepath
 
         return result
