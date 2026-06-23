@@ -350,10 +350,14 @@ def test_off_ball_movement_respects_offside_line(core_modules, make_user, monkey
     game.defence.players[0].y = 8
     game.defence.players[1].y = 22
     minimum_y = min(game.ball_holder.y, game.getLastSecondDefencePlayer().y) + 0.8
+    before_y = runner.y
+    max_step = runner.ability["Speed"] / 10
 
     game.run_off_ball_movement()
 
-    assert runner.y >= minimum_y
+    assert runner.y > before_y
+    assert runner.y <= before_y + max_step + 0.01
+    assert abs(runner.y - minimum_y) < abs(before_y - minimum_y)
 
 
 def test_attackers_do_not_stay_beyond_offside_line(core_modules, make_user, monkeypatch):
@@ -384,10 +388,15 @@ def test_attackers_do_not_stay_beyond_offside_line(core_modules, make_user, monk
         player.y = 50
     game.defence.players[0].y = 6
     game.defence.players[1].y = 24
+    before_y = runner.y
+    max_step = runner.ability["Speed"] / 10
+    target_y = min(game.ball_holder.y, game.getLastSecondDefencePlayer().y) + 1.2
 
     game.run_off_ball_movement()
 
-    assert runner.y >= min(game.ball_holder.y, game.getLastSecondDefencePlayer().y) + 1.2
+    assert runner.y > before_y
+    assert runner.y <= before_y + max_step + 0.01
+    assert runner.y < target_y
 
 
 def test_high_quality_chance_increases_shooting_choice(core_modules, make_user, monkeypatch):

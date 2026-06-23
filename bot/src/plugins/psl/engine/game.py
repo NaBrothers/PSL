@@ -758,7 +758,7 @@ class Game:
         if player.get_distance(self.ball_holder.x, self.ball_holder.y) < 8:
             support_x = self.clamp(player.x + (player.x - self.ball_holder.x), self.lane_min_x(player, defending=False), self.lane_max_x(player, defending=False))
         support_x, support_y = self.apply_positioning_noise(player, support_x, support_y, defending=False)
-        support_y = self.keep_onside_y(player, support_y, offside_line)
+        support_y = self.onside_target_y(player, support_y, offside_line)
         player.approaching(support_x, support_y)
 
     def move_defence_player(self, player, presser=None, cover=None):
@@ -873,7 +873,7 @@ class Game:
             if player.position == "GK":
                 continue
             player.x = self.clamp(player.x, self.lane_min_x(player, defending=False), self.lane_max_x(player, defending=False))
-            player.y = self.keep_onside_y(player, player.y, offside_line)
+            player.y = self.clamp(player.y, self.attack_min_y(player, offside_line), self.attack_max_y(player))
         emergency = self.is_defensive_danger()
         for player in self.defence.players:
             if player.position == "GK":
@@ -888,7 +888,7 @@ class Game:
         y = Const.LENGTH - (Const.LENGTH - player.default_y) / 2
         return Const.LENGTH - y if defending else y
 
-    def keep_onside_y(self, player, y, offside_line):
+    def onside_target_y(self, player, y, offside_line):
         y = self.clamp(y, self.attack_min_y(player, offside_line), self.attack_max_y(player))
         if player is self.ball_holder or player.position == "GK":
             return y
@@ -898,14 +898,16 @@ class Game:
             return max(y, min(self.ball_holder.y, offside_line) + 1.2)
         return y
 
+    def move_onside_if_needed(self, player, offside_line):
+        target_y = self.onside_target_y(player, player.y, offside_line)
+        if target_y != player.y:
+            player.approaching(player.x, target_y)
+
     def attack_min_y(self, player, offside_line=None):
-        offside_floor = 0
-        if offside_line is not None and offside_line < Const.LENGTH / 2:
-            offside_floor = min(self.ball_holder.y, offside_line) + 0.8
         if player.position in ("ST", "CF", "LW", "RW"):
-            return max(8, offside_floor)
+            return 8
         if player.position in ("CAM", "LM", "RM"):
-            return max(18, offside_floor)
+            return 18
         if "M" in player.position or "DM" in player.position:
             return 30
         return 48
@@ -1099,7 +1101,7 @@ class Game:
         for player in self.offence.players:
             if player.position == "GK":
                 continue
-            player.y = self.keep_onside_y(player, player.y, offside_line)
+            self.move_onside_if_needed(player, offside_line)
 
     # 随机转换持球人
     def changeRandomBallHolder(self, target=None, target_abs=None):
