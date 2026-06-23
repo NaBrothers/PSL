@@ -4,9 +4,10 @@ from engine.team import Team
 from engine.const import Const
 from engine.commentary import CommentaryRenderer, event_player_name, event_target_name
 from engine.probability import build_shot_context, expected_threat, pass_success_probability, shot_on_target_goal_probability
+from engine.types import MatchResult, TeamStats, GoalRecord
+from engine.types import MatchEvent as PureMatchEvent
 from utils.image import toImage
 from engine.display import Display
-# from display import Display
 import random
 import math
 import time
@@ -975,3 +976,101 @@ class Game:
             return self.time // 60
         else:
             return self.time // 60 + 45
+
+    def run_simulation(self):
+        """Run the full match simulation without any IO. Returns MatchResult."""
+        self.mode = Const.MODE_SILENCE
+        self.resetPosition()
+        self.last_broadcast_time = 0
+        while self.time < 45 * 60:
+            self.play_possession()
+            if self.time > 45 * 60:
+                self.flush_possession_summary()
+
+        self.half = "下半时"
+        self.time = 0
+        self.last_broadcast_time = 0
+        if self.offence is self.home:
+            self.swap()
+        self.resetPosition()
+        self.changeBallHolderToOpen()
+        while self.time < 45 * 60:
+            self.play_possession()
+            if self.time > 45 * 60:
+                self.flush_possession_summary()
+
+        return self.to_result()
+
+    def to_result(self) -> MatchResult:
+        """Convert internal game state to a pure MatchResult data object."""
+        self.home.getStats()
+        self.away.getStats()
+
+        def _team_stats(team) -> TeamStats:
+            return TeamStats(
+                name=team.coach.name,
+                point=team.point,
+                control=team.control,
+                shoots=team.shoots,
+                shoots_in_target=team.shoots_in_target,
+                goals=team.goals,
+                passes=team.passes,
+                successful_passes=team.successful_passes,
+                dribbles=team.dribbles,
+                carries=team.carries,
+                progressive_carries=team.progressive_carries,
+                assists=team.assists,
+                tackles=team.tackles,
+                tackle_attempts=team.tackle_attempts,
+                interceptions=team.interceptions,
+                blocks=team.blocks,
+                saves=team.saves,
+                xg=team.xg,
+                adjusted_xg=team.adjusted_xg,
+                xt=team.xt,
+                key_passes=team.key_passes,
+                box_touches=team.box_touches,
+                big_chances=team.big_chances,
+                possessions=team.possessions,
+                goals_detailed=team.goals_detailed,
+            )
+
+        events = []
+        for ev in self.match_events:
+            team_side = "home" if ev.team == self.home else "away"
+            player_name = ev.player.getName() if ev.player else ""
+            target_name = ev.target.getName() if ev.target else ""
+            events.append(PureMatchEvent(
+                minute=ev.minute,
+                second=ev.second,
+                seq=ev.seq,
+                event_type=ev.event_type,
+                text=ev.text,
+                home_score=ev.home_score,
+                away_score=ev.away_score,
+                importance=ev.importance,
+                team_side=team_side,
+                player_name=player_name,
+                xg=ev.xg,
+                target_name=target_name,
+                result=ev.result,
+            ))
+
+        timeline = []
+        for item in self.timeline:
+            team_side = "home" if item[1] == self.home else "away"
+            scorer_name = item[2].getName() if item[2] else ""
+            assister_name = item[3].getName() if item[3] else None
+            timeline.append(GoalRecord(
+                minute=item[0],
+                team_side=team_side,
+                scorer_name=scorer_name,
+                assister_name=assister_name,
+            ))
+
+        return MatchResult(
+            home_stats=_team_stats(self.home),
+            away_stats=_team_stats(self.away),
+            events=events,
+            timeline=timeline,
+        )
