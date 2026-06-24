@@ -139,6 +139,296 @@ def test_shot_context_is_independent_from_random_shot_location(core_modules, mak
     assert first.on_target_probability == second.on_target_probability
 
 
+def test_goal_kick_setup_and_gk_distribution(core_modules, make_user, monkeypatch):
+    from conftest import DummyMatcher
+    from test_game_flows import build_full_squad
+
+    formation_kernel = core_modules["kernel.formation"]
+    Game = core_modules["engine.game"].Game
+
+    user1 = make_user(40351, "goal-kick-home", money=0)
+    user2 = make_user(40352, "goal-kick-away", money=0)
+    build_full_squad(core_modules, user1, star=3)
+    build_full_squad(core_modules, user2, star=3)
+
+    async def finish_no_raise(*args, **kwargs):
+        return None
+
+    monkeypatch.setattr(formation_kernel.get_team, "finish", finish_no_raise)
+    asyncio.run(formation_kernel.auto_update(user1))
+    asyncio.run(formation_kernel.auto_update(user2))
+
+    game = Game(DummyMatcher(), user1, user2, seed=40351)
+    game.resetPosition()
+    game.changeBallHolderToGK()
+    assert game.goal_kick_pending
+
+    game.current_events = []
+    game.match_events = []
+    game.play_possession()
+
+    assert not game.goal_kick_pending
+    assert game.ball_holder.position in ("LB", "LCB", "CB", "RCB", "RB", "ST", "CF", "LW", "RW", "CAM")
+    gk_events = [ev for ev in game.match_events if ev.player and ev.player.position == "GK"]
+    assert any(ev.event_type in ("pass", "long_pass") for ev in gk_events)
+    assert not any(ev.event_type in ("carry", "shot", "goal", "miss", "save") for ev in gk_events)
+
+    defenders_in_box = [
+        p for p in game.defence.players
+        if p.position != "GK" and 24 <= p.x <= 44 and p.y >= 88.5
+    ]
+    assert defenders_in_box == []
+    own_defenders = [p for p in game.offence.players if p.position in ("LB", "LCB", "CB", "RCB", "RB")]
+    opposition_forwards = [p for p in game.defence.players if p.position in ("ST", "CF", "LW", "RW", "CAM")]
+    assert max(p.y for p in own_defenders) > max(p.y for p in opposition_forwards)
+
+
+def test_goal_kick_shape_uses_formation_depth(core_modules, make_user, monkeypatch):
+    from conftest import DummyMatcher
+    from test_game_flows import build_full_squad
+
+    formation_kernel = core_modules["kernel.formation"]
+    Game = core_modules["engine.game"].Game
+
+    user1 = make_user(40361, "goal-kick-352", money=0)
+    user2 = make_user(40362, "goal-kick-433", money=0)
+    user1.setFormation("352")
+    user2.setFormation("433")
+    build_full_squad(core_modules, user1, star=3)
+    build_full_squad(core_modules, user2, star=3)
+
+    async def finish_no_raise(*args, **kwargs):
+        return None
+
+    monkeypatch.setattr(formation_kernel.get_team, "finish", finish_no_raise)
+    asyncio.run(formation_kernel.auto_update(user1))
+    asyncio.run(formation_kernel.auto_update(user2))
+
+    game = Game(DummyMatcher(), user1, user2, seed=40361)
+    game.resetPosition()
+    game.changeBallHolderToGK()
+    game.arrange_goal_kick_shape()
+
+    defenders = [p for p in game.offence.players if p.position in ("LCB", "CB", "RCB")]
+    wing_mids = [p for p in game.offence.players if p.position in ("LM", "RM")]
+    forwards = [p for p in game.offence.players if p.position in ("CF", "ST")]
+    assert len(defenders) == 3
+    assert min(p.y for p in defenders) > max(p.y for p in wing_mids)
+    assert min(p.y for p in wing_mids) > max(p.y for p in forwards)
+
+
+def test_goal_kick_shape_keeps_team_left_right_orientation(core_modules, make_user, monkeypatch):
+    from conftest import DummyMatcher
+    from test_game_flows import build_full_squad
+
+    formation_kernel = core_modules["kernel.formation"]
+    Game = core_modules["engine.game"].Game
+
+    user1 = make_user(40371, "goal-kick-lr-home", money=0)
+    user2 = make_user(40372, "goal-kick-lr-away", money=0)
+    build_full_squad(core_modules, user1, star=3)
+    build_full_squad(core_modules, user2, star=3)
+
+    async def finish_no_raise(*args, **kwargs):
+        return None
+
+    monkeypatch.setattr(formation_kernel.get_team, "finish", finish_no_raise)
+    asyncio.run(formation_kernel.auto_update(user1))
+    asyncio.run(formation_kernel.auto_update(user2))
+
+    game = Game(DummyMatcher(), user1, user2, seed=40371)
+    game.resetPosition()
+    game.arrange_goal_kick_shape()
+
+    home_lb = next(p for p in game.home.players if p.position == "LB")
+    home_rb = next(p for p in game.home.players if p.position == "RB")
+    away_lb = next(p for p in game.away.players if p.position == "LB")
+    away_rb = next(p for p in game.away.players if p.position == "RB")
+
+    assert home_lb.x < home_rb.x
+    assert away_lb.x > away_rb.x
+
+
+def test_offside_is_limited_to_advanced_receivers(core_modules, make_user, monkeypatch):
+    from conftest import DummyMatcher
+    from test_game_flows import build_full_squad
+
+    formation_kernel = core_modules["kernel.formation"]
+    Game = core_modules["engine.game"].Game
+
+    user1 = make_user(40401, "offside-home", money=0)
+    user2 = make_user(40402, "offside-away", money=0)
+    build_full_squad(core_modules, user1, star=3)
+    build_full_squad(core_modules, user2, star=3)
+
+    async def finish_no_raise(*args, **kwargs):
+        return None
+
+    monkeypatch.setattr(formation_kernel.get_team, "finish", finish_no_raise)
+    asyncio.run(formation_kernel.auto_update(user1))
+    asyncio.run(formation_kernel.auto_update(user2))
+
+    game = Game(DummyMatcher(), user1, user2, seed=404)
+    passer = game.offence.players[8]
+    receiver = game.offence.players[10]
+    game.ball_holder = passer
+    passer.y = 42
+    receiver.y = 30
+    for player in game.defence.players:
+        player.y = 50
+    game.defence.players[0].y = 8
+    game.defence.players[1].y = 36
+
+    assert game.is_offside(passer, receiver)
+    receiver.y = 36
+    assert not game.is_offside(passer, receiver)
+
+
+def test_pass_target_selection_prefers_onside_players(core_modules, make_user, monkeypatch):
+    from conftest import DummyMatcher
+    from test_game_flows import build_full_squad
+
+    formation_kernel = core_modules["kernel.formation"]
+    Game = core_modules["engine.game"].Game
+
+    user1 = make_user(40411, "target-home", money=0)
+    user2 = make_user(40412, "target-away", money=0)
+    build_full_squad(core_modules, user1, star=3)
+    build_full_squad(core_modules, user2, star=3)
+
+    async def finish_no_raise(*args, **kwargs):
+        return None
+
+    monkeypatch.setattr(formation_kernel.get_team, "finish", finish_no_raise)
+    asyncio.run(formation_kernel.auto_update(user1))
+    asyncio.run(formation_kernel.auto_update(user2))
+
+    game = Game(DummyMatcher(), user1, user2, seed=405)
+    passer = game.offence.players[8]
+    offside_runner = game.offence.players[10]
+    safe_support = game.offence.players[7]
+    game.ball_holder = passer
+    passer.y = 44
+    offside_runner.y = 24
+    safe_support.y = 50
+    for player in game.defence.players:
+        player.y = 55
+    game.defence.players[0].y = 8
+    game.defence.players[1].y = 34
+
+    targets = game.get_available_pass_targets()
+    assert safe_support in targets
+    assert offside_runner not in targets
+
+
+def test_off_ball_movement_respects_offside_line(core_modules, make_user, monkeypatch):
+    from conftest import DummyMatcher
+    from test_game_flows import build_full_squad
+
+    formation_kernel = core_modules["kernel.formation"]
+    Game = core_modules["engine.game"].Game
+
+    user1 = make_user(40421, "shape-home", money=0)
+    user2 = make_user(40422, "shape-away", money=0)
+    build_full_squad(core_modules, user1, star=3)
+    build_full_squad(core_modules, user2, star=3)
+
+    async def finish_no_raise(*args, **kwargs):
+        return None
+
+    monkeypatch.setattr(formation_kernel.get_team, "finish", finish_no_raise)
+    asyncio.run(formation_kernel.auto_update(user1))
+    asyncio.run(formation_kernel.auto_update(user2))
+
+    game = Game(DummyMatcher(), user1, user2, seed=406)
+    game.ball_holder = game.offence.players[8]
+    game.ball_holder.y = 24
+    runner = game.offence.players[10]
+    runner.y = 18
+    for player in game.defence.players:
+        player.y = 50
+    game.defence.players[0].y = 8
+    game.defence.players[1].y = 22
+    minimum_y = min(game.ball_holder.y, game.getLastSecondDefencePlayer().y) + 0.8
+    before_y = runner.y
+    max_step = runner.ability["Speed"] / 10
+
+    game.run_off_ball_movement()
+
+    assert runner.y > before_y
+    assert runner.y <= before_y + max_step + 0.01
+    assert abs(runner.y - minimum_y) < abs(before_y - minimum_y)
+
+
+def test_attackers_do_not_stay_beyond_offside_line(core_modules, make_user, monkeypatch):
+    from conftest import DummyMatcher
+    from test_game_flows import build_full_squad
+
+    formation_kernel = core_modules["kernel.formation"]
+    Game = core_modules["engine.game"].Game
+
+    user1 = make_user(40425, "onside-home", money=0)
+    user2 = make_user(40426, "onside-away", money=0)
+    build_full_squad(core_modules, user1, star=3)
+    build_full_squad(core_modules, user2, star=3)
+
+    async def finish_no_raise(*args, **kwargs):
+        return None
+
+    monkeypatch.setattr(formation_kernel.get_team, "finish", finish_no_raise)
+    asyncio.run(formation_kernel.auto_update(user1))
+    asyncio.run(formation_kernel.auto_update(user2))
+
+    game = Game(DummyMatcher(), user1, user2, seed=408)
+    game.ball_holder = game.offence.players[8]
+    game.ball_holder.y = 28
+    runner = game.offence.players[10]
+    runner.y = 12
+    for player in game.defence.players:
+        player.y = 50
+    game.defence.players[0].y = 6
+    game.defence.players[1].y = 24
+    before_y = runner.y
+    max_step = runner.ability["Speed"] / 10
+    target_y = min(game.ball_holder.y, game.getLastSecondDefencePlayer().y) + 1.2
+
+    game.run_off_ball_movement()
+
+    assert runner.y > before_y
+    assert runner.y <= before_y + max_step + 0.01
+    assert runner.y < target_y
+
+
+def test_high_quality_chance_increases_shooting_choice(core_modules, make_user, monkeypatch):
+    from conftest import DummyMatcher
+    from test_game_flows import build_full_squad
+
+    formation_kernel = core_modules["kernel.formation"]
+    Game = core_modules["engine.game"].Game
+
+    user1 = make_user(40431, "chance-home", money=0)
+    user2 = make_user(40432, "chance-away", money=0)
+    build_full_squad(core_modules, user1, star=3)
+    build_full_squad(core_modules, user2, star=3)
+
+    async def finish_no_raise(*args, **kwargs):
+        return None
+
+    monkeypatch.setattr(formation_kernel.get_team, "finish", finish_no_raise)
+    asyncio.run(formation_kernel.auto_update(user1))
+    asyncio.run(formation_kernel.auto_update(user2))
+
+    game = Game(DummyMatcher(), user1, user2, seed=407)
+    shooter = game.offence.players[10]
+    shooter.x = 34
+    shooter.y = 9
+    close_shot = game.create_shot(shooter, pressure=0)
+    shooter.y = 34
+    far_shot = game.create_shot(shooter, pressure=3)
+
+    assert shooter.get_opportunity_shooting_rate(close_shot) > shooter.get_opportunity_shooting_rate(far_shot)
+
+
 def test_keeper_ability_affects_goal_probability(core_modules, make_user, monkeypatch):
     from conftest import DummyMatcher
     from test_game_flows import build_full_squad

@@ -20,3 +20,7 @@ config = Config(**global_config.dict())
 
 # 添加一个新的功能（监听事件），在此处import
 from kernel import server,lottery,query,account,bag,admin,payment,transfer,help,player,game,formation,league,challenge
+
+from utils.replay_server import start_replay_server
+
+start_replay_server(8888)

@@ -187,3 +187,5 @@ psl.db
 psl.db-shm
 psl.db-wal
 data/images/
+data/replays/*.jsonl
+bot/data/
