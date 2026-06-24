@@ -70,6 +70,11 @@ def test_web_adapter_serialization(core_modules, make_user, monkeypatch):
     assert data["home"]["name"] != ""
     assert data["away"]["name"] != ""
     assert isinstance(data["home"]["stats"]["xg"], float)
+    assert "player_stats" in data["home"]["stats"]
+    assert "position_stats" in data["home"]["stats"]
+    assert "zone_stats" in data["home"]["stats"]
+    assert "progressive_passes" in data["home"]["stats"]
+    assert "post_shot_xg" in data["home"]["stats"]
     assert isinstance(data["events"], list)
     assert isinstance(data["timeline"], list)
 

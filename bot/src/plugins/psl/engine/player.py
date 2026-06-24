@@ -31,18 +31,56 @@ class Player:
     self.shoots = 0
     self.shoots_in_target = 0
     self.goals = 0
+    self.xg = 0
+    self.npxg = 0
+    self.post_shot_xg = 0
+    self.big_chances = 0
+    self.big_chances_missed = 0
+    self.shots_in_box = 0
+    self.shots_outside_box = 0
     self.passes = 0
     self.successful_passes = 0
     self.assists = 0
+    self.key_passes = 0
+    self.xa = 0
+    self.progressive_passes = 0
+    self.passes_into_final_third = 0
+    self.passes_into_box = 0
+    self.long_passes = 0
+    self.completed_long_passes = 0
+    self.short_passes = 0
+    self.completed_short_passes = 0
+    self.crosses = 0
+    self.successful_crosses = 0
     self.tackles = 0
     self.tackle_attempts = 0
     self.interceptions = 0
     self.blocks = 0
+    self.clearances = 0
+    self.pressures = 0
+    self.successful_pressures = 0
     self.saves = 0
+    self.goals_conceded = 0
+    self.psxg_faced = 0
+    self.goals_prevented = 0
     self.dribbles = 0
     self.carries = 0
     self.progressive_carries = 0
+    self.carries_into_final_third = 0
+    self.carries_into_box = 0
+    self.take_ons = 0
+    self.successful_take_ons = 0
+    self.turnovers = 0
+    self.dispossessed = 0
+    self.offsides = 0
     self.goals_detailed = []
+
+  def match_ability(self, key):
+    value = self.ability[key]
+    if value <= 92:
+      return value * getattr(self, "match_form", 1.0)
+    compressed = 92 + (value - 92) * 0.58
+    return compressed * getattr(self, "match_form", 1.0)
 
   # def __init__(self, name, position, ability, x, y):
   #   self.name = name
@@ -127,7 +165,7 @@ class Player:
   def shooting(self, on_target_probability, rng=None):
     rng = rng or random
     distance = self.get_distance(Const.WIDTH / 2, 0)
-    shoot_ability = self.ability["Finishing"] if distance < 25 else self.ability["Long_Shot"]
+    shoot_ability = self.match_ability("Finishing") if distance < 25 else self.match_ability("Long_Shot")
     on_target = rng.random() < on_target_probability
     if on_target:
       random_min = Const.LEFT_GOALPOST * 100
@@ -170,13 +208,13 @@ class Player:
     rng = rng or random
     if distance < 0:
       distance = 0
-    tackling = self.ability["Tackling"]
-    def_v = self.ability["Defence"] / 15
+    tackling = self.match_ability("Tackling")
+    def_v = self.match_ability("Defence") / 15
     efficiency = (def_v - distance) / def_v
     if efficiency <= 0:
       return False
     effective_tackling = tackling * (0.35 + 0.65 * efficiency)
-    return contest_success(rng, effective_tackling, ability, scale=8, floor=0.02, ceiling=0.94)
+    return contest_success(rng, effective_tackling, ability, scale=16, floor=0.04, ceiling=0.88)
 
   # 扑救-被动触发
   def saving(self, shoot_ability, distance, shoot_place, rng=None):
@@ -184,7 +222,7 @@ class Player:
     # success_rate = self.get_success_rate(self.ability["GK_Saving"], shoot_ability) *\
     #   math.pow(distance, 0.6)*self.ability["GK_Reaction"]*math.pow(shoot_ability, -1)/4 *\
     #   math.pow(1.1, math.pow(self.ability["GK_Positioning"], 1.5)/shoot_ability-shoot_place)*0.65
-    gk_ability = self.ability["GK_Saving"] * 0.55 + self.ability["GK_Reaction"] * 0.3 + self.ability["GK_Positioning"] * 0.15
+    gk_ability = self.match_ability("GK_Saving") * 0.55 + self.match_ability("GK_Reaction") * 0.3 + self.match_ability("GK_Positioning") * 0.15
     goal_probability = logistic_probability(shoot_ability - distance * 0.7 + shoot_place * 1.5, gk_ability, scale=14, floor=0.03, ceiling=0.85)
     return rng.random() >= goal_probability
 
@@ -217,35 +255,35 @@ class Player:
     if distance > 40:
       return 0
     pressure = max(1, shoot_defence_players_number + 1)
-    shoot_ability = self.ability["Finishing"] if distance < 25 else self.ability["Long_Shot"]
+    shoot_ability = self.match_ability("Finishing") if distance < 25 else self.match_ability("Long_Shot")
     ability_factor = 0.65 + ability_advantage_probability(shoot_ability, 82, scale=12, floor=0.0, ceiling=1.0) * 0.75
     distance_curve = math.pow(0.982, 0.0065 * math.pow(distance, 2.65) * pressure)
     if distance <= 18:
-      base = 0.080 + 0.34 * distance_curve
+      base = 0.052 + 0.235 * distance_curve
     elif distance <= 26:
-      base = 0.075 + 0.34 * distance_curve
+      base = 0.048 + 0.225 * distance_curve
     else:
-      base = 0.030 + 0.18 * distance_curve
+      base = 0.018 + 0.105 * distance_curve
     return base * ability_factor
 
   def get_opportunity_shooting_rate(self, shot_context):
     rate = 0
     if shot_context.raw_xg >= 0.20:
-      rate = 0.86
+      rate = 0.78
     elif shot_context.raw_xg >= 0.15:
-      rate = 0.74
+      rate = 0.66
     elif shot_context.raw_xg >= 0.10:
-      rate = 0.56
+      rate = 0.44
     elif shot_context.raw_xg >= 0.07:
-      rate = 0.38
+      rate = 0.29
     elif shot_context.distance <= 18:
-      rate = 0.28
+      rate = 0.22
     elif shot_context.distance <= 25:
-      rate = 0.20
+      rate = 0.15
     if shot_context.distance <= 10:
-      rate = max(rate, 0.90)
+      rate = max(rate, 0.82)
     elif shot_context.distance <= 14:
-      rate = max(rate, 0.78)
+      rate = max(rate, 0.70)
     if shot_context.angle >= 35:
       rate += 0.05
     if shot_context.distance >= 24:
@@ -257,29 +295,29 @@ class Player:
 
   # 盘带选择率
   def get_dribbling_rate(self, defence_players_number):
-    return self.ability["Dribbling"] * 3.0 / ((defence_players_number + 1) * (self.get_distance(self.default_x, self.default_y) + 1))
+    return self.match_ability("Dribbling") * 3.0 / ((defence_players_number + 1) * (self.get_distance(self.default_x, self.default_y) + 1))
 
   # 传球选择率
   def get_passing_rate(self, defence_players_number):
-    return (self.ability["Long_Passing"] + self.ability["Short_Passing"]) * (defence_players_number + 1) / 40
+    return (self.match_ability("Long_Passing") + self.match_ability("Short_Passing")) * (defence_players_number + 1) / 40
 
   # 获取射门能力值
   def get_shooting_ability(self, shoot_x):
     distance = self.get_distance(shoot_x, 0)
     if distance <= 20:
-      return self.ability["Finishing"]
+      return self.match_ability("Finishing")
     elif distance >= 30:
-      return self.ability["Long_Shot"]
+      return self.match_ability("Long_Shot")
     else:
-      return self.ability["Finishing"] * (30 - distance) / 10 + self.ability["Long_Shot"] * (distance - 20) / 10
+      return self.match_ability("Finishing") * (30 - distance) / 10 + self.match_ability("Long_Shot") * (distance - 20) / 10
 
   # 获得传球能力值
   def get_passing_ability(self, player):
     distance = self.get_distance_player(player)
     if distance < 30:
-      return self.ability["Short_Passing"]
+      return self.match_ability("Short_Passing")
     else:
-      return self.ability["Long_Passing"]
+      return self.match_ability("Long_Passing")
 
   # 与球员距离计算
   def get_distance_player(self, player):

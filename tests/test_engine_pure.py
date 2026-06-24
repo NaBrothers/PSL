@@ -45,6 +45,14 @@ def test_run_simulation_produces_match_result(core_modules, make_user, monkeypat
     assert result.away_stats.possessions > 0
     assert result.home_stats.passes > 0
     assert result.home_stats.xg >= 0
+    assert isinstance(result.home_stats.player_stats, list)
+    assert len(result.home_stats.player_stats) == 11
+    assert isinstance(result.home_stats.position_stats, dict)
+    assert "GK" in result.home_stats.position_stats
+    assert isinstance(result.home_stats.zone_stats, dict)
+    assert "final_third_entries" in result.home_stats.zone_stats
+    assert result.home_stats.progressive_passes >= 0
+    assert result.home_stats.shots_in_box + result.home_stats.shots_outside_box == result.home_stats.shoots
 
     assert len(result.events) > 50
     for ev in result.events:

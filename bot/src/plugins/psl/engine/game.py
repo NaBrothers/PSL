@@ -61,6 +61,49 @@ class Game:
         self.event_seq = 0
         self._movement_tick = 0
         self.goal_kick_pending = False
+        self.finishing_multiplier = 1.0
+        self.apply_match_form()
+
+    def apply_match_form(self):
+        for team in (self.offence, self.defence):
+            for player in team.players:
+                player.match_form = self.rng.uniform(0.96, 1.04)
+        home_strength = self.team_strength(self.home)
+        away_strength = self.team_strength(self.away)
+        if home_strength - away_strength >= 18:
+            self.finishing_multiplier = 0.96
+            upset_roll = self.rng.random()
+            if upset_roll < 0.06:
+                strong_factor, weak_factor = 0.78, 1.18
+            elif upset_roll < 0.14:
+                strong_factor, weak_factor = 0.88, 1.10
+            else:
+                strong_factor, weak_factor = 1.10, 0.96
+            for player in self.home.players:
+                player.match_form *= strong_factor
+            for player in self.away.players:
+                player.match_form *= weak_factor
+        elif away_strength - home_strength >= 18:
+            self.finishing_multiplier = 0.96
+            upset_roll = self.rng.random()
+            if upset_roll < 0.06:
+                strong_factor, weak_factor = 0.78, 1.18
+            elif upset_roll < 0.14:
+                strong_factor, weak_factor = 0.88, 1.10
+            else:
+                strong_factor, weak_factor = 1.10, 0.96
+            for player in self.away.players:
+                player.match_form *= strong_factor
+            for player in self.home.players:
+                player.match_form *= weak_factor
+        else:
+            self.finishing_multiplier = 1.22
+
+    def team_strength(self, team):
+        total = 0
+        for player in team.players:
+            total += player.ability["Finishing"] + player.ability["Short_Passing"] + player.ability["Dribbling"] + player.ability["Defence"]
+        return total / max(1, len(team.players) * 4)
 
     async def start(self, mode):
         self.mode = mode
@@ -213,15 +256,23 @@ class Game:
             (home_ctrl, "控球率", away_ctrl),
             (str(self.home.shoots_in_target), "射正", str(self.away.shoots_in_target)),
             (str(self.home.shoots), "射门", str(self.away.shoots)),
+            (str(self.home.shots_in_box), "禁区射门", str(self.away.shots_in_box)),
             (str(self.home.passes), "传球", str(self.away.passes)),
             (home_pass_rate, "传球成功率", away_pass_rate),
+            (str(self.home.final_third_entries), "进攻三区进入", str(self.away.final_third_entries)),
+            (str(self.home.box_entries), "禁区进入", str(self.away.box_entries)),
+            (str(self.home.progressive_passes), "推进传球", str(self.away.progressive_passes)),
+            (str(self.home.crosses), "传中", str(self.away.crosses)),
             (str(self.home.dribbles), "过人", str(self.away.dribbles)),
             (str(self.home.carries), "带球推进", str(self.away.carries)),
             (str(self.home.tackles), "抢断", str(self.away.tackles)),
+            (str(self.home.pressures), "逼抢", str(self.away.pressures)),
             (str(self.home.interceptions), "拦截", str(self.away.interceptions)),
             (str(self.home.blocks), "封堵", str(self.away.blocks)),
+            (str(self.home.turnovers), "丢失球权", str(self.away.turnovers)),
             (str(self.home.saves), "扑救", str(self.away.saves)),
             (str(round(self.home.xg, 2)), "xG", str(round(self.away.xg, 2))),
+            (str(round(self.home.post_shot_xg, 2)), "PSxG", str(round(self.away.post_shot_xg, 2))),
             (str(self.home.key_passes), "关键传球", str(self.away.key_passes)),
             (str(self.home.box_touches), "禁区触球", str(self.away.box_touches)),
             (str(self.home.big_chances), "绝对机会", str(self.away.big_chances)),
@@ -299,6 +350,7 @@ class Game:
                 if not on_target:
                     case = Display.print_miss_shot()
                     self.printCase(case, "miss", 3, self.ball_holder, xg=shot.raw_xg)
+                    self.record_shot_result(self.ball_holder, shot=shot, outcome="miss")
                     if hasattr(self, 'recorder'):
                         flight = self.recorder.make_ball_flight(self, self.ball_holder, [shoot_x, 0], "shot", on_target=False)
                         self.recorder.record_frame(self, ball_flight=flight, event_text="MISS", pause_ms=1200)
@@ -320,6 +372,9 @@ class Game:
                     if def_player.intercepting(shoot, distance, self.rng):
                         case = Display.print_interception(def_player)
                         self.printCase(case, "turnover", 3, def_player)
+                        def_player.clearances += 1
+                        self.record_pressure(def_player, success=True)
+                        self.record_turnover(self.offence, self.ball_holder)
                         self.swap()
                         self.changeBallHolder(def_player)
                         self.record_transition_frame()
@@ -332,6 +387,7 @@ class Game:
                     case = Display.print_saving(gk)
                     self.printCase(case, "save", 4, self.ball_holder, gk, shot.raw_xg)
                     gk.saves += 1
+                    self.record_shot_result(self.ball_holder, gk, shot, "save")
                     if hasattr(self, 'recorder'):
                         flight = self.recorder.make_ball_flight(self, self.ball_holder, [shoot_x, 0], "shot", on_target=True)
                         self.recorder.record_frame(self, ball_flight=flight, event_text="SAVE", pause_ms=1200)
@@ -345,6 +401,8 @@ class Game:
                 self.offence.point += 1
                 scorer = self.ball_holder
                 self.ball_holder.goals += 1
+                self.record_shot_result(self.ball_holder, gk, shot, "goal")
+                self.record_key_pass(self.assister, shot)
                 self.ball_holder.goals_detailed.append(self.getTime())
                 if self.assister:
                     self.assister.assists += 1
@@ -374,6 +432,8 @@ class Game:
                     if def_player.position == "GK":
                         continue
                     def_player.tackle_attempts += 1
+                    self.record_pressure(def_player)
+                    self.ball_holder.take_ons += 1
                     # 计算防守球员到球路的距离
                     distance = def_player.get_distance_line(
                         self.ball_holder.x, self.ball_holder.y, dribble_pos[0], dribble_pos[1])
@@ -383,6 +443,8 @@ class Game:
                             self.ball_holder, def_player)
                         self.printCase(case, "turnover", 3, def_player, self.ball_holder)
                         def_player.tackles += 1
+                        self.record_pressure(def_player, success=True)
+                        self.record_turnover(self.offence, self.ball_holder, dispossessed=True)
                         self.swap()
                         self.changeBallHolder(def_player)
                         self.record_transition_frame()
@@ -392,13 +454,11 @@ class Game:
                             self.ball_holder, def_player)
                         self.printCase(case, "carry", 1, self.ball_holder, def_player)
                         self.ball_holder.dribbles += 1
+                        self.ball_holder.successful_take_ons += 1
                         def_player.action_flag = True
-                carry_progress = max(0, self.ball_holder.y - dribble_pos[1])
+                carry_start_y = self.ball_holder.y
                 self.ball_holder.moving(dribble_pos[0], dribble_pos[1])
-                if carry_progress >= 5:
-                    self.ball_holder.carries += 1
-                if carry_progress >= 12:
-                    self.ball_holder.progressive_carries += 1
+                self.record_carry_stats(self.ball_holder, carry_start_y, dribble_pos[1])
                 self.record_box_touch(self.ball_holder)
                 self.record_expected_threat(self.ball_holder, 0.8)
             elif holder_action == "PASS":
@@ -420,6 +480,8 @@ class Game:
                     self.printCase(case, pass_event_type, pass_importance, self.ball_holder, passing_aim)
                     if self.is_offside(self.ball_holder, passing_aim):
                         self.printCaseWithPlayer(passing_aim, "处在越位位置", "turnover", 3)
+                        self.record_pass_stats(self.ball_holder, passing_aim, distance, long_pass=False, success=False)
+                        self.record_turnover(self.offence, passing_aim, offside=True)
                         if action_frame is not None and hasattr(self, 'recorder'):
                             action_frame["ball_flight"] = self.recorder.make_pass_flight(self, self.ball_holder, passing_aim)
                         self.swap()
@@ -430,6 +492,8 @@ class Game:
                     pass_probability = pass_success_probability(self.ball_holder.ability["Short_Passing"], distance, pressure, False)
                     if self.rng.random() > pass_probability:
                         self.printCaseWithPlayer(self.ball_holder, "传球失误", "turnover", 3)
+                        self.record_pass_stats(self.ball_holder, passing_aim, distance, long_pass=False, success=False)
+                        self.record_turnover(self.offence, self.ball_holder)
                         interceptor = self.choose_pass_interceptor(self.ball_holder.x, self.ball_holder.y, passing_aim.x, passing_aim.y, 5)
                         passer = self.ball_holder
                         if action_frame is not None and hasattr(self, 'recorder'):
@@ -451,6 +515,7 @@ class Game:
                             continue
                         def_player.tackle_attempts += 1
                         def_player.interceptions += 1
+                        self.record_pressure(def_player)
                         # 计算防守球员到球路的距离
                         distance = def_player.get_distance_line(
                             self.ball_holder.x, self.ball_holder.y, passing_aim.x, passing_aim.y)
@@ -459,6 +524,9 @@ class Game:
                                 self.ball_holder, def_player)
                             self.printCase(case, "turnover", 3, def_player, self.ball_holder)
                             def_player.tackles += 1
+                            self.record_pressure(def_player, success=True)
+                            self.record_pass_stats(self.ball_holder, passing_aim, distance, long_pass=False, success=False)
+                            self.record_turnover(self.offence, self.ball_holder)
                             if action_frame is not None and hasattr(self, 'recorder'):
                                 action_frame["ball_flight"] = self.recorder.make_pass_flight(self, self.ball_holder, def_player)
                             self.swap()
@@ -468,6 +536,7 @@ class Game:
                         else:
                             def_player.action_flag = True
                     self.ball_holder.successful_passes += 1
+                    self.record_pass_stats(self.ball_holder, passing_aim, distance, long_pass=False, success=True)
                     self.ball_holder.action_flag = False
                     self.assister = self.ball_holder
                     if passing_aim.y <= 25:
@@ -492,6 +561,8 @@ class Game:
                     self.printCase(case, pass_event_type, pass_importance, self.ball_holder, passing_aim)
                     if self.is_offside(self.ball_holder, passing_aim):
                         self.printCaseWithPlayer(passing_aim, "处在越位位置", "turnover", 3)
+                        self.record_pass_stats(self.ball_holder, passing_aim, distance, long_pass=True, success=False)
+                        self.record_turnover(self.offence, passing_aim, offside=True)
                         if action_frame is not None and hasattr(self, 'recorder'):
                             action_frame["ball_flight"] = self.recorder.make_pass_flight(self, self.ball_holder, passing_aim)
                         self.swap()
@@ -502,6 +573,8 @@ class Game:
                     pass_probability = pass_success_probability(passing_ability, distance, pressure, True)
                     if self.rng.random() > pass_probability:
                         self.printCaseWithPlayer(self.ball_holder, "长传失误", "turnover", 3)
+                        self.record_pass_stats(self.ball_holder, passing_aim, distance, long_pass=True, success=False)
+                        self.record_turnover(self.offence, self.ball_holder)
                         interceptor = self.choose_pass_interceptor(self.ball_holder.x, self.ball_holder.y, passing_aim.x, passing_aim.y, 8)
                         passer = self.ball_holder
                         if action_frame is not None and hasattr(self, 'recorder'):
@@ -523,12 +596,15 @@ class Game:
                                 and not player.action_flag:
                             if self.isDefencePlayer(player):
                                 player.tackle_attempts += 1
+                                self.record_pressure(player)
                             player.approaching(passing_aim.x, passing_aim.y)
                             player.action_flag = True
                     roll_point_players = self.getPlayersInArea(
                         passing_aim.x, passing_aim.y, 15 * distance / passing_ability)
                     if len(roll_point_players) == 0:
                         self.printCaseWithPlayer(self.ball_holder, "传球出界", "turnover", 3)
+                        self.record_pass_stats(self.ball_holder, passing_aim, distance, long_pass=True, success=False)
+                        self.record_turnover(self.offence, self.ball_holder)
                         if action_frame is not None and hasattr(self, 'recorder'):
                             action_frame["ball_flight"] = self.recorder.make_ball_flight(self, self.ball_holder, [passing_aim.x, passing_aim.y], "pass")
                         self.swap()
@@ -546,6 +622,9 @@ class Game:
                             roll_winner = player
                     if self.isDefencePlayer(roll_winner):
                         self.printCaseWithPlayer(roll_winner, "顶到了球", "turnover", 3)
+                        roll_winner.clearances += 1
+                        self.record_pass_stats(self.ball_holder, roll_winner, distance, long_pass=True, success=False)
+                        self.record_turnover(self.offence, self.ball_holder)
                         if action_frame is not None and hasattr(self, 'recorder'):
                             action_frame["ball_flight"] = self.recorder.make_pass_flight(self, self.ball_holder, roll_winner)
                         self.swap()
@@ -554,6 +633,7 @@ class Game:
                         return
                     else:
                         self.ball_holder.successful_passes += 1
+                        self.record_pass_stats(self.ball_holder, roll_winner, distance, long_pass=True, success=True)
                         self.assister = self.ball_holder
                         if passing_aim.y <= 25:
                             self.offence.key_passes += 1
@@ -573,6 +653,7 @@ class Game:
                             self.record_box_touch(roll_winner)
                             case = Display.print_high_shot(roll_winner)
                             self.printCase(case, "shot", 3, roll_winner, xg=header_shot.raw_xg)
+                            roll_winner.shoots += 1
                             gk = self.getDefenceGK()
                             roll_winner.shoots_in_target += 1
                             goal_probability = self.adjust_shot_for_keeper(header_shot, gk)
@@ -581,6 +662,7 @@ class Game:
                                 case = Display.print_saving(gk)
                                 self.printCase(case, "save", 4, roll_winner, gk, header_shot.raw_xg)
                                 gk.saves += 1
+                                self.record_shot_result(roll_winner, gk, header_shot, "save")
                                 if hasattr(self, 'recorder'):
                                     flight = self.recorder.make_ball_flight(self, roll_winner, [Const.WIDTH / 2, 0], "shot", on_target=True)
                                     self.recorder.record_frame(self, ball_flight=flight, event_text="SAVE", pause_ms=1200)
@@ -594,6 +676,8 @@ class Game:
                                 self.offence.point += 1
                                 scorer = roll_winner
                                 roll_winner.goals += 1
+                                self.record_shot_result(roll_winner, gk, header_shot, "goal")
+                                self.record_key_pass(self.assister, header_shot)
                                 roll_winner.goals_detailed.append(
                                     self.getTime())
                                 if self.assister:
@@ -1021,15 +1105,44 @@ class Game:
 
     def record_shot_quality(self, shot, shooter):
         self.offence.xg += shot.raw_xg
+        self.offence.open_play_xg += shot.raw_xg
+        self.offence.npxg += shot.raw_xg
         self.offence.adjusted_xg += shot.goal_probability
+        shooter.xg += shot.raw_xg
+        shooter.npxg += shot.raw_xg
+        in_box = shooter.y <= 16.5 and Const.LEFT_GOALPOST - 13 <= shooter.x <= Const.RIGHT_GOALPOST + 13
+        if in_box:
+            self.offence.shots_in_box += 1
+            self.offence.zone_stats["shots_in_box"] += 1
+            shooter.shots_in_box += 1
+        else:
+            self.offence.shots_outside_box += 1
+            self.offence.zone_stats["shots_outside_box"] += 1
+            shooter.shots_outside_box += 1
         if shot.raw_xg >= 0.15 or shot.goal_probability >= 0.18:
             self.offence.big_chances += 1
+            shooter.big_chances += 1
         self.record_box_touch(shooter)
         return shot.raw_xg
 
     def adjust_shot_for_keeper(self, shot, keeper):
         keeper_ability = keeper.ability["GK_Saving"] * 0.45 + keeper.ability["GK_Reaction"] * 0.35 + keeper.ability["GK_Positioning"] * 0.20
-        return shot_on_target_goal_probability(shot.shoot_ability, keeper_ability, shot.raw_xg)
+        return self.clamp(shot_on_target_goal_probability(shot.shoot_ability, keeper_ability, shot.raw_xg) * self.finishing_multiplier, 0.02, 0.72)
+
+    def record_shot_result(self, shooter, keeper=None, shot=None, outcome="miss"):
+        if outcome != "goal" and getattr(shooter, "big_chances", 0) > 0 and shot is not None and (shot.raw_xg >= 0.15 or shot.goal_probability >= 0.18):
+            shooter.big_chances_missed += 1
+        if shot is None or keeper is None:
+            return
+        psxg = shot.on_target_probability * self.adjust_shot_for_keeper(shot, keeper)
+        self.offence.post_shot_xg += psxg
+        shooter.post_shot_xg += psxg
+        keeper.psxg_faced += psxg
+        if outcome == "goal":
+            keeper.goals_conceded += 1
+            keeper.goals_prevented += psxg - 1
+        elif outcome == "save":
+            keeper.goals_prevented += psxg
 
     def record_expected_threat(self, player, action_quality=1.0):
         self.offence.xt += expected_threat(player.y, action_quality)
@@ -1038,6 +1151,103 @@ class Game:
         if player.y <= 16.5 and self.possession_box_touches < 1:
             self.offence.box_touches += 1
             self.possession_box_touches += 1
+
+    def record_pass_stats(self, passer, receiver, distance, long_pass=False, success=False):
+        if long_pass:
+            passer.long_passes += 1
+            self.offence.long_passes += 1
+        else:
+            passer.short_passes += 1
+            self.offence.short_passes += 1
+        if success:
+            if long_pass:
+                passer.completed_long_passes += 1
+                self.offence.completed_long_passes += 1
+            else:
+                passer.completed_short_passes += 1
+                self.offence.completed_short_passes += 1
+        progress = passer.y - receiver.y
+        if progress >= 10 or (progress >= 6 and receiver.y <= 35):
+            passer.progressive_passes += 1
+            self.offence.progressive_passes += 1
+        if passer.y > 35 and receiver.y <= 35:
+            passer.passes_into_final_third += 1
+            self.offence.passes_into_final_third += 1
+            self.offence.final_third_entries += 1
+            self.offence.zone_stats["final_third_entries"] += 1
+            self.record_channel_attack(receiver.x)
+        if passer.y > 16.5 and receiver.y <= 16.5:
+            passer.passes_into_box += 1
+            self.offence.passes_into_box += 1
+            self.offence.box_entries += 1
+            self.offence.zone_stats["box_entries"] += 1
+        if self.is_cross_attempt(passer, receiver, distance):
+            passer.crosses += 1
+            self.offence.crosses += 1
+            if success:
+                passer.successful_crosses += 1
+                self.offence.successful_crosses += 1
+
+    def record_key_pass(self, passer, shot):
+        if passer is None or shot is None:
+            return
+        passer.key_passes += 1
+        passer.xa += shot.raw_xg
+
+    def record_carry_stats(self, player, start_y, end_y):
+        progress = start_y - end_y
+        if progress >= 5:
+            player.carries += 1
+        if progress >= 12:
+            player.progressive_carries += 1
+        if start_y > 35 and end_y <= 35:
+            player.carries_into_final_third += 1
+            self.offence.carries_into_final_third += 1
+            self.offence.final_third_entries += 1
+            self.offence.zone_stats["final_third_entries"] += 1
+            self.record_channel_attack(player.x)
+        if start_y > 16.5 and end_y <= 16.5:
+            player.carries_into_box += 1
+            self.offence.carries_into_box += 1
+            self.offence.box_entries += 1
+            self.offence.zone_stats["box_entries"] += 1
+
+    def record_turnover(self, team, player=None, offside=False, dispossessed=False):
+        team.turnovers += 1
+        if player is not None:
+            player.turnovers += 1
+            if dispossessed:
+                player.dispossessed += 1
+            if offside:
+                player.offsides += 1
+        if offside:
+            self.defence.offsides_forced += 1
+
+    def record_pressure(self, defender, success=False):
+        defender.pressures += 1
+        self.defence.pressures += 1
+        if success:
+            defender.successful_pressures += 1
+            self.defence.successful_pressures += 1
+
+    def is_wide_channel(self, x):
+        return x <= Const.WIDTH * 0.26 or x >= Const.WIDTH * 0.74
+
+    def is_cross_attempt(self, passer, receiver, distance):
+        starts_wide = self.is_wide_channel(passer.x)
+        starts_in_attacking_zone = passer.y <= 38
+        targets_box_or_sixteen = receiver.y <= 20
+        targets_central_area = Const.WIDTH * 0.22 <= receiver.x <= Const.WIDTH * 0.78
+        has_lateral_delivery = abs(receiver.x - passer.x) >= 10
+        return starts_wide and starts_in_attacking_zone and targets_box_or_sixteen and targets_central_area and has_lateral_delivery and distance >= 12
+
+    def record_channel_attack(self, x):
+        if x <= Const.WIDTH / 3:
+            self.offence.zone_stats["left_channel_attacks"] += 1
+        elif x >= Const.WIDTH * 2 / 3:
+            self.offence.zone_stats["right_channel_attacks"] += 1
+        else:
+            self.offence.zone_stats["center_channel_attacks"] += 1
 
     def get_offside_line_y(self):
         return min(self.getLastSecondDefencePlayer().y, self.ball_holder.y)
@@ -1618,25 +1828,59 @@ class Game:
                 shoots=team.shoots,
                 shoots_in_target=team.shoots_in_target,
                 goals=team.goals,
+                shots_in_box=team.shots_in_box,
+                shots_outside_box=team.shots_outside_box,
                 passes=team.passes,
                 successful_passes=team.successful_passes,
+                progressive_passes=team.progressive_passes,
+                passes_into_final_third=team.passes_into_final_third,
+                passes_into_box=team.passes_into_box,
+                long_passes=team.long_passes,
+                completed_long_passes=team.completed_long_passes,
+                short_passes=team.short_passes,
+                completed_short_passes=team.completed_short_passes,
+                crosses=team.crosses,
+                successful_crosses=team.successful_crosses,
+                final_third_entries=team.final_third_entries,
+                box_entries=team.box_entries,
                 dribbles=team.dribbles,
                 carries=team.carries,
                 progressive_carries=team.progressive_carries,
+                carries_into_final_third=team.carries_into_final_third,
+                carries_into_box=team.carries_into_box,
+                take_ons=team.take_ons,
+                successful_take_ons=team.successful_take_ons,
                 assists=team.assists,
                 tackles=team.tackles,
                 tackle_attempts=team.tackle_attempts,
                 interceptions=team.interceptions,
                 blocks=team.blocks,
+                clearances=team.clearances,
+                pressures=team.pressures,
+                successful_pressures=team.successful_pressures,
+                defensive_actions=team.defensive_actions,
+                turnovers=team.turnovers,
+                offsides=team.offsides,
+                offsides_forced=team.offsides_forced,
                 saves=team.saves,
                 xg=team.xg,
+                open_play_xg=team.open_play_xg,
+                set_piece_xg=team.set_piece_xg,
+                npxg=team.npxg,
+                post_shot_xg=team.post_shot_xg,
+                psxg_faced=team.psxg_faced,
+                goals_prevented=team.goals_prevented,
                 adjusted_xg=team.adjusted_xg,
                 xt=team.xt,
                 key_passes=team.key_passes,
                 box_touches=team.box_touches,
                 big_chances=team.big_chances,
                 possessions=team.possessions,
+                avg_possession_duration=team.avg_possession_duration,
                 goals_detailed=team.goals_detailed,
+                player_stats=team.player_stats,
+                position_stats=team.position_stats,
+                zone_stats=team.zone_stats,
             )
 
         events = []

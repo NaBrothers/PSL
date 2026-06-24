@@ -29,25 +29,59 @@ class TeamStats:
     shoots: int = 0
     shoots_in_target: int = 0
     goals: int = 0
+    shots_in_box: int = 0
+    shots_outside_box: int = 0
     passes: int = 0
     successful_passes: int = 0
+    progressive_passes: int = 0
+    passes_into_final_third: int = 0
+    passes_into_box: int = 0
+    long_passes: int = 0
+    completed_long_passes: int = 0
+    short_passes: int = 0
+    completed_short_passes: int = 0
+    crosses: int = 0
+    successful_crosses: int = 0
+    final_third_entries: int = 0
+    box_entries: int = 0
     dribbles: int = 0
     carries: int = 0
     progressive_carries: int = 0
+    carries_into_final_third: int = 0
+    carries_into_box: int = 0
+    take_ons: int = 0
+    successful_take_ons: int = 0
     assists: int = 0
     tackles: int = 0
     tackle_attempts: int = 0
     interceptions: int = 0
     blocks: int = 0
+    clearances: int = 0
+    pressures: int = 0
+    successful_pressures: int = 0
+    defensive_actions: int = 0
+    turnovers: int = 0
+    offsides: int = 0
+    offsides_forced: int = 0
     saves: int = 0
     xg: float = 0
+    open_play_xg: float = 0
+    set_piece_xg: float = 0
+    npxg: float = 0
+    post_shot_xg: float = 0
+    psxg_faced: float = 0
+    goals_prevented: float = 0
     adjusted_xg: float = 0
     xt: float = 0
     key_passes: int = 0
     box_touches: int = 0
     big_chances: int = 0
     possessions: int = 0
+    avg_possession_duration: float = 0
     goals_detailed: list = field(default_factory=list)
+    player_stats: list = field(default_factory=list)
+    position_stats: dict = field(default_factory=dict)
+    zone_stats: dict = field(default_factory=dict)
 
 
 @dataclass

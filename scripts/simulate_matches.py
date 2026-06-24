@@ -71,28 +71,58 @@ async def run_matches(count, seed, home_star, away_star):
     "away_shots": 0,
     "home_shots_on_target": 0,
     "away_shots_on_target": 0,
+    "home_shots_in_box": 0,
+    "away_shots_in_box": 0,
+    "home_shots_outside_box": 0,
+    "away_shots_outside_box": 0,
     "home_passes": 0,
     "away_passes": 0,
     "home_successful_passes": 0,
     "away_successful_passes": 0,
+    "home_progressive_passes": 0,
+    "away_progressive_passes": 0,
+    "home_final_third_entries": 0,
+    "away_final_third_entries": 0,
+    "home_box_entries": 0,
+    "away_box_entries": 0,
+    "home_crosses": 0,
+    "away_crosses": 0,
     "home_dribbles": 0,
     "away_dribbles": 0,
     "home_carries": 0,
     "away_carries": 0,
+    "home_take_ons": 0,
+    "away_take_ons": 0,
+    "home_successful_take_ons": 0,
+    "away_successful_take_ons": 0,
     "home_tackles": 0,
     "away_tackles": 0,
     "home_tackle_attempts": 0,
     "away_tackle_attempts": 0,
+    "home_pressures": 0,
+    "away_pressures": 0,
+    "home_successful_pressures": 0,
+    "away_successful_pressures": 0,
     "home_interceptions": 0,
     "away_interceptions": 0,
     "home_blocks": 0,
     "away_blocks": 0,
+    "home_turnovers": 0,
+    "away_turnovers": 0,
     "home_saves": 0,
     "away_saves": 0,
     "home_control": 0,
     "away_control": 0,
     "home_xg": 0,
     "away_xg": 0,
+    "home_npxg": 0,
+    "away_npxg": 0,
+    "home_post_shot_xg": 0,
+    "away_post_shot_xg": 0,
+    "home_psxg_faced": 0,
+    "away_psxg_faced": 0,
+    "home_goals_prevented": 0,
+    "away_goals_prevented": 0,
     "home_adjusted_xg": 0,
     "away_adjusted_xg": 0,
     "home_xt": 0,
@@ -119,28 +149,58 @@ async def run_matches(count, seed, home_star, away_star):
     result["away_shots"] += game.away.shoots
     result["home_shots_on_target"] += game.home.shoots_in_target
     result["away_shots_on_target"] += game.away.shoots_in_target
+    result["home_shots_in_box"] += game.home.shots_in_box
+    result["away_shots_in_box"] += game.away.shots_in_box
+    result["home_shots_outside_box"] += game.home.shots_outside_box
+    result["away_shots_outside_box"] += game.away.shots_outside_box
     result["home_passes"] += game.home.passes
     result["away_passes"] += game.away.passes
     result["home_successful_passes"] += game.home.successful_passes
     result["away_successful_passes"] += game.away.successful_passes
+    result["home_progressive_passes"] += game.home.progressive_passes
+    result["away_progressive_passes"] += game.away.progressive_passes
+    result["home_final_third_entries"] += game.home.final_third_entries
+    result["away_final_third_entries"] += game.away.final_third_entries
+    result["home_box_entries"] += game.home.box_entries
+    result["away_box_entries"] += game.away.box_entries
+    result["home_crosses"] += game.home.crosses
+    result["away_crosses"] += game.away.crosses
     result["home_dribbles"] += game.home.dribbles
     result["away_dribbles"] += game.away.dribbles
     result["home_carries"] += game.home.carries
     result["away_carries"] += game.away.carries
+    result["home_take_ons"] += game.home.take_ons
+    result["away_take_ons"] += game.away.take_ons
+    result["home_successful_take_ons"] += game.home.successful_take_ons
+    result["away_successful_take_ons"] += game.away.successful_take_ons
     result["home_tackles"] += game.home.tackles
     result["away_tackles"] += game.away.tackles
     result["home_tackle_attempts"] += game.home.tackle_attempts
     result["away_tackle_attempts"] += game.away.tackle_attempts
+    result["home_pressures"] += game.home.pressures
+    result["away_pressures"] += game.away.pressures
+    result["home_successful_pressures"] += game.home.successful_pressures
+    result["away_successful_pressures"] += game.away.successful_pressures
     result["home_interceptions"] += game.home.interceptions
     result["away_interceptions"] += game.away.interceptions
     result["home_blocks"] += game.home.blocks
     result["away_blocks"] += game.away.blocks
+    result["home_turnovers"] += game.home.turnovers
+    result["away_turnovers"] += game.away.turnovers
     result["home_saves"] += game.home.saves
     result["away_saves"] += game.away.saves
     result["home_control"] += game.home.control
     result["away_control"] += game.away.control
     result["home_xg"] += game.home.xg
     result["away_xg"] += game.away.xg
+    result["home_npxg"] += game.home.npxg
+    result["away_npxg"] += game.away.npxg
+    result["home_post_shot_xg"] += game.home.post_shot_xg
+    result["away_post_shot_xg"] += game.away.post_shot_xg
+    result["home_psxg_faced"] += game.home.psxg_faced
+    result["away_psxg_faced"] += game.away.psxg_faced
+    result["home_goals_prevented"] += game.home.goals_prevented
+    result["away_goals_prevented"] += game.away.goals_prevented
     result["home_adjusted_xg"] += game.home.adjusted_xg
     result["away_adjusted_xg"] += game.away.adjusted_xg
     result["home_xt"] += game.home.xt
@@ -180,20 +240,35 @@ def print_report(result):
   print("avg_score:", round(result["home_goals"] / matches, 2), "-", round(result["away_goals"] / matches, 2))
   print("avg_shots:", round(result["home_shots"] / matches, 2), "-", round(result["away_shots"] / matches, 2))
   print("avg_shots_on_target:", round(result["home_shots_on_target"] / matches, 2), "-", round(result["away_shots_on_target"] / matches, 2))
+  print("avg_shots_in_box:", round(result["home_shots_in_box"] / matches, 2), "-", round(result["away_shots_in_box"] / matches, 2))
+  print("avg_shots_outside_box:", round(result["home_shots_outside_box"] / matches, 2), "-", round(result["away_shots_outside_box"] / matches, 2))
   home_sot_rate = 0 if result["home_shots"] == 0 else result["home_shots_on_target"] * 100 / result["home_shots"]
   away_sot_rate = 0 if result["away_shots"] == 0 else result["away_shots_on_target"] * 100 / result["away_shots"]
   print("shot_on_target_pct:", round(home_sot_rate, 1), "-", round(away_sot_rate, 1))
   print("avg_passes:", round(result["home_passes"] / matches, 2), "-", round(result["away_passes"] / matches, 2))
   print("pass_success_pct:", round(home_pass_rate, 1), "-", round(away_pass_rate, 1))
+  print("avg_progressive_passes:", round(result["home_progressive_passes"] / matches, 2), "-", round(result["away_progressive_passes"] / matches, 2))
+  print("avg_final_third_entries:", round(result["home_final_third_entries"] / matches, 2), "-", round(result["away_final_third_entries"] / matches, 2))
+  print("avg_box_entries:", round(result["home_box_entries"] / matches, 2), "-", round(result["away_box_entries"] / matches, 2))
+  print("avg_crosses:", round(result["home_crosses"] / matches, 2), "-", round(result["away_crosses"] / matches, 2))
   print("avg_dribbles:", round(result["home_dribbles"] / matches, 2), "-", round(result["away_dribbles"] / matches, 2))
   print("avg_carries:", round(result["home_carries"] / matches, 2), "-", round(result["away_carries"] / matches, 2))
+  print("avg_take_ons:", round(result["home_take_ons"] / matches, 2), "-", round(result["away_take_ons"] / matches, 2))
+  print("avg_successful_take_ons:", round(result["home_successful_take_ons"] / matches, 2), "-", round(result["away_successful_take_ons"] / matches, 2))
   print("avg_tackles:", round(result["home_tackles"] / matches, 2), "-", round(result["away_tackles"] / matches, 2))
   print("avg_tackle_attempts:", round(result["home_tackle_attempts"] / matches, 2), "-", round(result["away_tackle_attempts"] / matches, 2))
+  print("avg_pressures:", round(result["home_pressures"] / matches, 2), "-", round(result["away_pressures"] / matches, 2))
+  print("avg_successful_pressures:", round(result["home_successful_pressures"] / matches, 2), "-", round(result["away_successful_pressures"] / matches, 2))
   print("avg_interceptions:", round(result["home_interceptions"] / matches, 2), "-", round(result["away_interceptions"] / matches, 2))
   print("avg_blocks:", round(result["home_blocks"] / matches, 2), "-", round(result["away_blocks"] / matches, 2))
+  print("avg_turnovers:", round(result["home_turnovers"] / matches, 2), "-", round(result["away_turnovers"] / matches, 2))
   print("avg_saves:", round(result["home_saves"] / matches, 2), "-", round(result["away_saves"] / matches, 2))
   print("control_pct:", round(home_control, 1), "-", round(away_control, 1))
   print("avg_xg:", round(result["home_xg"] / matches, 2), "-", round(result["away_xg"] / matches, 2))
+  print("avg_npxg:", round(result["home_npxg"] / matches, 2), "-", round(result["away_npxg"] / matches, 2))
+  print("avg_post_shot_xg:", round(result["home_post_shot_xg"] / matches, 2), "-", round(result["away_post_shot_xg"] / matches, 2))
+  print("avg_psxg_faced:", round(result["home_psxg_faced"] / matches, 2), "-", round(result["away_psxg_faced"] / matches, 2))
+  print("avg_goals_prevented:", round(result["home_goals_prevented"] / matches, 2), "-", round(result["away_goals_prevented"] / matches, 2))
   print("avg_adjusted_xg:", round(result["home_adjusted_xg"] / matches, 2), "-", round(result["away_adjusted_xg"] / matches, 2))
   print("avg_xt:", round(result["home_xt"] / matches, 2), "-", round(result["away_xt"] / matches, 2))
   print("avg_key_passes:", round(result["home_key_passes"] / matches, 2), "-", round(result["away_key_passes"] / matches, 2))

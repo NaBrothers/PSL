@@ -68,16 +68,16 @@ def build_shot_context(distance, angle, shoot_ability, pressure=0, assist_qualit
 
 
 def shot_on_target_goal_probability(shoot_ability, keeper_ability, raw_xg):
-  ability_edge = ability_advantage_probability(shoot_ability, keeper_ability, scale=8, floor=0.03, ceiling=0.97)
-  chance_bonus = clamp(raw_xg * 1.20, 0.0, 0.27)
-  return clamp(ability_edge * 0.70 + chance_bonus, 0.02, 0.90)
+  ability_edge = ability_advantage_probability(shoot_ability, keeper_ability, scale=16, floor=0.08, ceiling=0.92)
+  chance_bonus = clamp(raw_xg * 0.95, 0.0, 0.24)
+  return clamp(ability_edge * 0.32 + chance_bonus, 0.03, 0.56)
 
 
 def pass_success_probability(pass_ability, distance, pressure=0, is_long=False):
-  base = logistic_probability(pass_ability, 47 + pressure * 1.0, scale=18, floor=0.84, ceiling=0.993)
-  distance_penalty = distance * (0.0007 if is_long else 0.00025)
-  long_penalty = 0.01 if is_long else 0.0
-  return clamp(base - distance_penalty - long_penalty, 0.78, 0.993)
+  base = logistic_probability(pass_ability, 50 + pressure * 1.2, scale=18, floor=0.80, ceiling=0.985)
+  distance_penalty = distance * (0.0010 if is_long else 0.0004)
+  long_penalty = 0.025 if is_long else 0.0
+  return clamp(base - distance_penalty - long_penalty, 0.72, 0.985)
 
 
 def expected_threat(y, action_quality=1.0):
