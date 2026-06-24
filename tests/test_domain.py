@@ -14,6 +14,7 @@ from domain.card import CardData
 from domain.user import UserData
 from domain.formation import FormationData
 from domain.constants import STARS, STYLE, GK_STYLE, REAL_ABILITY
+from utils.const import Const
 
 
 def make_player(**kwargs):
@@ -115,6 +116,21 @@ class TestCardData:
 
 
 class TestFormationData:
+    def test_all_engine_formations_have_valid_shape(self):
+        for name, data in Const.FORMATION.items():
+            positions = data["positions"]
+            coords = data["coordinates"]
+            assert len(positions) == 11, name
+            assert len(coords) == 11, name
+            assert positions[0] == "GK", name
+            assert coords[0][1] == 100, name
+            assert all(0 <= x <= 68 and 0 <= y <= 105 for x, y in coords), name
+            for position, (_, y) in zip(positions, coords):
+                if position in Const.GUARD:
+                    assert y >= 70, (name, position, y)
+                if position in ("ST", "CF", "LW", "RW"):
+                    assert y <= 28, (name, position, y)
+
     def test_is_valid_all_cards(self):
         cards = [make_card() for _ in range(11)]
         positions = ["GK", "CB", "CB", "LB", "RB", "CM", "CM", "CDM", "LW", "RW", "ST"]

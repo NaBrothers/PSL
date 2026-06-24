@@ -47,6 +47,8 @@ class Game:
         self.half = "上半时"
         self.ball_holder = self.offence.players[10]
         self.assister = None
+        self.assist_candidate = None
+        self.assist_records = []
         self.timeline = []
         self.match_events = []
         self.current_events = []
@@ -71,39 +73,71 @@ class Game:
         home_strength = self.team_strength(self.home)
         away_strength = self.team_strength(self.away)
         if home_strength - away_strength >= 18:
-            self.finishing_multiplier = 0.96
+            self.finishing_multiplier = 0.88
             upset_roll = self.rng.random()
             if upset_roll < 0.06:
                 strong_factor, weak_factor = 0.78, 1.18
             elif upset_roll < 0.14:
                 strong_factor, weak_factor = 0.88, 1.10
             else:
-                strong_factor, weak_factor = 1.10, 0.96
+                strong_factor, weak_factor = 1.06, 0.97
             for player in self.home.players:
                 player.match_form *= strong_factor
             for player in self.away.players:
                 player.match_form *= weak_factor
         elif away_strength - home_strength >= 18:
-            self.finishing_multiplier = 0.96
+            self.finishing_multiplier = 0.88
             upset_roll = self.rng.random()
             if upset_roll < 0.06:
                 strong_factor, weak_factor = 0.78, 1.18
             elif upset_roll < 0.14:
                 strong_factor, weak_factor = 0.88, 1.10
             else:
-                strong_factor, weak_factor = 1.10, 0.96
+                strong_factor, weak_factor = 1.06, 0.97
             for player in self.away.players:
                 player.match_form *= strong_factor
             for player in self.home.players:
                 player.match_form *= weak_factor
         else:
-            self.finishing_multiplier = 1.22
+            self.finishing_multiplier = 1.10
 
     def team_strength(self, team):
         total = 0
         for player in team.players:
             total += player.ability["Finishing"] + player.ability["Short_Passing"] + player.ability["Dribbling"] + player.ability["Defence"]
         return total / max(1, len(team.players) * 4)
+
+    def set_assist_candidate(self, passer, receiver, pass_type, distance):
+        self.assister = passer
+        self.assist_candidate = {
+            "passer": passer,
+            "receiver": receiver,
+            "pass_type": pass_type,
+            "distance": distance,
+            "action_count": self.possession_action_count,
+            "minute": self.getTime(),
+        }
+
+    def record_goal_assist(self, scorer, shot):
+        if self.assist_candidate is not None and self.possession_action_count - self.assist_candidate["action_count"] > 3:
+            self.assister = None
+            self.assist_candidate = None
+        record = {
+            "team": "home" if self.offence is self.home else "away",
+            "scorer": scorer.getName(False),
+            "assisted": self.assister is not None,
+            "assister": self.assister.getName(False) if self.assister else "",
+            "age_actions": None,
+            "pass_type": "",
+            "distance": 0,
+            "xg": shot.raw_xg if shot else 0,
+        }
+        if self.assist_candidate is not None and self.assist_candidate.get("passer") is self.assister:
+            record["age_actions"] = self.possession_action_count - self.assist_candidate["action_count"]
+            record["pass_type"] = self.assist_candidate["pass_type"]
+            record["distance"] = self.assist_candidate["distance"]
+        self.assist_records.append(record)
+        return record
 
     async def start(self, mode):
         self.mode = mode
@@ -403,6 +437,7 @@ class Game:
                 self.ball_holder.goals += 1
                 self.record_shot_result(self.ball_holder, gk, shot, "goal")
                 self.record_key_pass(self.assister, shot)
+                self.record_goal_assist(self.ball_holder, shot)
                 self.ball_holder.goals_detailed.append(self.getTime())
                 if self.assister:
                     self.assister.assists += 1
@@ -457,7 +492,11 @@ class Game:
                         self.ball_holder.successful_take_ons += 1
                         def_player.action_flag = True
                 carry_start_y = self.ball_holder.y
+                take_ons_before = self.ball_holder.take_ons
                 self.ball_holder.moving(dribble_pos[0], dribble_pos[1])
+                if carry_start_y - dribble_pos[1] >= 8 or self.ball_holder.take_ons - take_ons_before >= 1:
+                    self.assister = None
+                    self.assist_candidate = None
                 self.record_carry_stats(self.ball_holder, carry_start_y, dribble_pos[1])
                 self.record_box_touch(self.ball_holder)
                 self.record_expected_threat(self.ball_holder, 0.8)
@@ -538,7 +577,7 @@ class Game:
                     self.ball_holder.successful_passes += 1
                     self.record_pass_stats(self.ball_holder, passing_aim, distance, long_pass=False, success=True)
                     self.ball_holder.action_flag = False
-                    self.assister = self.ball_holder
+                    self.set_assist_candidate(self.ball_holder, passing_aim, "pass", distance)
                     if passing_aim.y <= 25:
                         self.offence.key_passes += 1
                     self.record_expected_threat(passing_aim, self.ball_holder.ability["Short_Passing"] / 100)
@@ -634,7 +673,7 @@ class Game:
                     else:
                         self.ball_holder.successful_passes += 1
                         self.record_pass_stats(self.ball_holder, roll_winner, distance, long_pass=True, success=True)
-                        self.assister = self.ball_holder
+                        self.set_assist_candidate(self.ball_holder, roll_winner, "long_pass", distance)
                         if passing_aim.y <= 25:
                             self.offence.key_passes += 1
                         self.record_expected_threat(passing_aim, passing_ability / 100)
@@ -678,6 +717,7 @@ class Game:
                                 roll_winner.goals += 1
                                 self.record_shot_result(roll_winner, gk, header_shot, "goal")
                                 self.record_key_pass(self.assister, header_shot)
+                                self.record_goal_assist(roll_winner, header_shot)
                                 roll_winner.goals_detailed.append(
                                     self.getTime())
                                 if self.assister:
@@ -717,6 +757,7 @@ class Game:
         self.swapPosition(self.offence)
         self.swapPosition(self.defence)
         self.assister = None
+        self.assist_candidate = None
         self.possession_action_count = 0
 
     def run_off_ball_movement(self):
@@ -753,6 +794,7 @@ class Game:
         self.printCase(case, event_type, 2 if event_type == "long_pass" else 1, self.ball_holder, target)
         self.ball_holder.successful_passes += 1
         self.assister = None
+        self.assist_candidate = None
         if hasattr(self, 'recorder') and self.recorder:
             flight = self.recorder.make_pass_flight(self, self.ball_holder, target)
             self.recorder.record_frame(self, ball_flight=flight, event_text="GOAL_KICK", pause_ms=800)
@@ -1119,7 +1161,7 @@ class Game:
             self.offence.shots_outside_box += 1
             self.offence.zone_stats["shots_outside_box"] += 1
             shooter.shots_outside_box += 1
-        if shot.raw_xg >= 0.15 or shot.goal_probability >= 0.18:
+        if shot.raw_xg >= 0.16 or shot.goal_probability >= 0.21:
             self.offence.big_chances += 1
             shooter.big_chances += 1
         self.record_box_touch(shooter)
@@ -1130,7 +1172,7 @@ class Game:
         return self.clamp(shot_on_target_goal_probability(shot.shoot_ability, keeper_ability, shot.raw_xg) * self.finishing_multiplier, 0.02, 0.72)
 
     def record_shot_result(self, shooter, keeper=None, shot=None, outcome="miss"):
-        if outcome != "goal" and getattr(shooter, "big_chances", 0) > 0 and shot is not None and (shot.raw_xg >= 0.15 or shot.goal_probability >= 0.18):
+        if outcome != "goal" and getattr(shooter, "big_chances", 0) > 0 and shot is not None and (shot.raw_xg >= 0.16 or shot.goal_probability >= 0.21):
             shooter.big_chances_missed += 1
         if shot is None or keeper is None:
             return
@@ -1198,8 +1240,11 @@ class Game:
         progress = start_y - end_y
         if progress >= 5:
             player.carries += 1
-        if progress >= 12:
+        if progress > 0:
+            player.current_carry_progress += progress
+        if progress >= 12 or player.current_carry_progress >= 15:
             player.progressive_carries += 1
+            player.current_carry_progress = 0
         if start_y > 35 and end_y <= 35:
             player.carries_into_final_third += 1
             self.offence.carries_into_final_third += 1
@@ -1304,6 +1349,8 @@ class Game:
     def changeBallHolder(self, player):
         if self.ball_holder is player:
             return
+        if hasattr(self.ball_holder, "current_carry_progress"):
+            self.ball_holder.current_carry_progress = 0
         self.ball_holder = player
         if player in self.offence.players:
             self.keep_offence_players_onside()

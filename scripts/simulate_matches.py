@@ -67,6 +67,10 @@ async def run_matches(count, seed, home_star, away_star):
     "away_wins": 0,
     "home_goals": 0,
     "away_goals": 0,
+    "home_assisted_goals": 0,
+    "away_assisted_goals": 0,
+    "home_stale_assists": 0,
+    "away_stale_assists": 0,
     "home_shots": 0,
     "away_shots": 0,
     "home_shots_on_target": 0,
@@ -145,6 +149,12 @@ async def run_matches(count, seed, home_star, away_star):
     game.away.getStats()
     result["home_goals"] += game.home.point
     result["away_goals"] += game.away.point
+    for assist in game.assist_records:
+      prefix = "home" if assist["team"] == "home" else "away"
+      if assist["assisted"]:
+        result[f"{prefix}_assisted_goals"] += 1
+      if assist["assisted"] and assist["age_actions"] is not None and assist["age_actions"] > 1:
+        result[f"{prefix}_stale_assists"] += 1
     result["home_shots"] += game.home.shoots
     result["away_shots"] += game.away.shoots
     result["home_shots_on_target"] += game.home.shoots_in_target
@@ -238,6 +248,10 @@ def print_report(result):
   print("matches:", matches)
   print("home_wins:", result["home_wins"], "draws:", result["draws"], "away_wins:", result["away_wins"])
   print("avg_score:", round(result["home_goals"] / matches, 2), "-", round(result["away_goals"] / matches, 2))
+  home_assist_rate = 0 if result["home_goals"] == 0 else result["home_assisted_goals"] * 100 / result["home_goals"]
+  away_assist_rate = 0 if result["away_goals"] == 0 else result["away_assisted_goals"] * 100 / result["away_goals"]
+  print("assist_rate_pct:", round(home_assist_rate, 1), "-", round(away_assist_rate, 1))
+  print("avg_stale_assists:", round(result["home_stale_assists"] / matches, 2), "-", round(result["away_stale_assists"] / matches, 2))
   print("avg_shots:", round(result["home_shots"] / matches, 2), "-", round(result["away_shots"] / matches, 2))
   print("avg_shots_on_target:", round(result["home_shots_on_target"] / matches, 2), "-", round(result["away_shots_on_target"] / matches, 2))
   print("avg_shots_in_box:", round(result["home_shots_in_box"] / matches, 2), "-", round(result["away_shots_in_box"] / matches, 2))

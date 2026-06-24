@@ -66,6 +66,7 @@ class Player:
     self.dribbles = 0
     self.carries = 0
     self.progressive_carries = 0
+    self.current_carry_progress = 0
     self.carries_into_final_third = 0
     self.carries_into_box = 0
     self.take_ons = 0
@@ -236,12 +237,25 @@ class Player:
     shoot_rate_factor = self.get_shooting_rate(shoot_defence_players_number) * 100
     if shot_context is not None:
       shoot_rate_factor = max(shoot_rate_factor, self.get_opportunity_shooting_rate(shot_context) * 100)
+    if self.position in ("ST", "CF") and shot_context is not None and shot_context.distance <= 24:
+      shoot_rate_factor *= 1.25
     if shoot_rate_factor > 0:
       rand = rng.randint(0, 100)
       if rand < shoot_rate_factor:
         return "SHOOT"
     dribbling_rate_factor = self.get_dribbling_rate(defence_players_number) * 100
     passing_rate_factor = self.get_passing_rate(defence_players_number) * 100
+    if self.position in ("ST", "CF"):
+      passing_rate_factor *= 0.58
+      dribbling_rate_factor *= 0.86
+    elif self.position in ("LCB", "CB", "RCB"):
+      passing_rate_factor *= 1.35
+      dribbling_rate_factor *= 0.22
+    elif self.position in ("LB", "RB", "LWB", "RWB", "CDM"):
+      passing_rate_factor *= 1.15
+      dribbling_rate_factor *= 0.55
+    elif self.position in ("LW", "RW", "LM", "RM", "CAM"):
+      passing_rate_factor *= 0.88
     sum_rate_factor = dribbling_rate_factor + passing_rate_factor
     rand = rng.randint(0, int(sum_rate_factor))
     if rand < dribbling_rate_factor and self.get_distance(self.default_x, self.default_y) < 25:
@@ -281,9 +295,9 @@ class Player:
     elif shot_context.distance <= 25:
       rate = 0.15
     if shot_context.distance <= 10:
-      rate = max(rate, 0.82)
+      rate = max(rate, 0.76)
     elif shot_context.distance <= 14:
-      rate = max(rate, 0.70)
+      rate = max(rate, 0.64)
     if shot_context.angle >= 35:
       rate += 0.05
     if shot_context.distance >= 24:

@@ -13,10 +13,12 @@ from queue import PriorityQueue
 
 get_team = on_startswith(msg="阵容", rule=to_me(), priority=1)
 
+AVAILABLE_FORMATIONS = "、".join(Const.FORMATION.keys())
+
 error_text = '''阵容 自动：按能力值自动更新阵容
 阵容 [ID]：查看其他玩家阵容
 阵容 替换 [球员1] [球员2]：替换两名球员
-阵容 更改 [阵型]：更改其他阵型（442、433、343、4231、352、532）
+阵容 更改 [阵型]：更改其他阵型（''' + AVAILABLE_FORMATIONS + '''）
 '''
 
 
@@ -146,100 +148,75 @@ async def show_others(id):
     await show_team(user)
 
 async def auto_update(user):
-    def getIndexes(positions, position):
-      if position == "ST":
-        position = ["ST", "RS", "LS"]
-      elif position == "CF":
-        position = ["CF", "LF", "RF"]
-      elif position == "LRW":
-        position = ["RW", "LW"]
-      elif position == "AM":
-        position = ["CAM", "RAM", "LAM"]
-      elif position == "LRM":
-        position = ["LM", "RM"]
-      elif position == "CM":
-        position = ["CM", "RCM", "LCM"]
-      elif position == "DM":
-        position = ["CDM", "RDM", "LDM"]
-      elif position == "CB":
-        position = ["CB", "RCB", "LCB"]
-      elif position == "LRB":
-        position = ["LB", "LWB", "RB", "RWB"]
-      elif position == "GK":
-        positon = ["GK"]
-      
-      indexes = []
-      for i in range(len(positions)):
-        if positions[i] in position:
-          indexes.append(i)
-      return indexes
+    def slot_group(position):
+      if position in Const.GOALKEEPER:
+        return "GK"
+      if position in Const.FORWARD:
+        return "F"
+      if position in Const.MIDFIELD:
+        return "M"
+      if position in Const.GUARD:
+        return "D"
+      return "M"
+
+    def player_positions(card):
+      return [p.strip() for p in card.player.Position.split(",")]
+
+    def position_fit_bonus(card, slot):
+      positions = player_positions(card)
+      primary = positions[0] if positions else ""
+      if slot in positions:
+        return 18 if slot == primary else 12
+      if slot in ("LCB", "CB", "RCB"):
+        if any(position in ("CB", "LCB", "RCB") for position in positions):
+          return 10
+        if any(position in ("CDM", "LDM", "RDM") for position in positions):
+          return 1
+        if any(position in ("LB", "RB", "LWB", "RWB") for position in positions):
+          return -8
+      if slot in ("LB", "RB", "LWB", "RWB"):
+        if any(position in ("LB", "RB", "LWB", "RWB") for position in positions):
+          return 10
+        if any(position in ("CB", "LCB", "RCB") for position in positions):
+          return -6
+      slot_line = slot_group(slot)
+      player_lines = {slot_group(position) for position in positions}
+      if slot_line == "GK" or "GK" in player_lines:
+        return 0 if slot_line == "GK" and "GK" in player_lines else -80
+      if slot_line in player_lines:
+        return 4
+      return -35
 
     team = Formation.getFormation(user)
     bag = Bag.getBag(user)
-    count = 11
-    heap = PriorityQueue()
-    sub = Formation.PLAYERS_COUNT - 11
     result = [0 for i in range(Formation.PLAYERS_COUNT)]
     selected_players = set()
+    available_cards = [
+      card for card in bag.cards
+      if card is not None and (card.status == 0 or card.status == 2)
+    ]
 
-    for i, card in enumerate(bag.cards):
-      if card.status != 0 and card.status != 2:
-        continue
-      overalls = card.getOveralls()
-      heap.put((-overalls[0][1], 0, overalls[0][0], i)) # 能力，能力 index，位置，card Index
-
-    main_gk = False
-    sub_gk = False
-    while count > 0:
-      if heap.empty():
+    positions = Const.FORMATION[team.formation]["positions"]
+    # Fill constrained slots first so GK/CB/ST are not stolen by generic high-overall players.
+    slot_order = sorted(range(11), key=lambda idx: {"GK": 0, "D": 1, "F": 2, "M": 3}[slot_group(positions[idx])])
+    for slot_index in slot_order:
+      slot = positions[slot_index]
+      candidates = [
+        card for card in available_cards
+        if card.player.ID not in selected_players
+      ]
+      if not candidates:
         break
-      overall, index, position, i = heap.get()
-      overall = -overall
-      index = -index
-      card = bag.cards[i]
-      if card.player.ID in selected_players:
-        continue
-      indexes = getIndexes(Const.FORMATION[team.formation]["positions"],position)
-      picked = False
-      for n in indexes:
-        if result[n] == 0:
-          result[n] = card.id
-          count -= 1
-          picked = True
-          if position == "GK":
-            main_gk = True
-          selected_players.add(card.player.ID)
-          break
-          
-      if not picked:
-        overalls = card.getOveralls()
-        if main_gk == True and sub_gk == False and position == "GK":
-          sub_gk = card.id
-        elif index + 1 < len(overalls):
-          heap.put((-overalls[index+1][1],-index-1,overalls[index+1][0],i))
-
-    while sub > 0:
-      if heap.empty():
-        break
-      if sub_gk > 0:
-        card = Card.getCardByID(sub_gk)
-        sub_gk = -1
-      else:
-        overall, index, position, i = heap.get()
-        card = bag.cards[i]
-      if card.player.ID in selected_players:
-        continue
-      if position == "GK" and sub_gk == -1:
-        # 只有一个替补门将
-        continue
-      if position == "GK" and sub_gk == False:
-        sub_gk = -1
-      if sub == 1 and sub_gk == 0 and position != "GK":
-        # 至少一个替补门将
-        continue
-      result[Formation.PLAYERS_COUNT - sub] = card.id
-      selected_players.add(card.player.ID)
-      sub -= 1
+      best = max(
+        candidates,
+        key=lambda card: (
+          card.getRealOverall(slot) + position_fit_bonus(card, slot),
+          position_fit_bonus(card, slot),
+          card.overall,
+        )
+      )
+      result[slot_index] = best.id
+      selected_players.add(best.player.ID)
 
     for card in team.cards:
       if card != None:
