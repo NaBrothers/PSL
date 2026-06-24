@@ -47,6 +47,7 @@ class Team:
     self.completed_short_passes = 0
     self.crosses = 0
     self.successful_crosses = 0
+    self.corners = 0
     self.final_third_entries = 0
     self.box_entries = 0
     self.dribbles = 0

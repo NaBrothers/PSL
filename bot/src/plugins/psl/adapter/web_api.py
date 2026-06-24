@@ -49,6 +49,7 @@ def _serialize_stats(stats) -> dict:
         "completed_long_passes": stats.completed_long_passes,
         "crosses": stats.crosses,
         "successful_crosses": stats.successful_crosses,
+        "corners": stats.corners,
         "final_third_entries": stats.final_third_entries,
         "box_entries": stats.box_entries,
         "dribbles": stats.dribbles,

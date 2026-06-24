@@ -75,6 +75,7 @@ class Player:
     self.dispossessed = 0
     self.offsides = 0
     self.goals_detailed = []
+    self.shooting_tendency = 1.0
 
   def match_ability(self, key):
     value = self.ability[key]
@@ -239,6 +240,7 @@ class Player:
       shoot_rate_factor = max(shoot_rate_factor, self.get_opportunity_shooting_rate(shot_context) * 100)
     if self.position in ("ST", "CF") and shot_context is not None and shot_context.distance <= 24:
       shoot_rate_factor *= 1.25
+    shoot_rate_factor *= getattr(self, "shooting_tendency", 1.0)
     if shoot_rate_factor > 0:
       rand = rng.randint(0, 100)
       if rand < shoot_rate_factor:

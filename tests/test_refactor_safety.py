@@ -257,7 +257,7 @@ class TestStatsFormatting:
             "过人", "带球推进", "抢断", "拦截", "封堵", "扑救",
             "xG", "关键传球", "禁区触球", "绝对机会",
             "禁区射门", "进攻三区进入", "禁区进入", "推进传球",
-            "传中", "逼抢", "丢失球权", "PSxG"
+            "传中", "角球", "逼抢", "丢失球权", "PSxG"
         ]
         for label in required_labels:
             assert label in stats_msg, f"Missing stat label: {label}"

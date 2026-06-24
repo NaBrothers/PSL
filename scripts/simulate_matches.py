@@ -91,6 +91,8 @@ async def run_matches(count, seed, home_star, away_star):
     "away_box_entries": 0,
     "home_crosses": 0,
     "away_crosses": 0,
+    "home_corners": 0,
+    "away_corners": 0,
     "home_dribbles": 0,
     "away_dribbles": 0,
     "home_carries": 0,
@@ -175,6 +177,8 @@ async def run_matches(count, seed, home_star, away_star):
     result["away_box_entries"] += game.away.box_entries
     result["home_crosses"] += game.home.crosses
     result["away_crosses"] += game.away.crosses
+    result["home_corners"] += game.home.corners
+    result["away_corners"] += game.away.corners
     result["home_dribbles"] += game.home.dribbles
     result["away_dribbles"] += game.away.dribbles
     result["home_carries"] += game.home.carries
@@ -265,6 +269,7 @@ def print_report(result):
   print("avg_final_third_entries:", round(result["home_final_third_entries"] / matches, 2), "-", round(result["away_final_third_entries"] / matches, 2))
   print("avg_box_entries:", round(result["home_box_entries"] / matches, 2), "-", round(result["away_box_entries"] / matches, 2))
   print("avg_crosses:", round(result["home_crosses"] / matches, 2), "-", round(result["away_crosses"] / matches, 2))
+  print("avg_corners:", round(result["home_corners"] / matches, 2), "-", round(result["away_corners"] / matches, 2))
   print("avg_dribbles:", round(result["home_dribbles"] / matches, 2), "-", round(result["away_dribbles"] / matches, 2))
   print("avg_carries:", round(result["home_carries"] / matches, 2), "-", round(result["away_carries"] / matches, 2))
   print("avg_take_ons:", round(result["home_take_ons"] / matches, 2), "-", round(result["away_take_ons"] / matches, 2))

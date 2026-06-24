@@ -80,6 +80,7 @@ def format_stats(result: MatchResult) -> str:
         (str(home.box_entries), "禁区进入", str(away.box_entries)),
         (str(home.progressive_passes), "推进传球", str(away.progressive_passes)),
         (str(home.crosses), "传中", str(away.crosses)),
+        (str(home.corners), "角球", str(away.corners)),
         (str(home.dribbles), "过人", str(away.dribbles)),
         (str(home.carries), "带球推进", str(away.carries)),
         (str(home.tackles), "抢断", str(away.tackles)),

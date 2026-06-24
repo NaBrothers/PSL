@@ -42,6 +42,7 @@ class TeamStats:
     completed_short_passes: int = 0
     crosses: int = 0
     successful_crosses: int = 0
+    corners: int = 0
     final_third_entries: int = 0
     box_entries: int = 0
     dribbles: int = 0

@@ -63,6 +63,7 @@ class Game:
         self.event_seq = 0
         self._movement_tick = 0
         self.goal_kick_pending = False
+        self.corner_pending = False
         self.finishing_multiplier = 1.0
         self.apply_match_form()
 
@@ -100,6 +101,10 @@ class Game:
                 player.match_form *= weak_factor
         else:
             self.finishing_multiplier = 1.10
+            if min(home_strength, away_strength) >= 104:
+                self.finishing_multiplier = 0.96
+                for player in self.home.players + self.away.players:
+                    player.shooting_tendency *= 0.82
 
     def team_strength(self, team):
         total = 0
@@ -297,6 +302,7 @@ class Game:
             (str(self.home.box_entries), "禁区进入", str(self.away.box_entries)),
             (str(self.home.progressive_passes), "推进传球", str(self.away.progressive_passes)),
             (str(self.home.crosses), "传中", str(self.away.crosses)),
+            (str(self.home.corners), "角球", str(self.away.corners)),
             (str(self.home.dribbles), "过人", str(self.away.dribbles)),
             (str(self.home.carries), "带球推进", str(self.away.carries)),
             (str(self.home.tackles), "抢断", str(self.away.tackles)),
@@ -335,6 +341,9 @@ class Game:
             if self.possession_action_count >= 28:
                 self.swap()
                 self.changeRandomBallHolder()
+                return
+            if self.corner_pending:
+                self.play_corner_kick()
                 return
             action_time = self.get_action_duration()
             self.offence.control += action_time
@@ -388,9 +397,12 @@ class Game:
                     if hasattr(self, 'recorder'):
                         flight = self.recorder.make_ball_flight(self, self.ball_holder, [shoot_x, 0], "shot", on_target=False)
                         self.recorder.record_frame(self, ball_flight=flight, event_text="MISS", pause_ms=1200)
-                    self.swap()
-                    self.changeBallHolderToGK()
-                    self.record_transition_frame()
+                    if self.should_award_corner("miss", shot):
+                        self.play_corner()
+                    else:
+                        self.swap()
+                        self.changeBallHolderToGK()
+                        self.record_transition_frame()
                     return
                 def_players = self.getWayDefencePlayers(
                     self.ball_holder.x, self.ball_holder.y, shoot_x, 0)
@@ -409,9 +421,12 @@ class Game:
                         def_player.clearances += 1
                         self.record_pressure(def_player, success=True)
                         self.record_turnover(self.offence, self.ball_holder)
-                        self.swap()
-                        self.changeBallHolder(def_player)
-                        self.record_transition_frame()
+                        if self.should_award_corner("block", shot):
+                            self.play_corner()
+                        else:
+                            self.swap()
+                            self.changeBallHolder(def_player)
+                            self.record_transition_frame()
                         return
                 gk = self.getDefenceGK()
                 self.ball_holder.shoots_in_target += 1
@@ -425,9 +440,12 @@ class Game:
                     if hasattr(self, 'recorder'):
                         flight = self.recorder.make_ball_flight(self, self.ball_holder, [shoot_x, 0], "shot", on_target=True)
                         self.recorder.record_frame(self, ball_flight=flight, event_text="SAVE", pause_ms=1200)
-                    self.swap()
-                    self.changeBallHolderToGK()
-                    self.record_transition_frame()
+                    if self.should_award_corner("save", shot):
+                        self.play_corner()
+                    else:
+                        self.swap()
+                        self.changeBallHolderToGK()
+                        self.record_transition_frame()
                     return
                 case = Display.print_goal(
                     self.ball_holder, gk, self.assister)
@@ -705,9 +723,12 @@ class Game:
                                 if hasattr(self, 'recorder'):
                                     flight = self.recorder.make_ball_flight(self, roll_winner, [Const.WIDTH / 2, 0], "shot", on_target=True)
                                     self.recorder.record_frame(self, ball_flight=flight, event_text="SAVE", pause_ms=1200)
-                                self.swap()
-                                self.changeBallHolderToGK()
-                                self.record_transition_frame()
+                                if self.should_award_corner("save", header_shot):
+                                    self.play_corner()
+                                else:
+                                    self.swap()
+                                    self.changeBallHolderToGK()
+                                    self.record_transition_frame()
                             else:
                                 case = Display.print_goal(
                                     roll_winner, gk, self.assister)
@@ -798,10 +819,102 @@ class Game:
         if hasattr(self, 'recorder') and self.recorder:
             flight = self.recorder.make_pass_flight(self, self.ball_holder, target)
             self.recorder.record_frame(self, ball_flight=flight, event_text="GOAL_KICK", pause_ms=800)
-        self.changeBallHolder(target)
+        self.changeBallHolder(target, enforce_onside=False)
         self.run_off_ball_movement()
         if hasattr(self, 'recorder'):
             self.recorder.record_frame(self)
+
+    def should_award_corner(self, reason, shot):
+        if reason == "save":
+            return self.rng.random() < 0.42
+        if reason == "block":
+            return self.rng.random() < 0.52
+        if reason == "miss" and shot is not None and shot.distance <= 18:
+            return self.rng.random() < 0.14
+        return False
+
+    def play_corner(self):
+        self.offence.corners += 1
+        self.offence.set_piece_xg += 0.025
+        self.printCase("角球机会", "corner", 3, self.ball_holder)
+        self.arrange_corner_shape()
+        if hasattr(self, 'recorder'):
+            self.recorder.record_frame(self, event_text="CORNER_SETUP", pause_ms=900, cut=True)
+        self.corner_pending = True
+        self.possession_action_count = 0
+        return
+
+    def play_corner_kick(self):
+        self.corner_pending = False
+        taker = self.ball_holder
+        targets = [p for p in self.offence.players if p.position != "GK" and p is not taker]
+        target = self.choose_corner_target(taker, targets)
+        distance = taker.get_distance_player(target)
+        self.printCase(Display.print_long_pass(taker, target, int(distance)), "long_pass", 2, taker, target)
+        taker.passes += 1
+        taker.successful_passes += 1
+        self.record_pass_stats(taker, target, distance, long_pass=True, success=True)
+        self.set_assist_candidate(taker, target, "corner", distance)
+        if hasattr(self, 'recorder'):
+            flight = self.recorder.make_pass_flight(self, taker, target)
+            self.recorder.record_frame(self, ball_flight=flight, event_text="CORNER", pause_ms=950)
+        if hasattr(self.ball_holder, "current_carry_progress"):
+            self.ball_holder.current_carry_progress = 0
+        self.ball_holder = target
+        if hasattr(self, 'recorder'):
+            self.recorder.record_frame(self, event_text="SECOND_BALL", pause_ms=650)
+
+    def choose_corner_target(self, taker, targets):
+        def nearest_defender_distance(player):
+            defenders = [p for p in self.defence.players if p.position != "GK"]
+            if not defenders:
+                return 10
+            return min(player.get_distance_player(defender) for defender in defenders)
+
+        def target_score(player):
+            space = self.clamp(nearest_defender_distance(player), 0, 10)
+            centrality = 1 - abs(player.x - Const.WIDTH / 2) / (Const.WIDTH / 2)
+            goal_distance = player.get_distance(Const.WIDTH / 2, 0)
+            danger = self.clamp(1 - goal_distance / 26, 0, 1)
+            delivery = self.clamp(1 - taker.get_distance_player(player) / 50, 0, 1)
+            return (
+                player.ability["Heading"] * 1.0
+                + player.ability["Speed"] * 0.15
+                + space * 6.0
+                + centrality * 10.0
+                + danger * 14.0
+                + delivery * 6.0
+                + self.rng.randint(0, 12)
+            )
+
+        return max(targets, key=target_score)
+
+    def arrange_corner_shape(self):
+        holder_abs_x = self.ball_holder.x if self.offence is self.home else Const.WIDTH - self.ball_holder.x
+        left_side = holder_abs_x <= Const.WIDTH / 2
+        corner_abs_x = 0 if left_side else Const.WIDTH
+        attacking_abs_y = Const.LENGTH if self.offence is self.home else 0
+        taker = max(
+            [p for p in self.offence.players if p.position != "GK"],
+            key=lambda p: p.ability["Long_Passing"] + p.ability["Short_Passing"] * 0.35
+        )
+        self.set_player_absolute(taker, corner_abs_x, attacking_abs_y)
+        attackers = [p for p in self.offence.players if p.position != "GK" and p is not taker]
+        attackers.sort(key=lambda p: p.ability["Heading"] + p.ability["Speed"] * 0.2, reverse=True)
+        attack_y = [97, 98, 96, 93, 92, 89, 88, 85, 85] if self.offence is self.home else [8, 7, 9, 12, 13, 16, 17, 20, 20]
+        attack_x = [28, 34, 40, 24, 44, 32, 38, 18, 50]
+        attack_spots = list(zip(attack_x, attack_y))
+        for player, (x, y) in zip(attackers, attack_spots):
+            self.set_player_absolute(player, x, y)
+        defenders = [p for p in self.defence.players if p.position != "GK"]
+        defenders.sort(key=lambda p: p.ability["Heading"] + p.ability["Defence"] * 0.4, reverse=True)
+        defence_y = [98, 97, 95, 95, 91, 91, 89, 87, 81, 81] if self.offence is self.home else [7, 8, 10, 10, 14, 14, 16, 18, 24, 24]
+        defence_x = [30, 36, 42, 26, 46, 34, 22, 50, 34, 18]
+        defence_spots = list(zip(defence_x, defence_y))
+        for player, (x, y) in zip(defenders, defence_spots):
+            self.set_player_absolute(player, x, y)
+        self.set_player_absolute(self.getDefenceGK(), Const.WIDTH / 2, 102 if self.offence is self.home else 3)
+        self.ball_holder = taker
 
     def arrange_goal_kick_shape(self):
         left_goal_kick = self.offence is self.home
@@ -1346,13 +1459,13 @@ class Game:
             player.action_flag = False
 
     # 转换持球人
-    def changeBallHolder(self, player):
+    def changeBallHolder(self, player, enforce_onside=True):
         if self.ball_holder is player:
             return
         if hasattr(self.ball_holder, "current_carry_progress"):
             self.ball_holder.current_carry_progress = 0
         self.ball_holder = player
-        if player in self.offence.players:
+        if enforce_onside and player in self.offence.players:
             self.keep_offence_players_onside()
         # self.printCaseWithPlayer(player, "接到了球")
 
@@ -1888,6 +2001,7 @@ class Game:
                 completed_short_passes=team.completed_short_passes,
                 crosses=team.crosses,
                 successful_crosses=team.successful_crosses,
+                corners=team.corners,
                 final_third_entries=team.final_third_entries,
                 box_entries=team.box_entries,
                 dribbles=team.dribbles,
