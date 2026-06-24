@@ -8,6 +8,7 @@ from engine.types import MatchResult, TeamStats, GoalRecord
 from engine.types import MatchEvent as PureMatchEvent
 from utils.image import toImage
 from engine.display import Display
+from presentation.stats import _display_width, _format_stat_line
 from config import PROJECT_DIR
 import random
 import math
@@ -260,6 +261,8 @@ class Game:
                         detail_msg += "".ljust(maxLen+9) + "      (" + case[3].getName() + ")"
 
                 detail_msg += "\n\n"
+        else:
+            maxLen = 8
 
         if self.home.goals_detailed or self.away.goals_detailed:
             detail_msg += "[进球统计]\n"
@@ -317,10 +320,9 @@ class Game:
             (str(self.home.box_touches), "禁区触球", str(self.away.box_touches)),
             (str(self.home.big_chances), "绝对机会", str(self.away.big_chances)),
         ]
-        label_width = max(len(s[1]) for s in stats) + 2
-        val_width = 8
+        label_width = max(max(_display_width(s[1]) for s in stats) + 2, 14)
         for home_val, label, away_val in stats:
-            line = home_val.rjust(val_width) + "  " + label.center(label_width) + "  " + away_val.ljust(val_width)
+            line = _format_stat_line(home_val, label, away_val, maxLen, label_width)
             detail_msg += line + "\n"
         await self.matcher.send(toImage(detail_msg))
         return detail_msg

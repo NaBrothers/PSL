@@ -7,6 +7,52 @@ Output: formatted string
 from engine.types import MatchResult
 
 
+def _display_width(text: str) -> int:
+    width = 0
+    skip_marker = False
+    for char in text:
+        if skip_marker:
+            skip_marker = False
+            continue
+        if char == "/":
+            continue
+        if char == "~":
+            skip_marker = True
+            continue
+        width += 2 if len(char.encode("utf8")) == 3 else 1
+    return width
+
+
+def _pad_left(text: str, width: int) -> str:
+    return " " * max(0, width - _display_width(text)) + text
+
+
+def _pad_right(text: str, width: int) -> str:
+    return text + " " * max(0, width - _display_width(text))
+
+
+def _pad_center(text: str, width: int) -> str:
+    padding = max(0, width - _display_width(text))
+    left = padding // 2
+    return " " * left + text + " " * (padding - left)
+
+
+def _event_name_width(result: MatchResult) -> int:
+    max_width = -1
+    for goal in result.timeline:
+        if goal.team_side == "home":
+            max_width = max(max_width, _display_width(goal.scorer_name))
+            if goal.assister_name:
+                max_width = max(max_width, _display_width(goal.assister_name))
+    return max(max_width + 2, 8)
+
+
+def _format_stat_line(home_val: str, label: str, away_val: str, center_width: int, label_width: int) -> str:
+    value_width = max(8, center_width - 8)
+    pre_label_gap = max(2, center_width - value_width)
+    return _pad_left(home_val, value_width) + " " * pre_label_gap + _pad_center(label, label_width) + "  " + _pad_right(away_val, value_width)
+
+
 def format_stats(result: MatchResult) -> str:
     home = result.home_stats
     away = result.away_stats
@@ -96,10 +142,10 @@ def format_stats(result: MatchResult) -> str:
         (str(home.big_chances), "绝对机会", str(away.big_chances)),
     ]
 
-    label_width = max(len(s[1]) for s in stats) + 2
-    val_width = 8
+    event_width = _event_name_width(result)
+    label_width = max(max(_display_width(s[1]) for s in stats) + 2, 14)
     for home_val, label, away_val in stats:
-        line = home_val.rjust(val_width) + "  " + label.center(label_width) + "  " + away_val.ljust(val_width)
+        line = _format_stat_line(home_val, label, away_val, event_width, label_width)
         msg += line + "\n"
 
     return msg
