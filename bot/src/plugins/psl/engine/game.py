@@ -792,11 +792,11 @@ class Game:
         if player.position in ("LB", "LCB", "CB", "RCB", "RB"):
             factor, cap = 0.42, 42
         elif "DM" in player.position or player.position == "CDM":
-            factor, cap = 0.38, 34
+            factor, cap = 0.55, 48
         elif player.position in ("LCM", "CM", "RCM", "LM", "RM"):
-            factor, cap = 0.48, 42
+            factor, cap = 0.62, 54
         elif player.position == "CAM":
-            factor, cap = 0.58, 50
+            factor, cap = 0.66, 56
         else:
             factor, cap = 0.68, 58
         return self.clamp(progress * factor, 0, cap)
