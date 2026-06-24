@@ -37,7 +37,9 @@ class TestPlayerRepository:
         player = repo.get_by_id(158023)
         assert player is not None
         assert player.name == "L. Messi"
-        assert player.overall == 93
+        assert player.overall == 86
+        assert player.id == 158023
+        assert player.finishing == 84
 
     def test_get_by_id_not_found(self, repo_db):
         from repository.player_repo import PlayerRepository

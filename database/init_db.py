@@ -203,13 +203,16 @@ CREATE TABLE IF NOT EXISTS schedule (
 
 def import_players(conn):
     """Parse the MySQL dump and import player data."""
-    players_sql = os.path.join(SQL_DIR, "players.sql")
+    players_sql = os.path.join(SQL_DIR, "players_26.sql")
     if not os.path.exists(players_sql):
-        print("Warning: players.sql not found, skipping player import")
+        print("Warning: players_26.sql not found, skipping player import")
         return
 
     with open(players_sql, "r", encoding="utf-8") as f:
         content = f.read()
+
+    content = re.sub(r"DROP TABLE IF EXISTS `players`;\s*", "", content)
+    content = re.sub(r"CREATE TABLE `players` \(.+?\);\s*", "", content, flags=re.DOTALL)
 
     match = re.search(r"INSERT INTO `players` VALUES\s*(.+?);", content, re.DOTALL)
     if not match:

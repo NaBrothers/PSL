@@ -21,7 +21,7 @@ def patch_finish(monkeypatch, matcher):
 
 
 def build_full_squad(mods, user, star=3):
-    player_ids = [200389, 212622, 203376, 155862, 216267, 189596, 192985, 215914, 200104, 158023, 188545]
+    player_ids = [200389, 216267, 203376, 235212, 212622, 192985, 239053, 200104, 209331, 158023, 188545]
     for player_id in player_ids:
         add_card(mods, user, player_id, star=star)
     return player_ids
@@ -83,7 +83,7 @@ async def _test_recycle_upgrade_breach_and_lock_flows(core_modules, make_user, m
     card1 = add_card(core_modules, user, 158023, star=1)
     card2 = add_card(core_modules, user, 158023, star=1)
     card3 = add_card(core_modules, user, 158023, star=2)
-    recycle_card = add_card(core_modules, user, 190871, star=1)
+    recycle_card = add_card(core_modules, user, 200104, star=1)
 
     with pytest.raises(FinishException) as locked:
         await player_kernel.player_lock(str(recycle_card))

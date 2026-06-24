@@ -3,13 +3,13 @@ import json
 
 def test_sqlite_initialization_imports_players(db):
     cursor = db.cursor()
-    assert cursor.execute("select * from players") == 507
+    assert cursor.execute("select * from players") == 499
     assert cursor.execute("select * from players where name = 'L. Messi'") == 1
     player = cursor.fetchone()
     cursor.close()
 
     assert player[2] == "L. Messi"
-    assert player[7] == 93
+    assert player[7] == 86
 
 
 def test_user_money_global_items_and_offline(core_modules, make_user):

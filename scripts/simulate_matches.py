@@ -30,7 +30,7 @@ def initialize_temp_db(path):
 
 async def add_user_with_squad(user_cls, player_cls, card_cls, bag_cls, formation_kernel, qq, name, star):
   user = user_cls.addUser(qq, name)
-  player_ids = [200389, 212622, 203376, 155862, 216267, 189596, 192985, 215914, 200104, 158023, 188545]
+  player_ids = [200389, 216267, 203376, 235212, 212622, 192985, 239053, 200104, 209331, 158023, 188545]
   for player_id in player_ids:
     player = player_cls.getPlayerByID(player_id)
     bag_cls.addToBag(user, card_cls.new(player, user, star=star))
