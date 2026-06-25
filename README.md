@@ -33,7 +33,7 @@ python3 database/init_db.py
 PSL_DB_PATH=/tmp/psl-test.db python3 bot/bot.py
 ```
 
-## 4. 运行
+## 4. 运行 Bot
 
 启动 NapCatQQ：
 ```
@@ -45,7 +45,47 @@ napcat start
 python3 bot/bot.py
 ```
 
-## 5. 测试
+## 5. 运行 Web
+
+Web 端是独立 FastAPI 服务，默认监听 `8888`，和 Bot 共享项目根目录的 `psl.db`。
+
+首次运行先安装前端依赖并构建静态资源：
+
+```
+cd web
+npm install --cache /tmp/npm-cache
+npm run build
+cd ..
+```
+
+启动 Web 服务：
+
+```
+python3 -m server
+```
+
+浏览器访问：
+
+```
+http://127.0.0.1:8888
+```
+
+生产环境建议同时启动两个进程：
+
+```
+python3 bot/bot.py
+python3 -m server
+```
+
+可选环境变量：
+
+```
+PSL_DB_PATH=/path/to/psl.db
+PSL_WEB_PORT=8888
+PSL_JWT_SECRET=replace-with-a-long-random-secret
+```
+
+## 6. 测试
 
 测试绕过 QQ Bot，直接覆盖模型层和核心游戏功能流：
 

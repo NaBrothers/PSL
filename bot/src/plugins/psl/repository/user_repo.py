@@ -13,6 +13,7 @@ def _row_to_user(row) -> UserData:
         money=row[4] or 0,
         formation=row[5] or "442",
         is_admin=bool(row[6]) if row[6] else False,
+        web_pin_hash=row[7] if len(row) > 7 else None,
     )
 
 
@@ -48,3 +49,6 @@ class UserRepository:
     def get_all(self):
         rows = self.db.query_all("SELECT * FROM users")
         return [_row_to_user(r) for r in rows]
+
+    def set_web_pin_hash(self, qq: int, pin_hash: str):
+        self.db.execute("UPDATE users SET WebPinHash = ? WHERE qq = ?", (pin_hash, qq))

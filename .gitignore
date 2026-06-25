@@ -189,3 +189,7 @@ psl.db-wal
 data/images/
 data/replays/*.jsonl
 bot/data/
+
+# PSL web frontend
+web/dist/
+web/node_modules/
