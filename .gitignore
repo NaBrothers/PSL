@@ -15,6 +15,7 @@ downloads/
 eggs/
 .eggs/
 lib/
+!web/src/lib/
 lib64/
 parts/
 sdist/
@@ -145,6 +146,7 @@ jspm_packages/
 
 # TypeScript v1 declaration files
 typings/
+*.tsbuildinfo
 
 # Optional npm cache directory
 .npm
