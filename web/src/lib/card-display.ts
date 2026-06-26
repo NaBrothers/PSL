@@ -91,14 +91,15 @@ export function rarityGlow(overall: number, star?: number): string {
   return 'border-slate-700'
 }
 
-export function cardTone(ov: number): string {
-  if (ov >= 97) return 'bg-[linear-gradient(135deg,#ef4444,#f97316,#eab308,#22c55e,#06b6d4,#3b82f6,#a855f7,#ec4899)]'
-  if (ov >= 94) return 'bg-pink-400'
-  if (ov >= 92) return 'bg-red-500'
-  if (ov >= 89) return 'bg-orange-500'
-  if (ov >= 87) return 'bg-purple-500'
-  if (ov >= 84) return 'bg-blue-500'
-  if (ov >= 82) return 'bg-green-500'
+export function cardTone(ov: number, star?: number): string {
+  const v = star != null ? colorValue(ov, star) : ov
+  if (v >= 97) return 'bg-[linear-gradient(135deg,#ef4444,#f97316,#eab308,#22c55e,#06b6d4,#3b82f6,#a855f7,#ec4899)]'
+  if (v >= 94) return 'bg-pink-400'
+  if (v >= 92) return 'bg-red-500'
+  if (v >= 89) return 'bg-orange-500'
+  if (v >= 87) return 'bg-purple-500'
+  if (v >= 84) return 'bg-blue-500'
+  if (v >= 82) return 'bg-green-500'
   return 'bg-slate-500'
 }
 

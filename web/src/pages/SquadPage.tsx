@@ -171,7 +171,7 @@ export default function SquadPage() {
                 {card ? (
                   <>
                     <div className="flex items-center gap-0.5">
-                      <div className={`w-9 h-9 rounded-full border-2 border-white/80 flex items-center justify-center text-[11px] font-bold text-white shadow-md group-hover:scale-110 transition-transform ${cardTone(card.overall)}`}>
+                      <div className={`w-9 h-9 rounded-full border-2 border-white/80 flex items-center justify-center text-[11px] font-bold text-white shadow-md group-hover:scale-110 transition-transform ${cardTone(card.overall, card.star)}`}>
                         {card.real_overall}
                       </div>
                       {(() => { const diff = card.real_overall - card.overall; return diff !== 0 ? (
