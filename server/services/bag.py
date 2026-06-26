@@ -82,7 +82,7 @@ class BagService:
         for r in rows:
             ov = compute_overall(r[9], r[2])
             cards.append(BagCardInfo(
-                id=r[0], player_id=r[1], name=r[7], position=r[8],
+                id=r[0], player_id=r[1], name=r[7], position=(r[8] or "").split(",")[0].strip(),
                 overall=ov, real_overall=ov, star=r[2], style=r[3],
                 breach=r[6], locked=bool(r[5]), status=r[4] or 0,
                 status_text=STATUS_TEXT.get(r[4] or 0, ""),
