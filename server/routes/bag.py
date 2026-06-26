@@ -121,22 +121,14 @@ def global_search(query: str = "", user=Depends(get_current_user)):
             "ELSE 0 END) DESC, p.Name ASC "
             "LIMIT 100"
         )
-    from server.services._formations import STARS
-    style_names = {
-        'sniper': '狙击手', 'finisher': '终结者', 'deadeye': '恶魔眼', 'marksman': '神枪手',
-        'hawk': '凤头鹰', 'artist': '艺术家', 'architect': '建筑师', 'powerhous': '抢球机器',
-        'maestro': '大师', 'engine': '发动机', 'sentinal': '哨兵', 'guardian': '护卫',
-        'gladiator': '斗士', 'backbone': '骨干', 'anchor': '铁锚', 'hunter': '狩猎者',
-        'catalyst': '催化剂', 'shadow': '暗影', 'speedster': '疾速魔', 'slugger': '重炮手',
-        'bronzewall': '铜墙', 'ironwall': '铁壁', 'agilecat': '灵猫', 'gloves': '手套',
-    }
+    from psl_core.constants import STARS
+    from psl_core.card import get_style_name, compute_overall
     results = []
     for r in rows:
-        star_bonus = STARS.get(r[1], {}).get("ability", 0)
         results.append({
             "card_id": r[0], "star": r[1], "style": r[2], "breach": r[3],
-            "style_name": style_names.get(r[2], r[2]),
-            "name": r[4], "position": r[5], "overall": r[6] + star_bonus,
+            "style_name": get_style_name(r[2], r[5]),
+            "name": r[4], "position": r[5], "overall": compute_overall(r[6], r[1]),
             "owner": r[7],
         })
     return {"results": results}

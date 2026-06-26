@@ -15,20 +15,20 @@ router = APIRouter(prefix="/api", tags=["challenge"])
 
 @router.get("/challenge")
 def get_challenge(user=Depends(get_current_user)):
-    from utils.const import Const
+    from psl_core.constants import NPC, DIFFICULTY
     from model.user import User
     from model.challenge_times import ChallengeTimes
 
-    npc = time.localtime(time.time()).tm_wday % len(Const.NPC)
+    npc = time.localtime(time.time()).tm_wday % len(NPC)
     u = User.getUserByQQ(user["qq"])
     challenge_times = ChallengeTimes.getTimes(u)
 
     difficulties = []
-    for key, val in Const.DIFFICULTY.items():
+    for key, val in DIFFICULTY.items():
         difficulties.append({"key": key, "star": val["star"]})
 
     return {
-        "npc_name": Const.NPC[npc]["name"],
+        "npc_name": NPC[npc]["name"],
         "npc_index": npc,
         "times_left": challenge_times.times,
         "difficulties": difficulties,
@@ -42,16 +42,16 @@ class ChallengePlayRequest(BaseModel):
 
 @router.post("/challenge/play")
 def play_challenge(req: ChallengePlayRequest, user=Depends(get_current_user)):
-    from utils.const import Const
+    from psl_core.constants import NPC, DIFFICULTY
     from model.user import User
     from model.formation import Formation
     from model.challenge_times import ChallengeTimes
     from engine.game import Game
 
-    if req.difficulty not in Const.DIFFICULTY:
+    if req.difficulty not in DIFFICULTY:
         raise HTTPException(status_code=400, detail="Invalid difficulty")
 
-    npc = time.localtime(time.time()).tm_wday % len(Const.NPC)
+    npc = time.localtime(time.time()).tm_wday % len(NPC)
     u = User.getUserByQQ(user["qq"])
     challenge_times = ChallengeTimes.getTimes(u)
 
@@ -96,7 +96,7 @@ def play_challenge(req: ChallengePlayRequest, user=Depends(get_current_user)):
     else:
         match_result = "lose"
 
-    awards = Const.DIFFICULTY[req.difficulty]["award"]
+    awards = DIFFICULTY[req.difficulty]["award"]
     award_msg = ""
     if match_result in awards:
         award_money = awards[match_result]["money"]
