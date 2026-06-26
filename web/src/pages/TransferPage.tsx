@@ -261,7 +261,7 @@ export default function TransferPage() {
       <Dialog open={showFilter} onOpenChange={setShowFilter}>
         <DialogContent className="max-h-[60vh] flex flex-col">
           <DialogHeader><DialogTitle>筛选与排序</DialogTitle></DialogHeader>
-          <div className="space-y-4 overflow-y-auto flex-1">
+          <div className="space-y-4 overflow-y-auto scrollbar-hide flex-1">
             <div>
               <p className="text-xs text-slate-500 mb-2">位置</p>
               <div className="flex flex-wrap gap-2">
@@ -305,7 +305,7 @@ export default function TransferPage() {
 
       {/* Card detail dialog */}
       <Dialog open={detailId !== null} onOpenChange={(open) => { if (!open) { setDetailId(null); setDetail(null) } }}>
-        <DialogContent className="max-h-[70vh] overflow-y-auto">
+        <DialogContent className="max-h-[70vh] overflow-y-auto scrollbar-hide">
           <DialogHeader><DialogTitle>球员详情</DialogTitle></DialogHeader>
           <PlayerCardDetail detail={detail} />
         </DialogContent>

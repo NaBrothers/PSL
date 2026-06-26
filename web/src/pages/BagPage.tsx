@@ -391,7 +391,7 @@ export default function BagPage() {
           {subCards.length === 0 ? (
             <p className="text-slate-500 text-sm text-center py-4">没有可用的同球员副卡</p>
           ) : (
-            <div className="space-y-1 max-h-60 overflow-y-auto">
+            <div className="space-y-1 max-h-60 overflow-y-auto scrollbar-hide">
               {subCards.map((c: BagCard) => (
                 <div key={c.id} onClick={() => doUpgrade(c.id)} className="flex items-center gap-2 p-2 rounded-md hover:bg-slate-800 cursor-pointer">
                   <span className="text-slate-500 text-xs">[{c.id}]</span>
@@ -413,7 +413,7 @@ export default function BagPage() {
           {subCards.length === 0 ? (
             <p className="text-slate-500 text-sm text-center py-4">没有可用的同球员副卡</p>
           ) : (
-            <div className="space-y-1 max-h-60 overflow-y-auto">
+            <div className="space-y-1 max-h-60 overflow-y-auto scrollbar-hide">
               {subCards.map((c: BagCard) => (
                 <div key={c.id} onClick={() => doBreach(c.id)} className="flex items-center gap-2 p-2 rounded-md hover:bg-slate-800 cursor-pointer">
                   <span className="text-slate-500 text-xs">[{c.id}]</span>
@@ -456,7 +456,7 @@ export default function BagPage() {
         <DialogContent className="max-h-[70vh] flex flex-col">
           <DialogHeader><DialogTitle>批量上架确认</DialogTitle></DialogHeader>
           <p className="text-xs text-slate-500 mb-2">留空价格将使用默认身价</p>
-          <div className="overflow-y-auto flex-1 space-y-2">
+          <div className="overflow-y-auto scrollbar-hide flex-1 space-y-2">
             {cards.filter(c => selected.has(c.id)).map(c => (
               <div key={c.id} className="flex items-center gap-2">
                 <span className="text-slate-200 text-sm flex-1 truncate">{c.name} ★{c.star} {c.overall}</span>

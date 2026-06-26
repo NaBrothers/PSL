@@ -167,7 +167,7 @@ export default function MatchPage() {
     return (
       <div className="bg-dark p-4 flex flex-col">
         <h2 className="text-sm text-slate-400 text-center mb-2">比赛进行中...</h2>
-        <div ref={liveRef} className="flex-1 overflow-y-auto space-y-3 pb-4 scrollbar-hide" style={{ maxHeight: 'calc(100vh - 100px)' }}>
+        <div ref={liveRef} className="flex-1 overflow-y-auto scrollbar-hide space-y-3 pb-4 scrollbar-hide" style={{ maxHeight: 'calc(100vh - 100px)' }}>
           {broadcasts.map((group, i) => (
             <div key={i} className="bg-slate-900 border border-slate-800 rounded-lg p-3 text-sm leading-relaxed space-y-1">
               {group.map((line, j) => (

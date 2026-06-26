@@ -197,7 +197,7 @@ export default function SquadPage() {
             onChange={e => setSearchQuery(e.target.value)}
             className="mb-2"
           />
-          <div className="overflow-y-auto flex-1 space-y-1">
+          <div className="overflow-y-auto scrollbar-hide flex-1 space-y-1">
             {filteredCandidates.map(c => (
               <div
                 key={c.id}
