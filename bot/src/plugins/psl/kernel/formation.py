@@ -148,44 +148,12 @@ async def show_others(id):
     await show_team(user)
 
 async def auto_update(user):
-    def slot_group(position):
-      if position in Const.GOALKEEPER:
-        return "GK"
-      if position in Const.FORWARD:
-        return "F"
-      if position in Const.MIDFIELD:
-        return "M"
-      if position in Const.GUARD:
-        return "D"
-      return "M"
-
-    def player_positions(card):
-      return [p.strip() for p in card.player.Position.split(",")]
+    from psl_core.card import position_group
+    from psl_core.formation import position_fit_bonus as _fit_bonus
 
     def position_fit_bonus(card, slot):
-      positions = player_positions(card)
-      primary = positions[0] if positions else ""
-      if slot in positions:
-        return 18 if slot == primary else 12
-      if slot in ("LCB", "CB", "RCB"):
-        if any(position in ("CB", "LCB", "RCB") for position in positions):
-          return 10
-        if any(position in ("CDM", "LDM", "RDM") for position in positions):
-          return 1
-        if any(position in ("LB", "RB", "LWB", "RWB") for position in positions):
-          return -8
-      if slot in ("LB", "RB", "LWB", "RWB"):
-        if any(position in ("LB", "RB", "LWB", "RWB") for position in positions):
-          return 10
-        if any(position in ("CB", "LCB", "RCB") for position in positions):
-          return -6
-      slot_line = slot_group(slot)
-      player_lines = {slot_group(position) for position in positions}
-      if slot_line == "GK" or "GK" in player_lines:
-        return 0 if slot_line == "GK" and "GK" in player_lines else -80
-      if slot_line in player_lines:
-        return 4
-      return -35
+      positions = [p.strip() for p in card.player.Position.split(",")]
+      return _fit_bonus(positions, slot)
 
     team = Formation.getFormation(user)
     bag = Bag.getBag(user)
@@ -197,8 +165,7 @@ async def auto_update(user):
     ]
 
     positions = Const.FORMATION[team.formation]["positions"]
-    # Fill constrained slots first so GK/CB/ST are not stolen by generic high-overall players.
-    slot_order = sorted(range(11), key=lambda idx: {"GK": 0, "D": 1, "F": 2, "M": 3}[slot_group(positions[idx])])
+    slot_order = sorted(range(11), key=lambda idx: {"GK": 0, "D": 1, "F": 2, "M": 3}[position_group(positions[idx])])
     for slot_index in slot_order:
       slot = positions[slot_index]
       candidates = [

@@ -71,9 +71,13 @@ def position_fit_bonus(player_positions: List[str], slot: str) -> int:
             return 10
         if any(p in ("CDM", "LDM", "RDM") for p in player_positions):
             return 1
+        if any(p in ("LB", "RB", "LWB", "RWB") for p in player_positions):
+            return -8
     if slot in ("LB", "RB", "LWB", "RWB"):
         if any(p in ("LB", "RB", "LWB", "RWB") for p in player_positions):
             return 10
+        if any(p in ("CB", "LCB", "RCB") for p in player_positions):
+            return -6
 
     from psl_core.card import position_group
     sg = position_group(slot)
