@@ -244,3 +244,12 @@ class SquadService:
             if item.get("position") == mapped:
                 return item["rating"]
         return detail["overall"]
+
+    def _compute_real_overall_for_player(self, player_id: int, star: int, style: str, ext_abilities, slot: str) -> int:
+        card_row = self.db.query_one(
+            "SELECT ID, User FROM cards WHERE Player = ? AND Star = ? AND Style = ? LIMIT 1",
+            (player_id, star, style),
+        )
+        if not card_row:
+            return 80
+        return self._compute_real_overall_for_card(card_row[0], slot)
