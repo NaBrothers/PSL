@@ -185,6 +185,10 @@ class BagService:
 
         ABILITY_NAMES = {**ABILITIES, **GK_ABILITIES, "IQ": "球商"}
 
+
+        from psl_core.constants import STYLE as _STYLE, GK_STYLE as _GK_STYLE, GOALKEEPER as _GK
+        _sd = _GK_STYLE.get(style) if position in _GK else _STYLE.get(style)
+        style_keys = set(k for k in (_sd or {}) if k != "name")
         position_ratings = compute_all_position_ratings(abilities)
         overall_with_star = compute_overall(base_overall, star)
 
@@ -201,7 +205,7 @@ class BagService:
             "name": row[18], "position": position, "age": row[21],
             "height": row[22], "weight": row[23], "nationality": row[24],
             "price": price,
-            "abilities": {k: {"value": v, "name": ABILITY_NAMES.get(k, k), "ext": ext.get(k, 0)} for k, v in abilities.items()},
+            "abilities": {k: {"value": v, "name": ABILITY_NAMES.get(k, k), "ext": ext.get(k, 0), "style_boosted": k in style_keys} for k, v in abilities.items()},
             "position_ratings": position_ratings[:3],
             "all_position_ratings": position_ratings,
             "season": {"appearance": row[7], "goal": row[8], "assist": row[9], "tackle": row[10], "save": row[11]},

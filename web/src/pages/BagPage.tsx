@@ -421,9 +421,9 @@ export default function BagPage() {
               {detail.abilities && (
                 <div className="border-t border-slate-700 pt-2">
                   <div className="grid grid-cols-2 gap-x-4 gap-y-1 text-sm">
-                    {Object.entries(detail.abilities as Record<string, {value: number; name: string; ext: number}>).map(([key, ab]) => (
+                    {Object.entries(detail.abilities as Record<string, {value: number; name: string; ext: number; style_boosted?: boolean}>).map(([key, ab]) => (
                       <div key={key} className="flex justify-between">
-                        <span className="text-slate-400">{ab.name}</span>
+                        <span className={ab.style_boosted ? "text-amber-400" : "text-slate-400"}>{ab.name}</span>
                         <span><span className={`font-bold ${abilityColor(ab.value)}`}>{ab.value}</span>{ab.ext > 0 && <span className="text-green-400 text-xs ml-0.5">(+{ab.ext})</span>}</span>
                       </div>
                     ))}
