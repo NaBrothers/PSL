@@ -157,8 +157,12 @@ class SquadService:
         )
         if slot < 0 or slot >= len(team_rows):
             raise SquadError("Invalid slot")
-        if team_rows[slot][0] != 0:
-            raise SquadError("Slot is not empty, use swap instead")
+        existing_card_id = team_rows[slot][0]
+        if existing_card_id != 0:
+            existing = self.db.query_one("SELECT ID FROM cards WHERE id = ? AND user = ?", (existing_card_id, qq))
+            if existing:
+                raise SquadError("Slot is not empty, use swap instead")
+            self.db.execute("UPDATE team SET card = 0 WHERE user = ? AND position = ?", (qq, slot))
 
         bag_rows = self.db.query_all("SELECT ID, Status FROM cards WHERE user = ? AND id = ?", (qq, card_id))
         if not bag_rows:
