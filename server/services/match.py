@@ -81,6 +81,7 @@ class MatchResultData:
     report: str
     stats_text: str
     replay_url: Optional[str]
+    ratings: Optional[dict] = None
 
 
 @dataclass
@@ -307,6 +308,12 @@ class MatchService:
             from utils.replay_server import replay_url as make_url
             replay_url = make_url(base_url, result.replay_path)
 
+        from engine.rating import compute_match_ratings
+        ratings = compute_match_ratings(
+            result.home_stats.player_stats,
+            result.away_stats.player_stats,
+        )
+
         return MatchResultData(
             home_name=result.home_stats.name,
             away_name=result.away_stats.name,
@@ -319,6 +326,7 @@ class MatchService:
             report=report,
             stats_text=stats_text,
             replay_url=replay_url,
+            ratings=ratings,
         )
 
     def _serialize_stats(self, stats) -> dict:

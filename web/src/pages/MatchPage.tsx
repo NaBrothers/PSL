@@ -21,6 +21,19 @@ interface GoalInfo {
   assister_color?: string | null
 }
 
+interface PlayerRating {
+  name: string
+  colored_name?: string
+  position: string
+  rating: number
+}
+
+interface MatchRatings {
+  home_ratings: PlayerRating[]
+  away_ratings: PlayerRating[]
+  motm: { name: string; colored_name?: string; team_side: string; rating: number }
+}
+
 interface MatchResult {
   home_name: string
   away_name: string
@@ -32,6 +45,7 @@ interface MatchResult {
   report: string
   stats_text: string
   replay_url: string | null
+  ratings: MatchRatings | null
 }
 
 type Mode = 'quick' | 'watch' | 'ten' | 'odds'
@@ -46,6 +60,22 @@ const NAME_COLORS: Record<string, string> = {
   r: 'text-red-400',
   f: 'text-pink-400',
   '$': 'text-transparent bg-clip-text bg-[linear-gradient(90deg,#ef4444,#f97316,#eab308,#22c55e,#06b6d4,#3b82f6,#a855f7,#ec4899)]',
+}
+
+function ratingColor(rating: number): string {
+  if (rating >= 8.0) return 'text-green-400'
+  if (rating >= 7.0) return 'text-lime-400'
+  if (rating >= 6.5) return 'text-yellow-400'
+  if (rating >= 6.0) return 'text-orange-400'
+  return 'text-red-400'
+}
+
+function ratingBg(rating: number): string {
+  if (rating >= 8.0) return 'bg-green-500/20 border-green-500/30'
+  if (rating >= 7.0) return 'bg-lime-500/20 border-lime-500/30'
+  if (rating >= 6.5) return 'bg-yellow-500/20 border-yellow-500/30'
+  if (rating >= 6.0) return 'bg-orange-500/20 border-orange-500/30'
+  return 'bg-red-500/20 border-red-500/30'
 }
 
 function GoalName({ goal, align = 'left' }: { goal: GoalInfo; align?: 'left' | 'right' }) {
@@ -294,6 +324,7 @@ export default function MatchPage() {
           <TabsTrigger value="report" className="flex-1">战报</TabsTrigger>
           <TabsTrigger value="goals" className="flex-1">进球</TabsTrigger>
           <TabsTrigger value="stats" className="flex-1">数据</TabsTrigger>
+          {result.ratings && <TabsTrigger value="ratings" className="flex-1">评分</TabsTrigger>}
             {broadcasts.length > 0 && <TabsTrigger value="live" className="flex-1">播报</TabsTrigger>}
         </TabsList>
 
@@ -359,6 +390,50 @@ export default function MatchPage() {
             })}
           </CardContent></Card>
         </TabsContent>
+
+        {result.ratings && (
+          <TabsContent value="ratings">
+            <Card><CardContent className="p-4">
+              {result.ratings.motm && (
+                <div className="text-center mb-4 p-3 bg-yellow-500/10 border border-yellow-500/30 rounded-lg">
+                  <div className="text-xs text-yellow-500 mb-1">⭐ 全场最佳</div>
+                  <div className="text-lg font-bold text-yellow-400"><ColorText text={result.ratings.motm.colored_name || result.ratings.motm.name} /></div>
+                  <div className={`text-2xl font-bold ${ratingColor(result.ratings.motm.rating)}`}>{result.ratings.motm.rating}</div>
+                </div>
+              )}
+              <div className="grid grid-cols-2 gap-4">
+                <div>
+                  <div className="text-xs text-accent font-medium mb-2 text-center">{result.home_name}</div>
+                  <div className="space-y-1.5">
+                    {result.ratings.home_ratings.map((p, i) => (
+                      <div key={i} className={`flex items-center justify-between px-2 py-1.5 rounded border ${ratingBg(p.rating)}`}>
+                        <div className="min-w-0 flex-1">
+                          <span className="text-xs text-slate-500 mr-1">{p.position}</span>
+                          <span className="text-xs truncate"><ColorText text={p.colored_name || p.name} /></span>
+                        </div>
+                        <span className={`text-sm font-bold ml-1 ${ratingColor(p.rating)}`}>{p.rating}</span>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+                <div>
+                  <div className="text-xs text-red-400 font-medium mb-2 text-center">{result.away_name}</div>
+                  <div className="space-y-1.5">
+                    {result.ratings.away_ratings.map((p, i) => (
+                      <div key={i} className={`flex items-center justify-between px-2 py-1.5 rounded border ${ratingBg(p.rating)}`}>
+                        <div className="min-w-0 flex-1">
+                          <span className="text-xs text-slate-500 mr-1">{p.position}</span>
+                          <span className="text-xs truncate"><ColorText text={p.colored_name || p.name} /></span>
+                        </div>
+                        <span className={`text-sm font-bold ml-1 ${ratingColor(p.rating)}`}>{p.rating}</span>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              </div>
+            </CardContent></Card>
+          </TabsContent>
+        )}
 
         {broadcasts.length > 0 && (
           <TabsContent value="live">

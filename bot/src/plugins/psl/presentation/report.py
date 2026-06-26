@@ -6,6 +6,71 @@ Output: report text string
 
 from engine.types import MatchResult
 from engine.commentary import CommentaryRenderer
+from engine.rating import compute_match_ratings
+
+
+def _position_group(position: str) -> str:
+    if position == "GK":
+        return "goalkeeper"
+    if position in ("LCB", "CB", "RCB", "LB", "RB", "LWB", "RWB"):
+        return "defender"
+    if position in ("ST", "CF", "LW", "RW", "LS", "RS"):
+        return "forward"
+    return "midfielder"
+
+
+def _build_rating_paragraph(ratings: dict, player_stats_home: list, player_stats_away: list, commentary: CommentaryRenderer) -> str:
+    parts = []
+    motm = ratings["motm"]
+    if not motm:
+        return ""
+    motm_name = motm["name"]
+    motm_colored = motm.get("colored_name", motm_name)
+    motm_rating = motm["rating"]
+    motm_side = motm["team_side"]
+
+    all_stats = player_stats_home if motm_side == "home" else player_stats_away
+    motm_stats = next((ps for ps in all_stats if ps["name"] == motm_name), None)
+
+    if motm_stats:
+        group = _position_group(motm_stats["position"])
+        goals = motm_stats.get("goals", 0)
+        saves = motm_stats.get("saves", 0)
+
+        if group == "forward":
+            key = "motm_forward" if goals > 0 else "motm_forward_no_goal"
+            parts.append(commentary.render("rating", key,
+                player=motm_colored, goals=str(goals), rating=str(motm_rating)))
+        elif group == "midfielder":
+            parts.append(commentary.render("rating", "motm_midfielder",
+                player=motm_colored, rating=str(motm_rating)))
+        elif group == "defender":
+            parts.append(commentary.render("rating", "motm_defender",
+                player=motm_colored, rating=str(motm_rating)))
+        else:
+            parts.append(commentary.render("rating", "motm_goalkeeper",
+                player=motm_colored, saves=str(saves), rating=str(motm_rating)))
+
+    all_rated = ratings["home_ratings"] + ratings["away_ratings"]
+    high_players = [p for p in all_rated if p["rating"] >= 7.5 and p["name"] != motm_name]
+    high_players.sort(key=lambda x: x["rating"], reverse=True)
+    for p in high_players[:2]:
+        group = _position_group(p["position"])
+        key = f"high_rating_{group}"
+        text = commentary.render("rating", key, player=p.get("colored_name", p["name"]), rating=str(p["rating"]))
+        if text:
+            parts.append(text)
+
+    low_players = [p for p in all_rated if p["rating"] < 5.5]
+    low_players.sort(key=lambda x: x["rating"])
+    for p in low_players[:1]:
+        group = _position_group(p["position"])
+        key = f"low_rating_{group}"
+        text = commentary.render("rating", key, player=p.get("colored_name", p["name"]), rating=str(p["rating"]))
+        if text:
+            parts.append(text)
+
+    return " ".join(parts)
 
 
 def build_report(result: MatchResult, commentary: CommentaryRenderer) -> str:
@@ -84,5 +149,10 @@ def build_report(result: MatchResult, commentary: CommentaryRenderer) -> str:
             paragraphs.append(commentary.render("narrative", "xg_underperform_home", home=home_name, away=away_name, home_xg=str(home_xg), away_xg=str(away_xg)))
         elif away_xg > away.point + 0.8:
             paragraphs.append(commentary.render("narrative", "xg_underperform_away", home=home_name, away=away_name, home_xg=str(home_xg), away_xg=str(away_xg)))
+
+    ratings = compute_match_ratings(home.player_stats, away.player_stats)
+    rating_text = _build_rating_paragraph(ratings, home.player_stats, away.player_stats, commentary)
+    if rating_text:
+        paragraphs.append(rating_text)
 
     return "\n".join(paragraphs)

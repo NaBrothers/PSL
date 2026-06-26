@@ -103,6 +103,12 @@ class ChallengeService:
         commentary = CommentaryRenderer(random.Random())
         report = build_report(result, commentary)
 
+        from engine.rating import compute_match_ratings
+        ratings = compute_match_ratings(
+            result.home_stats.player_stats,
+            result.away_stats.player_stats,
+        )
+
         return {
             "home_score": result.home_stats.point,
             "away_score": result.away_stats.point,
@@ -110,4 +116,5 @@ class ChallengeService:
             "award": award_msg,
             "report": report,
             "times_left": challenge_times.times,
+            "ratings": ratings,
         }

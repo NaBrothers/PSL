@@ -80,11 +80,22 @@ export default function SquadPage() {
   const handleReplace = async (candidateId: number) => {
     if (selectedSlot === null || !squad) return
     const currentCard = squad.cards[selectedSlot]
-    if (!currentCard) return
-    await api.post('/squad/swap', { card_id_1: currentCard.id, card_id_2: candidateId })
+    if (!currentCard) {
+      await api.post('/squad/assign', { slot: selectedSlot, card_id: candidateId })
+    } else {
+      await api.post('/squad/swap', { card_id_1: currentCard.id, card_id_2: candidateId })
+    }
     setSelectedSlot(null)
     loadSquad()
   }
+
+
+
+
+
+
+
+
 
   const handleCompare = async (candidateId: number) => {
     if (selectedSlot === null || !squad) return

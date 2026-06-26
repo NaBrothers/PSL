@@ -89,3 +89,20 @@ def swap_players(req: SwapRequest, user=Depends(get_current_user)):
 def auto_squad(user=Depends(get_current_user)):
     svc = _squad_svc()
     return svc.auto_squad(user["qq"])
+
+
+class AssignRequest(BaseModel):
+    slot: int
+    card_id: int
+
+
+@router.post("/squad/assign", response_model=SquadResponse)
+def assign_player(req: AssignRequest, user=Depends(get_current_user)):
+    svc = _squad_svc()
+    try:
+        svc.assign_player(user["qq"], req.slot, req.card_id)
+    except CardNotFound as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except SquadError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    return svc.get_squad(user["qq"])

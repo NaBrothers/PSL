@@ -4,7 +4,7 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/u
 import { Input } from '@/components/ui/input'
 import { Grid3X3, List } from 'lucide-react'
 import api from '../api/client'
-import { abilityColor, overallColor, rarityBg, rarityBorder } from '@/lib/card-display'
+import { abilityColor, overallColor, rarityBg, rarityBorder, STYLE_NAMES } from '@/lib/card-display'
 import PlayerCardDetail from '@/components/PlayerCardDetail'
 
 interface BagCard {
@@ -114,7 +114,7 @@ export default function BagPage() {
     if (!detail) return
     const res = await api.post(`/cards/${detail.id}/lock`)
     setDetail({ ...detail, locked: res.data.locked })
-    loadBag()
+    loadBag(1)
   }
 
   const handleRecycleSingle = async () => {
@@ -123,7 +123,7 @@ export default function BagPage() {
     setOpResult(`回收成功！获得 $${res.data.earned}`)
     setDialogMode(null)
     setDetail(null)
-    loadBag()
+    loadBag(1)
   }
 
   const handleBatchRecycle = async () => {
@@ -132,7 +132,7 @@ export default function BagPage() {
     setSelected(new Set())
     setManageMode(false)
     setDialogMode(null)
-    loadBag()
+    loadBag(1)
   }
 
   const handleBatchTransfer = () => {
@@ -153,7 +153,7 @@ export default function BagPage() {
     setSelected(new Set())
     setManageMode(false)
     setDialogMode(null)
-    loadBag()
+    loadBag(1)
   }
 
   const openUpgrade = () => {
@@ -178,7 +178,7 @@ export default function BagPage() {
     try {
       const res = await api.post("/cards/upgrade", { main_id: detail.id, sub_id: subId })
       setOpResult(`强化成功！新星级: ${"★".repeat(res.data.new_star)}`)
-      loadBag()
+      loadBag(1)
       const newDetail = await api.get(`/cards/${detail.id}`)
       setDetail(newDetail.data)
       setDialogMode("detail")
@@ -192,7 +192,7 @@ export default function BagPage() {
     try {
       const res = await api.post("/cards/breach", { main_id: detail.id, sub_id: subId })
       setOpResult(`突破成功！「${res.data.boosted_ability}」+${res.data.boost_amount}${res.data.style_bonus ? " (风格加成!)" : ""}`)
-      loadBag()
+      loadBag(1)
       const newDetail = await api.get(`/cards/${detail.id}`)
       setDetail(newDetail.data)
       setDialogMode("detail")
@@ -305,6 +305,7 @@ export default function BagPage() {
                 <div className={`text-xl font-bold mt-3 ${overallColor(card.overall)}`}>{card.overall}</div>
                 <div className="text-[10px] text-slate-300 truncate mt-0.5">{card.name}</div>
                 <div className="text-[9px] text-yellow-400 mt-0.5">{'★'.repeat(Math.min(card.star, 5))}</div>
+                {card.style && <div className="text-[8px] text-emerald-400 mt-0.5 truncate">{STYLE_NAMES[card.style] || card.style}</div>}
               </div>
             ))}
           </div>
@@ -324,6 +325,7 @@ export default function BagPage() {
                 <span className="text-slate-100 flex-1 text-sm truncate">{card.name}</span>
                 <span className="text-yellow-400 text-xs">{'★'.repeat(card.star)}</span>
                 <span className={`text-sm font-bold ${overallColor(card.overall)}`}>{card.overall}</span>
+                {card.style && <span className="text-emerald-400 text-[10px]">{STYLE_NAMES[card.style] || card.style}</span>}
                 {card.locked && <span className="text-xs">🔒</span>}
                 {card.status === 2 && <span className="text-accent text-[10px]">首发</span>}
                 {card.status === 1 && <span className="text-orange-400 text-[10px]">转会中</span>}
@@ -396,6 +398,7 @@ export default function BagPage() {
                 <div key={c.id} onClick={() => doUpgrade(c.id)} className="flex items-center gap-2 p-2 rounded-md hover:bg-slate-800 cursor-pointer">
                   <span className="text-slate-500 text-xs">[{c.id}]</span>
                   <span className="text-slate-200 text-sm flex-1">{c.name}</span>
+                  {c.style && <span className="text-emerald-400 text-[10px]">{STYLE_NAMES[c.style] || c.style}</span>}
                   <span className="text-yellow-400 text-xs">{'★'.repeat(c.star)}</span>
                   <span className={`text-sm font-bold ${overallColor(c.overall)}`}>{c.overall}</span>
                 </div>
@@ -418,6 +421,7 @@ export default function BagPage() {
                 <div key={c.id} onClick={() => doBreach(c.id)} className="flex items-center gap-2 p-2 rounded-md hover:bg-slate-800 cursor-pointer">
                   <span className="text-slate-500 text-xs">[{c.id}]</span>
                   <span className="text-slate-200 text-sm flex-1">{c.name}</span>
+                  {c.style && <span className="text-emerald-400 text-[10px]">{STYLE_NAMES[c.style] || c.style}</span>}
                   <span className="text-yellow-400 text-xs">{'★'.repeat(c.star)}</span>
                   <span className={`text-sm font-bold ${overallColor(c.overall)}`}>{c.overall}</span>
                 </div>
@@ -496,6 +500,7 @@ export default function BagPage() {
                 <span className="text-slate-500 text-xs">[{c.id}]</span>
                 <span className="text-slate-400 text-xs">{c.position}</span>
                 <span className="text-slate-200 text-sm flex-1">{c.name}</span>
+                {c.style && <span className="text-emerald-400 text-[10px]">{STYLE_NAMES[c.style] || c.style}</span>}
                 <span className="text-yellow-400 text-xs">{"★".repeat(c.star)}</span>
                 <span className={`text-sm font-bold ${overallColor(c.overall)}`}>{c.overall}</span>
               </div>

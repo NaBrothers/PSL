@@ -151,6 +151,25 @@ class SquadService:
 
         return SwapResult(success=True, message="Swap successful")
 
+    def assign_player(self, qq: int, slot: int, card_id: int) -> SwapResult:
+        team_rows = self.db.query_all(
+            "SELECT Card FROM team WHERE user = ? ORDER BY position", (qq,)
+        )
+        if slot < 0 or slot >= len(team_rows):
+            raise SquadError("Invalid slot")
+        if team_rows[slot][0] != 0:
+            raise SquadError("Slot is not empty, use swap instead")
+
+        bag_rows = self.db.query_all("SELECT ID, Status FROM cards WHERE user = ? AND id = ?", (qq, card_id))
+        if not bag_rows:
+            raise CardNotFound("Card not found in bag")
+        if bag_rows[0][1] != 0:
+            raise SquadError("Card status invalid for squad")
+
+        self.db.execute("UPDATE team SET card = ? WHERE user = ? AND position = ?", (card_id, qq, slot))
+        self.db.execute("UPDATE cards SET status = 2 WHERE id = ?", (card_id,))
+        return SwapResult(success=True, message="Assign successful")
+
     def auto_squad(self, qq: int) -> SquadData:
         user_row = self.db.query_one("SELECT Formation FROM users WHERE qq = ?", (qq,))
         formation = (user_row[0] if user_row else None) or "442"

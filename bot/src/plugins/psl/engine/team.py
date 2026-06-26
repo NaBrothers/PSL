@@ -198,6 +198,7 @@ class Team:
   def player_stat_dict(self, player):
     return {
       "name": player.getName(False),
+      "colored_name": player.getName(True),
       "position": player.position,
       "goals": player.goals,
       "assists": player.assists,
