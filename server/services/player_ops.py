@@ -56,10 +56,7 @@ class PlayerOpsService:
         card1.set("total_tackle", card1.total_tackle + card2.total_tackle)
         card1.set("total_save", card1.total_save + card2.total_save)
 
-        from utils.database import g_database
-        cursor = g_database.cursor()
-        cursor.execute("delete from cards where id = " + str(card2.id))
-        cursor.close()
+        card2.remove()
 
         if card2.locked:
             card1.set("locked", True)
@@ -108,10 +105,7 @@ class PlayerOpsService:
         card1.set("total_tackle", card1.total_tackle + card2.total_tackle)
         card1.set("total_save", card1.total_save + card2.total_save)
 
-        from utils.database import g_database
-        cursor = g_database.cursor()
-        cursor.execute("delete from cards where id = " + str(card2.id))
-        cursor.close()
+        card2.remove()
 
         if card2.locked:
             card1.set("locked", True)
