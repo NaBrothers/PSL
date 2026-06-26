@@ -46,9 +46,9 @@ class RecycleResponse(BaseModel):
 
 
 @router.get("/bag", response_model=BagPageSchema)
-def get_bag(page: int = 1, query: str = "", sort: str = "overall", position: str = "", color: str = "", for_position: str = "", user=Depends(get_current_user)):
+def get_bag(page: int = 1, page_size: int = 20, query: str = "", sort: str = "overall", position: str = "", color: str = "", for_position: str = "", user=Depends(get_current_user)):
     svc = _bag_svc()
-    result = svc.get_bag(user["qq"], page=page, query=query, sort=sort, position=position, color=color)
+    result = svc.get_bag(user["qq"], page=page, query=query, sort=sort, position=position, color=color, page_size=page_size)
     if for_position:
         from server.services.squad import SquadService
         squad_svc = SquadService(server.database.db)

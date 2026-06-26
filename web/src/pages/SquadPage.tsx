@@ -72,7 +72,7 @@ export default function SquadPage() {
     setSelectedSlot(idx)
     setSearchQuery("")
     const pos = squad?.positions[idx] || "CM"
-    api.get("/bag", { params: { page: 1, query: "", for_position: pos } }).then(res => {
+    api.get("/bag", { params: { page: 1, page_size: 500, query: "", for_position: pos } }).then(res => {
       setReplaceCandidates(res.data.cards.filter((c: BagCard) => c.status === 0))
     })
   }
