@@ -6,6 +6,7 @@ import { Input } from '@/components/ui/input'
 import api from '../api/client'
 import { useToast } from '@/components/AppToast'
 import { overallColor } from '@/lib/card-display'
+import PlayerCardDetail from '@/components/PlayerCardDetail'
 
 interface TransferItem {
   card_id: number
@@ -306,27 +307,7 @@ export default function TransferPage() {
       <Dialog open={detailId !== null} onOpenChange={(open) => { if (!open) { setDetailId(null); setDetail(null) } }}>
         <DialogContent className="max-h-[70vh] overflow-y-auto">
           <DialogHeader><DialogTitle>球员详情</DialogTitle></DialogHeader>
-          {detail ? (
-            <div className="space-y-3">
-              <div className="flex items-center justify-between">
-                <div>
-                  <p className={`font-bold text-lg ${overallColor(detail.overall)}`}>{detail.name}</p>
-                  <p className="text-xs text-slate-400">{detail.position} · {detail.style_name} · {'★'.repeat(Math.min(detail.star, 5))}{detail.star > 5 ? `×${detail.star}` : ''}</p>
-                </div>
-                <div className={`text-2xl font-bold ${overallColor(detail.overall)}`}>{detail.overall}</div>
-              </div>
-              {detail.abilities && (
-                <div className="grid grid-cols-2 gap-x-4 gap-y-1 text-sm">
-                  {Object.entries(detail.abilities as Record<string, any>).map(([key, ab]: [string, any]) => (
-                    <div key={key} className="flex justify-between">
-                      <span className={ab.style_boosted ? "text-amber-400" : "text-slate-400"}>{ab.name}</span>
-                      <span className="font-bold text-slate-200">{ab.value}{ab.ext > 0 && <span className="text-green-400 text-xs ml-0.5">(+{ab.ext})</span>}</span>
-                    </div>
-                  ))}
-                </div>
-              )}
-            </div>
-          ) : <p className="text-slate-500 text-center py-4">加载中...</p>}
+          <PlayerCardDetail detail={detail} />
         </DialogContent>
       </Dialog>
     </div>
