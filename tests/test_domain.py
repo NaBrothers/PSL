@@ -110,7 +110,7 @@ class TestCardData:
 
     def test_gk_style(self):
         gk_player = make_player(position="GK", gk_diving=88, gk_handling=90, gk_positioning=85, gk_reflexes=91)
-        card = CardData(id=1, player=gk_player, user_qq=1, star=3, style="wall")
+        card = CardData(id=1, player=gk_player, user_qq=1, star=3, style="ironwall")
         assert card.ability["GK_Saving"] > 0
         assert card.get_style_name() == "铁壁"
 

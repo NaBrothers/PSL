@@ -4,6 +4,14 @@ from model.player import *
 import json
 import random
 
+from psl_core.card import (
+    compute_abilities, compute_real_overall, compute_overall,
+    compute_price, get_name_with_color, get_style_name, format_price,
+    compute_all_position_ratings,
+)
+from psl_core.constants import STARS, STYLE, GK_STYLE, GOALKEEPER, REAL_ABILITY, STATUS
+
+
 class Card:
   def __init__(self, id, player, user, star, style, status, appearance, goal, assist, tackle, save, total_appearance, total_goal, total_assist, total_tackle, total_save, locked, ext_abilities, breach):
     self.id = id
@@ -25,43 +33,49 @@ class Card:
     self.locked = locked
     self.ext_abilities = ext_abilities
     self.breach = breach
-    self.ability = {
-      "Heading" : Const.STARS[self.star]["ability"]+int((player.Heading_Accuracy+player.Jumping+player.Strength+int(player.Height)-100)/4),
-      "Long_Shot" : Const.STARS[self.star]["ability"]+int((player.Long_Shots+player.Shot_Power)/2),
-      "Finishing" : Const.STARS[self.star]["ability"]+int((player.Finishing*2+player.Shot_Power)/3),
-      "Long_Passing" : Const.STARS[self.star]["ability"]+int(player.Long_Passing),
-      "Short_Passing" : Const.STARS[self.star]["ability"]+int(player.Short_Passing),
-      "Dribbling" : Const.STARS[self.star]["ability"]+int((player.Dribbling*2+player.Ball_Control*2+player.Balance)/5),
-      "Tackling" : Const.STARS[self.star]["ability"]+int((player.Sliding_Tackle+player.Standing_Tackle)/2),
-      "Defence" : Const.STARS[self.star]["ability"]+int((player.Defensive_Awareness*2+player.Aggression+player.Interceptions*2)/5),
-      "Speed" : Const.STARS[self.star]["ability"]+int((player.Sprint_Speed+player.Acceleration)/2),
-      "IQ" : Const.STARS[self.star]["ability"]+int(player.Composure),
-      "GK_Saving" : Const.STARS[self.star]["ability"]+int((player.GK_Handling+player.GK_Diving)/2),
-      "GK_Positioning" : Const.STARS[self.star]["ability"]+int(player.GK_Positioning),
-      "GK_Reaction" : Const.STARS[self.star]["ability"]+int((player.GK_Reflexes*2+player.Reactions)/3)
-    }
-    
-    for ability in self.ability.keys():
-          if ability in self.ext_abilities:
-                self.ability[ability] += int(self.ext_abilities[ability])
-            
 
-    self.overall = self.player.Overall + Const.STARS[self.star]["ability"]
-    styles = Const.GK_STYLE[style] if self.player.Position in Const.GOALKEEPER else Const.STYLE[style]
-    for ability in styles.keys():
-      if ability == "name":
-        continue
-      self.ability[ability] += styles[ability]*self.star
-  
-    self.price = self.player.price * Const.STARS[self.star]["count"] + self.player.price * self.breach
+    self.ability = compute_abilities(
+        star=star,
+        style=style,
+        position=player.Position,
+        height=int(player.Height),
+        heading_accuracy=player.Heading_Accuracy,
+        jumping=player.Jumping,
+        strength=player.Strength,
+        long_shots=player.Long_Shots,
+        shot_power=player.Shot_Power,
+        finishing=player.Finishing,
+        long_passing=player.Long_Passing,
+        short_passing=player.Short_Passing,
+        dribbling=player.Dribbling,
+        ball_control=player.Ball_Control,
+        balance=player.Balance,
+        sliding_tackle=player.Sliding_Tackle,
+        standing_tackle=player.Standing_Tackle,
+        defensive_awareness=player.Defensive_Awareness,
+        aggression=player.Aggression,
+        interceptions=player.Interceptions,
+        sprint_speed=player.Sprint_Speed,
+        acceleration=player.Acceleration,
+        composure=player.Composure,
+        gk_handling=player.GK_Handling,
+        gk_diving=player.GK_Diving,
+        gk_positioning=player.GK_Positioning,
+        gk_reflexes=player.GK_Reflexes,
+        reactions=player.Reactions,
+        ext_abilities=ext_abilities,
+    )
 
-  def new(player, user, star = 1, style = 0, id=0, status=False, locked=False):
+    self.overall = compute_overall(self.player.Overall, self.star)
+    self.price = compute_price(self.player.Overall, self.star, self.breach)
+
+  def new(player, user, star=1, style=0, id=0, status=False, locked=False):
     if style == 0:
-      if player.Position in Const.GOALKEEPER:
-        style = random.choice(list(Const.GK_STYLE.keys()))
+      if player.Position in GOALKEEPER:
+        style = random.choice(list(GK_STYLE.keys()))
       else:
-        style = random.choice(list(Const.STYLE.keys()))
-    return Card(id ,player, user, star, style, status, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, locked, {}, 0)
+        style = random.choice(list(STYLE.keys()))
+    return Card(id, player, user, star, style, status, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, locked, {}, 0)
 
   def set(self, attr, value):
       setattr(self, attr, value)
@@ -139,16 +153,16 @@ class Card:
         return cards
 
   def format(self):
-    return self.player.Position.ljust(3)+" " + self.getNameWithColor() + " " + str(self.overall) + " " + Const.STARS[self.star]["star"] + " ◆+" + str(self.breach)  + " " + self.getStyle() +  " " + self.printPrice() + " " + self.getStatus()
+    return self.player.Position.ljust(3) + " " + self.getNameWithColor() + " " + str(self.overall) + " " + STARS[self.star]["star"] + " ◆+" + str(self.breach) + " " + self.getStyle() + " " + self.printPrice() + " " + self.getStatus()
 
   def getStatus(self):
     if self.status != 0:
-      status = " (" + Const.STATUS[self.status] + ")"
+      s = " (" + STATUS[self.status] + ")"
     elif self.locked:
-      status = " (已锁定)"
+      s = " (已锁定)"
     else:
-      status = ""
-    return status
+      s = ""
+    return s
 
   def printID(self):
     if self.id == 0:
@@ -156,31 +170,10 @@ class Card:
     return "[" + str(self.id) + "]"
 
   def getStyle(self):
-    styles = Const.GK_STYLE[self.style] if self.player.Position in Const.GOALKEEPER else Const.STYLE[self.style]
-    return styles["name"]
+    return get_style_name(self.style, self.player.Position)
 
   def getNameWithColor(self):
-    overall = self.star + self.player.Overall - 1
-    ret = "/~"
-    if overall >= 97:
-      ret += "$"
-    elif overall >= 94:
-      ret += "f"
-    elif overall >= 92:
-      ret += "r"
-    elif overall >= 89:
-      ret += "o"
-    elif overall >= 87:
-      ret += "p"
-    elif overall >= 84:
-      ret += "b"
-    elif overall >= 82:
-      ret += "g"
-    else:
-      ret += "w"
-    ret += self.player.Name
-    ret += "/"
-    return ret
+    return get_name_with_color(self.player.Name, self.player.Overall, self.star)
 
   def tocm(height):
       h = height.split("'")
@@ -193,62 +186,29 @@ class Card:
       return int(0.453592*w)
 
   def getRealOverall(self, position):
-    if position in ["ST", "RS", "LS"]:
-      position = "ST"
-    elif position in ["CF", "LF", "RF"]:
-      position = "CF"
-    elif position in ["RW", "LW"]:
-      position = "LRW"
-    elif position in ["CAM", "RAM", "LAM"]:
-      position = "AM"
-    elif position in ["LM", "RM"]:
-      position = "LRM"
-    elif position in ["CM", "RCM", "LCM"]:
-      position = "CM"
-    elif position in ["CDM", "RDM", "LDM"]:
-      position = "DM"
-    elif position in ["CB", "RCB", "LCB"]:
-      position = "CB"
-    elif position in ["LB", "LWB", "RB", "RWB"]:
-      position = "LRB"
-    elif position in ["GK"]:
-      position = "GK"
-    overall = 0
-    for a in Const.REAL_ABILITY[position].keys():
-      overall += Const.REAL_ABILITY[position][a] * self.ability[a]
-    return int(overall)
+    return compute_real_overall(self.ability, position)
 
   def printRealOverall(self, position):
     real = self.getRealOverall(position)
     diff = real - self.overall
     if diff > 0:
-      return str(real) + "/~r▲" + str(diff)  + "/"
+      return str(real) + "/~r▲" + str(diff) + "/"
     elif diff < 0:
-      return str(real) + "/~g▼" + str(-diff)  + "/"
+      return str(real) + "/~g▼" + str(-diff) + "/"
     else:
       return str(real) + "/~w" + "　" + "/"
 
   def printPrice(self):
-    return Card.formatPrice(self.price)
+    return format_price(self.price)
   
   def formatPrice(price):
-    if price >= 1000000:
-      price = price // 10000
-      return "$" + str(price) + "万"
-    elif price >= 100000:
-      price = format(price/10000, '.1f')
-      return "$" + str(price) + "万"
-    elif price >= 10000:
-      price = format(price/10000, '.2f')
-      return "$" + str(price) + "万"
-    return "$" + str(price)
+    return format_price(price)
 
-  # 返回(位置，能力)的列表
   def getOveralls(self):
     tmp = []
-    for position in Const.REAL_ABILITY.keys():
+    for position in REAL_ABILITY.keys():
       tmp.append((position, self.getRealOverall(position)))
-    tmp.sort(key = lambda x: x[1], reverse=True)
+    tmp.sort(key=lambda x: x[1], reverse=True)
     return tmp
 
   def remove(self):

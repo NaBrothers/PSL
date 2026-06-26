@@ -107,20 +107,13 @@ class LotteryService:
         ids = Bag.addToBagMany(user, cards) if count > 1 else [Bag.addToBag(user, cards[0])]
         user.spend(cost)
 
-        style_names = {
-            'sniper': '狙击手', 'finisher': '终结者', 'deadeye': '恶魔眼', 'marksman': '神枪手',
-            'hawk': '凤头鹰', 'artist': '艺术家', 'architect': '建筑师', 'powerhous': '抢球机器',
-            'maestro': '大师', 'engine': '发动机', 'sentinal': '哨兵', 'guardian': '护卫',
-            'gladiator': '斗士', 'backbone': '骨干', 'anchor': '铁锚', 'hunter': '狩猎者',
-            'catalyst': '催化剂', 'shadow': '暗影', 'speedster': '疾速魔', 'slugger': '重炮手',
-            'bronzewall': '铜墙', 'ironwall': '铁壁', 'agilecat': '灵猫', 'gloves': '手套',
-        }
+        from psl_core.card import get_style_name
         drawn = []
         for i, card in enumerate(cards):
             drawn.append(DrawnCard(
                 id=ids[i], name=card.player.Name, position=card.player.Position,
                 overall=card.overall, star=card.star, style=card.style,
-                style_name=style_names.get(card.style, card.style),
+                style_name=get_style_name(card.style, card.player.Position),
             ))
 
         return DrawResult(pool_name=pool["name"], cards=drawn, cost=cost, remaining_money=user.money)

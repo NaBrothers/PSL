@@ -1,7 +1,12 @@
 """Squad service - formation/squad operations for web and bot."""
 
+import json
 from dataclasses import dataclass
-from typing import List, Optional, Dict, Any
+from typing import List, Optional
+
+from psl_core.constants import FORWARD, MIDFIELD, GUARD, GOALKEEPER, FORMATION as FORMATIONS, STARS, POSITION_MAP
+from psl_core.card import compute_overall, compute_real_overall, position_group
+from psl_core.formation import compute_formation_abilities, position_fit_bonus
 
 
 class SquadError(Exception):
@@ -61,7 +66,6 @@ class SquadService:
         if user_row is None:
             raise SquadError("User not found")
         formation = user_row[2] or "442"
-        from server.services._formations import FORMATIONS
         if formation not in FORMATIONS:
             formation = "442"
         positions = FORMATIONS[formation]["positions"]
@@ -88,7 +92,8 @@ class SquadService:
                 card_info = self._get_card_info(card_id, positions[slot_idx] if slot_idx < len(positions) else "CM")
                 cards.append(card_info)
 
-        total, fwd, mid, grd = self._compute_abilities(cards, positions)
+        real_overalls = [c.real_overall if c else None for c in cards]
+        total, fwd, mid, grd = compute_formation_abilities(positions, real_overalls)
         return SquadData(
             formation=formation,
             total_ability=total,
@@ -100,7 +105,6 @@ class SquadService:
         )
 
     def change_formation(self, qq: int, new_formation: str) -> str:
-        from server.services._formations import FORMATIONS
         if new_formation not in FORMATIONS:
             raise InvalidFormation(f"Unknown formation: {new_formation}")
         self.db.execute("UPDATE users SET formation = ? WHERE qq = ?", (new_formation, qq))
@@ -150,7 +154,6 @@ class SquadService:
     def auto_squad(self, qq: int) -> SquadData:
         user_row = self.db.query_one("SELECT Formation FROM users WHERE qq = ?", (qq,))
         formation = (user_row[0] if user_row else None) or "442"
-        from server.services._formations import FORMATIONS
         if formation not in FORMATIONS:
             formation = "442"
         positions = FORMATIONS[formation]["positions"]
@@ -165,18 +168,7 @@ class SquadService:
         selected_players: set = set()
         result = [0] * 11
 
-        from server.services._formations import FORWARD, MIDFIELD, GUARD, GOALKEEPER
-
-        def slot_group(pos):
-            if pos in GOALKEEPER:
-                return "GK"
-            if pos in GUARD:
-                return "D"
-            if pos in FORWARD:
-                return "F"
-            return "M"
-
-        slot_order = sorted(range(11), key=lambda idx: {"GK": 0, "D": 1, "F": 2, "M": 3}[slot_group(positions[idx])])
+        slot_order = sorted(range(11), key=lambda idx: {"GK": 0, "D": 1, "F": 2, "M": 3}[position_group(positions[idx])])
 
         for slot_index in slot_order:
             slot = positions[slot_index]
@@ -206,37 +198,15 @@ class SquadService:
     def _card_score_for_slot(self, card_row, slot: str) -> int:
         card_id, player_id, star, style, status, ext_abilities, breach = card_row
         real_ov = self._compute_real_overall_for_card(card_id, slot)
-        fit_bonus = self._position_fit_bonus(player_id, slot)
+        fit_bonus = self._get_position_fit_bonus(player_id, slot)
         return real_ov + fit_bonus
 
-    def _position_fit_bonus(self, player_id: int, slot: str) -> int:
-        from server.services._formations import FORWARD, MIDFIELD, GUARD, GOALKEEPER
+    def _get_position_fit_bonus(self, player_id: int, slot: str) -> int:
         row = self.db.query_one("SELECT Position FROM players WHERE ID = ?", (player_id,))
         if not row:
             return 0
-        positions = [p.strip() for p in (row[0] or "").split(",")]
-        primary = positions[0] if positions else ""
-
-        def slot_group(pos):
-            if pos in GOALKEEPER: return "GK"
-            if pos in GUARD: return "D"
-            if pos in FORWARD: return "F"
-            return "M"
-
-        if slot in positions:
-            return 18 if slot == primary else 12
-        if slot in ("LCB", "CB", "RCB"):
-            if any(p in ("CB", "LCB", "RCB") for p in positions): return 10
-            if any(p in ("CDM", "LDM", "RDM") for p in positions): return 1
-        if slot in ("LB", "RB", "LWB", "RWB"):
-            if any(p in ("LB", "RB", "LWB", "RWB") for p in positions): return 10
-        sg = slot_group(slot)
-        player_lines = {slot_group(p) for p in positions}
-        if sg == "GK" or "GK" in player_lines:
-            return 0 if sg == "GK" and "GK" in player_lines else -80
-        if sg in player_lines:
-            return 4
-        return -35
+        player_positions = [p.strip() for p in (row[0] or "").split(",")]
+        return position_fit_bonus(player_positions, slot)
 
     def _get_card_info(self, card_id: int, slot_position: str) -> Optional[CardInfo]:
         row = self.db.query_one(
@@ -247,11 +217,7 @@ class SquadService:
         )
         if row is None:
             return None
-        import json
-        from server.services._formations import STARS
-        star_bonus = STARS.get(row[2], {}).get("ability", 0)
-        overall = row[10] + star_bonus
-        ext = json.loads(row[7]) if row[7] else {}
+        overall = compute_overall(row[10], row[2])
         real_overall = self._compute_real_overall_for_card(row[0], slot_position)
         return CardInfo(
             id=row[0],
@@ -267,56 +233,14 @@ class SquadService:
             status=row[4] or 0,
         )
 
-    def _compute_real_overall_for_player(self, player_id: int, star: int, style: str, ext_abilities, slot: str) -> int:
-        card_row = self.db.query_one(
-            "SELECT ID, User FROM cards WHERE Player = ? AND Star = ? AND Style = ? LIMIT 1",
-            (player_id, star, style),
-        )
-        if not card_row:
-            return 80
-        return self._compute_real_overall_for_card(card_row[0], slot)
-
     def _compute_real_overall_for_card(self, card_id: int, slot: str) -> int:
         card_row = self.db.query_one("SELECT User FROM cards WHERE ID = ?", (card_id,))
         if not card_row:
             return 80
         from server.services.bag import BagService
         detail = BagService(self.db).get_card_detail(card_id, card_row[0])
+        mapped = POSITION_MAP.get(slot, "CM")
         for item in detail.get("all_position_ratings", []):
-            if item.get("position") == self._map_slot(slot):
+            if item.get("position") == mapped:
                 return item["rating"]
         return detail["overall"]
-
-    def _map_slot(self, slot: str) -> str:
-        pos_map = {
-            "ST": "ST", "RS": "ST", "LS": "ST", "CF": "CF", "LF": "CF", "RF": "CF",
-            "RW": "LRW", "LW": "LRW", "CAM": "AM", "RAM": "AM", "LAM": "AM",
-            "LM": "LRM", "RM": "LRM", "CM": "CM", "RCM": "CM", "LCM": "CM",
-            "CDM": "DM", "RDM": "DM", "LDM": "DM", "CB": "CB", "RCB": "CB", "LCB": "CB",
-            "LB": "LRB", "LWB": "LRB", "RB": "LRB", "RWB": "LRB", "GK": "GK",
-        }
-        return pos_map.get(slot, "CM")
-
-    def _compute_abilities(self, cards: List[Optional[CardInfo]], positions: List[str]):
-        from server.services._formations import FORWARD, MIDFIELD, GUARD, GOALKEEPER
-        total = fwd = mid = grd = 0
-        fwd_c = mid_c = grd_c = 0
-        for i, pos in enumerate(positions[:len(cards)]):
-            if pos in FORWARD:
-                fwd_c += 1
-            elif pos in MIDFIELD:
-                mid_c += 1
-            elif pos in GUARD or pos in GOALKEEPER:
-                grd_c += 1
-            card = cards[i]
-            if card is None:
-                continue
-            ov = card.real_overall
-            total += ov
-            if pos in FORWARD:
-                fwd += ov
-            elif pos in MIDFIELD:
-                mid += ov
-            elif pos in GUARD or pos in GOALKEEPER:
-                grd += ov
-        return (total, fwd // max(fwd_c, 1), mid // max(mid_c, 1), grd // max(grd_c, 1))

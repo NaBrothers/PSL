@@ -1,13 +1,10 @@
 """Transfer service - market operations."""
 
-import sys
-import os
 from dataclasses import dataclass
 from typing import List
 
-BOT_SRC = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))), "bot", "src", "plugins", "psl")
-if BOT_SRC not in sys.path:
-    sys.path.insert(0, BOT_SRC)
+from psl_core.constants import STARS
+from psl_core.card import compute_overall, compute_price
 
 
 class TransferError(Exception):
@@ -43,13 +40,11 @@ class TransferService:
         page = max(1, min(page, total_pages))
         start = (page - 1) * page_size
 
-        from server.services._formations import STARS
         items = []
         for r in rows[start:start + page_size]:
-            star_bonus = STARS.get(r[4], {}).get("ability", 0)
             items.append(TransferItem(
                 card_id=r[0], seller_qq=r[2], cost=r[1], player_name=r[6], position=r[7],
-                overall=r[8] + star_bonus, star=r[4], seller_name=r[9] or "",
+                overall=compute_overall(r[8], r[4]), star=r[4], seller_name=r[9] or "",
             ))
 
         return {"items": [i.__dict__ for i in items], "total": total, "page": page, "total_pages": total_pages}
@@ -70,12 +65,7 @@ class TransferService:
                 (card_id,)
             )
             if price_row:
-                from server.services._formations import STARS
-                ovr = price_row[2]
-                x = ovr - 74 if ovr >= 80 else 6
-                base = int(0.0131*x**5 - 0.6118*x**4 + 11.189*x**3 - 55.238*x**2 + 123.16*x - 29.137)
-                star_count = STARS.get(price_row[0], {}).get("count", 1)
-                price = base * star_count + base * (price_row[1] or 0)
+                price = compute_price(price_row[2], price_row[0], price_row[1] or 0)
             else:
                 price = 1000
         self.db.execute("INSERT INTO transfer (User, Card, Cost) VALUES (?, ?, ?)", (qq, card_id, price))

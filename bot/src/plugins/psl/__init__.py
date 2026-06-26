@@ -6,6 +6,8 @@ from .config import *
 
 import sys
 sys.path.append(PROJECT_DIR + "/bot/src/plugins/psl")
+if PROJECT_DIR not in sys.path:
+    sys.path.insert(0, PROJECT_DIR)
 
 global_config = get_driver().config
 config = Config(**global_config.dict())

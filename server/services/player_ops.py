@@ -6,6 +6,8 @@ import json
 import random
 from dataclasses import dataclass
 
+from psl_core.constants import STARS, STYLE, GK_STYLE, GOALKEEPER, ABILITIES, GK_ABILITIES
+
 BOT_SRC = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))), "bot", "src", "plugins", "psl")
 if BOT_SRC not in sys.path:
     sys.path.insert(0, BOT_SRC)
@@ -67,7 +69,6 @@ class PlayerOpsService:
 
     def breach(self, qq: int, main_id: int, sub_id: int) -> dict:
         from model.card import Card
-        from utils.const import Const
         card1 = Card.getCardByID(main_id)
         card2 = Card.getCardByID(sub_id)
         if card1 is None or card1.user.qq != qq:
@@ -83,16 +84,16 @@ class PlayerOpsService:
             else:
                 card1.ext_abilities[ability] = card2.ext_abilities[ability]
 
-        if card2.player.Position in Const.GOALKEEPER:
-            random_ability = random.choice(list(Const.GK_ABILITIES))
+        if card2.player.Position in GOALKEEPER:
+            random_ability = random.choice(list(GK_ABILITIES))
         else:
-            random_ability = random.choice(list(Const.ABILITIES))
+            random_ability = random.choice(list(ABILITIES))
 
-        base_amount = Const.STARS[card2.star]["count"]
+        base_amount = STARS[card2.star]["count"]
         addition_amount = 0
-        abilities = Const.GK_STYLE[card2.style].keys() if card2.player.Position in Const.GOALKEEPER else Const.STYLE[card2.style].keys()
+        abilities = GK_STYLE[card2.style].keys() if card2.player.Position in GOALKEEPER else STYLE[card2.style].keys()
         if random_ability in abilities:
-            addition_amount = Const.STARS[card2.star]["ability"]
+            addition_amount = STARS[card2.star]["ability"]
 
         if random_ability in card1.ext_abilities:
             card1.ext_abilities[random_ability] += base_amount + addition_amount
@@ -100,7 +101,7 @@ class PlayerOpsService:
             card1.ext_abilities[random_ability] = base_amount + addition_amount
 
         card1.set("ext_abilities", json.dumps(card1.ext_abilities))
-        card1.set("breach", card1.breach + card2.breach + Const.STARS[card2.star]["count"])
+        card1.set("breach", card1.breach + card2.breach + STARS[card2.star]["count"])
         card1.set("total_appearance", card1.total_appearance + card2.total_appearance)
         card1.set("total_goal", card1.total_goal + card2.total_goal)
         card1.set("total_assist", card1.total_assist + card2.total_assist)
@@ -115,7 +116,7 @@ class PlayerOpsService:
         if card2.locked:
             card1.set("locked", True)
 
-        ability_name = Const.GK_ABILITIES.get(random_ability, Const.ABILITIES.get(random_ability, random_ability))
+        ability_name = GK_ABILITIES.get(random_ability, ABILITIES.get(random_ability, random_ability))
         return {
             "success": True,
             "boosted_ability": ability_name,

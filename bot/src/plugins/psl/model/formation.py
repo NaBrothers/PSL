@@ -2,6 +2,10 @@ from model.user import User
 from model.card import Card
 from utils.database import *
 
+from psl_core.constants import FORMATION as FORMATION_DATA
+from psl_core.formation import compute_formation_abilities, get_formation_positions
+
+
 class Formation():
   PLAYERS_COUNT = 11
 
@@ -9,7 +13,7 @@ class Formation():
     self.user = User.getUserByQQ(data[0][1])
     self.cards = [Card.getCardByID(i[2]) for i in data]
     self.formation = self.user.formation
-    self.coordinates = Const.FORMATION[self.formation]["coordinates"]
+    self.coordinates = FORMATION_DATA[self.formation]["coordinates"]
 
   def getFormation(user):
       cursor = g_database.cursor()
@@ -23,44 +27,16 @@ class Formation():
       cursor.close()
       return team
 
-  # 返回四个值：总能力，前场能力，中场能力，后场能力
   def getAbilities(self, user):
-      total = 0
-      forward = 0
-      midfield = 0
-      guard = 0
-      forward_count = 0
-      midfield_count = 0
-      guard_count = 0
-      positions = Const.FORMATION[self.formation]["positions"]
+      positions = get_formation_positions(self.formation)
+      real_overalls = []
       for i in range(11):
-        if positions[i] in Const.FORWARD:
-          forward_count += 1 
-        elif positions[i] in Const.MIDFIELD:
-          midfield_count += 1
-        elif positions[i] in Const.GUARD:
-          guard_count += 1
-        elif positions[i] in Const.GOALKEEPER:
-          guard_count += 1
-        if self.cards[i] == None:
-          continue
-        overall = self.cards[i].getRealOverall(positions[i])
-        total += overall
-        if positions[i] in Const.FORWARD:
-          forward += overall
-        elif positions[i] in Const.MIDFIELD:
-          midfield += overall
-        elif positions[i] in Const.GUARD:
-          guard += overall
-        elif positions[i] in Const.GOALKEEPER:
-          guard += overall
-      if forward_count == 0:
-        forward_count = 1
-      if midfield_count == 0:
-        midfield_count = 1
-      if guard_count == 0:
-        guard_count = 1
-      return (total, forward // forward_count, midfield // midfield_count, guard // guard_count)
+        card = self.cards[i] if i < len(self.cards) else None
+        if card is None:
+          real_overalls.append(None)
+        else:
+          real_overalls.append(card.getRealOverall(positions[i]))
+      return compute_formation_abilities(positions, real_overalls)
 
   def isValid(self):
     return None not in self.cards

@@ -2,6 +2,8 @@
 
 from dataclasses import dataclass
 
+from psl_core.card import compute_price
+
 
 @dataclass
 class PlayerData:
@@ -61,5 +63,4 @@ class PlayerData:
 
     @property
     def price(self) -> int:
-        x = self.overall - 74 if self.overall >= 80 else 6
-        return int(0.0131*x**5 - 0.6118*x**4 + 11.189*x**3 - 55.238*x**2 + 123.16*x - 29.137)
+        return compute_price(self.overall, 1, 0)
