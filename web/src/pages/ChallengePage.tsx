@@ -88,7 +88,7 @@ export default function ChallengePage() {
               <CardContent className="p-4 flex items-center justify-between">
                 <div>
                   <span className="text-slate-100 font-medium">{d.key}</span>
-                  <span className="text-yellow-400 ml-2 text-sm">{'★'.repeat(d.star)}</span>
+                  <span className="text-yellow-400 ml-2 text-sm">{d.star <= 5 ? '★'.repeat(d.star) : `★${d.star}`}</span>
                 </div>
                 <Button size="sm" disabled={loading || info.times_left <= 0}>
                   {loading ? '进行中...' : '开赛'}

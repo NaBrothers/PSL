@@ -74,7 +74,7 @@ export default function SearchPage() {
                   </div>
                   <div className={`text-2xl font-bold ${overallColor(r.overall)}`}>{r.overall}</div>
                   <div className={`text-sm mt-1 truncate ${overallColor(r.overall)}`}>{r.name}</div>
-                  <div className="text-yellow-400 text-xs mt-1">{'★'.repeat(r.star)}</div>
+                  <div className="text-yellow-400 text-xs mt-1">{r.star <= 5 ? '★'.repeat(r.star) : `★${r.star}`}</div>
                   <div className="text-[10px] text-slate-500 mt-1">{r.style_name || STYLE_NAMES[r.style] || r.style}</div>
                 </CardContent>
               </Card>

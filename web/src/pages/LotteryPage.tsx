@@ -72,7 +72,7 @@ export default function LotteryPage() {
                   {c.overall}
                 </div>
                 <div className="text-sm text-slate-200 mt-1 truncate">{c.name}</div>
-                <div className="text-yellow-400 text-xs mt-1">{'★'.repeat(c.star)}</div>
+                <div className="text-yellow-400 text-xs mt-1">{c.star <= 5 ? '★'.repeat(c.star) : `★${c.star}`}</div>
                 <div className="text-[10px] text-slate-500 mt-0.5">{c.style_name}</div>
               </div>
             ))}

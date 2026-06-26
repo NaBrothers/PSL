@@ -4,8 +4,9 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/u
 import { Input } from '@/components/ui/input'
 import { Grid3X3, List } from 'lucide-react'
 import api from '../api/client'
-import { abilityColor, overallColor, rarityBg, rarityBorder, STYLE_NAMES } from '@/lib/card-display'
+import { overallColor, rarityBg, rarityBorder, STYLE_NAMES } from '@/lib/card-display'
 import PlayerCardDetail from '@/components/PlayerCardDetail'
+import CompareView from '@/components/CompareView'
 
 interface BagCard {
   id: number
@@ -304,7 +305,7 @@ export default function BagPage() {
                 {card.status === 1 && <div className="absolute bottom-1 left-1 text-[8px] text-orange-400 font-bold">转会中</div>}
                 <div className={`text-xl font-bold mt-3 ${overallColor(card.overall)}`}>{card.overall}</div>
                 <div className="text-[10px] text-slate-300 truncate mt-0.5">{card.name}</div>
-                <div className="text-[9px] text-yellow-400 mt-0.5">{'★'.repeat(Math.min(card.star, 5))}</div>
+                <div className="text-[9px] text-yellow-400 mt-0.5">{card.star <= 5 ? '★'.repeat(card.star) : `★${card.star}`}</div>
                 {card.style && <div className="text-[8px] text-emerald-400 mt-0.5 truncate">{STYLE_NAMES[card.style] || card.style}</div>}
               </div>
             ))}
@@ -323,7 +324,7 @@ export default function BagPage() {
                 <span className="text-slate-500 w-7 text-xs text-right">{card.id}</span>
                 <span className="text-slate-400 w-8 text-xs">{card.position}</span>
                 <span className="text-slate-100 flex-1 text-sm truncate">{card.name}</span>
-                <span className="text-yellow-400 text-xs">{'★'.repeat(card.star)}</span>
+                <span className="text-yellow-400 text-xs">{card.star <= 5 ? '★'.repeat(card.star) : `★${card.star}`}</span>
                 <span className={`text-sm font-bold ${overallColor(card.overall)}`}>{card.overall}</span>
                 {card.style && <span className="text-emerald-400 text-[10px]">{STYLE_NAMES[card.style] || card.style}</span>}
                 {card.locked && <span className="text-xs">🔒</span>}
@@ -399,7 +400,7 @@ export default function BagPage() {
                   <span className="text-slate-500 text-xs">[{c.id}]</span>
                   <span className="text-slate-200 text-sm flex-1">{c.name}</span>
                   {c.style && <span className="text-emerald-400 text-[10px]">{STYLE_NAMES[c.style] || c.style}</span>}
-                  <span className="text-yellow-400 text-xs">{'★'.repeat(c.star)}</span>
+                  <span className="text-yellow-400 text-xs">{c.star <= 5 ? '★'.repeat(c.star) : `★${c.star}`}</span>
                   <span className={`text-sm font-bold ${overallColor(c.overall)}`}>{c.overall}</span>
                 </div>
               ))}
@@ -422,7 +423,7 @@ export default function BagPage() {
                   <span className="text-slate-500 text-xs">[{c.id}]</span>
                   <span className="text-slate-200 text-sm flex-1">{c.name}</span>
                   {c.style && <span className="text-emerald-400 text-[10px]">{STYLE_NAMES[c.style] || c.style}</span>}
-                  <span className="text-yellow-400 text-xs">{'★'.repeat(c.star)}</span>
+                  <span className="text-yellow-400 text-xs">{c.star <= 5 ? '★'.repeat(c.star) : `★${c.star}`}</span>
                   <span className={`text-sm font-bold ${overallColor(c.overall)}`}>{c.overall}</span>
                 </div>
               ))}
@@ -501,7 +502,7 @@ export default function BagPage() {
                 <span className="text-slate-400 text-xs">{c.position}</span>
                 <span className="text-slate-200 text-sm flex-1">{c.name}</span>
                 {c.style && <span className="text-emerald-400 text-[10px]">{STYLE_NAMES[c.style] || c.style}</span>}
-                <span className="text-yellow-400 text-xs">{"★".repeat(c.star)}</span>
+                <span className="text-yellow-400 text-xs">{c.star <= 5 ? "★".repeat(c.star) : `★${c.star}`}</span>
                 <span className={`text-sm font-bold ${overallColor(c.overall)}`}>{c.overall}</span>
               </div>
             ))}
@@ -509,39 +510,7 @@ export default function BagPage() {
         </DialogContent>
       </Dialog>
 
-      {/* Compare view */}
-      <Dialog open={dialogMode === "compare-view"} onOpenChange={(open) => { if (!open) { setDialogMode("detail"); setCompareData(null) } }}>
-        <DialogContent className="max-h-[85vh] overflow-y-auto scrollbar-hide">
-          <DialogHeader><DialogTitle>能力对比</DialogTitle></DialogHeader>
-          {compareData && (
-            <div className="space-y-2">
-              <div className="flex justify-between text-sm font-bold mb-2">
-                <span className={overallColor(compareData.card1.overall)}>{compareData.card1.name} {compareData.card1.overall}</span>
-                <span className={overallColor(compareData.card2.overall)}>{compareData.card2.name} {compareData.card2.overall}</span>
-              </div>
-              {compareData.card1.abilities && Object.entries(compareData.card1.abilities as Record<string, {value: number; name: string}>).map(([key, ab]) => {
-                const v1 = ab.value
-                const v2 = (compareData.card2.abilities as any)[key]?.value || 0
-                const leftAdv = Math.max(0, v1 - v2)
-                const rightAdv = Math.max(0, v2 - v1)
-                return (
-                  <div key={key} className="grid grid-cols-[28px_24px_1fr_40px_1fr_24px_28px] items-center gap-1 text-xs">
-                    <span className={`text-right font-bold ${abilityColor(v1)}`}>{v1}</span>
-                    <span className="text-right text-green-400">{leftAdv > 0 ? `+${leftAdv}` : ""}</span>
-                    <div className="flex-1 flex items-center gap-1">
-                      <div className="flex-1 h-1.5 bg-slate-800 rounded overflow-hidden flex justify-end"><div className="bg-accent/70 h-full" style={{width: `${Math.min(v1, 120) / 1.2}%`}} /></div>
-                    </div>
-                    <span className="text-slate-500 text-center">{ab.name}</span>
-                    <div className="flex-1 h-1.5 bg-slate-800 rounded overflow-hidden"><div className="bg-red-400/70 h-full" style={{width: `${Math.min(v2, 120) / 1.2}%`}} /></div>
-                    <span className="text-green-400">{rightAdv > 0 ? `+${rightAdv}` : ""}</span>
-                    <span className={`font-bold ${abilityColor(v2)}`}>{v2}</span>
-                  </div>
-                )
-              })}
-            </div>
-          )}
-        </DialogContent>
-      </Dialog>
+      <CompareView data={compareData} open={dialogMode === "compare-view"} onClose={() => { setDialogMode("detail"); setCompareData(null) }} />
     </div>
   )
 }
