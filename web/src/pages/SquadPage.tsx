@@ -178,7 +178,7 @@ export default function SquadPage() {
                         <span className={`text-[7px] font-bold leading-none ${diff > 0 ? "text-red-400" : "text-green-400"}`}>{diff > 0 ? "▲" : "▼"}{Math.abs(diff)}</span>
                       ) : null })()}
                     </div>
-                    <span className={`text-[9px] mt-0.5 font-medium truncate max-w-[56px] text-center ${overallColor(card.overall)}`}>
+                    <span className={`text-[9px] mt-0.5 font-medium truncate max-w-[56px] text-center ${overallColor(card.overall, card.star)}`}>
                       {card.name}
                     </span>
                     <span className="text-[8px] text-yellow-400">{'★'.repeat(Math.min(card.star, 5))}{card.star > 5 ? `+${card.star-5}` : ''}</span>
@@ -220,7 +220,7 @@ export default function SquadPage() {
                 <span className="text-slate-100 flex-1 text-sm">{c.name}</span>
                 <span className="text-yellow-400 text-xs">{c.star <= 5 ? '★'.repeat(c.star) : `★${c.star}`}</span>
                 <div className="flex items-center gap-1">
-                  <span className={`text-sm font-bold ${overallColor(c.overall)}`}>{c.real_overall ?? c.overall}</span>
+                  <span className={`text-sm font-bold ${overallColor(c.overall, c.star)}`}>{c.real_overall ?? c.overall}</span>
                   {((c.real_overall ?? c.overall) !== c.overall) && (
                     <span className={`text-[10px] font-bold ${(c.real_overall ?? c.overall) > c.overall ? 'text-red-400' : 'text-green-400'}`}>
                       {(c.real_overall ?? c.overall) > c.overall ? '▲' : '▼'}{Math.abs((c.real_overall ?? c.overall) - c.overall)}

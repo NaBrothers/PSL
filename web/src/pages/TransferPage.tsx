@@ -222,7 +222,7 @@ export default function TransferPage() {
                 )}
                 <div className="flex-1 min-w-0">
                   <div className="flex items-center gap-2">
-                    <span className={`font-medium text-sm truncate ${overallColor(item.overall)}`}>{item.player_name}</span>
+                    <span className={`font-medium text-sm truncate ${overallColor(item.overall, item.star)}`}>{item.player_name}</span>
                     <span className="text-yellow-400 text-xs flex-shrink-0">{'★'.repeat(Math.min(item.star, 5))}{item.star > 5 ? `×${item.star}` : ''}</span>
                   </div>
                   <div className="text-xs text-slate-500 truncate">

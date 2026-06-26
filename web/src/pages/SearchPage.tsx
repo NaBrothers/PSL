@@ -64,7 +64,7 @@ export default function SearchPage() {
             {results.map((r, i) => (
               <Card
                 key={i}
-                className={`${rarityBorder(r.overall)} ${rarityBg(r.overall)} cursor-pointer hover:scale-[1.02] transition-transform`}
+                className={`${rarityBorder(r.overall, r.star)} ${rarityBg(r.overall, r.star)} cursor-pointer hover:scale-[1.02] transition-transform`}
                 onClick={() => api.get(`/cards/${r.card_id}`).then(res => setDetail(res.data))}
               >
                 <CardContent className="p-3 text-center">
@@ -72,8 +72,8 @@ export default function SearchPage() {
                     <span>{r.position}</span>
                     <span>{r.owner}</span>
                   </div>
-                  <div className={`text-2xl font-bold ${overallColor(r.overall)}`}>{r.overall}</div>
-                  <div className={`text-sm mt-1 truncate ${overallColor(r.overall)}`}>{r.name}</div>
+                  <div className={`text-2xl font-bold ${overallColor(r.overall, r.star)}`}>{r.overall}</div>
+                  <div className={`text-sm mt-1 truncate ${overallColor(r.overall, r.star)}`}>{r.name}</div>
                   <div className="text-yellow-400 text-xs mt-1">{r.star <= 5 ? '★'.repeat(r.star) : `★${r.star}`}</div>
                   <div className="text-[10px] text-slate-500 mt-1">{r.style_name || STYLE_NAMES[r.style] || r.style}</div>
                 </CardContent>
@@ -89,8 +89,8 @@ export default function SearchPage() {
             <DialogTitle className="flex items-center gap-2 flex-wrap">
               <span className="text-slate-500 text-sm">[{detail?.id}]</span>
               <span className="text-slate-400 text-sm">{detail?.position}</span>
-              <span className={overallColor(detail?.overall || 0)}>{detail?.name}</span>
-              <span className={`font-bold ${overallColor(detail?.overall || 0)}`}>{detail?.overall}</span>
+              <span className={overallColor(detail?.overall || 0, detail?.star)}>{detail?.name}</span>
+              <span className={`font-bold ${overallColor(detail?.overall || 0, detail?.star)}`}>{detail?.overall}</span>
             </DialogTitle>
           </DialogHeader>
           <PlayerCardDetail detail={detail} />

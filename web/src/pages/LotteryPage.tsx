@@ -68,7 +68,7 @@ export default function LotteryPage() {
                 style={{ transitionDelay: `${i * 100}ms`, background: 'linear-gradient(to bottom, rgba(30,41,59,0.8), rgb(15,23,42))' }}
               >
                 <div className="text-[10px] text-slate-500">{c.position}</div>
-                <div className={`text-2xl font-bold mt-1 ${overallColor(c.overall)}`}>
+                <div className={`text-2xl font-bold mt-1 ${overallColor(c.overall, c.star)}`}>
                   {c.overall}
                 </div>
                 <div className="text-sm text-slate-200 mt-1 truncate">{c.name}</div>
@@ -87,8 +87,8 @@ export default function LotteryPage() {
                 <DialogTitle className="flex items-center gap-2 flex-wrap">
                   <span className="text-slate-500 text-sm">[{detail?.id}]</span>
                   <span className="text-slate-400 text-sm">{detail?.position}</span>
-                  <span className={overallColor(detail?.overall || 0)}>{detail?.name}</span>
-                  <span className={`font-bold ${overallColor(detail?.overall || 0)}`}>{detail?.overall}</span>
+                  <span className={overallColor(detail?.overall || 0, detail?.star)}>{detail?.name}</span>
+                  <span className={`font-bold ${overallColor(detail?.overall || 0, detail?.star)}`}>{detail?.overall}</span>
                 </DialogTitle>
               </DialogHeader>
               <PlayerCardDetail detail={detail} />

@@ -294,7 +294,7 @@ export default function BagPage() {
               <div
                 key={card.id}
                 onClick={() => handleCardClick(card)}
-                className={`relative rounded-lg border-2 p-2 text-center cursor-pointer transition-all ${rarityBorder(card.overall)} ${rarityBg(card.overall)} ${selected.has(card.id) ? 'ring-2 ring-accent scale-95' : 'hover:scale-105'}`}
+                className={`relative rounded-lg border-2 p-2 text-center cursor-pointer transition-all ${rarityBorder(card.overall, card.star)} ${rarityBg(card.overall, card.star)} ${selected.has(card.id) ? 'ring-2 ring-accent scale-95' : 'hover:scale-105'}`}
               >
                 {manageMode && (
                   <div className={`absolute top-1 left-1 w-4 h-4 rounded border ${selected.has(card.id) ? 'bg-accent border-accent' : 'border-slate-500'}`} />
@@ -303,7 +303,7 @@ export default function BagPage() {
                 {card.locked && <div className="absolute bottom-1 right-1 text-[10px]">🔒</div>}
                 {card.status === 2 && <div className="absolute bottom-1 left-1 text-[8px] text-accent font-bold">首发</div>}
                 {card.status === 1 && <div className="absolute bottom-1 left-1 text-[8px] text-orange-400 font-bold">转会中</div>}
-                <div className={`text-xl font-bold mt-3 ${overallColor(card.overall)}`}>{card.overall}</div>
+                <div className={`text-xl font-bold mt-3 ${overallColor(card.overall, card.star)}`}>{card.overall}</div>
                 <div className="text-[10px] text-slate-300 truncate mt-0.5">{card.name}</div>
                 <div className="text-[9px] text-yellow-400 mt-0.5">{card.star <= 5 ? '★'.repeat(card.star) : `★${card.star}`}</div>
                 {card.style && <div className="text-[8px] text-emerald-400 mt-0.5 truncate">{STYLE_NAMES[card.style] || card.style}</div>}
@@ -316,7 +316,7 @@ export default function BagPage() {
               <div
                 key={card.id}
                 onClick={() => handleCardClick(card)}
-                className={`flex items-center gap-2 p-2 rounded-lg border cursor-pointer transition-colors ${selected.has(card.id) ? 'border-accent bg-slate-800/50' : `${rarityBorder(card.overall)} bg-slate-900 hover:bg-slate-800/50`}`}
+                className={`flex items-center gap-2 p-2 rounded-lg border cursor-pointer transition-colors ${selected.has(card.id) ? 'border-accent bg-slate-800/50' : `${rarityBorder(card.overall, card.star)} bg-slate-900 hover:bg-slate-800/50`}`}
               >
                 {manageMode && (
                   <div className={`w-4 h-4 rounded border flex-shrink-0 ${selected.has(card.id) ? 'bg-accent border-accent' : 'border-slate-500'}`} />
@@ -325,7 +325,7 @@ export default function BagPage() {
                 <span className="text-slate-400 w-8 text-xs">{card.position}</span>
                 <span className="text-slate-100 flex-1 text-sm truncate">{card.name}</span>
                 <span className="text-yellow-400 text-xs">{card.star <= 5 ? '★'.repeat(card.star) : `★${card.star}`}</span>
-                <span className={`text-sm font-bold ${overallColor(card.overall)}`}>{card.overall}</span>
+                <span className={`text-sm font-bold ${overallColor(card.overall, card.star)}`}>{card.overall}</span>
                 {card.style && <span className="text-emerald-400 text-[10px]">{STYLE_NAMES[card.style] || card.style}</span>}
                 {card.locked && <span className="text-xs">🔒</span>}
                 {card.status === 2 && <span className="text-accent text-[10px]">首发</span>}
@@ -365,8 +365,8 @@ export default function BagPage() {
             <DialogTitle className="flex items-center gap-2 flex-wrap">
               <span className="text-slate-500 text-sm">[{detail?.id}]</span>
               <span className="text-slate-400 text-sm">{detail?.position}</span>
-              <span className={overallColor(detail?.overall || 0)}>{detail?.name}</span>
-              <span className={`font-bold ${overallColor(detail?.overall || 0)}`}>{detail?.overall}</span>
+              <span className={overallColor(detail?.overall || 0, detail?.star)}>{detail?.name}</span>
+              <span className={`font-bold ${overallColor(detail?.overall || 0, detail?.star)}`}>{detail?.overall}</span>
             </DialogTitle>
           </DialogHeader>
           {detail && (
@@ -401,7 +401,7 @@ export default function BagPage() {
                   <span className="text-slate-200 text-sm flex-1">{c.name}</span>
                   {c.style && <span className="text-emerald-400 text-[10px]">{STYLE_NAMES[c.style] || c.style}</span>}
                   <span className="text-yellow-400 text-xs">{c.star <= 5 ? '★'.repeat(c.star) : `★${c.star}`}</span>
-                  <span className={`text-sm font-bold ${overallColor(c.overall)}`}>{c.overall}</span>
+                  <span className={`text-sm font-bold ${overallColor(c.overall, c.star)}`}>{c.overall}</span>
                 </div>
               ))}
             </div>
@@ -424,7 +424,7 @@ export default function BagPage() {
                   <span className="text-slate-200 text-sm flex-1">{c.name}</span>
                   {c.style && <span className="text-emerald-400 text-[10px]">{STYLE_NAMES[c.style] || c.style}</span>}
                   <span className="text-yellow-400 text-xs">{c.star <= 5 ? '★'.repeat(c.star) : `★${c.star}`}</span>
-                  <span className={`text-sm font-bold ${overallColor(c.overall)}`}>{c.overall}</span>
+                  <span className={`text-sm font-bold ${overallColor(c.overall, c.star)}`}>{c.overall}</span>
                 </div>
               ))}
             </div>
@@ -503,7 +503,7 @@ export default function BagPage() {
                 <span className="text-slate-200 text-sm flex-1">{c.name}</span>
                 {c.style && <span className="text-emerald-400 text-[10px]">{STYLE_NAMES[c.style] || c.style}</span>}
                 <span className="text-yellow-400 text-xs">{c.star <= 5 ? "★".repeat(c.star) : `★${c.star}`}</span>
-                <span className={`text-sm font-bold ${overallColor(c.overall)}`}>{c.overall}</span>
+                <span className={`text-sm font-bold ${overallColor(c.overall, c.star)}`}>{c.overall}</span>
               </div>
             ))}
           </div>
