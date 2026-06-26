@@ -5,6 +5,7 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/u
 import { Input } from '@/components/ui/input'
 import api from '../api/client'
 import { useToast } from '@/components/AppToast'
+import { overallColor } from '@/lib/card-display'
 
 interface TransferItem {
   card_id: number
@@ -13,9 +14,47 @@ interface TransferItem {
   position: string
   overall: number
   star: number
+  style: string
+  style_name: string
+  breach: number
   seller_name: string
   cost: number
 }
+
+const POSITION_FILTERS = [
+  { key: '', label: '全部' },
+  { key: 'FWD', label: '前锋' },
+  { key: 'MID', label: '中场' },
+  { key: 'DEF', label: '后卫' },
+  { key: 'GK', label: '门将' },
+]
+
+const SORT_OPTIONS = [
+  { key: 'overall', label: '能力值' },
+  { key: 'price_asc', label: '价格↑' },
+  { key: 'price_desc', label: '价格↓' },
+  { key: 'star', label: '星级' },
+  { key: 'Speed', label: '速度' },
+  { key: 'Finishing', label: '终结' },
+  { key: 'Dribbling', label: '盘带' },
+  { key: 'Defence', label: '防守' },
+  { key: 'Tackling', label: '抢断' },
+  { key: 'Short_Passing', label: '短传' },
+]
+
+const STYLE_OPTIONS = [
+  { key: '', label: '全部特性' },
+  { key: 'hunter', label: '狩猎者' }, { key: 'shadow', label: '暗影' },
+  { key: 'catalyst', label: '催化剂' }, { key: 'engine', label: '发动机' },
+  { key: 'sniper', label: '狙击手' }, { key: 'finisher', label: '终结者' },
+  { key: 'deadeye', label: '恶魔眼' }, { key: 'hawk', label: '凤头鹰' },
+  { key: 'artist', label: '艺术家' }, { key: 'maestro', label: '大师' },
+  { key: 'powerhous', label: '抢球机器' }, { key: 'sentinal', label: '哨兵' },
+  { key: 'anchor', label: '铁锚' }, { key: 'guardian', label: '护卫' },
+  { key: 'gladiator', label: '斗士' }, { key: 'backbone', label: '骨干' },
+  { key: 'marksman', label: '神枪手' }, { key: 'architect', label: '建筑师' },
+  { key: 'speedster', label: '疾速魔' }, { key: 'slugger', label: '重炮手' },
+]
 
 export default function TransferPage() {
   const [items, setItems] = useState<TransferItem[]>([])
@@ -23,16 +62,27 @@ export default function TransferPage() {
   const [page, setPage] = useState(1)
   const [totalPages, setTotalPages] = useState(1)
   const [loadingMore, setLoadingMore] = useState(false)
-  const [showSell, setShowSell] = useState(false)
-  const [sellCards, setSellCards] = useState<any[]>([])
-  const [sellTarget, setSellTarget] = useState<any>(null)
-  const [sellPrice, setSellPrice] = useState('')
-  const [confirmTarget, setConfirmTarget] = useState<{ cardId: number; cost: number; isMine: boolean; name: string } | null>(null)
+
+  const [query, setQuery] = useState('')
+  const [position, setPosition] = useState('')
+  const [minStar, setMinStar] = useState(0)
+  const [style, setStyle] = useState('')
+  const [sortBy, setSortBy] = useState('overall')
+  const [showFilter, setShowFilter] = useState(false)
+
+  const [selectMode, setSelectMode] = useState(false)
+  const [selected, setSelected] = useState<Set<number>>(new Set())
+
+  const [detailId, setDetailId] = useState<number | null>(null)
+  const [detail, setDetail] = useState<any>(null)
+
   const listRef = useRef<HTMLDivElement | null>(null)
   const { showToast } = useToast()
 
   const loadMarket = async (p: number = 1, append: boolean = false) => {
-    const res = await api.get('/transfer', { params: { page: p } })
+    const res = await api.get('/transfer', {
+      params: { page: p, page_size: 20, query, position, min_star: minStar, style, sort_by: sortBy }
+    })
     setItems(prev => (append ? [...prev, ...res.data.items] : res.data.items))
     setPage(res.data.page)
     setTotalPages(res.data.total_pages)
@@ -44,155 +94,239 @@ export default function TransferPage() {
   }, [])
 
   useEffect(() => {
+    loadMarket(1, false)
+    setSelected(new Set())
+  }, [query, position, minStar, style, sortBy])
+
+  useEffect(() => {
     const node = listRef.current
     if (!node) return
-
     const onScroll = () => {
       if (loadingMore || page >= totalPages) return
-      const nearBottom = node.scrollTop + node.clientHeight >= node.scrollHeight - 80
-      if (!nearBottom) return
-      setLoadingMore(true)
-      loadMarket(page + 1, true).finally(() => setLoadingMore(false))
+      if (node.scrollTop + node.clientHeight >= node.scrollHeight - 80) {
+        setLoadingMore(true)
+        loadMarket(page + 1, true).finally(() => setLoadingMore(false))
+      }
     }
-
     node.addEventListener('scroll', onScroll)
     return () => node.removeEventListener('scroll', onScroll)
   }, [loadingMore, page, totalPages])
 
-  const buy = async (cardId: number, isMine: boolean) => {
+  const handleBuy = async (cardId: number) => {
     try {
-      if (isMine) {
-        await api.post('/transfer/cancel', { card_id: cardId })
+      const res = await api.post('/transfer/buy', { card_id: cardId })
+      if (res.data.cancelled) {
+        showToast('已下架')
       } else {
-        await api.post('/transfer/buy', { card_id: cardId })
+        showToast(`购买成功，花费 $${res.data.cost}`)
       }
-      setConfirmTarget(null)
-      loadMarket(page)
+      loadMarket(1, false)
     } catch (e: any) {
-      showToast(e.response?.data?.detail || (isMine ? '下架失败' : '购买失败'))
+      showToast(e.response?.data?.detail || '操作失败')
     }
   }
 
-  const openSellDialog = () => {
-    api.get('/bag', { params: { page: 1, query: '' } }).then(res => {
-      setSellCards(res.data.cards.filter((c: any) => c.status === 0 && !c.locked))
-      setShowSell(true)
+  const handleBatchBuy = async () => {
+    if (selected.size === 0) return
+    const ids = Array.from(selected)
+    const res = await api.post('/transfer/batch-buy', { card_ids: ids })
+    const ok = res.data.results.filter((r: any) => r.ok).length
+    const fail = res.data.results.filter((r: any) => !r.ok).length
+    showToast(`批量购买：成功 ${ok} 张${fail > 0 ? `，失败 ${fail} 张` : ''}`)
+    setSelected(new Set())
+    setSelectMode(false)
+    loadMarket(1, false)
+  }
+
+  const toggleSelect = (cardId: number) => {
+    setSelected(prev => {
+      const next = new Set(prev)
+      if (next.has(cardId)) next.delete(cardId)
+      else next.add(cardId)
+      return next
     })
   }
 
-  const confirmSell = async () => {
-    if (!sellTarget || !sellPrice) return
+  const openDetail = async (cardId: number) => {
+    if (selectMode) { toggleSelect(cardId); return }
+    setDetailId(cardId)
     try {
-      await api.post('/transfer/list', { card_id: sellTarget.id, price: parseInt(sellPrice) })
-      setShowSell(false)
-      setSellTarget(null)
-      setSellPrice('')
-      loadMarket()
-    } catch (e: any) {
-      showToast(e.response?.data?.detail || '上架失败')
-    }
+      const res = await api.get(`/cards/${cardId}`)
+      setDetail(res.data)
+    } catch { setDetail(null) }
   }
 
+  const activeFilters = [
+    position && POSITION_FILTERS.find(p => p.key === position)?.label,
+    minStar > 0 && `≥${minStar}星`,
+    style && STYLE_OPTIONS.find(s => s.key === style)?.label,
+  ].filter(Boolean)
+
+  const totalCost = items.filter(i => selected.has(i.card_id)).reduce((s, i) => s + i.cost, 0)
+
   return (
-    <div className="bg-dark p-4">
-      <div className="max-w-md mx-auto">
-        <div className="flex items-center justify-between mb-4">
-          <h1 className="text-lg font-bold text-slate-100">转会市场</h1>
-          <Button size="sm" onClick={openSellDialog}>上架球员</Button>
+    <div className="flex flex-col h-full">
+      {/* Header */}
+      <div className="p-3 space-y-2">
+        <div className="flex items-center gap-2">
+          <Input
+            placeholder="搜索球员名..."
+            value={query}
+            onChange={e => setQuery(e.target.value)}
+            className="flex-1 h-9"
+          />
+          <Button size="sm" variant="outline" className="h-9 px-3" onClick={() => setShowFilter(!showFilter)}>
+            筛选
+          </Button>
+          <Button
+            size="sm"
+            variant={selectMode ? 'default' : 'outline'}
+            className="h-9 px-3"
+            onClick={() => { setSelectMode(!selectMode); setSelected(new Set()) }}
+          >
+            多选
+          </Button>
         </div>
 
-        {items.length === 0 ? (
-          <div className="text-center py-12">
-            <p className="text-slate-500">暂无球员在售</p>
-          </div>
-        ) : (
-          <div ref={listRef} className="space-y-2 mb-3 overflow-y-auto scrollbar-hide flex-1">
-            {items.map(item => (
-              <Card key={item.card_id} className="hover:border-slate-600 transition-colors">
-                <CardContent className="p-3 flex items-center gap-3">
-                  <div className="flex-1">
-                    <div className="flex items-center gap-2">
-                      <span className="text-slate-200 font-medium text-sm">{item.player_name}</span>
-                      <span className="text-yellow-400 text-xs">{'★'.repeat(item.star)}</span>
-                    </div>
-                    <div className="text-xs text-slate-500">{item.position} · {item.overall} · 卖家: {item.seller_name}</div>
-                  </div>
-                  <div className="text-right">
-                    <div className="text-yellow-400 font-bold text-sm">${item.cost}</div>
-                    <Button
-                      size="sm"
-                      className="mt-1 h-7 text-xs"
-                      variant={me?.qq === item.seller_qq ? 'outline' : 'default'}
-                      onClick={() => setConfirmTarget({
-                        cardId: item.card_id,
-                        cost: item.cost,
-                        isMine: me?.qq === item.seller_qq,
-                        name: item.player_name,
-                      })}
-                    >
-                      {me?.qq === item.seller_qq ? '下架' : '购买'}
-                    </Button>
-                  </div>
-                </CardContent>
-              </Card>
+        {activeFilters.length > 0 && (
+          <div className="flex gap-1 flex-wrap">
+            {activeFilters.map((f, i) => (
+              <span key={i} className="bg-slate-700 text-slate-300 text-xs px-2 py-0.5 rounded-full">{f}</span>
             ))}
+            <button className="text-xs text-slate-500 underline ml-1" onClick={() => { setPosition(''); setMinStar(0); setStyle('') }}>
+              清除
+            </button>
           </div>
         )}
-
-        <div className="py-2" />
       </div>
 
-      {/* Sell Dialog */}
-      <Dialog open={showSell} onOpenChange={setShowSell}>
-        <DialogContent className="max-h-[70vh] flex flex-col">
-          <DialogHeader>
-            <DialogTitle>{sellTarget ? '设置价格' : '选择要上架的球员'}</DialogTitle>
-          </DialogHeader>
-          {!sellTarget ? (
-            <div className="overflow-y-auto flex-1 space-y-1">
-              {sellCards.map((c: any) => (
-                <div key={c.id} onClick={() => setSellTarget(c)}
-                  className="flex items-center gap-2 p-2 rounded-md hover:bg-slate-800 cursor-pointer">
-                  <span className="text-slate-500 text-xs w-8">{c.position}</span>
-                  <span className="text-slate-200 text-sm flex-1">{c.name}</span>
-                  <span className="text-yellow-400 text-xs">{'★'.repeat(c.star)}</span>
-                  <span className="text-sm text-slate-300">{c.overall}</span>
+      {/* List */}
+      <div ref={listRef} className="flex-1 overflow-y-auto scrollbar-hide px-3 space-y-2 pb-20">
+        {items.length === 0 ? (
+          <div className="text-center py-12"><p className="text-slate-500">暂无球员在售</p></div>
+        ) : items.map(item => {
+          const isMine = me?.qq === item.seller_qq
+          const isSelected = selected.has(item.card_id)
+          return (
+            <Card
+              key={item.card_id}
+              className={`transition-colors cursor-pointer ${isSelected ? 'border-blue-500 bg-blue-950/20' : 'hover:border-slate-600'}`}
+              onClick={() => openDetail(item.card_id)}
+            >
+              <CardContent className="p-3 flex items-center gap-3">
+                {selectMode && !isMine && (
+                  <div className={`w-5 h-5 rounded border-2 flex items-center justify-center flex-shrink-0 ${isSelected ? 'bg-blue-500 border-blue-500' : 'border-slate-600'}`}>
+                    {isSelected && <span className="text-white text-xs">✓</span>}
+                  </div>
+                )}
+                <div className="flex-1 min-w-0">
+                  <div className="flex items-center gap-2">
+                    <span className={`font-medium text-sm truncate ${overallColor(item.overall)}`}>{item.player_name}</span>
+                    <span className="text-yellow-400 text-xs flex-shrink-0">{'★'.repeat(Math.min(item.star, 5))}{item.star > 5 ? `×${item.star}` : ''}</span>
+                  </div>
+                  <div className="text-xs text-slate-500 truncate">
+                    {item.position} · {item.overall} · {item.style_name}{item.breach > 0 ? ` · ◆+${item.breach}` : ''} · {item.seller_name}
+                  </div>
                 </div>
-              ))}
-            </div>
-          ) : (
-            <div className="space-y-3">
-              <p className="text-sm text-slate-300">{sellTarget.name} · {sellTarget.position} · {sellTarget.overall}</p>
-              <Input placeholder="输入价格" value={sellPrice} onChange={e => setSellPrice(e.target.value.replace(/\D/g, ''))} />
-              <div className="flex gap-2">
-                <Button variant="outline" className="flex-1" onClick={() => setSellTarget(null)}>返回</Button>
-                <Button className="flex-1" onClick={confirmSell} disabled={!sellPrice}>确认上架</Button>
+                <div className="text-right flex-shrink-0">
+                  <div className="text-yellow-400 font-bold text-sm">${item.cost.toLocaleString()}</div>
+                  {!selectMode && (
+                    <Button
+                      size="sm"
+                      className="mt-1 h-6 text-xs px-2"
+                      variant={isMine ? 'outline' : 'default'}
+                      onClick={(e) => { e.stopPropagation(); handleBuy(item.card_id) }}
+                    >
+                      {isMine ? '下架' : '购买'}
+                    </Button>
+                  )}
+                </div>
+              </CardContent>
+            </Card>
+          )
+        })}
+      </div>
+
+      {/* Batch buy bar */}
+      {selectMode && selected.size > 0 && (
+        <div className="fixed bottom-16 left-0 right-0 mx-auto max-w-[430px] p-3 bg-slate-900/95 border-t border-slate-700">
+          <Button className="w-full" onClick={handleBatchBuy}>
+            购买 {selected.size} 张 · 总计 ${totalCost.toLocaleString()}
+          </Button>
+        </div>
+      )}
+
+      {/* Filter bottom sheet */}
+      <Dialog open={showFilter} onOpenChange={setShowFilter}>
+        <DialogContent className="max-h-[60vh] flex flex-col">
+          <DialogHeader><DialogTitle>筛选与排序</DialogTitle></DialogHeader>
+          <div className="space-y-4 overflow-y-auto flex-1">
+            <div>
+              <p className="text-xs text-slate-500 mb-2">位置</p>
+              <div className="flex flex-wrap gap-2">
+                {POSITION_FILTERS.map(p => (
+                  <button key={p.key}
+                    className={`px-3 py-1 rounded-full text-xs ${position === p.key ? 'bg-blue-600 text-white' : 'bg-slate-700 text-slate-300'}`}
+                    onClick={() => setPosition(p.key)}
+                  >{p.label}</button>
+                ))}
               </div>
             </div>
-          )}
+            <div>
+              <p className="text-xs text-slate-500 mb-2">最低星级</p>
+              <div className="flex flex-wrap gap-2">
+                {[0, 3, 5, 7, 9].map(s => (
+                  <button key={s}
+                    className={`px-3 py-1 rounded-full text-xs ${minStar === s ? 'bg-blue-600 text-white' : 'bg-slate-700 text-slate-300'}`}
+                    onClick={() => setMinStar(s)}
+                  >{s === 0 ? '不限' : `≥${s}★`}</button>
+                ))}
+              </div>
+            </div>
+            <div>
+              <p className="text-xs text-slate-500 mb-2">特性</p>
+              <select value={style} onChange={e => setStyle(e.target.value)}
+                className="w-full bg-slate-800 border border-slate-700 rounded px-3 py-2 text-sm text-slate-200">
+                {STYLE_OPTIONS.map(s => <option key={s.key} value={s.key}>{s.label}</option>)}
+              </select>
+            </div>
+            <div>
+              <p className="text-xs text-slate-500 mb-2">排序</p>
+              <select value={sortBy} onChange={e => setSortBy(e.target.value)}
+                className="w-full bg-slate-800 border border-slate-700 rounded px-3 py-2 text-sm text-slate-200">
+                {SORT_OPTIONS.map(s => <option key={s.key} value={s.key}>{s.label}</option>)}
+              </select>
+            </div>
+          </div>
+          <Button className="mt-3" onClick={() => setShowFilter(false)}>确认</Button>
         </DialogContent>
       </Dialog>
 
-      <Dialog open={confirmTarget !== null} onOpenChange={(open) => { if (!open) setConfirmTarget(null) }}>
-        <DialogContent>
-          <DialogHeader>
-            <DialogTitle>{confirmTarget?.isMine ? '确认下架' : '确认购买'}</DialogTitle>
-          </DialogHeader>
-          {confirmTarget && (
-            <div className="space-y-4">
-              <p className="text-sm text-slate-300">
-                {confirmTarget.isMine
-                  ? `确定下架 ${confirmTarget.name}？`
-                  : `确定花费 $${confirmTarget.cost} 购买 ${confirmTarget.name}？`}
-              </p>
-              <div className="flex gap-2">
-                <Button variant="outline" className="flex-1" onClick={() => setConfirmTarget(null)}>取消</Button>
-                <Button className="flex-1" onClick={() => buy(confirmTarget.cardId, confirmTarget.isMine)}>
-                  确认
-                </Button>
+      {/* Card detail dialog */}
+      <Dialog open={detailId !== null} onOpenChange={(open) => { if (!open) { setDetailId(null); setDetail(null) } }}>
+        <DialogContent className="max-h-[70vh] overflow-y-auto">
+          <DialogHeader><DialogTitle>球员详情</DialogTitle></DialogHeader>
+          {detail ? (
+            <div className="space-y-3">
+              <div className="flex items-center justify-between">
+                <div>
+                  <p className={`font-bold text-lg ${overallColor(detail.overall)}`}>{detail.name}</p>
+                  <p className="text-xs text-slate-400">{detail.position} · {detail.style_name} · {'★'.repeat(Math.min(detail.star, 5))}{detail.star > 5 ? `×${detail.star}` : ''}</p>
+                </div>
+                <div className={`text-2xl font-bold ${overallColor(detail.overall)}`}>{detail.overall}</div>
               </div>
+              {detail.abilities && (
+                <div className="grid grid-cols-2 gap-x-4 gap-y-1 text-sm">
+                  {Object.entries(detail.abilities as Record<string, any>).map(([key, ab]: [string, any]) => (
+                    <div key={key} className="flex justify-between">
+                      <span className={ab.style_boosted ? "text-amber-400" : "text-slate-400"}>{ab.name}</span>
+                      <span className="font-bold text-slate-200">{ab.value}{ab.ext > 0 && <span className="text-green-400 text-xs ml-0.5">(+{ab.ext})</span>}</span>
+                    </div>
+                  ))}
+                </div>
+              )}
             </div>
-          )}
+          ) : <p className="text-slate-500 text-center py-4">加载中...</p>}
         </DialogContent>
       </Dialog>
     </div>

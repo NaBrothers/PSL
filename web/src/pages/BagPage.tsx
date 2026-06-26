@@ -20,7 +20,7 @@ interface BagCard {
   status_text: string
 }
 
-type DialogMode = 'detail' | 'upgrade' | 'breach' | 'compare-select' | 'compare-view' | 'confirm-recycle' | 'confirm-batch-recycle' | null
+type DialogMode = 'detail' | 'upgrade' | 'breach' | 'compare-select' | 'compare-view' | 'confirm-recycle' | 'confirm-batch-recycle' | 'confirm-batch-transfer' | null
 
 export default function BagPage() {
   const [cards, setCards] = useState<BagCard[]>([])
@@ -42,6 +42,7 @@ export default function BagPage() {
   const [showToast, setShowToast] = useState(false)
   const [loadingMore, setLoadingMore] = useState(false)
   const listRef = useRef<HTMLDivElement | null>(null)
+  const [batchTransferPrices, setBatchTransferPrices] = useState<Record<number, string>>({})
 
   const loadBag = async (
     p: number = page,
@@ -133,17 +134,24 @@ export default function BagPage() {
     loadBag()
   }
 
-  const handleBatchTransfer = async () => {
-    let success = 0
-    for (const id of Array.from(selected)) {
-      try {
-        await api.post("/transfer/list", { card_id: id, price: 0 })
-        success++
-      } catch { /* skip locked/in-use cards */ }
-    }
-    setOpResult(`已上架 ${success} 张球员卡到转会市场`)
+  const handleBatchTransfer = () => {
+    const prices: Record<number, string> = {}
+    for (const id of Array.from(selected)) { prices[id] = '' }
+    setBatchTransferPrices(prices)
+    setDialogMode('confirm-batch-transfer')
+  }
+
+  const confirmBatchTransfer = async () => {
+    const items = Object.entries(batchTransferPrices).map(([id, price]) => ({
+      card_id: parseInt(id), price: parseInt(price) || 0
+    }))
+    const res = await api.post("/transfer/batch-list", { cards: items })
+    const ok = res.data.results.filter((r: any) => r.ok).length
+    const fail = res.data.results.filter((r: any) => !r.ok).length
+    setOpResult(`已上架 ${ok} 张${fail > 0 ? `，${fail} 张失败` : ''}`)
     setSelected(new Set())
     setManageMode(false)
+    setDialogMode(null)
     loadBag()
   }
 
@@ -532,6 +540,31 @@ export default function BagPage() {
           <div className="flex gap-2">
             <Button variant="outline" className="flex-1" onClick={() => setDialogMode(null)}>取消</Button>
             <Button variant="destructive" className="flex-1" onClick={handleBatchRecycle}>确认回收</Button>
+          </div>
+        </DialogContent>
+      </Dialog>
+
+      {/* Batch transfer confirm */}
+      <Dialog open={dialogMode === "confirm-batch-transfer"} onOpenChange={(open) => { if (!open) setDialogMode(null) }}>
+        <DialogContent className="max-h-[70vh] flex flex-col">
+          <DialogHeader><DialogTitle>批量上架确认</DialogTitle></DialogHeader>
+          <p className="text-xs text-slate-500 mb-2">留空价格将使用默认身价</p>
+          <div className="overflow-y-auto flex-1 space-y-2">
+            {cards.filter(c => selected.has(c.id)).map(c => (
+              <div key={c.id} className="flex items-center gap-2">
+                <span className="text-slate-200 text-sm flex-1 truncate">{c.name} ★{c.star} {c.overall}</span>
+                <Input
+                  className="w-24 h-7 text-xs"
+                  placeholder="默认身价"
+                  value={batchTransferPrices[c.id] || ""}
+                  onChange={e => setBatchTransferPrices(p => ({ ...p, [c.id]: e.target.value.replace(/\D/g, "") }))}
+                />
+              </div>
+            ))}
+          </div>
+          <div className="flex gap-2 mt-3">
+            <Button variant="outline" className="flex-1" onClick={() => setDialogMode(null)}>取消</Button>
+            <Button className="flex-1" onClick={confirmBatchTransfer}>确认上架 {selected.size} 张</Button>
           </div>
         </DialogContent>
       </Dialog>
