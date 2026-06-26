@@ -5,6 +5,7 @@
 html, body {
   margin: 0;
   height: 100%;
+  height: 100dvh;
   overflow: hidden;
   font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
   -webkit-font-smoothing: antialiased;
@@ -15,6 +16,7 @@ html, body {
   max-width: 430px;
   margin: 0 auto;
   height: 100vh;
+  height: 100dvh;
   overflow: hidden;
   position: relative;
   background: #1a1a2e;
