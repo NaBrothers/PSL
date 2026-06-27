@@ -195,7 +195,7 @@ export default function MatchPage() {
   // Live broadcast phase
   if (phase === 'live') {
     return (
-      <div className="bg-dark p-4 flex flex-col">
+      <div className="p-4 flex flex-col">
         <h2 className="text-sm text-slate-400 text-center mb-2">比赛进行中...</h2>
         <div ref={liveRef} className="flex-1 overflow-y-auto scrollbar-hide space-y-3 pb-4 scrollbar-hide" style={{ maxHeight: 'calc(100vh - 100px)' }}>
           {broadcasts.map((group, i) => (
@@ -213,7 +213,7 @@ export default function MatchPage() {
   // Select phase
   if (phase === 'select') {
     return (
-      <div className="bg-dark p-4">
+      <div className="p-4">
         <h1 className="text-lg font-bold text-slate-100 mb-4">比赛</h1>
 
         <div className="flex gap-2 mb-4">
@@ -244,18 +244,21 @@ export default function MatchPage() {
         </div>
 
         {selected && (
-          <div className="text-center mb-4 py-4 bg-slate-900/50 rounded-lg border border-slate-800">
-            <div className="flex items-center justify-center gap-6">
+          <div className="text-center mb-4 py-5 rounded-xl border border-gold/20 bg-gradient-to-r from-blue-900/20 via-dark-card/60 to-red-900/20 relative overflow-hidden">
+            <div className="absolute inset-0 bg-[radial-gradient(ellipse_at_center,rgba(79,195,247,0.05),transparent_70%)]" />
+            <div className="flex items-center justify-center gap-6 relative">
               <div className="text-center">
-                <div className="w-12 h-12 rounded-full bg-accent/20 flex items-center justify-center text-accent font-bold text-lg mx-auto mb-1">我</div>
-                <p className="text-xs text-slate-400">主队</p>
+                <div className="w-14 h-14 rounded-full bg-gradient-to-br from-accent/30 to-blue-600/20 border-2 border-accent/50 flex items-center justify-center text-accent font-bold text-xl mx-auto mb-1 shadow-[0_0_12px_rgba(79,195,247,0.3)]">我</div>
+                <p className="text-xs text-slate-300 font-medium">主队</p>
               </div>
-              <span className="text-2xl font-bold text-slate-600">VS</span>
+              <div className="flex flex-col items-center">
+                <span className="text-3xl font-black text-gold">VS</span>
+              </div>
               <div className="text-center">
-                <div className="w-12 h-12 rounded-full bg-red-500/20 flex items-center justify-center text-red-400 font-bold text-lg mx-auto mb-1">
+                <div className="w-14 h-14 rounded-full bg-gradient-to-br from-red-500/30 to-red-800/20 border-2 border-red-400/50 flex items-center justify-center text-red-400 font-bold text-xl mx-auto mb-1 shadow-[0_0_12px_rgba(239,68,68,0.3)]">
                   {selected.name[0]}
                 </div>
-                <p className="text-xs text-slate-400">{selected.name}</p>
+                <p className="text-xs text-slate-300 font-medium">{selected.name}</p>
               </div>
             </div>
           </div>
@@ -271,7 +274,7 @@ export default function MatchPage() {
   // Result phase - ten
   if (tenResult) {
     return (
-      <div className="bg-dark p-4">
+      <div className="p-4">
         <h2 className="text-lg font-bold text-slate-100 mb-3">十连结果</h2>
         <div className="grid grid-cols-3 gap-3 text-center mb-4">
           <div className="bg-green-900/30 rounded-lg p-3"><div className="text-green-400 text-xl font-bold">{tenResult.wins}</div><div className="text-xs text-slate-500">胜</div></div>
@@ -292,7 +295,7 @@ export default function MatchPage() {
   // Result phase - odds
   if (oddsResult) {
     return (
-      <div className="bg-dark p-4">
+      <div className="p-4">
         <h2 className="text-lg font-bold text-slate-100 mb-4">赔率</h2>
         <div className="grid grid-cols-3 gap-3 text-center mb-4">
           <div className="bg-slate-800 rounded-lg p-4"><div className="text-accent text-2xl font-bold">{oddsResult.home_win_odds}</div><div className="text-xs text-slate-500">主胜</div></div>
@@ -309,14 +312,17 @@ export default function MatchPage() {
   if (!result) return null
 
   return (
-    <div className="bg-dark p-4">
-      <div className="text-center py-6 mb-4 bg-gradient-to-b from-slate-800/50 to-transparent rounded-xl">
-        <div className="text-4xl font-bold mb-1">
-          <span className="text-accent">{result.home_score}</span>
-          <span className="text-slate-600 mx-3">-</span>
-          <span className="text-red-400">{result.away_score}</span>
+    <div className="p-4">
+      <div className="text-center py-6 mb-4 rounded-xl border border-dark-border bg-gradient-to-b from-dark-card/80 to-transparent relative overflow-hidden">
+        <div className="absolute inset-0 bg-[radial-gradient(ellipse_at_top,rgba(212,168,67,0.05),transparent_60%)]" />
+        <div className="relative">
+          <div className="text-5xl font-black mb-2">
+            <span className="text-accent">{result.home_score}</span>
+            <span className="text-gold mx-3">:</span>
+            <span className="text-red-400">{result.away_score}</span>
+          </div>
+          <p className="text-sm text-slate-400">{result.home_name} vs {result.away_name}</p>
         </div>
-        <p className="text-sm text-slate-400">{result.home_name} vs {result.away_name}</p>
       </div>
 
       <Tabs defaultValue="report" className="w-full">

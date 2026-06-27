@@ -3,7 +3,7 @@ import { Button } from '@/components/ui/button'
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog'
 import { Input } from '@/components/ui/input'
 import api from '../api/client'
-import { cardTone, overallColor } from '@/lib/card-display'
+import { overallColor } from '@/lib/card-display'
 import CompareView from '@/components/CompareView'
 
 interface CardInfo {
@@ -118,7 +118,7 @@ export default function SquadPage() {
   }
 
   if (!squad) {
-    return <div className="bg-dark flex items-center justify-center text-slate-500">加载中...</div>
+    return <div className="flex items-center justify-center text-slate-500">加载中...</div>
   }
 
   const coords = FORMATION_COORDS[squad.formation] || FORMATION_COORDS["442"]
@@ -127,7 +127,7 @@ export default function SquadPage() {
   )
 
   return (
-    <div className="bg-dark p-4">
+    <div className="p-4">
       <div className="max-w-md mx-auto">
         {/* Header */}
         <div className="flex items-center justify-between mb-3">
@@ -169,26 +169,29 @@ export default function SquadPage() {
                 onClick={() => handleSlotClick(idx)}
               >
                 {card ? (
-                  <>
-                    <div className="flex items-center gap-0.5">
-                      <div className={`w-9 h-9 rounded-full border-2 border-white/80 flex items-center justify-center text-[11px] font-bold text-white shadow-md group-hover:scale-110 transition-transform ${cardTone(card.overall, card.star)}`}>
-                        {card.real_overall}
-                      </div>
+                  <div className="flex flex-col items-center group-hover:scale-110 transition-transform">
+                    <div className="w-9 h-9 rounded-full overflow-hidden border-2 border-white/60 shadow-md bg-slate-800">
+                      <img
+                        src={`/game-assets/avatars/${card.player_id}.png`}
+                        alt={card.name}
+                        className="w-full h-full object-cover"
+                        onError={(e) => { (e.target as HTMLImageElement).style.display = 'none' }}
+                      />
+                    </div>
+                    <div className="flex items-center gap-0.5 mt-0.5">
+                      <span className={`text-[10px] font-bold ${overallColor(card.overall, card.star)}`}>{card.real_overall}</span>
                       {(() => { const diff = card.real_overall - card.overall; return diff !== 0 ? (
-                        <span className={`text-[7px] font-bold leading-none ${diff > 0 ? "text-red-400" : "text-green-400"}`}>{diff > 0 ? "▲" : "▼"}{Math.abs(diff)}</span>
+                        <span className={`text-[7px] font-bold ${diff > 0 ? "text-red-400" : "text-green-400"}`}>{diff > 0 ? "+" : ""}{diff}</span>
                       ) : null })()}
                     </div>
-                    <span className={`text-[9px] mt-0.5 font-medium truncate max-w-[56px] text-center ${overallColor(card.overall, card.star)}`}>
-                      {card.name}
-                    </span>
-                    <span className="text-[8px] text-yellow-400">{'★'.repeat(Math.min(card.star, 5))}{card.star > 5 ? `+${card.star-5}` : ''}</span>
-                  </>
+                    <span className="text-[8px] text-white/80 truncate max-w-[52px] text-center font-medium">{card.name}</span>
+                  </div>
                 ) : (
                   <>
-                    <div className="w-9 h-9 rounded-full bg-slate-700/80 border-2 border-dashed border-slate-500 flex items-center justify-center text-slate-400 text-xs group-hover:border-accent transition-colors">
+                    <div className="w-9 h-9 rounded-full bg-slate-700/60 border-2 border-dashed border-slate-500/60 flex items-center justify-center text-slate-400 text-xs group-hover:border-gold/60 transition-colors">
                       +
                     </div>
-                    <span className="text-[9px] text-slate-500 mt-0.5">{squad.positions[idx]}</span>
+                    <span className="text-[8px] text-slate-500 mt-0.5">{squad.positions[idx]}</span>
                   </>
                 )}
               </div>

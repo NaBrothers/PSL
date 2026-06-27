@@ -25,6 +25,7 @@ class PoolNotFound(LotteryError):
 @dataclass
 class DrawnCard:
     id: int
+    player_id: int
     name: str
     position: str
     overall: int
@@ -111,7 +112,7 @@ class LotteryService:
         drawn = []
         for i, card in enumerate(cards):
             drawn.append(DrawnCard(
-                id=ids[i], name=card.player.Name, position=card.player.Position,
+                id=ids[i], player_id=card.player.ID, name=card.player.Name, position=card.player.Position,
                 overall=card.overall, star=card.star, style=card.style,
                 style_name=get_style_name(card.style, card.player.Position),
             ))

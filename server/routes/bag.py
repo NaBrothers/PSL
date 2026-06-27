@@ -101,7 +101,7 @@ def global_search(query: str = "", user=Depends(get_current_user)):
     db = server.database.db
     if query and len(query) >= 1:
         rows = db.query_all(
-            "SELECT c.ID, c.Star, c.Style, c.Breach, p.Name, p.Position, p.Overall, u.Name as OwnerName "
+            "SELECT c.ID, c.Star, c.Style, c.Breach, p.Name, p.Position, p.Overall, u.Name as OwnerName, c.Player "
             "FROM cards c JOIN players p ON c.Player = p.ID JOIN users u ON c.User = u.QQ "
             "WHERE p.Name LIKE ? "
             "ORDER BY (p.Overall + CASE c.Star "
@@ -113,7 +113,7 @@ def global_search(query: str = "", user=Depends(get_current_user)):
         )
     else:
         rows = db.query_all(
-            "SELECT c.ID, c.Star, c.Style, c.Breach, p.Name, p.Position, p.Overall, u.Name as OwnerName "
+            "SELECT c.ID, c.Star, c.Style, c.Breach, p.Name, p.Position, p.Overall, u.Name as OwnerName, c.Player "
             "FROM cards c JOIN players p ON c.Player = p.ID JOIN users u ON c.User = u.QQ "
             "ORDER BY (p.Overall + CASE c.Star "
             "WHEN 1 THEN 0 WHEN 2 THEN 1 WHEN 3 THEN 2 WHEN 4 THEN 4 WHEN 5 THEN 6 "
@@ -126,7 +126,7 @@ def global_search(query: str = "", user=Depends(get_current_user)):
     results = []
     for r in rows:
         results.append({
-            "card_id": r[0], "star": r[1], "style": r[2], "breach": r[3],
+            "card_id": r[0], "player_id": r[8], "star": r[1], "style": r[2], "breach": r[3],
             "style_name": get_style_name(r[2], r[5]),
             "name": r[4], "position": r[5], "overall": compute_overall(r[6], r[1]),
             "owner": r[7],

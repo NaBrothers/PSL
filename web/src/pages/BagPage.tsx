@@ -4,8 +4,9 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/u
 import { Input } from '@/components/ui/input'
 import { Grid3X3, List } from 'lucide-react'
 import api from '../api/client'
-import { overallColor, rarityBg, rarityBorder, STYLE_NAMES } from '@/lib/card-display'
+import { overallColor, rarityBorder, STYLE_NAMES } from '@/lib/card-display'
 import PlayerCardDetail from '@/components/PlayerCardDetail'
+import PlayerCard from '@/components/PlayerCard'
 import CompareView from '@/components/CompareView'
 
 interface BagCard {
@@ -218,7 +219,7 @@ export default function BagPage() {
     setDialogMode("compare-view")
   }
   return (
-    <div className="bg-dark p-4 flex flex-col h-full">
+    <div className="p-4 flex flex-col h-full">
       {/* Header */}
       <div className="flex items-center justify-between mb-3">
         <h1 className="text-lg font-bold text-slate-100">背包 <span className="text-sm text-slate-500 font-normal">({total})</span></h1>
@@ -289,24 +290,24 @@ export default function BagPage() {
       {/* Card list */}
       <div ref={listRef} className="flex-1 overflow-y-auto scrollbar-hide">
         {viewMode === 'grid' ? (
-          <div className="grid grid-cols-3 gap-2 mb-3">
+          <div className="grid grid-cols-3 gap-2 mb-3 justify-items-center">
             {cards.map(card => (
-              <div
-                key={card.id}
-                onClick={() => handleCardClick(card)}
-                className={`relative rounded-lg border-2 p-2 text-center cursor-pointer transition-all ${rarityBorder(card.overall, card.star)} ${rarityBg(card.overall, card.star)} ${selected.has(card.id) ? 'ring-2 ring-accent scale-95' : 'hover:scale-105'}`}
-              >
+              <div key={card.id} className="relative">
                 {manageMode && (
-                  <div className={`absolute top-1 left-1 w-4 h-4 rounded border ${selected.has(card.id) ? 'bg-accent border-accent' : 'border-slate-500'}`} />
+                  <div className={`absolute -top-1 -left-1 z-10 w-4 h-4 rounded border ${selected.has(card.id) ? 'bg-accent border-accent' : 'border-slate-500 bg-dark-card'}`} />
                 )}
-                <div className="text-[10px] text-slate-500 absolute top-1 right-1">{card.position}</div>
-                {card.locked && <div className="absolute bottom-1 right-1 text-[10px]">🔒</div>}
-                {card.status === 2 && <div className="absolute bottom-1 left-1 text-[8px] text-accent font-bold">首发</div>}
-                {card.status === 1 && <div className="absolute bottom-1 left-1 text-[8px] text-orange-400 font-bold">转会中</div>}
-                <div className={`text-xl font-bold mt-3 ${overallColor(card.overall, card.star)}`}>{card.overall}</div>
-                <div className="text-[10px] text-slate-300 truncate mt-0.5">{card.name}</div>
-                <div className="text-[9px] text-yellow-400 mt-0.5">{card.star <= 5 ? '★'.repeat(card.star) : `★${card.star}`}</div>
-                {card.style && <div className="text-[8px] text-emerald-400 mt-0.5 truncate">{STYLE_NAMES[card.style] || card.style}</div>}
+                <PlayerCard
+                  playerId={card.player_id}
+                  name={card.name}
+                  position={card.position}
+                  overall={card.overall}
+                  star={card.star}
+                  style={card.style}
+                  size="sm"
+                  selected={selected.has(card.id)}
+                  badge={card.status === 2 ? '首发' : card.status === 1 ? '转会中' : card.locked ? '🔒' : undefined}
+                  onClick={() => handleCardClick(card)}
+                />
               </div>
             ))}
           </div>

@@ -2,8 +2,8 @@ import React, { useState, createContext, useContext } from 'react'
 import ReactDOM from 'react-dom/client'
 import { BrowserRouter, Routes, Route, Navigate, useNavigate, useLocation } from 'react-router-dom'
 import './index.css'
-import { Card, CardContent } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
+import { Home, Shield, Swords, Backpack, Menu } from 'lucide-react'
 import LoginPage from './pages/LoginPage'
 import HomePage from './pages/HomePage'
 import SquadPage from './pages/SquadPage'
@@ -28,28 +28,36 @@ function TabBar() {
   const navigate = useNavigate()
   const location = useLocation()
   const tabs = [
-    { path: '/home', label: '首页' },
-    { path: '/squad', label: '球队' },
-    { path: '/match', label: '比赛' },
-    { path: '/bag', label: '背包' },
-    { path: '/more', label: '更多' },
+    { path: '/home', label: '首页', icon: Home },
+    { path: '/squad', label: '球队', icon: Shield },
+    { path: '/match', label: '比赛', icon: Swords },
+    { path: '/bag', label: '背包', icon: Backpack },
+    { path: '/more', label: '更多', icon: Menu },
   ]
 
   if (location.pathname === '/login') return null
 
   return (
-    <nav className="sticky bottom-0 h-16 bg-slate-900 border-t border-slate-800 flex z-50">
-      {tabs.map(t => (
-        <button
-          key={t.path}
-          onClick={() => navigate(t.path)}
-          className={`flex-1 h-full text-sm font-medium transition-colors ${
-            location.pathname === t.path ? 'text-accent' : 'text-slate-500'
-          }`}
-        >
-          {t.label}
-        </button>
-      ))}
+    <nav className="sticky bottom-0 h-16 bg-gradient-to-t from-[#070b16] via-[#0c1222]/98 to-[#0c1222]/90 backdrop-blur-md border-t border-gold/20 flex z-50">
+      {tabs.map(t => {
+        const active = location.pathname === t.path
+        const Icon = t.icon
+        return (
+          <button
+            key={t.path}
+            onClick={() => navigate(t.path)}
+            className={`flex-1 h-full flex flex-col items-center justify-center gap-0.5 relative transition-all ${
+              active ? 'text-gold-light' : 'text-slate-500'
+            }`}
+          >
+            {active && (
+              <div className="absolute top-0 left-1/2 -translate-x-1/2 w-8 h-0.5 bg-gradient-to-r from-transparent via-gold-light to-transparent rounded-full" />
+            )}
+            <Icon size={20} strokeWidth={active ? 2.5 : 1.5} />
+            <span className="text-[10px] font-medium">{t.label}</span>
+          </button>
+        )
+      })}
     </nav>
   )
 }
@@ -58,34 +66,37 @@ function MorePage() {
   const navigate = useNavigate()
   const { setToken } = useAuth()
   const pages = [
-    { path: '/lottery', label: '抽卡' },
-    { path: '/transfer', label: '转会市场' },
-    { path: '/league', label: '联赛' },
-    { path: '/challenge', label: '每日挑战' },
-    { path: '/search', label: '全局查询' },
+    { path: '/lottery', label: '抽卡', desc: '开启卡包获取球员' },
+    { path: '/transfer', label: '转会市场', desc: '买卖球员卡' },
+    { path: '/league', label: '联赛', desc: '查看积分榜和赛程' },
+    { path: '/challenge', label: '每日挑战', desc: '挑战NPC赢取奖励' },
+    { path: '/search', label: '全局查询', desc: '搜索全服球员卡' },
   ]
   return (
-    <div className="bg-dark p-4">
-      <div className="max-w-md mx-auto">
-        <h1 className="text-lg font-bold text-slate-100 mb-4">更多</h1>
-        <div className="space-y-2">
-          {pages.map(p => (
-            <Card key={p.path} className="cursor-pointer hover:border-slate-600 transition-colors" onClick={() => navigate(p.path)}>
-              <CardContent className="p-4 flex items-center justify-between">
-                <span className="text-slate-200 font-medium text-sm">{p.label}</span>
-                <span className="text-slate-600">→</span>
-              </CardContent>
-            </Card>
-          ))}
-        </div>
-        <Button
-          variant="outline"
-          className="w-full mt-6 text-red-400 border-red-900/50 hover:bg-red-950/30"
-          onClick={() => { setToken(null); navigate('/login') }}
-        >
-          退出登录
-        </Button>
+    <div className="p-4 relative z-10">
+      <h1 className="text-lg font-bold text-slate-100 mb-4">更多</h1>
+      <div className="space-y-2">
+        {pages.map(p => (
+          <div
+            key={p.path}
+            className="bg-dark-card/80 border border-dark-border rounded-xl p-4 flex items-center justify-between cursor-pointer hover:border-gold/30 transition-colors"
+            onClick={() => navigate(p.path)}
+          >
+            <div>
+              <span className="text-slate-200 font-medium text-sm">{p.label}</span>
+              <p className="text-slate-500 text-xs mt-0.5">{p.desc}</p>
+            </div>
+            <span className="text-gold/60 text-lg">›</span>
+          </div>
+        ))}
       </div>
+      <Button
+        variant="outline"
+        className="w-full mt-6 text-red-400 border-red-900/50 hover:bg-red-950/30"
+        onClick={() => { setToken(null); navigate('/login') }}
+      >
+        退出登录
+      </Button>
     </div>
   )
 }
@@ -107,7 +118,7 @@ function App() {
       <ToastProvider>
         <BrowserRouter>
           <div className="flex flex-col h-full overflow-hidden">
-            <div className="flex-1 overflow-y-auto scrollbar-hide">
+            <div className="flex-1 overflow-y-auto scrollbar-hide relative z-10">
               <Routes>
                 <Route path="/login" element={<LoginPage />} />
                 <Route path="/home" element={token ? <HomePage /> : <Navigate to="/login" />} />

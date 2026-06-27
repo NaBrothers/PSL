@@ -50,7 +50,7 @@ export default function LeaguePage() {
   }
 
   return (
-    <div className="bg-dark p-4">
+    <div className="p-4">
       <div className="max-w-md mx-auto">
         <div className="flex items-center justify-between mb-4">
           <h1 className="text-lg font-bold text-slate-100">联赛</h1>
