@@ -98,16 +98,11 @@ export default function PlayerCard({
       <div className="flex items-center justify-between px-1.5 pt-1">
         <div className="flex items-center gap-1">
           <StarDisplay star={star} />
-          {breach ? <span className="text-[7px] text-green-400 font-bold">◆{breach}</span> : null}
+          {breach ? <span className="text-[8px] text-green-400 font-bold">◆{breach}</span> : null}
         </div>
         {badge && <span className="text-[7px] font-bold text-gold bg-black/60 px-1 rounded">{badge}</span>}
       </div>
-      {/* Style centered at top */}
-      {style && (
-        <div className="text-[7px] text-emerald-400/80 truncate text-center px-1">
-          {STYLE_NAMES[style] || style}
-        </div>
-      )}
+
 
       {/* Avatar - square, fills width */}
       <div className="relative mx-1.5 mt-0.5 aspect-square rounded overflow-hidden bg-slate-800">
@@ -121,6 +116,12 @@ export default function PlayerCard({
         <div className={`absolute bottom-0 left-0 px-1.5 py-0.5 bg-black/70 rounded-tr text-sm font-black ${overallColor(overall, star)}`}>
           {overall}
         </div>
+        {/* Style badge on avatar top-right */}
+        {style && (
+          <div className="absolute top-0 right-0 bg-black/60 px-1 py-0.5 rounded-bl text-[7px] text-emerald-400 font-medium">
+            {STYLE_NAMES[style] || style}
+          </div>
+        )}
       </div>
 
       {/* Name with position */}
