@@ -116,9 +116,9 @@ export default function PlayerCard({
         <div className={`absolute bottom-0 left-0 px-1.5 py-0.5 bg-black/70 rounded-tr text-sm font-black ${overallColor(overall, star)}`}>
           {overall}
         </div>
-        {/* Style badge on avatar top-right */}
+        {/* Style badge on avatar bottom-right */}
         {style && (
-          <div className="absolute top-0 right-0 bg-black/60 px-1 py-0.5 rounded-bl text-[7px] text-emerald-400 font-medium">
+          <div className="absolute bottom-0 right-0 bg-black/60 px-1 py-0.5 rounded-tl text-[7px] text-emerald-400 font-medium">
             {STYLE_NAMES[style] || style}
           </div>
         )}
