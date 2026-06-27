@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
+import { createPortal } from 'react-dom'
 import { Button } from '@/components/ui/button'
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog'
 import { Input } from '@/components/ui/input'
@@ -181,10 +182,9 @@ export default function BagPage() {
     try {
       const res = await api.post("/cards/upgrade", { main_id: detail.id, sub_id: subId })
       setOpResult(`强化成功！新星级: ${"★".repeat(res.data.new_star)}`)
-      loadBag(1)
-      const newDetail = await api.get(`/cards/${detail.id}`)
-      setDetail(newDetail.data)
       setDialogMode("detail")
+      loadBag(1).catch(() => {})
+      api.get(`/cards/${detail.id}`).then(r => setDetail(r.data)).catch(() => {})
     } catch (e: any) {
       setOpResult(e.response?.data?.detail || "强化失败")
       setDialogMode("detail")
@@ -195,10 +195,9 @@ export default function BagPage() {
     try {
       const res = await api.post("/cards/breach", { main_id: detail.id, sub_id: subId })
       setOpResult(`突破成功！「${res.data.boosted_ability}」+${res.data.boost_amount}${res.data.style_bonus ? " (风格加成!)" : ""}`)
-      loadBag(1)
-      const newDetail = await api.get(`/cards/${detail.id}`)
-      setDetail(newDetail.data)
       setDialogMode("detail")
+      loadBag(1).catch(() => {})
+      api.get(`/cards/${detail.id}`).then(r => setDetail(r.data)).catch(() => {})
     } catch (e: any) {
       setOpResult(e.response?.data?.detail || "突破失败")
       setDialogMode("detail")
@@ -353,14 +352,15 @@ export default function BagPage() {
       )}
 
       {/* Operation result toast */}
-      {opResult && (
+      {opResult && createPortal(
         <div
-          className={`fixed top-4 left-1/2 -translate-x-1/2 bg-slate-800/95 border border-slate-600 rounded-lg px-4 py-2 text-sm text-slate-200 z-[120] shadow-2xl backdrop-blur transition-all duration-500 ${
+          className={`fixed top-4 left-1/2 -translate-x-1/2 bg-slate-800/95 border border-slate-600 rounded-lg px-4 py-2 text-sm text-slate-200 z-[9999] shadow-2xl backdrop-blur transition-all duration-500 ${
             showToast ? 'translate-y-0 opacity-100' : '-translate-y-6 opacity-0'
           }`}
         >
           {opResult}
-        </div>
+        </div>,
+        document.body
       )}
 
       {/* Detail Dialog */}

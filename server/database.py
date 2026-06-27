@@ -8,6 +8,7 @@ class Database:
         self.db = sqlite3.connect(self.db_path, check_same_thread=False)
         self.db.execute("PRAGMA journal_mode=WAL")
         self.db.execute("PRAGMA foreign_keys=ON")
+        self.db.execute("PRAGMA busy_timeout=5000")
         self.db.isolation_level = None
 
     def close(self):
