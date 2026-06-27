@@ -25,6 +25,7 @@ class BagCardSchema(BaseModel):
     locked: bool
     status: int
     status_text: str
+    top_abilities: Optional[list] = None
 
 
 class BagPageSchema(BaseModel):

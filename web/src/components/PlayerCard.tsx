@@ -76,7 +76,7 @@ export default function PlayerCard({
   const avatarUrl = `/game-assets/avatars/${playerId}.png`
 
   const sizeClasses = {
-    sm: 'w-[108px]',
+    sm: 'w-full',
     md: 'w-[130px]',
     lg: 'w-[160px]',
   }
@@ -93,11 +93,17 @@ export default function PlayerCard({
       `}
       onClick={onClick}
     >
-      {/* Top section: star + overall + position */}
+      {/* Top section: star + badge */}
       <div className="flex items-center justify-between px-1.5 pt-1">
         <StarDisplay star={star} />
-        <span className="text-[8px] text-slate-400 uppercase">{position}</span>
+        {badge && <span className="text-[7px] font-bold text-gold bg-black/60 px-1 rounded">{badge}</span>}
       </div>
+      {/* Style centered at top */}
+      {style && (
+        <div className="text-[7px] text-emerald-400/80 truncate text-center px-1">
+          {STYLE_NAMES[style] || style}
+        </div>
+      )}
 
       {/* Avatar - square, fills width */}
       <div className="relative mx-1.5 mt-0.5 aspect-square rounded overflow-hidden bg-slate-800">
@@ -113,15 +119,12 @@ export default function PlayerCard({
         </div>
       </div>
 
-      {/* Name */}
-      <div className="text-[9px] text-slate-200 font-medium truncate text-center px-1 mt-1">{name}</div>
+      {/* Name with position */}
+      <div className="text-[9px] text-slate-200 font-medium truncate text-center px-1 mt-1">
+        <span className="text-slate-500">{position}</span> {name}
+      </div>
 
-      {/* Style */}
-      {style && (
-        <div className="text-[7px] text-emerald-400/80 truncate text-center px-1">
-          {STYLE_NAMES[style] || style}
-        </div>
-      )}
+
 
       {/* Top 3 abilities */}
       {topAbilities && topAbilities.length > 0 && (
@@ -135,12 +138,7 @@ export default function PlayerCard({
         </div>
       )}
 
-      {/* Badge overlay */}
-      {badge && (
-        <div className="absolute top-1 right-1 text-[7px] font-bold text-gold bg-black/60 px-1 rounded">
-          {badge}
-        </div>
-      )}
+
     </div>
   )
 }

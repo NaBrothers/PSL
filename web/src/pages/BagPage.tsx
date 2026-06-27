@@ -292,7 +292,7 @@ export default function BagPage() {
       {/* Card list */}
       <div ref={listRef} className="flex-1 overflow-y-auto scrollbar-hide">
         {viewMode === 'grid' ? (
-          <div className="grid grid-cols-3 gap-2 mb-3 justify-items-center">
+          <div className="grid grid-cols-3 gap-1.5 mb-3">
             {cards.map(card => (
               <div key={card.id} className="relative">
                 {manageMode && (
