@@ -31,6 +31,7 @@ export default function LotteryPage() {
   const [rewardPacks, setRewardPacks] = useState<{name: string; count: number}[]>([])
   const [drawn, setDrawn] = useState<DrawnCard[]>([])
   const [loading, setLoading] = useState(false)
+  const [lastDraw, setLastDraw] = useState<{pool: string; count: number}>({pool: "", count: 1})
   const [animating, setAnimating] = useState(true)
   const [detail, setDetail] = useState<any>(null)
   const { showToast } = useToast()
@@ -47,6 +48,7 @@ export default function LotteryPage() {
     setDrawn([])
     setAnimating(true)
     try {
+      setLastDraw({pool, count})
       const res = await api.post('/lottery/draw', { pool, count })
       setDrawn(res.data.cards)
       setTimeout(() => setAnimating(false), 600)
@@ -84,8 +86,8 @@ export default function LotteryPage() {
           <Button variant="outline" className="flex-1" onClick={() => setDrawn([])}>
             返回卡包
           </Button>
-          <Button className="flex-1" onClick={() => { setDrawn([]); draw(pools[0]?.key || '', 10) }} disabled={loading}>
-            再来十连
+          <Button className="flex-1" onClick={() => { setDrawn([]); draw(lastDraw.pool, lastDraw.count) }} disabled={loading}>
+            {lastDraw.count === 1 ? '再来一发' : '再来十连'}
           </Button>
         </div>
 

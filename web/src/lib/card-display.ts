@@ -103,6 +103,18 @@ export function cardTone(ov: number, star?: number): string {
   return 'bg-slate-500'
 }
 
+export function cardBorderColor(ov: number, star?: number): string {
+  const v = star != null ? colorValue(ov, star) : ov
+  if (v >= 97) return 'border-yellow-400'
+  if (v >= 94) return 'border-pink-400'
+  if (v >= 92) return 'border-red-400'
+  if (v >= 89) return 'border-orange-400'
+  if (v >= 87) return 'border-purple-400'
+  if (v >= 84) return 'border-blue-400'
+  if (v >= 82) return 'border-green-400'
+  return 'border-slate-400'
+}
+
 export type PositionRating = { position: string; rating: number; diff: number } | [string, number]
 
 export function normalizePositionRating(item: PositionRating, baseOverall: number) {

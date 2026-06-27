@@ -3,7 +3,8 @@ import { Button } from '@/components/ui/button'
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog'
 import { Input } from '@/components/ui/input'
 import api from '../api/client'
-import { overallColor } from '@/lib/card-display'
+import { cardBorderColor, overallColor } from '@/lib/card-display'
+import PlayerCardDetail from '@/components/PlayerCardDetail'
 import CompareView from '@/components/CompareView'
 
 interface CardInfo {
@@ -62,6 +63,8 @@ export default function SquadPage() {
   const [showFormation, setShowFormation] = useState(false)
   const [searchQuery, setSearchQuery] = useState('')
   const [compareData, setCompareData] = useState<any>(null)
+  const [popupSlot, setPopupSlot] = useState<number | null>(null)
+  const [detail, setDetail] = useState<any>(null)
 
   const loadSquad = () => {
     api.get('/squad').then(res => setSquad(res.data))
@@ -70,12 +73,28 @@ export default function SquadPage() {
   useEffect(() => { loadSquad() }, [])
 
   const handleSlotClick = (idx: number) => {
+    if (!squad?.cards[idx]) {
+      openReplaceDialog(idx)
+    } else {
+      setPopupSlot(idx)
+    }
+  }
+
+  const openReplaceDialog = (idx: number) => {
+    setPopupSlot(null)
     setSelectedSlot(idx)
     setSearchQuery("")
     const pos = squad?.positions[idx] || "CM"
     api.get("/bag", { params: { page: 1, page_size: 500, query: "", for_position: pos } }).then(res => {
       setReplaceCandidates(res.data.cards.filter((c: BagCard) => c.status === 0))
     })
+  }
+
+  const openDetail = (idx: number) => {
+    setPopupSlot(null)
+    const card = squad?.cards[idx]
+    if (!card) return
+    api.get(`/cards/${card.id}`).then(res => setDetail(res.data))
   }
 
   const handleReplace = async (candidateId: number) => {
@@ -170,7 +189,7 @@ export default function SquadPage() {
               >
                 {card ? (
                   <div className="flex flex-col items-center group-hover:scale-110 transition-transform">
-                    <div className="w-9 h-9 rounded-full overflow-hidden border-2 border-white/60 shadow-md bg-slate-800">
+                    <div className={`w-9 h-9 rounded-full overflow-hidden border-2 shadow-md bg-slate-800 ${cardBorderColor(card.overall, card.star)}`}>
                       <img
                         src={`/game-assets/avatars/${card.player_id}.png`}
                         alt={card.name}
@@ -266,6 +285,33 @@ export default function SquadPage() {
               </Button>
             ))}
           </div>
+        </DialogContent>
+      </Dialog>
+
+      {/* Player action popup */}
+      <Dialog open={popupSlot !== null} onOpenChange={(open) => { if (!open) setPopupSlot(null) }}>
+        <DialogContent className="max-w-[240px]">
+          {popupSlot !== null && squad?.cards[popupSlot] && (
+            <div className="flex flex-col gap-2 pt-2">
+              <p className="text-center text-sm text-slate-300 font-medium mb-1">{squad.cards[popupSlot]!.name}</p>
+              <Button className="w-full" onClick={() => openDetail(popupSlot)}>球员详情</Button>
+              <Button variant="outline" className="w-full" onClick={() => openReplaceDialog(popupSlot)}>替换球员</Button>
+            </div>
+          )}
+        </DialogContent>
+      </Dialog>
+
+      {/* Player detail dialog */}
+      <Dialog open={detail !== null} onOpenChange={(open) => { if (!open) setDetail(null) }}>
+        <DialogContent className="max-h-[85vh] overflow-y-auto scrollbar-hide">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2 flex-wrap">
+              <span className="text-slate-500 text-sm">[{detail?.id}]</span>
+              <span className={overallColor(detail?.overall || 0, detail?.star)}>{detail?.name}</span>
+              <span className={`font-bold ${overallColor(detail?.overall || 0, detail?.star)}`}>{detail?.overall}</span>
+            </DialogTitle>
+          </DialogHeader>
+          <PlayerCardDetail detail={detail} />
         </DialogContent>
       </Dialog>
 

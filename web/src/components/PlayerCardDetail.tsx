@@ -27,8 +27,18 @@ export default function PlayerCardDetail({ detail }: PlayerCardDetailProps) {
   ]
 
   return (
-    <div className="space-y-3">
-      <div className="flex items-center gap-3 text-sm">
+    <div className="space-y-3 relative">
+      {detail.player_id && (
+        <div className="absolute -top-1 right-0 w-16 h-16 rounded-lg overflow-hidden border border-slate-600/50 bg-slate-800">
+          <img
+            src={`/game-assets/avatars/${detail.player_id}.png`}
+            alt={detail.name}
+            className="w-full h-full object-cover"
+            onError={(e) => { (e.target as HTMLImageElement).style.display = 'none' }}
+          />
+        </div>
+      )}
+      <div className="flex items-center gap-3 text-sm pr-18">
         <span className="text-yellow-400">{'★'.repeat(Math.min(detail.star, 5))}{detail.star > 5 ? `×${detail.star}` : ''}</span>
         <span className="text-green-400">◆+{detail.breach}</span>
         <span className="text-slate-300">{detail.style_name || detail.style}</span>
