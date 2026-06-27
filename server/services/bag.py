@@ -71,29 +71,51 @@ class BagService:
                 sort: str = "overall", position: str = "", color: str = "") -> BagPage:
         rows = self.db.query_all(
             "SELECT c.ID, c.Player, c.Star, c.Style, c.Status, c.Locked, c.Breach, "
-            "p.Name, p.Position, p.Overall, "
-            "p.Sprint_Speed, p.Finishing, p.Short_Passing, p.Dribbling, "
-            "p.Standing_Tackle, p.Stamina, p.GK_Reflexes, p.Heading_Accuracy, "
-            "p.Long_Shots, p.Vision "
+            "c.Ext_Abilities, "
+            "p.Name, p.Position, p.Overall, p.Height, "
+            "p.Heading_Accuracy, p.Jumping, p.Strength, p.Long_Shots, p.Shot_Power, "
+            "p.Finishing, p.Long_Passing, p.Short_Passing, p.Dribbling, p.Ball_Control, "
+            "p.Balance, p.Sliding_Tackle, p.Standing_Tackle, p.Defensive_Awareness, "
+            "p.Aggression, p.Interceptions, p.Sprint_Speed, p.Acceleration, "
+            "p.Composure, p.GK_Handling, p.GK_Diving, p.GK_Positioning, p.GK_Reflexes, p.Reactions "
             "FROM cards c JOIN players p ON c.Player = p.ID "
             "WHERE c.User = ?",
             (qq,)
         )
 
+        import json as _json
         STATUS_TEXT = {0: "", 1: "转会中", 2: "首发"}
-
-        ABILITY_LABELS = {"速度": 10, "射门": 11, "传球": 12, "盘带": 13, "防守": 14, "体力": 15, "门将": 16, "头球": 17, "远射": 18, "视野": 19}
-        LABEL_NAMES = ["速度", "射门", "传球", "盘带", "防守", "体力", "门将", "头球", "远射", "视野"]
+        ABILITY_NAMES = {"Heading": "头球", "Finishing": "终结", "Short_Passing": "短传",
+            "Dribbling": "盘带", "Tackling": "抢断", "Defence": "防守", "Speed": "速度",
+            "Long_Shot": "远射", "Long_Passing": "长传", "IQ": "球商",
+            "GK_Saving": "扑救", "GK_Positioning": "站位", "GK_Reaction": "反应"}
 
         cards = []
         for r in rows:
-            ov = compute_overall(r[9], r[2])
-            # Compute top 3 abilities
-            ability_vals = [(LABEL_NAMES[i], r[10 + i] or 0) for i in range(10)]
-            ability_vals.sort(key=lambda x: -x[1])
-            top3 = [{"name": a[0], "value": a[1]} for a in ability_vals[:3]]
+            ov = compute_overall(r[10], r[2])
+            pos = (r[9] or "").split(",")[0].strip()
+            ext = _json.loads(r[7]) if r[7] else {}
+            height_str = r[11] or "180"
+            height_val = int(height_str) if str(height_str).isdigit() else 180
+            abilities = compute_abilities(
+                star=r[2], style=r[3], position=pos, height=height_val,
+                heading_accuracy=r[12] or 0, jumping=r[13] or 0, strength=r[14] or 0,
+                long_shots=r[15] or 0, shot_power=r[16] or 0, finishing=r[17] or 0,
+                long_passing=r[18] or 0, short_passing=r[19] or 0, dribbling=r[20] or 0,
+                ball_control=r[21] or 0, balance=r[22] or 0, sliding_tackle=r[23] or 0,
+                standing_tackle=r[24] or 0, defensive_awareness=r[25] or 0,
+                aggression=r[26] or 0, interceptions=r[27] or 0, sprint_speed=r[28] or 0,
+                acceleration=r[29] or 0, composure=r[30] or 0, gk_handling=r[31] or 0,
+                gk_diving=r[32] or 0, gk_positioning=r[33] or 0, gk_reflexes=r[34] or 0,
+                reactions=r[35] or 0, ext_abilities=ext,
+            )
+            # Get top 3 abilities (exclude GK stats for non-GK)
+            exclude = {"GK_Saving", "GK_Positioning", "GK_Reaction"} if pos not in GOALKEEPER else {"Heading", "Finishing", "Long_Shot", "Tackling"}
+            ability_list = [(ABILITY_NAMES.get(k, k), v) for k, v in abilities.items() if k not in exclude]
+            ability_list.sort(key=lambda x: -x[1])
+            top3 = [{"name": a[0], "value": a[1]} for a in ability_list[:3]]
             cards.append(BagCardInfo(
-                id=r[0], player_id=r[1], name=r[7], position=(r[8] or "").split(",")[0].strip(),
+                id=r[0], player_id=r[1], name=r[8], position=pos,
                 overall=ov, real_overall=ov, star=r[2], style=r[3],
                 breach=r[6], locked=bool(r[5]), status=r[4] or 0,
                 status_text=STATUS_TEXT.get(r[4] or 0, ""),
