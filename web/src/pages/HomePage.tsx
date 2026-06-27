@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { Sparkles, Backpack, Store, Search, Trophy as TrophyIcon, CalendarDays } from 'lucide-react'
 import api from '../api/client'
+import { cardBorderColor } from '@/lib/card-display'
 
 interface UserInfo {
   id: number
@@ -17,7 +18,7 @@ interface SquadPreview {
   forward_ability: number
   midfield_ability: number
   guard_ability: number
-  cards: ({ player_id: number; name: string } | null)[]
+  cards: ({ player_id: number; name: string; overall: number; star: number } | null)[]
 }
 
 export default function HomePage() {
@@ -43,55 +44,49 @@ export default function HomePage() {
     { icon: TrophyIcon, label: '挑战', path: '/challenge', color: 'bg-yellow-500/20 text-yellow-400' },
   ]
 
-  const topPlayers = squad?.cards?.filter(c => c !== null).slice(0, 3) || []
+  const topPlayers = squad?.cards?.filter(c => c !== null).slice(0, 5) || []
 
   return (
-    <div className="p-3 space-y-3">
+    <div className="p-3 flex flex-col gap-3 h-full">
       {/* User header */}
       <div className="flex items-center gap-3">
-        <div className="w-11 h-11 rounded-full bg-gradient-to-br from-gold/30 to-gold/10 border-2 border-gold/50 flex items-center justify-center shadow-[0_0_10px_rgba(212,168,67,0.15)]">
-          <span className="text-gold font-bold text-lg">{user.name[0]}</span>
+        <div className="w-10 h-10 rounded-full bg-gradient-to-br from-gold/30 to-gold/10 border-2 border-gold/50 flex items-center justify-center shadow-[0_0_10px_rgba(212,168,67,0.15)]">
+          <span className="text-gold font-bold text-base">{user.name[0]}</span>
         </div>
         <div className="flex-1 min-w-0">
-          <h1 className="text-base font-bold text-slate-100 truncate">{user.name}</h1>
-          <p className="text-[10px] text-slate-500">ID: {user.id} · 战力 {squad?.total_ability || 0}</p>
+          <h1 className="text-sm font-bold text-slate-100 truncate">{user.name}</h1>
+          <p className="text-[10px] text-slate-500">ID: {user.id}</p>
         </div>
-        <div className="bg-dark-card/80 border border-gold/20 rounded-lg px-3 py-1.5">
+        <div className="bg-dark-card/80 border border-gold/20 rounded-lg px-3 py-1">
           <p className="text-gold font-bold text-sm">${user.money.toLocaleString()}</p>
         </div>
       </div>
 
-      {/* Quick icon bar */}
-      <div className="grid grid-cols-6 gap-1">
-        {quickIcons.map(item => {
-          const Icon = item.icon
-          return (
-            <div
-              key={item.path}
-              onClick={() => navigate(item.path)}
-              className="flex flex-col items-center gap-1 py-2 cursor-pointer hover:opacity-80 transition-opacity"
-            >
-              <div className={`w-9 h-9 rounded-full flex items-center justify-center ${item.color}`}>
-                <Icon size={16} />
-              </div>
-              <span className="text-[9px] text-slate-400">{item.label}</span>
-            </div>
-          )
-        })}
-      </div>
-
-      {/* Main Banner - PK */}
+      {/* Main Banner - Squad */}
       <div
-        className="relative rounded-xl overflow-hidden cursor-pointer group h-36"
-        onClick={() => navigate('/match')}
+        className="relative rounded-xl overflow-hidden cursor-pointer group flex-shrink-0"
+        onClick={() => navigate('/squad')}
       >
-        <img src="/assets/banner-stadium.jpg" alt="" className="absolute inset-0 w-full h-full object-cover" />
-        <div className="absolute inset-0 bg-gradient-to-r from-black/70 via-black/40 to-transparent" />
-        <div className="relative h-full flex items-center px-4">
-          {/* Left: player avatars */}
-          <div className="flex -space-x-3">
+        <div className="absolute inset-0 bg-gradient-to-r from-[#0a1628] via-[#0d1f3c] to-[#0a1628]" />
+        <div className="absolute inset-0 bg-[radial-gradient(ellipse_at_bottom,rgba(45,90,39,0.3),transparent_70%)]" />
+        <div className="relative px-4 py-5">
+          <div className="flex items-center justify-between mb-3">
+            <div>
+              <span className="text-white font-bold text-base">我的球队</span>
+              <span className="text-gold text-xs ml-2 border border-gold/30 rounded px-1.5 py-0.5">{squad?.formation || '442'}</span>
+            </div>
+            <div className="text-right">
+              <span className="text-2xl font-black text-white">{squad?.total_ability || 0}</span>
+              <span className="text-[10px] text-slate-400 ml-1">战力</span>
+            </div>
+          </div>
+          {/* Player avatars */}
+          <div className="flex justify-center -space-x-2">
             {topPlayers.map((p, i) => (
-              <div key={i} className="w-12 h-12 rounded-full border-2 border-white/30 overflow-hidden bg-slate-800 shadow-lg">
+              <div
+                key={i}
+                className={`w-11 h-11 rounded-full overflow-hidden border-2 bg-slate-800 shadow-lg ${cardBorderColor(p!.overall, p!.star)}`}
+              >
                 <img
                   src={`/game-assets/avatars/${p!.player_id}.png`}
                   alt=""
@@ -101,72 +96,91 @@ export default function HomePage() {
               </div>
             ))}
           </div>
-          {/* Right: CTA */}
-          <div className="ml-auto text-right">
-            <p className="text-slate-300 text-xs mb-2">选择对手，一决高下</p>
-            <div className="inline-block bg-gradient-to-r from-gold to-yellow-500 text-black font-black text-lg px-5 py-1.5 rounded-lg shadow-[0_0_12px_rgba(212,168,67,0.4)] group-hover:scale-105 transition-transform">
-              PK
+          <div className="flex justify-center gap-4 mt-2 text-[10px]">
+            <span className="text-red-400">前场 {squad?.forward_ability || 0}</span>
+            <span className="text-green-400">中场 {squad?.midfield_ability || 0}</span>
+            <span className="text-blue-400">后场 {squad?.guard_ability || 0}</span>
+          </div>
+        </div>
+      </div>
+
+      {/* Quick icon bar */}
+      <div className="grid grid-cols-6 gap-1 flex-shrink-0">
+        {quickIcons.map(item => {
+          const Icon = item.icon
+          return (
+            <div
+              key={item.path}
+              onClick={() => navigate(item.path)}
+              className="flex flex-col items-center gap-1 py-1.5 cursor-pointer hover:opacity-80 transition-opacity"
+            >
+              <div className={`w-8 h-8 rounded-full flex items-center justify-center ${item.color}`}>
+                <Icon size={15} />
+              </div>
+              <span className="text-[9px] text-slate-400">{item.label}</span>
+            </div>
+          )
+        })}
+      </div>
+
+      {/* Bottom cards - fill remaining space */}
+      <div className="flex-1 grid grid-rows-[1fr_1fr] gap-2.5 min-h-0">
+        {/* Row 1: PK + Challenge */}
+        <div className="grid grid-cols-2 gap-2.5 min-h-0">
+          <div
+            className="relative rounded-xl overflow-hidden cursor-pointer"
+            onClick={() => navigate('/match')}
+          >
+            <img src="/assets/banner-stadium.jpg" alt="" className="absolute inset-0 w-full h-full object-cover" />
+            <div className="absolute inset-0 bg-gradient-to-t from-black/80 via-black/40 to-black/20" />
+            <div className="relative h-full flex flex-col justify-end p-3">
+              <span className="text-white font-bold text-sm">比赛</span>
+              <span className="text-gold text-[10px] font-medium">PK · 对战</span>
+            </div>
+          </div>
+          <div
+            className="relative rounded-xl overflow-hidden cursor-pointer"
+            onClick={() => navigate('/challenge')}
+          >
+            <img src="/assets/entry-trophy.jpg" alt="" className="absolute inset-0 w-full h-full object-cover" />
+            <div className="absolute inset-0 bg-gradient-to-t from-black/80 via-black/40 to-black/20" />
+            <div className="relative h-full flex flex-col justify-end p-3">
+              <span className="text-white font-bold text-sm">每日挑战</span>
+              <span className="text-slate-300 text-[10px]">赢取奖励</span>
             </div>
           </div>
         </div>
-      </div>
-
-      {/* Medium entries - 2 columns */}
-      <div className="grid grid-cols-2 gap-2.5">
-        <div
-          className="relative rounded-xl overflow-hidden h-24 cursor-pointer group"
-          onClick={() => navigate('/squad')}
-        >
-          <img src="/assets/entry-pitch.jpg" alt="" className="absolute inset-0 w-full h-full object-cover" />
-          <div className="absolute inset-0 bg-gradient-to-t from-black/80 via-black/30 to-transparent" />
-          <div className="relative h-full flex flex-col justify-end p-3">
-            <span className="text-white font-bold text-sm">球队阵容</span>
-            <span className="text-slate-300 text-[10px]">{squad?.formation || '442'} · {squad?.total_ability || 0}</span>
+        {/* Row 2: Lottery + Transfer + League */}
+        <div className="grid grid-cols-3 gap-2 min-h-0">
+          <div
+            className="relative rounded-xl overflow-hidden cursor-pointer"
+            onClick={() => navigate('/lottery')}
+          >
+            <img src="/assets/entry-cards.jpg" alt="" className="absolute inset-0 w-full h-full object-cover" />
+            <div className="absolute inset-0 bg-gradient-to-t from-black/80 to-transparent" />
+            <div className="relative h-full flex flex-col justify-end p-2">
+              <span className="text-white font-bold text-xs">抽卡</span>
+            </div>
           </div>
-        </div>
-        <div
-          className="relative rounded-xl overflow-hidden h-24 cursor-pointer group"
-          onClick={() => navigate('/challenge')}
-        >
-          <img src="/assets/entry-trophy.jpg" alt="" className="absolute inset-0 w-full h-full object-cover" />
-          <div className="absolute inset-0 bg-gradient-to-t from-black/80 via-black/30 to-transparent" />
-          <div className="relative h-full flex flex-col justify-end p-3">
-            <span className="text-white font-bold text-sm">每日挑战</span>
-            <span className="text-slate-300 text-[10px]">挑战NPC赢奖励</span>
+          <div
+            className="relative rounded-xl overflow-hidden cursor-pointer"
+            onClick={() => navigate('/transfer')}
+          >
+            <img src="/assets/entry-market.jpg" alt="" className="absolute inset-0 w-full h-full object-cover" />
+            <div className="absolute inset-0 bg-gradient-to-t from-black/80 to-transparent" />
+            <div className="relative h-full flex flex-col justify-end p-2">
+              <span className="text-white font-bold text-xs">转会</span>
+            </div>
           </div>
-        </div>
-      </div>
-
-      {/* Small entries - 3 columns */}
-      <div className="grid grid-cols-3 gap-2">
-        <div
-          className="relative rounded-xl overflow-hidden h-20 cursor-pointer"
-          onClick={() => navigate('/lottery')}
-        >
-          <img src="/assets/entry-cards.jpg" alt="" className="absolute inset-0 w-full h-full object-cover" />
-          <div className="absolute inset-0 bg-gradient-to-t from-black/80 to-transparent" />
-          <div className="relative h-full flex flex-col justify-end p-2">
-            <span className="text-white font-bold text-xs">抽卡</span>
-          </div>
-        </div>
-        <div
-          className="relative rounded-xl overflow-hidden h-20 cursor-pointer"
-          onClick={() => navigate('/transfer')}
-        >
-          <img src="/assets/entry-market.jpg" alt="" className="absolute inset-0 w-full h-full object-cover" />
-          <div className="absolute inset-0 bg-gradient-to-t from-black/80 to-transparent" />
-          <div className="relative h-full flex flex-col justify-end p-2">
-            <span className="text-white font-bold text-xs">转会市场</span>
-          </div>
-        </div>
-        <div
-          className="relative rounded-xl overflow-hidden h-20 cursor-pointer"
-          onClick={() => navigate('/league')}
-        >
-          <img src="/assets/entry-league.jpg" alt="" className="absolute inset-0 w-full h-full object-cover" />
-          <div className="absolute inset-0 bg-gradient-to-t from-black/80 to-transparent" />
-          <div className="relative h-full flex flex-col justify-end p-2">
-            <span className="text-white font-bold text-xs">联赛</span>
+          <div
+            className="relative rounded-xl overflow-hidden cursor-pointer"
+            onClick={() => navigate('/league')}
+          >
+            <img src="/assets/entry-league.jpg" alt="" className="absolute inset-0 w-full h-full object-cover" />
+            <div className="absolute inset-0 bg-gradient-to-t from-black/80 to-transparent" />
+            <div className="relative h-full flex flex-col justify-end p-2">
+              <span className="text-white font-bold text-xs">联赛</span>
+            </div>
           </div>
         </div>
       </div>
