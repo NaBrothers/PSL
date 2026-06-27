@@ -125,7 +125,7 @@ export default function HomePage() {
 
       {/* Bottom cards - waterfall layout */}
       <div className="flex-1 grid grid-cols-2 grid-rows-3 gap-2.5 min-h-0">
-        {/* Left column - tall first */}
+        {/* Left: match tall card */}
         <div
           className="relative rounded-xl overflow-hidden cursor-pointer row-span-2"
           onClick={() => navigate('/match')}
@@ -137,9 +137,9 @@ export default function HomePage() {
             <span className="text-gold text-[10px] font-medium">PK · 对战</span>
           </div>
         </div>
-        {/* Right column - two short */}
+        {/* Right top: challenge */}
         <div
-          className="relative rounded-xl overflow-hidden cursor-pointer "
+          className="relative rounded-xl overflow-hidden cursor-pointer"
           onClick={() => navigate('/challenge')}
         >
           <img src="/assets/entry-trophy.jpg" alt="" className="absolute inset-0 w-full h-full object-cover" />
@@ -148,8 +148,9 @@ export default function HomePage() {
             <span className="text-white font-bold text-sm">每日挑战</span>
           </div>
         </div>
+        {/* Right bottom: lottery */}
         <div
-          className="relative rounded-xl overflow-hidden cursor-pointer "
+          className="relative rounded-xl overflow-hidden cursor-pointer"
           onClick={() => navigate('/lottery')}
         >
           <img src="/assets/entry-cards.jpg" alt="" className="absolute inset-0 w-full h-full object-cover" />
@@ -158,9 +159,9 @@ export default function HomePage() {
             <span className="text-white font-bold text-sm">抽卡</span>
           </div>
         </div>
-        {/* Second row */}
+        {/* Bottom row: transfer + league */}
         <div
-          className="relative rounded-xl overflow-hidden cursor-pointer "
+          className="relative rounded-xl overflow-hidden cursor-pointer"
           onClick={() => navigate('/transfer')}
         >
           <img src="/assets/entry-market.jpg" alt="" className="absolute inset-0 w-full h-full object-cover" />
@@ -170,23 +171,13 @@ export default function HomePage() {
           </div>
         </div>
         <div
-          className="relative rounded-xl overflow-hidden cursor-pointer "
+          className="relative rounded-xl overflow-hidden cursor-pointer"
           onClick={() => navigate('/league')}
         >
           <img src="/assets/entry-league.jpg" alt="" className="absolute inset-0 w-full h-full object-cover" />
           <div className="absolute inset-0 bg-gradient-to-t from-black/80 to-transparent" />
           <div className="relative h-full flex flex-col justify-end p-2.5">
             <span className="text-white font-bold text-sm">联赛</span>
-          </div>
-        </div>
-        <div
-          className="relative rounded-xl overflow-hidden cursor-pointer "
-          onClick={() => navigate('/search')}
-        >
-          <img src="/assets/entry-pitch.jpg" alt="" className="absolute inset-0 w-full h-full object-cover" />
-          <div className="absolute inset-0 bg-gradient-to-t from-black/80 to-transparent" />
-          <div className="relative h-full flex flex-col justify-end p-2.5">
-            <span className="text-white font-bold text-sm">全局查询</span>
           </div>
         </div>
       </div>
