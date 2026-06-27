@@ -211,7 +211,7 @@ export default function SquadPage() {
                         onError={(e) => { (e.target as HTMLImageElement).style.display = 'none' }}
                       />
                     </div>
-                    <span className="text-[9px] text-white/90 truncate max-w-[60px] text-center font-medium mt-0.5"><span className="text-slate-400">{squad.positions[idx]}</span> {card.name}</span>
+                    <span className="text-[9px] text-white/90 text-center font-medium mt-0.5 leading-tight"><span className="text-slate-400">{squad.positions[idx]}</span> {card.name.split(" ").pop()}</span>
                   </div>
                 ) : (
                   <>
