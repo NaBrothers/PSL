@@ -124,10 +124,10 @@ export default function HomePage() {
       </div>
 
       {/* Bottom cards - waterfall layout */}
-      <div className="flex-1 grid grid-cols-2 gap-2.5 auto-rows-min min-h-0">
+      <div className="flex-1 grid grid-cols-2 grid-rows-3 gap-2.5 min-h-0">
         {/* Left column - tall first */}
         <div
-          className="relative rounded-xl overflow-hidden cursor-pointer row-span-2 min-h-[140px]"
+          className="relative rounded-xl overflow-hidden cursor-pointer row-span-2"
           onClick={() => navigate('/match')}
         >
           <img src="/assets/banner-stadium.jpg" alt="" className="absolute inset-0 w-full h-full object-cover" />
@@ -139,7 +139,7 @@ export default function HomePage() {
         </div>
         {/* Right column - two short */}
         <div
-          className="relative rounded-xl overflow-hidden cursor-pointer min-h-[66px]"
+          className="relative rounded-xl overflow-hidden cursor-pointer "
           onClick={() => navigate('/challenge')}
         >
           <img src="/assets/entry-trophy.jpg" alt="" className="absolute inset-0 w-full h-full object-cover" />
@@ -149,7 +149,7 @@ export default function HomePage() {
           </div>
         </div>
         <div
-          className="relative rounded-xl overflow-hidden cursor-pointer min-h-[66px]"
+          className="relative rounded-xl overflow-hidden cursor-pointer "
           onClick={() => navigate('/lottery')}
         >
           <img src="/assets/entry-cards.jpg" alt="" className="absolute inset-0 w-full h-full object-cover" />
@@ -160,7 +160,7 @@ export default function HomePage() {
         </div>
         {/* Second row */}
         <div
-          className="relative rounded-xl overflow-hidden cursor-pointer min-h-[66px]"
+          className="relative rounded-xl overflow-hidden cursor-pointer "
           onClick={() => navigate('/transfer')}
         >
           <img src="/assets/entry-market.jpg" alt="" className="absolute inset-0 w-full h-full object-cover" />
@@ -170,7 +170,7 @@ export default function HomePage() {
           </div>
         </div>
         <div
-          className="relative rounded-xl overflow-hidden cursor-pointer min-h-[66px]"
+          className="relative rounded-xl overflow-hidden cursor-pointer "
           onClick={() => navigate('/league')}
         >
           <img src="/assets/entry-league.jpg" alt="" className="absolute inset-0 w-full h-full object-cover" />
@@ -180,7 +180,7 @@ export default function HomePage() {
           </div>
         </div>
         <div
-          className="relative rounded-xl overflow-hidden cursor-pointer min-h-[66px]"
+          className="relative rounded-xl overflow-hidden cursor-pointer "
           onClick={() => navigate('/search')}
         >
           <img src="/assets/entry-pitch.jpg" alt="" className="absolute inset-0 w-full h-full object-cover" />
