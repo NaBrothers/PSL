@@ -6,7 +6,6 @@ import api from '../api/client'
 import { cardBorderColor, overallColor } from '@/lib/card-display'
 import PlayerCardDetail from '@/components/PlayerCardDetail'
 import CompareView from '@/components/CompareView'
-import PlayerCard from '@/components/PlayerCard'
 
 interface CardInfo {
   id: number
@@ -197,37 +196,23 @@ export default function SquadPage() {
                   </div>
                 )}
                 {card ? (
-                  showPopup ? (
-                    <div className="transition-all duration-300 animate-in zoom-in-50">
-                      <PlayerCard
-                        playerId={card.player_id}
-                        name={card.name}
-                        position={card.position}
-                        overall={card.real_overall}
-                        star={card.star}
-                        style={card.style}
-                        size="sm"
+                  <div className="flex flex-col items-center group-hover:scale-110 transition-transform">
+                    <div className={`w-9 h-9 rounded-full overflow-hidden border-2 shadow-md bg-slate-800 ${cardBorderColor(card.overall, card.star)}`}>
+                      <img
+                        src={`/game-assets/avatars/${card.player_id}.png`}
+                        alt={card.name}
+                        className="w-full h-full object-cover"
+                        onError={(e) => { (e.target as HTMLImageElement).style.display = 'none' }}
                       />
                     </div>
-                  ) : (
-                    <div className="flex flex-col items-center group-hover:scale-110 transition-transform">
-                      <div className={`w-9 h-9 rounded-full overflow-hidden border-2 shadow-md bg-slate-800 ${cardBorderColor(card.overall, card.star)}`}>
-                        <img
-                          src={`/game-assets/avatars/${card.player_id}.png`}
-                          alt={card.name}
-                          className="w-full h-full object-cover"
-                          onError={(e) => { (e.target as HTMLImageElement).style.display = 'none' }}
-                        />
-                      </div>
-                      <div className="flex items-center gap-0.5 mt-0.5">
-                        <span className={`text-[10px] font-bold ${overallColor(card.overall, card.star)}`}>{card.real_overall}</span>
-                        {(() => { const diff = card.real_overall - card.overall; return diff !== 0 ? (
-                          <span className={`text-[7px] font-bold ${diff > 0 ? "text-red-400" : "text-green-400"}`}>{diff > 0 ? "+" : ""}{diff}</span>
-                        ) : null })()}
-                      </div>
-                      <span className="text-[8px] text-white/80 truncate max-w-[52px] text-center font-medium">{card.name}</span>
+                    <div className="flex items-center gap-0.5 mt-0.5">
+                      <span className={`text-[10px] font-bold ${overallColor(card.overall, card.star)}`}>{card.real_overall}</span>
+                      {(() => { const diff = card.real_overall - card.overall; return diff !== 0 ? (
+                        <span className={`text-[7px] font-bold ${diff > 0 ? "text-red-400" : "text-green-400"}`}>{diff > 0 ? "+" : ""}{diff}</span>
+                      ) : null })()}
                     </div>
-                  )
+                    <span className="text-[8px] text-white/80 truncate max-w-[52px] text-center font-medium">{card.name}</span>
+                  </div>
                 ) : (
                   <>
                     <div className="w-9 h-9 rounded-full bg-slate-700/60 border-2 border-dashed border-slate-500/60 flex items-center justify-center text-slate-400 text-xs group-hover:border-gold/60 transition-colors">
