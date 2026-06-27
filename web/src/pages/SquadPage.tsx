@@ -168,7 +168,7 @@ export default function SquadPage() {
         </div>
 
         {/* Pitch */}
-        <div className="relative w-full aspect-[68/105] bg-gradient-to-b from-green-900 to-green-800 rounded-xl border border-green-700/50 overflow-hidden shadow-lg">
+        <div className="relative w-full aspect-[68/105] bg-gradient-to-b from-green-900 to-green-800 rounded-xl border border-green-700/50 overflow-hidden shadow-lg" onClick={() => setPopupSlot(null)}>
           {/* Field markings */}
           <div className="absolute inset-0 flex items-center justify-center">
             <div className="w-20 h-20 border border-white/15 rounded-full" />
@@ -180,13 +180,21 @@ export default function SquadPage() {
           {/* Players */}
           {squad.cards.map((card, idx) => {
             const [x, y] = coords[idx] || [50, 50]
+            const showPopup = popupSlot === idx
             return (
               <div
                 key={idx}
                 className="absolute flex flex-col items-center -translate-x-1/2 -translate-y-1/2 cursor-pointer group"
-                style={{ left: `${x}%`, top: `${y}%` }}
+                style={{ left: `${x}%`, top: `${y}%`, zIndex: showPopup ? 50 : 1 }}
                 onClick={() => handleSlotClick(idx)}
               >
+                {/* Inline popup bubble */}
+                {showPopup && card && (
+                  <div className="absolute bottom-full mb-1 flex gap-1 bg-slate-900/95 border border-gold/30 rounded-lg px-2 py-1.5 shadow-lg whitespace-nowrap z-50" onClick={e => e.stopPropagation()}>
+                    <button className="text-[10px] text-accent font-medium px-2 py-0.5 rounded hover:bg-slate-700/50" onClick={() => openDetail(idx)}>详情</button>
+                    <button className="text-[10px] text-gold font-medium px-2 py-0.5 rounded hover:bg-slate-700/50" onClick={() => openReplaceDialog(idx)}>替换</button>
+                  </div>
+                )}
                 {card ? (
                   <div className="flex flex-col items-center group-hover:scale-110 transition-transform">
                     <div className={`w-9 h-9 rounded-full overflow-hidden border-2 shadow-md bg-slate-800 ${cardBorderColor(card.overall, card.star)}`}>
@@ -288,18 +296,7 @@ export default function SquadPage() {
         </DialogContent>
       </Dialog>
 
-      {/* Player action popup */}
-      <Dialog open={popupSlot !== null} onOpenChange={(open) => { if (!open) setPopupSlot(null) }}>
-        <DialogContent className="max-w-[240px]">
-          {popupSlot !== null && squad?.cards[popupSlot] && (
-            <div className="flex flex-col gap-2 pt-2">
-              <p className="text-center text-sm text-slate-300 font-medium mb-1">{squad.cards[popupSlot]!.name}</p>
-              <Button className="w-full" onClick={() => openDetail(popupSlot)}>球员详情</Button>
-              <Button variant="outline" className="w-full" onClick={() => openReplaceDialog(popupSlot)}>替换球员</Button>
-            </div>
-          )}
-        </DialogContent>
-      </Dialog>
+
 
       {/* Player detail dialog */}
       <Dialog open={detail !== null} onOpenChange={(open) => { if (!open) setDetail(null) }}>

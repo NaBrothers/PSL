@@ -105,7 +105,7 @@ export function cardTone(ov: number, star?: number): string {
 
 export function cardBorderColor(ov: number, star?: number): string {
   const v = star != null ? colorValue(ov, star) : ov
-  if (v >= 97) return 'border-yellow-400'
+  if (v >= 97) return 'rainbow-border'
   if (v >= 94) return 'border-pink-400'
   if (v >= 92) return 'border-red-400'
   if (v >= 89) return 'border-orange-400'
