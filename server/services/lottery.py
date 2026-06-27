@@ -32,6 +32,7 @@ class DrawnCard:
     star: int
     style: str
     style_name: str
+    top_abilities: list = None
 
 
 @dataclass
@@ -109,12 +110,23 @@ class LotteryService:
         user.spend(cost)
 
         from psl_core.card import get_style_name
+        from psl_core.constants import GOALKEEPER
+        ABILITY_NAMES = {"Heading": "头球", "Finishing": "终结", "Short_Passing": "短传",
+            "Dribbling": "盘带", "Tackling": "抢断", "Defence": "防守", "Speed": "速度",
+            "Long_Shot": "远射", "Long_Passing": "长传", "IQ": "球商",
+            "GK_Saving": "扑救", "GK_Positioning": "站位", "GK_Reaction": "反应"}
         drawn = []
         for i, card in enumerate(cards):
+            pos = card.player.Position.split(",")[0].strip() if card.player.Position else ""
+            exclude = {"GK_Saving", "GK_Positioning", "GK_Reaction"} if pos not in GOALKEEPER else {"Heading", "Finishing", "Long_Shot", "Tackling"}
+            ability_list = [(ABILITY_NAMES.get(k, k), v) for k, v in card.ability.items() if k not in exclude]
+            ability_list.sort(key=lambda x: -x[1])
+            top3 = [{"name": a[0], "value": a[1]} for a in ability_list[:3]]
             drawn.append(DrawnCard(
                 id=ids[i], player_id=card.player.ID, name=card.player.Name, position=card.player.Position,
                 overall=card.overall, star=card.star, style=card.style,
                 style_name=get_style_name(card.style, card.player.Position),
+                top_abilities=top3,
             ))
 
         return DrawResult(pool_name=pool["name"], cards=drawn, cost=cost, remaining_money=user.money)
