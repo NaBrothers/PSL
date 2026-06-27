@@ -305,6 +305,7 @@ export default function BagPage() {
                   overall={card.overall}
                   star={card.star}
                   style={card.style}
+                  breach={card.breach}
                   topAbilities={card.top_abilities}
                   size="sm"
                   selected={selected.has(card.id)}

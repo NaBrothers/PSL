@@ -13,6 +13,7 @@ interface PlayerCardProps {
   overall: number
   star: number
   style?: string
+  breach?: number
   topAbilities?: TopAbility[]
   size?: 'sm' | 'md' | 'lg'
   onClick?: () => void
@@ -68,7 +69,7 @@ function StarDisplay({ star }: { star: number }) {
 }
 
 export default function PlayerCard({
-  playerId, name, position, overall, star, style, topAbilities,
+  playerId, name, position, overall, star, style, breach, topAbilities,
   size = 'md', onClick, selected, badge, className = ''
 }: PlayerCardProps) {
   const frameKey = getFrameKey(overall, star)
@@ -93,9 +94,12 @@ export default function PlayerCard({
       `}
       onClick={onClick}
     >
-      {/* Top section: star + badge */}
+      {/* Top section: star + breach + badge */}
       <div className="flex items-center justify-between px-1.5 pt-1">
-        <StarDisplay star={star} />
+        <div className="flex items-center gap-1">
+          <StarDisplay star={star} />
+          {breach ? <span className="text-[7px] text-green-400 font-bold">◆{breach}</span> : null}
+        </div>
         {badge && <span className="text-[7px] font-bold text-gold bg-black/60 px-1 rounded">{badge}</span>}
       </div>
       {/* Style centered at top */}
