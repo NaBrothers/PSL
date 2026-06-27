@@ -44,6 +44,7 @@ class BagCardInfo:
     status: int
     status_text: str
     real_overall: Optional[int] = None
+    top_abilities: list = None
 
 
 @dataclass
@@ -70,7 +71,10 @@ class BagService:
                 sort: str = "overall", position: str = "", color: str = "") -> BagPage:
         rows = self.db.query_all(
             "SELECT c.ID, c.Player, c.Star, c.Style, c.Status, c.Locked, c.Breach, "
-            "p.Name, p.Position, p.Overall "
+            "p.Name, p.Position, p.Overall, "
+            "p.Sprint_Speed, p.Finishing, p.Short_Passing, p.Dribbling, "
+            "p.Standing_Tackle, p.Stamina, p.GK_Reflexes, p.Heading_Accuracy, "
+            "p.Long_Shots, p.Vision "
             "FROM cards c JOIN players p ON c.Player = p.ID "
             "WHERE c.User = ?",
             (qq,)
@@ -78,14 +82,22 @@ class BagService:
 
         STATUS_TEXT = {0: "", 1: "转会中", 2: "首发"}
 
+        ABILITY_LABELS = {"速度": 10, "射门": 11, "传球": 12, "盘带": 13, "防守": 14, "体力": 15, "门将": 16, "头球": 17, "远射": 18, "视野": 19}
+        LABEL_NAMES = ["速度", "射门", "传球", "盘带", "防守", "体力", "门将", "头球", "远射", "视野"]
+
         cards = []
         for r in rows:
             ov = compute_overall(r[9], r[2])
+            # Compute top 3 abilities
+            ability_vals = [(LABEL_NAMES[i], r[10 + i] or 0) for i in range(10)]
+            ability_vals.sort(key=lambda x: -x[1])
+            top3 = [{"name": a[0], "value": a[1]} for a in ability_vals[:3]]
             cards.append(BagCardInfo(
                 id=r[0], player_id=r[1], name=r[7], position=(r[8] or "").split(",")[0].strip(),
                 overall=ov, real_overall=ov, star=r[2], style=r[3],
                 breach=r[6], locked=bool(r[5]), status=r[4] or 0,
                 status_text=STATUS_TEXT.get(r[4] or 0, ""),
+                top_abilities=top3,
             ))
 
         if query:

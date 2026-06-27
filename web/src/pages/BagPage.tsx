@@ -21,6 +21,7 @@ interface BagCard {
   locked: boolean
   status: number
   status_text: string
+  top_abilities?: { name: string; value: number }[]
 }
 
 type DialogMode = 'detail' | 'upgrade' | 'breach' | 'compare-select' | 'compare-view' | 'confirm-recycle' | 'confirm-batch-recycle' | 'confirm-batch-transfer' | null
@@ -240,43 +241,44 @@ export default function BagPage() {
         </div>
       </div>
 
-      {/* Search + Filter */}
+      {/* Search */}
       <Input
         placeholder="搜索球员..."
         value={query}
         onChange={e => { setQuery(e.target.value); loadBag(1, e.target.value, sortBy, filterPos, filterColor, false) }}
         className="mb-2"
       />
-      <div className="flex gap-1 mb-3 flex-wrap">
-        {/* Sort */}
+      {/* Position pill buttons */}
+      <div className="flex gap-1.5 mb-2 overflow-x-auto scrollbar-hide">
+        {[['', '全部'], ['FWD', '前锋'], ['MID', '中场'], ['DEF', '后卫'], ['GK', '门将']].map(([val, label]) => (
+          <button
+            key={val}
+            onClick={() => { setFilterPos(val); loadBag(1, query, sortBy, val, filterColor, false) }}
+            className={`px-3 py-1 rounded-full text-xs font-medium whitespace-nowrap transition-colors ${
+              filterPos === val ? 'bg-gold/90 text-black' : 'bg-slate-800 text-slate-400 border border-slate-700'
+            }`}
+          >
+            {label}
+          </button>
+        ))}
+      </div>
+      {/* Sort + Color filters */}
+      <div className="flex gap-1.5 mb-3">
         <select
           value={sortBy}
           onChange={e => { setSortBy(e.target.value); loadBag(1, query, e.target.value, filterPos, filterColor, false) }}
-          className="bg-slate-800 border border-slate-700 rounded px-2 py-1 text-xs text-slate-300"
+          className="bg-slate-800 border border-slate-700 rounded-lg px-2 py-1 text-xs text-slate-300 flex-1"
         >
           <option value="overall">能力排序</option>
           <option value="name">名字排序</option>
           <option value="star">星级排序</option>
         </select>
-        {/* Position filter */}
-        <select
-          value={filterPos}
-          onChange={e => { setFilterPos(e.target.value); loadBag(1, query, sortBy, e.target.value, filterColor, false) }}
-          className="bg-slate-800 border border-slate-700 rounded px-2 py-1 text-xs text-slate-300"
-        >
-          <option value="">全部位置</option>
-          <option value="GK">门将</option>
-          <option value="DEF">后卫</option>
-          <option value="MID">中场</option>
-          <option value="FWD">前锋</option>
-        </select>
-        {/* Color filter */}
         <select
           value={filterColor}
           onChange={e => { setFilterColor(e.target.value); loadBag(1, query, sortBy, filterPos, e.target.value, false) }}
-          className="bg-slate-800 border border-slate-700 rounded px-2 py-1 text-xs text-slate-300"
+          className="bg-slate-800 border border-slate-700 rounded-lg px-2 py-1 text-xs text-slate-300 flex-1"
         >
-          <option value="">全部颜色</option>
+          <option value="">全部品质</option>
           <option value="pink">粉色 (94+)</option>
           <option value="red">红色 (92+)</option>
           <option value="orange">橙色 (89+)</option>
@@ -303,6 +305,7 @@ export default function BagPage() {
                   overall={card.overall}
                   star={card.star}
                   style={card.style}
+                  topAbilities={card.top_abilities}
                   size="sm"
                   selected={selected.has(card.id)}
                   badge={card.status === 2 ? '首发' : card.status === 1 ? '转会中' : card.locked ? '🔒' : undefined}
