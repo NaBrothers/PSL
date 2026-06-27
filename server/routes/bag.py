@@ -100,36 +100,61 @@ def compare_cards(card_id: int, other_id: int, user=Depends(get_current_user)):
 @router.get("/search")
 def global_search(query: str = "", user=Depends(get_current_user)):
     db = server.database.db
+    _fields = (
+        "SELECT c.ID, c.Star, c.Style, c.Breach, p.Name, p.Position, p.Overall, "
+        "u.Name as OwnerName, c.Player, c.Ext_Abilities, p.Height, "
+        "p.Heading_Accuracy, p.Jumping, p.Strength, p.Long_Shots, p.Shot_Power, "
+        "p.Finishing, p.Long_Passing, p.Short_Passing, p.Dribbling, p.Ball_Control, "
+        "p.Balance, p.Sliding_Tackle, p.Standing_Tackle, p.Defensive_Awareness, "
+        "p.Aggression, p.Interceptions, p.Sprint_Speed, p.Acceleration, "
+        "p.Composure, p.GK_Handling, p.GK_Diving, p.GK_Positioning, p.GK_Reflexes, p.Reactions "
+        "FROM cards c JOIN players p ON c.Player = p.ID JOIN users u ON c.User = u.QQ "
+    )
+    _order = (
+        "ORDER BY (p.Overall + CASE c.Star "
+        "WHEN 1 THEN 0 WHEN 2 THEN 1 WHEN 3 THEN 2 WHEN 4 THEN 4 WHEN 5 THEN 6 "
+        "WHEN 6 THEN 8 WHEN 7 THEN 11 WHEN 8 THEN 14 WHEN 9 THEN 17 WHEN 10 THEN 21 "
+        "ELSE 0 END) DESC, p.Name ASC LIMIT 100"
+    )
     if query and len(query) >= 1:
-        rows = db.query_all(
-            "SELECT c.ID, c.Star, c.Style, c.Breach, p.Name, p.Position, p.Overall, u.Name as OwnerName, c.Player "
-            "FROM cards c JOIN players p ON c.Player = p.ID JOIN users u ON c.User = u.QQ "
-            "WHERE p.Name LIKE ? "
-            "ORDER BY (p.Overall + CASE c.Star "
-            "WHEN 1 THEN 0 WHEN 2 THEN 1 WHEN 3 THEN 2 WHEN 4 THEN 4 WHEN 5 THEN 6 "
-            "WHEN 6 THEN 8 WHEN 7 THEN 11 WHEN 8 THEN 14 WHEN 9 THEN 17 WHEN 10 THEN 21 "
-            "ELSE 0 END) DESC, p.Name ASC "
-            "LIMIT 100",
-            (f"%{query}%",)
-        )
+        rows = db.query_all(_fields + "WHERE p.Name LIKE ? " + _order, (f"%{query}%",))
     else:
-        rows = db.query_all(
-            "SELECT c.ID, c.Star, c.Style, c.Breach, p.Name, p.Position, p.Overall, u.Name as OwnerName, c.Player "
-            "FROM cards c JOIN players p ON c.Player = p.ID JOIN users u ON c.User = u.QQ "
-            "ORDER BY (p.Overall + CASE c.Star "
-            "WHEN 1 THEN 0 WHEN 2 THEN 1 WHEN 3 THEN 2 WHEN 4 THEN 4 WHEN 5 THEN 6 "
-            "WHEN 6 THEN 8 WHEN 7 THEN 11 WHEN 8 THEN 14 WHEN 9 THEN 17 WHEN 10 THEN 21 "
-            "ELSE 0 END) DESC, p.Name ASC "
-            "LIMIT 100"
-        )
-    from psl_core.constants import STARS
-    from psl_core.card import get_style_name, compute_overall
+        rows = db.query_all(_fields + _order)
+
+    import json as _json
+    from psl_core.constants import STARS, GOALKEEPER
+    from psl_core.card import get_style_name, compute_overall, compute_abilities
+
+    ABILITY_NAMES = {"Heading": "头球", "Finishing": "终结", "Short_Passing": "短传",
+        "Dribbling": "盘带", "Tackling": "抢断", "Defence": "防守", "Speed": "速度",
+        "Long_Shot": "远射", "Long_Passing": "长传", "IQ": "球商",
+        "GK_Saving": "扑救", "GK_Positioning": "站位", "GK_Reaction": "反应"}
+
     results = []
     for r in rows:
+        pos = (r[5] or "").split(",")[0].strip()
+        ext = _json.loads(r[9]) if r[9] else {}
+        height_val = int(r[10]) if r[10] and str(r[10]).isdigit() else 180
+        abilities = compute_abilities(
+            star=r[1], style=r[2], position=pos, height=height_val,
+            heading_accuracy=r[11] or 0, jumping=r[12] or 0, strength=r[13] or 0,
+            long_shots=r[14] or 0, shot_power=r[15] or 0, finishing=r[16] or 0,
+            long_passing=r[17] or 0, short_passing=r[18] or 0, dribbling=r[19] or 0,
+            ball_control=r[20] or 0, balance=r[21] or 0, sliding_tackle=r[22] or 0,
+            standing_tackle=r[23] or 0, defensive_awareness=r[24] or 0,
+            aggression=r[25] or 0, interceptions=r[26] or 0, sprint_speed=r[27] or 0,
+            acceleration=r[28] or 0, composure=r[29] or 0, gk_handling=r[30] or 0,
+            gk_diving=r[31] or 0, gk_positioning=r[32] or 0, gk_reflexes=r[33] or 0,
+            reactions=r[34] or 0, ext_abilities=ext,
+        )
+        exclude = {"GK_Saving", "GK_Positioning", "GK_Reaction"} if pos not in GOALKEEPER else {"Heading", "Finishing", "Long_Shot", "Tackling"}
+        ability_list = [(ABILITY_NAMES.get(k, k), v) for k, v in abilities.items() if k not in exclude]
+        ability_list.sort(key=lambda x: -x[1])
+        top3 = [{"name": a[0], "value": a[1]} for a in ability_list[:3]]
         results.append({
             "card_id": r[0], "player_id": r[8], "star": r[1], "style": r[2], "breach": r[3],
             "style_name": get_style_name(r[2], r[5]),
-            "name": r[4], "position": r[5], "overall": compute_overall(r[6], r[1]),
-            "owner": r[7],
+            "name": r[4], "position": pos, "overall": compute_overall(r[6], r[1]),
+            "owner": r[7], "top_abilities": top3,
         })
     return {"results": results}

@@ -19,6 +19,7 @@ interface SearchResult {
   position: string
   overall: number
   owner: string
+  top_abilities?: { name: string; value: number }[]
 }
 
 export default function SearchPage() {
@@ -75,6 +76,8 @@ export default function SearchPage() {
                 overall={r.overall}
                 star={r.star}
                 style={r.style}
+                breach={r.breach}
+                topAbilities={r.top_abilities}
                 size="sm"
                 badge={r.owner}
                 onClick={() => api.get(`/cards/${r.card_id}`).then(res => setDetail(res.data))}

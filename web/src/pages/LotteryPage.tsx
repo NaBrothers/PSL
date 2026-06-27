@@ -24,6 +24,7 @@ interface DrawnCard {
   star: number
   style: string
   style_name: string
+  top_abilities?: { name: string; value: number }[]
 }
 
 export default function LotteryPage() {
@@ -76,6 +77,7 @@ export default function LotteryPage() {
                 overall={c.overall}
                 star={c.star}
                 style={c.style}
+                topAbilities={c.top_abilities}
                 size="sm"
                 onClick={() => api.get(`/cards/${c.id}`).then(res => setDetail(res.data))}
               />
