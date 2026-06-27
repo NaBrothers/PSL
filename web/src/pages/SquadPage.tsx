@@ -197,7 +197,7 @@ export default function SquadPage() {
                 )}
                 {card ? (
                   <div className="flex flex-col items-center group-hover:scale-110 transition-transform">
-                    <div className={`w-9 h-9 rounded-full overflow-hidden border-2 shadow-md bg-slate-800 ${cardBorderColor(card.overall, card.star)}`}>
+                    <div className={`w-11 h-11 rounded-full overflow-hidden border-2 shadow-md bg-slate-800 ${cardBorderColor(card.overall, card.star)}`}>
                       <img
                         src={`/game-assets/avatars/${card.player_id}.png`}
                         alt={card.name}
@@ -206,19 +206,19 @@ export default function SquadPage() {
                       />
                     </div>
                     <div className="flex items-center gap-0.5 mt-0.5">
-                      <span className={`text-[10px] font-bold ${overallColor(card.overall, card.star)}`}>{card.real_overall}</span>
+                      <span className={`text-xs font-bold ${overallColor(card.overall, card.star)}`}>{card.real_overall}</span>
                       {(() => { const diff = card.real_overall - card.overall; return diff !== 0 ? (
-                        <span className={`text-[7px] font-bold ${diff > 0 ? "text-red-400" : "text-green-400"}`}>{diff > 0 ? "+" : ""}{diff}</span>
+                        <span className={`text-[8px] font-bold ${diff > 0 ? "text-red-400" : "text-green-400"}`}>{diff > 0 ? "+" : ""}{diff}</span>
                       ) : null })()}
                     </div>
-                    <span className="text-[8px] text-white/80 truncate max-w-[52px] text-center font-medium">{card.name}</span>
+                    <span className="text-[9px] text-white/90 truncate max-w-[60px] text-center font-medium">{card.name}</span>
                   </div>
                 ) : (
                   <>
-                    <div className="w-9 h-9 rounded-full bg-slate-700/60 border-2 border-dashed border-slate-500/60 flex items-center justify-center text-slate-400 text-xs group-hover:border-gold/60 transition-colors">
+                    <div className="w-11 h-11 rounded-full bg-slate-700/60 border-2 border-dashed border-slate-500/60 flex items-center justify-center text-slate-400 text-sm group-hover:border-gold/60 transition-colors">
                       +
                     </div>
-                    <span className="text-[8px] text-slate-500 mt-0.5">{squad.positions[idx]}</span>
+                    <span className="text-[9px] text-slate-500 mt-0.5">{squad.positions[idx]}</span>
                   </>
                 )}
               </div>
