@@ -186,7 +186,7 @@ export default function SquadPage() {
                 key={idx}
                 className="absolute flex flex-col items-center -translate-x-1/2 -translate-y-1/2 cursor-pointer group"
                 style={{ left: `${x}%`, top: `${y}%`, zIndex: showPopup ? 50 : 1 }}
-                onClick={() => handleSlotClick(idx)}
+                onClick={(e) => { e.stopPropagation(); handleSlotClick(idx) }}
               >
                 {/* Inline popup bubble */}
                 {showPopup && card && (
