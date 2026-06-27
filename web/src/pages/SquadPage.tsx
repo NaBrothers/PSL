@@ -197,6 +197,12 @@ export default function SquadPage() {
                 )}
                 {card ? (
                   <div className="flex flex-col items-center group-hover:scale-110 transition-transform">
+                    <div className="flex items-center gap-0.5 mb-0.5">
+                      <span className={`text-xs font-bold ${overallColor(card.overall, card.star)}`}>{card.real_overall}</span>
+                      {(() => { const diff = card.real_overall - card.overall; return diff !== 0 ? (
+                        <span className={`text-[8px] font-bold ${diff > 0 ? "text-red-400" : "text-green-400"}`}>{diff > 0 ? "+" : ""}{diff}</span>
+                      ) : null })()}
+                    </div>
                     <div className={`w-11 h-11 rounded-full overflow-hidden border-2 shadow-md bg-slate-800 ${cardBorderColor(card.overall, card.star)}`}>
                       <img
                         src={`/game-assets/avatars/${card.player_id}.png`}
@@ -205,13 +211,7 @@ export default function SquadPage() {
                         onError={(e) => { (e.target as HTMLImageElement).style.display = 'none' }}
                       />
                     </div>
-                    <div className="flex items-center gap-0.5 mt-0.5">
-                      <span className={`text-xs font-bold ${overallColor(card.overall, card.star)}`}>{card.real_overall}</span>
-                      {(() => { const diff = card.real_overall - card.overall; return diff !== 0 ? (
-                        <span className={`text-[8px] font-bold ${diff > 0 ? "text-red-400" : "text-green-400"}`}>{diff > 0 ? "+" : ""}{diff}</span>
-                      ) : null })()}
-                    </div>
-                    <span className="text-[9px] text-white/90 truncate max-w-[60px] text-center font-medium">{card.name}</span>
+                    <span className="text-[9px] text-white/90 truncate max-w-[60px] text-center font-medium mt-0.5"><span className="text-slate-400">{squad.positions[idx]}</span> {card.name}</span>
                   </div>
                 ) : (
                   <>
