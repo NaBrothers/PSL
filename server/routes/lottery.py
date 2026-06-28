@@ -30,3 +30,19 @@ def draw(req: DrawRequest, user=Depends(get_current_user)):
         raise HTTPException(status_code=400, detail=str(e))
     except LotteryError as e:
         raise HTTPException(status_code=400, detail=str(e))
+
+
+class RewardDrawRequest(BaseModel):
+    pool: str
+
+
+@router.post("/lottery/draw-reward")
+def draw_reward(req: RewardDrawRequest, user=Depends(get_current_user)):
+    svc = LotteryService(server.database.db)
+    try:
+        result = svc.draw_reward(user["qq"], req.pool)
+        return {"pool_name": result.pool_name, "cards": [c.__dict__ for c in result.cards], "cost": result.cost, "remaining_money": result.remaining_money}
+    except PoolNotFound as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except LotteryError as e:
+        raise HTTPException(status_code=400, detail=str(e))

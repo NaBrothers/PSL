@@ -11,7 +11,12 @@ api.interceptors.request.use((config) => {
 })
 
 api.interceptors.response.use(
-  (res) => res,
+  (res) => {
+    if (res.config.method && res.config.method !== 'get') {
+      window.dispatchEvent(new Event('psl-status-update'))
+    }
+    return res
+  },
   (err) => {
     if (err.response?.status === 401) {
       localStorage.removeItem('psl_token')

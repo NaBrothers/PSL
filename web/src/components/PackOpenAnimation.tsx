@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useRef } from 'react'
 import { overallColor, cardBorderColor } from '@/lib/card-display'
 
 interface PackCard {
@@ -23,6 +23,7 @@ type Phase = 'nationality' | 'club' | 'position' | 'reveal' | 'done'
 export default function PackOpenAnimation({ card, onComplete }: Props) {
   const [phase, setPhase] = useState<Phase>('nationality')
   const [animClass, setAnimClass] = useState('animate-doorOpen')
+  const timersRef = useRef<ReturnType<typeof setTimeout>[]>([])
   const [particles] = useState(() => Array.from({length: 30}, (_, i) => ({
     id: i,
     x: Math.random() * 100,
@@ -33,17 +34,26 @@ export default function PackOpenAnimation({ card, onComplete }: Props) {
   })))
 
   useEffect(() => {
-    const timers = [
+    timersRef.current = [
       setTimeout(() => { setAnimClass('animate-fadeOut'); }, 900),
       setTimeout(() => { setPhase('club'); setAnimClass('animate-doorOpen'); }, 1200),
       setTimeout(() => { setAnimClass('animate-fadeOut'); }, 2100),
       setTimeout(() => { setPhase('position'); setAnimClass('animate-doorOpen'); }, 2400),
       setTimeout(() => { setAnimClass('animate-fadeOut'); }, 3300),
       setTimeout(() => { setPhase('reveal'); setAnimClass('animate-cardReveal'); }, 3600),
-      
     ]
-    return () => timers.forEach(clearTimeout)
+    return () => timersRef.current.forEach(clearTimeout)
   }, [])
+
+  const handleClick = () => {
+    if (phase === 'reveal') {
+      onComplete()
+    } else {
+      timersRef.current.forEach(clearTimeout)
+      setPhase('reveal')
+      setAnimClass('animate-cardReveal')
+    }
+  }
 
   useEffect(() => {
     if (phase === 'done') onComplete()
@@ -54,7 +64,7 @@ export default function PackOpenAnimation({ card, onComplete }: Props) {
   if (phase === 'done') return null
 
   return (
-    <div className="fixed inset-0 z-[100] bg-black flex items-center justify-center" onClick={() => { if (phase === "reveal") onComplete() }}>
+    <div className="fixed inset-0 z-[100] bg-black flex items-center justify-center" onClick={handleClick}>
       {/* Particles background */}
       <div className="absolute inset-0 overflow-hidden pointer-events-none">
         {particles.map(p => (
@@ -136,7 +146,7 @@ export default function PackOpenAnimation({ card, onComplete }: Props) {
         </div>
       )}
 
-      {phase === "reveal" && <div className="absolute bottom-8 text-slate-400 text-xs animate-pulse">点击继续</div>}
+      <div className="absolute bottom-8 text-slate-400 text-xs animate-pulse">点击{phase === 'reveal' ? '继续' : '跳过'}</div>
     </div>
   )
 }

@@ -19,8 +19,13 @@ export default function StatusHeader() {
   useEffect(() => {
     const token = localStorage.getItem('psl_token')
     if (!token) { setStatus(null); return }
-    api.get('/me').then(res => setStatus(res.data)).catch(() => setStatus(null))
-    api.get('/inbox/unread').then(res => setUnread(res.data.count)).catch(() => {})
+    const fetchStatus = () => {
+      api.get('/me').then(res => setStatus(res.data)).catch(() => setStatus(null))
+      api.get('/inbox/unread').then(res => setUnread(res.data.count)).catch(() => {})
+    }
+    fetchStatus()
+    window.addEventListener('psl-status-update', fetchStatus)
+    return () => window.removeEventListener('psl-status-update', fetchStatus)
   }, [location.pathname])
 
   if (!status || location.pathname === '/login') return null

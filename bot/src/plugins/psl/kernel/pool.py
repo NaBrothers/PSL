@@ -107,73 +107,77 @@ class NBPool(Pool):
 g_pool = {
   "初级": {
     "pool": ElementaryPool(),
-    "name": "初级球员卡包",
+    "name": "初级卡包",
     "cost": 1000,
-    "ten_cost": 9500,
+    "ten_cost": 9000,
     "visible": True
   },
   "初级前锋": {
     "pool": ElementaryForwardPool(),
     "name": "初级前锋卡包",
     "cost": 1500,
-    "ten_cost": 14250,
+    "ten_cost": 13500,
     "visible": True
   },
   "初级中场": {
     "pool": ElementaryMidfieldPool(),
     "name": "初级中场卡包",
     "cost": 1500,
-    "ten_cost": 14250,
+    "ten_cost": 13500,
     "visible": True
   },
   "初级后卫": {
     "pool": ElementaryGuardPool(),
     "name": "初级后卫卡包",
     "cost": 1500,
-    "ten_cost": 14250,
+    "ten_cost": 13500,
     "visible": True
   },
   "初级门将": {
     "pool": ElementaryGoalkeeperPool(),
     "name": "初级门将卡包",
     "cost": 1750,
-    "ten_cost": 16625,
+    "ten_cost": 15750,
     "visible": True
   },
   "中级": {
     "pool": IntermediatePool(),
-    "name": "中级球员卡包",
+    "name": "中级卡包",
     "cost": 2500,
-    "ten_cost": 23750,
+    "ten_cost": 22500,
     "visible": True
   },
   "中级前锋": {
     "pool": IntermediateForwardPool(),
     "name": "中级前锋卡包",
     "cost": 3750,
+    "ten_cost": 33750,
     "visible": True
   },
   "中级中场": {
     "pool": IntermediateMidfieldPool(),
     "name": "中级中场卡包",
     "cost": 3750,
+    "ten_cost": 33750,
     "visible": True
   },
   "中级后卫": {
     "pool": IntermediateGuardPool(),
     "name": "中级后卫卡包",
     "cost": 3750,
+    "ten_cost": 33750,
     "visible": True
   },
   "中级门将": {
     "pool": IntermediateGoalkeeperPool(),
     "name": "中级门将卡包",
     "cost": 5000,
+    "ten_cost": 45000,
     "visible": True
   },
   "高级": {
     "pool": AdvancedPool(),
-    "name": "高级球员卡包",
+    "name": "高级卡包",
     "cost": 7500,
     "visible": True
   },
