@@ -174,11 +174,11 @@ export default function LotteryPage() {
                 <span className="text-gold text-sm font-medium">${p.cost}/抽</span>
               </div>
               <div className="flex gap-2">
-                <Button size="sm" className="flex-1 bg-gradient-to-r from-gold/80 to-yellow-600/80 text-black font-bold hover:from-gold hover:to-yellow-600 active:animate-btnPress active:animate-glowPulse" onClick={() => draw(p.key, 1)} disabled={loading}>
+                <Button size="sm" className="flex-1 bg-gradient-to-r from-gold/80 to-yellow-600/80 text-black font-bold hover:from-gold hover:to-yellow-600" onClick={() => draw(p.key, 1)} disabled={loading}>
                   单抽 ${p.cost}
                 </Button>
                 {p.ten_cost > 0 && (
-                  <Button size="sm" className="flex-1 bg-gradient-to-r from-purple-600/80 to-blue-600/80 text-white font-bold hover:from-purple-600 hover:to-blue-600 active:animate-btnPress" onClick={() => draw(p.key, 10)} disabled={loading}>
+                  <Button size="sm" className="flex-1 bg-gradient-to-r from-purple-600/80 to-blue-600/80 text-white font-bold hover:from-purple-600 hover:to-blue-600" onClick={() => draw(p.key, 10)} disabled={loading}>
                     十连 ${p.ten_cost}
                   </Button>
                 )}

@@ -375,7 +375,7 @@ export default function BagPage() {
 
       {/* Detail Dialog */}
       <Dialog open={dialogMode === 'detail'} onOpenChange={(open) => { if (!open) { setDialogMode(null); setDetail(null) } }}>
-        <DialogContent className="max-h-[85vh] overflow-y-auto scrollbar-hide animate-cardFlip">
+        <DialogContent className="max-h-[85vh] overflow-y-auto scrollbar-hide">
           <DialogHeader>
             <DialogTitle className="flex items-center gap-2 flex-wrap">
               <span className="text-slate-500 text-sm">[{detail?.id}]</span>

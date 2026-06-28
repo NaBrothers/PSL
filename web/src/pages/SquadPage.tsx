@@ -204,8 +204,8 @@ export default function SquadPage() {
             return (
               <div
                 key={idx}
-                className="absolute flex flex-col items-center -translate-x-1/2 -translate-y-1/2 cursor-pointer group animate-staggerIn"
-                style={{ left: `${x}%`, top: `${y}%`, zIndex: showPopup ? 50 : 1, animationDelay: `${idx * 50}ms` }}
+                className="absolute flex flex-col items-center -translate-x-1/2 -translate-y-1/2 cursor-pointer group"
+                style={{ left: `${x}%`, top: `${y}%`, zIndex: showPopup ? 50 : 1 }}
                 onClick={(e) => { e.stopPropagation(); handleSlotClick(idx) }}
               >
                 {/* Inline popup bubble */}
