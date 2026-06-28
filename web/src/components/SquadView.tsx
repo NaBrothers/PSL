@@ -1,5 +1,21 @@
 import { overallColor, cardBorderColor } from '@/lib/card-display'
 
+const FORWARD_POS = ["ST", "RW", "RS", "LW", "CF", "LS", "LF", "RF"]
+const MID_POS = ["RM", "LM", "LCM", "CM", "CDM", "CAM", "RAM", "RCM", "LDM", "LAM", "RDM"]
+const DEF_POS = ["RB", "CB", "LB", "RCB", "RWB", "LCB", "LWB"]
+
+function positionColor(pos: string): string {
+  if (FORWARD_POS.includes(pos)) return 'bg-red-500 text-white'
+  if (MID_POS.includes(pos)) return 'bg-green-500 text-white'
+  if (DEF_POS.includes(pos)) return 'bg-blue-500 text-white'
+  if (pos === 'GK') return 'bg-yellow-500 text-black'
+  return 'bg-slate-500 text-white'
+}
+
+function cardBgColor(_overall: number, _star?: number): string {
+  return 'bg-[#20293a]'
+}
+
 interface CardInfo {
   id: number
   player_id: number
@@ -79,8 +95,7 @@ export default function SquadView({ squad, title }: SquadViewProps) {
             >
               {card ? (
                 <div className="flex flex-col items-center">
-                  <span className={`text-xs font-bold mb-0.5 ${overallColor(card.overall, card.star)}`}>{card.real_overall}</span>
-                  <div className={`w-11 h-11 rounded-full overflow-hidden border-2 shadow-md bg-slate-800 ${cardBorderColor(card.overall, card.star)}`}>
+                  <div className={`w-12 h-12 rounded-md overflow-hidden border-2 shadow-md ${cardBorderColor(card.overall, card.star)} ${cardBgColor(card.overall, card.star)}`}>
                     <img
                       src={`/game-assets/avatars/${card.player_id}.png`}
                       alt={card.name}
@@ -88,9 +103,11 @@ export default function SquadView({ squad, title }: SquadViewProps) {
                       onError={(e) => { (e.target as HTMLImageElement).style.display = 'none' }}
                     />
                   </div>
-                  <span className="text-[9px] text-white/90 text-center font-medium mt-0.5 leading-tight">
-                    <span className="text-slate-400">{squad.positions[idx]}</span> {card.name.split(" ").pop()}
-                  </span>
+                  <div className="flex items-center gap-0.5 mt-0.5">
+                    <span className={`text-[9px] font-bold px-1 rounded ${positionColor(squad.positions[idx])}`}>{squad.positions[idx]}</span>
+                    <span className={`text-[10px] font-bold ${overallColor(card.overall, card.star)}`}>{card.real_overall}</span>
+                  </div>
+                  <span className="text-[8px] text-white/90 text-center font-medium leading-tight max-w-[60px] truncate">{card.name}</span>
                 </div>
               ) : (
                 <>

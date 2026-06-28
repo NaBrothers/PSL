@@ -1,4 +1,5 @@
 import { abilityColor, normalizePositionRating, ratingDiffClass, ratingDiffText } from '@/lib/card-display'
+import RadarChart, { computeRadarValues, RADAR_LABELS, RADAR_LABELS_GK } from '@/components/RadarChart'
 
 interface PlayerCardDetailProps {
   detail: any
@@ -64,18 +65,27 @@ export default function PlayerCardDetail({ detail }: PlayerCardDetailProps) {
 
       {detail.all_position_ratings && (
         <div className="border-t border-slate-700 pt-2">
-          <div className="grid grid-cols-5 gap-y-0.5 text-xs text-center">
-            {layout.map((row, ri) => row.map((cell, ci) => (
-              <div key={`${ri}-${ci}`} className="h-5">
-                {cell && rMap[cell] !== undefined && (
-                  <>
-                    <span className="text-slate-500">{cell} </span>
-                    <span className={`font-bold ${abilityColor(rMap[cell].rating)}`}>{rMap[cell].rating}</span>
-                    {rMap[cell].diff !== 0 && <span className={`ml-0.5 text-[10px] ${ratingDiffClass(rMap[cell].diff)}`}>{ratingDiffText(rMap[cell].diff)}</span>}
-                  </>
-                )}
+          <div className="flex gap-0 items-center">
+            <div className="flex-1 min-w-0">
+              <div className="grid grid-cols-5 gap-y-0 text-[10px] text-center">
+                {layout.map((row, ri) => row.map((cell, ci) => (
+                  <div key={`${ri}-${ci}`} className="h-[22px] flex items-center justify-center">
+                    {cell && rMap[cell] !== undefined && (
+                      <span className="whitespace-nowrap">
+                        <span className="text-slate-500">{cell} </span>
+                        <span className={`font-bold ${abilityColor(rMap[cell].rating)}`}>{rMap[cell].rating}</span>
+                        {rMap[cell].diff !== 0 && <span className={`ml-0.5 text-[8px] ${ratingDiffClass(rMap[cell].diff)}`}>{ratingDiffText(rMap[cell].diff)}</span>}
+                      </span>
+                    )}
+                  </div>
+                )))}
               </div>
-            )))}
+            </div>
+            {detail.abilities && (
+              <div className="w-[160px] flex-shrink-0 flex items-center justify-center">
+                <RadarChart values={computeRadarValues(detail.abilities, detail.position === 'GK')} labels={detail.position === 'GK' ? RADAR_LABELS_GK : RADAR_LABELS} size={155} />
+              </div>
+            )}
           </div>
         </div>
       )}

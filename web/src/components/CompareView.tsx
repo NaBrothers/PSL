@@ -1,5 +1,6 @@
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog'
 import { abilityColor, overallColor } from '@/lib/card-display'
+import RadarChart, { computeRadarValues, RADAR_LABELS, RADAR_LABELS_GK } from '@/components/RadarChart'
 
 interface CompareViewProps {
   data: any
@@ -37,6 +38,22 @@ export default function CompareView({ data, open, onClose }: CompareViewProps) {
                 </div>
               )
             })}
+            {data.card1.abilities && data.card2.abilities && (
+              <div className="border-t border-slate-700 pt-3 mt-2">
+                <div className="flex justify-center gap-4 text-xs mb-2">
+                  <span className="flex items-center gap-1"><span className="w-3 h-0.5 bg-[#4fc3f7] inline-block" />{data.card1.name}</span>
+                  <span className="flex items-center gap-1"><span className="w-3 h-0.5 bg-[#4ade80] inline-block" />{data.card2.name}</span>
+                </div>
+                <div className="flex justify-center">
+                  <RadarChart
+                    values={computeRadarValues(data.card1.abilities, data.card1.position === 'GK' && data.card2.position === 'GK')}
+                    labels={data.card1.position === 'GK' && data.card2.position === 'GK' ? RADAR_LABELS_GK : RADAR_LABELS}
+                    secondValues={computeRadarValues(data.card2.abilities, data.card1.position === 'GK' && data.card2.position === 'GK')}
+                    size={220}
+                  />
+                </div>
+              </div>
+            )}
           </div>
         )}
       </DialogContent>
