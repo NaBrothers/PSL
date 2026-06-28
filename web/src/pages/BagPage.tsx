@@ -40,6 +40,7 @@ export default function BagPage() {
   const [viewMode, setViewMode] = useState<"grid" | "list">("grid")
   const [manageMode, setManageMode] = useState(false)
   const [selected, setSelected] = useState<Set<number>>(new Set())
+
   const [detail, setDetail] = useState<any>(null)
   const [dialogMode, setDialogMode] = useState<DialogMode>(null)
   const [subCards, setSubCards] = useState<any[]>([])

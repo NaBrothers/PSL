@@ -146,3 +146,13 @@ html, body {
   100% { opacity: 1; }
 }
 .animate-fadeIn { animation: fadeIn 0.5s ease-out; }
+
+/* Stadium texture background */
+.bg-dark {
+  background-color: #070b16;
+  background-image: 
+    radial-gradient(ellipse at 50% 0%, rgba(79,195,247,0.03) 0%, transparent 60%),
+    radial-gradient(ellipse at 80% 80%, rgba(168,85,247,0.02) 0%, transparent 40%),
+    linear-gradient(180deg, rgba(255,255,255,0.01) 1px, transparent 1px);
+  background-size: 100% 100%, 100% 100%, 100% 4px;
+}

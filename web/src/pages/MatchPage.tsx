@@ -298,7 +298,10 @@ export default function MatchPage() {
                 <div className="w-8 h-8 rounded-full bg-slate-800 flex items-center justify-center text-accent font-bold text-sm mr-3">
                   {o.name[0]}
                 </div>
-                <span className="text-slate-200 text-sm font-medium flex-1">{o.name}</span>
+                <div className="flex-1 min-w-0">
+                  <span className="text-slate-200 text-sm font-medium">{o.name}</span>
+                  {(o as any).total_ability && <span className="text-slate-500 text-[10px] ml-2">战力 {(o as any).total_ability}</span>}
+                </div>
                 <Button size="sm" className="text-xs ml-2" disabled={loading} onClick={(e) => { e.stopPropagation(); setSelected(o); selectedRef.current = o; startMatch() }}>
                   开赛
                 </Button>

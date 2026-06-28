@@ -48,19 +48,7 @@ export default function HomePage() {
 
   return (
     <div className="p-3 flex flex-col gap-3 h-full">
-      {/* User header */}
-      <div className="flex items-center gap-3">
-        <div className="w-10 h-10 rounded-full bg-gradient-to-br from-gold/30 to-gold/10 border-2 border-gold/50 flex items-center justify-center shadow-[0_0_10px_rgba(212,168,67,0.15)]">
-          <span className="text-gold font-bold text-base">{user.name[0]}</span>
-        </div>
-        <div className="flex-1 min-w-0">
-          <h1 className="text-sm font-bold text-slate-100 truncate">{user.name}</h1>
-          <p className="text-[10px] text-slate-500">ID: {user.id}</p>
-        </div>
-        <div className="bg-dark-card/80 border border-gold/20 rounded-lg px-3 py-1">
-          <p className="text-gold font-bold text-sm">${user.money.toLocaleString()}</p>
-        </div>
-      </div>
+
 
       {/* Main Banner - Squad */}
       <div

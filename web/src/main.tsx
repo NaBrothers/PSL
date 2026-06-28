@@ -15,6 +15,8 @@ import LeaguePage from './pages/LeaguePage'
 import ChallengePage from './pages/ChallengePage'
 import SearchPage from './pages/SearchPage'
 import { ToastProvider } from '@/components/AppToast'
+import StatusHeader from '@/components/StatusHeader'
+
 
 interface AuthCtx {
   token: string | null
@@ -120,7 +122,8 @@ function App() {
       <ToastProvider>
         <BrowserRouter>
           <div className="flex flex-col h-full overflow-hidden">
-            <div className="flex-1 overflow-y-auto scrollbar-hide relative z-10 animate-pageIn">
+            <StatusHeader />
+            <div className="flex-1 overflow-y-auto scrollbar-hide relative z-10">
               <Routes>
                 <Route path="/login" element={<LoginPage />} />
                 <Route path="/home" element={token ? <HomePage /> : <Navigate to="/login" />} />

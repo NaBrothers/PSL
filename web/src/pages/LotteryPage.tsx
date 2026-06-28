@@ -7,6 +7,7 @@ import { overallColor } from '@/lib/card-display'
 import PlayerCardDetail from '@/components/PlayerCardDetail'
 import PlayerCard from '@/components/PlayerCard'
 import { useToast } from '@/components/AppToast'
+import { haptic, hapticSuccess } from '@/lib/haptic'
 import PackOpenAnimation from '@/components/PackOpenAnimation'
 
 interface PoolInfo {
@@ -57,6 +58,7 @@ export default function LotteryPage() {
   }, [])
 
   const draw = async (pool: string, count: number) => {
+    haptic('medium')
     setLoading(true)
     setDrawn([])
     setAnimating(true)
@@ -66,6 +68,7 @@ export default function LotteryPage() {
       const cards = res.data.cards as DrawnCard[]
       const rares = cards.filter(c => isRareCard(c.overall, c.star))
       if (rares.length > 0) {
+        hapticSuccess()
         setAnimQueue(rares.slice(1))
         setAnimCard(rares[0])
       }

@@ -63,12 +63,23 @@ class OpponentSchema(BaseModel):
     id: int
     qq: int
     name: str
+    total_ability: int = 0
 
 
 @router.get("/matches/opponents", response_model=List[OpponentSchema])
 def list_opponents(user=Depends(get_current_user)):
     rows = server.database.db.query_all("SELECT ID, QQ, Name FROM users WHERE QQ != ?", (user["qq"],))
-    return [OpponentSchema(id=r[0], qq=r[1], name=r[2] or "") for r in rows]
+    from server.services.squad import SquadService
+    svc = SquadService(server.database.db)
+    result = []
+    for r in rows:
+        try:
+            squad = svc.get_squad(r[1])
+            total = squad.get("total_ability", 0) if isinstance(squad, dict) else getattr(squad, "total_ability", 0)
+        except:
+            total = 0
+        result.append(OpponentSchema(id=r[0], qq=r[1], name=r[2] or "", total_ability=total))
+    return result
 
 
 @router.post("/matches")
