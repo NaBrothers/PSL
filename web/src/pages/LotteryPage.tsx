@@ -7,6 +7,7 @@ import { overallColor } from '@/lib/card-display'
 import PlayerCardDetail from '@/components/PlayerCardDetail'
 import PlayerCard from '@/components/PlayerCard'
 import { useToast } from '@/components/AppToast'
+import PackOpenAnimation from '@/components/PackOpenAnimation'
 
 interface PoolInfo {
   key: string
@@ -24,13 +25,24 @@ interface DrawnCard {
   star: number
   style: string
   style_name: string
+  nationality: string
+  club: string
   top_abilities?: { name: string; value: number }[]
+}
+
+const STAR_ABILITY: Record<number, number> = {1:0,2:1,3:2,4:4,5:6,6:8,7:11,8:14,9:17,10:21}
+function isRareCard(overall: number, star: number): boolean {
+  const bonus = STAR_ABILITY[star] ?? 0
+  const v = overall - bonus + star - 1
+  return v >= 89
 }
 
 export default function LotteryPage() {
   const [pools, setPools] = useState<PoolInfo[]>([])
   const [rewardPacks, setRewardPacks] = useState<{name: string; count: number}[]>([])
   const [drawn, setDrawn] = useState<DrawnCard[]>([])
+  const [animCard, setAnimCard] = useState<DrawnCard | null>(null)
+  const [animQueue, setAnimQueue] = useState<DrawnCard[]>([])
   const [loading, setLoading] = useState(false)
   const [lastDraw, setLastDraw] = useState<{pool: string; count: number}>({pool: "", count: 1})
   const [animating, setAnimating] = useState(true)
@@ -51,7 +63,13 @@ export default function LotteryPage() {
     try {
       setLastDraw({pool, count})
       const res = await api.post('/lottery/draw', { pool, count })
-      setDrawn(res.data.cards)
+      const cards = res.data.cards as DrawnCard[]
+      const rares = cards.filter(c => isRareCard(c.overall, c.star))
+      if (rares.length > 0) {
+        setAnimQueue(rares.slice(1))
+        setAnimCard(rares[0])
+      }
+      setDrawn(cards)
       setTimeout(() => setAnimating(false), 600)
     } catch (e: any) {
       showToast(e.response?.data?.detail || '抽卡失败')
@@ -59,8 +77,19 @@ export default function LotteryPage() {
     setLoading(false)
   }
 
+  const handleAnimComplete = () => {
+    if (animQueue.length > 0) {
+      setAnimCard(animQueue[0])
+      setAnimQueue(animQueue.slice(1))
+    } else {
+      setAnimCard(null)
+    }
+  }
+
   if (drawn.length > 0) {
     return (
+      <>
+      {animCard && <PackOpenAnimation key={animCard.id} card={animCard} onComplete={handleAnimComplete} />}
       <div className="p-4">
         <h2 className="text-lg font-bold text-slate-100 mb-4 text-center">抽卡结果</h2>
         <div className="grid grid-cols-3 gap-2 mb-4 justify-items-center">
@@ -106,6 +135,7 @@ export default function LotteryPage() {
           </DialogContent>
         </Dialog>
       </div>
+      </>
     )
   }
 

@@ -32,6 +32,8 @@ class DrawnCard:
     star: int
     style: str
     style_name: str
+    nationality: str = ""
+    club: str = ""
     top_abilities: list = None
 
 
@@ -126,6 +128,8 @@ class LotteryService:
                 id=ids[i], player_id=card.player.ID, name=card.player.Name, position=card.player.Position,
                 overall=card.overall, star=card.star, style=card.style,
                 style_name=get_style_name(card.style, card.player.Position),
+                nationality=card.player.Nationality or "",
+                club=card.player.Club or "",
                 top_abilities=top3,
             ))
 
