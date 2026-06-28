@@ -205,13 +205,14 @@ export default function TransferPage() {
       <div ref={listRef} className="flex-1 overflow-y-auto scrollbar-hide px-3 space-y-2 pb-20">
         {items.length === 0 ? (
           <div className="text-center py-12"><p className="text-slate-500">暂无球员在售</p></div>
-        ) : items.map(item => {
+        ) : items.map((item, idx) => {
           const isMine = me?.qq === item.seller_qq
           const isSelected = selected.has(item.card_id)
           return (
             <Card
               key={item.card_id}
-              className={`transition-colors cursor-pointer ${isSelected ? 'border-blue-500 bg-blue-950/20' : 'hover:border-slate-600'}`}
+              className={`transition-colors cursor-pointer animate-waterfallIn ${isSelected ? 'border-blue-500 bg-blue-950/20' : 'hover:border-slate-600'}`}
+              style={{ animationDelay: `${idx * 40}ms` }}
               onClick={() => openDetail(item.card_id)}
             >
               <CardContent className="p-3 flex items-center gap-3">

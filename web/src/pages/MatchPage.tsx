@@ -7,6 +7,7 @@ import SquadView from '@/components/SquadView'
 import ReplayHighlights from "@/components/ReplayHighlights"
 import KickoffAnimation from "@/components/KickoffAnimation"
 import MatchResultEffect from "@/components/MatchResultEffect"
+import FlipNumber from "@/components/FlipNumber"
 import type { SquadData } from '@/components/SquadView'
 import PlayerMatchDetail from "@/components/PlayerMatchDetail"
 import type { PlayerStat } from "@/components/PlayerMatchDetail"
@@ -144,15 +145,17 @@ export default function MatchPage() {
     const target = selectedRef.current
     if (!target) return
     setShowKickoff(true)
-    await new Promise(r => setTimeout(r, 2500))
-    setShowKickoff(false)
     setLoading(true)
     setResult(null)
     setTenResult(null)
     setOddsResult(null)
     setBroadcasts([])
 
+    const kickoffDone = new Promise(r => setTimeout(r, 2500))
+
     if (mode === 'watch') {
+      await kickoffDone
+      setShowKickoff(false)
       setPhase('live')
       const token = localStorage.getItem('psl_token')
       const es = new EventSource(`/api/matches/watch?opponent_id=${target.id}&authorization=Bearer ${token}`)
@@ -183,7 +186,10 @@ export default function MatchPage() {
     }
 
     try {
-      const res = await api.post('/matches', { opponent_id: target.id, mode })
+      const [res] = await Promise.all([
+        api.post('/matches', { opponent_id: target.id, mode }),
+        kickoffDone.then(() => setShowKickoff(false)),
+      ])
       if (mode === 'ten') {
         setTenResult(res.data)
       } else if (mode === 'odds') {
@@ -218,6 +224,11 @@ export default function MatchPage() {
     turnovers: '丢失球权', saves: '扑救', xg: 'xG',
     post_shot_xg: 'PSxG', key_passes: '关键传球',
     box_touches: '禁区触球', big_chances: '绝对机会', offsides: '越位',
+  }
+
+  // Kickoff animation - show fullscreen overlay
+  if (showKickoff && selectedRef.current) {
+    return <KickoffAnimation homeName="我" awayName={selectedRef.current.name} onComplete={() => {}} />
   }
 
   // Live broadcast phase
@@ -334,9 +345,9 @@ export default function MatchPage() {
         <div className="absolute inset-0 bg-[radial-gradient(ellipse_at_top,rgba(212,168,67,0.05),transparent_60%)]" />
         <div className="relative">
           <div className="text-5xl font-black mb-2">
-            <span className="text-accent">{result.home_score}</span>
+            <FlipNumber value={result.home_score} className="text-accent" />
             <span className="text-gold mx-3">:</span>
-            <span className="text-red-400">{result.away_score}</span>
+            <FlipNumber value={result.away_score} className="text-red-400" />
           </div>
           <p className="text-sm text-slate-400">{result.home_name} vs {result.away_name}</p>
         </div>
@@ -486,13 +497,6 @@ export default function MatchPage() {
         <Button variant="outline" className="flex-1" onClick={reset}>返回</Button>
         <Button variant="secondary" className="flex-1" onClick={() => { setResult(null); setTenResult(null); setOddsResult(null); setBroadcasts([]); setPhase('select'); if (selectedRef.current) startMatch() }}>再来一场</Button>
       </div>
-      {showKickoff && selectedRef.current && (
-        <KickoffAnimation
-          homeName="我"
-          awayName={selectedRef.current.name}
-          onComplete={() => {}}
-        />
-      )}
       {/* Player Detail Dialog */}
       <Dialog open={playerDetail !== null} onOpenChange={(open) => { if (!open) setPlayerDetail(null) }}>
         <DialogContent className="max-h-[85vh] overflow-y-auto scrollbar-hide">
