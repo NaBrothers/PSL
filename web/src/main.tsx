@@ -51,9 +51,11 @@ function TabBar() {
             }`}
           >
             {active && (
-              <div className="absolute top-0 left-1/2 -translate-x-1/2 w-8 h-0.5 bg-gradient-to-r from-transparent via-gold-light to-transparent rounded-full" />
+              <div className="absolute top-0 left-1/2 -translate-x-1/2 w-8 h-0.5 bg-gradient-to-r from-transparent via-gold-light to-transparent rounded-full transition-all duration-300" />
             )}
-            <Icon size={20} strokeWidth={active ? 2.5 : 1.5} />
+            <div className={`transition-transform duration-200 ${active ? 'scale-110 -translate-y-0.5' : 'scale-100'}`}>
+              <Icon size={20} strokeWidth={active ? 2.5 : 1.5} />
+            </div>
             <span className="text-[10px] font-medium">{t.label}</span>
           </button>
         )
@@ -118,7 +120,7 @@ function App() {
       <ToastProvider>
         <BrowserRouter>
           <div className="flex flex-col h-full overflow-hidden">
-            <div className="flex-1 overflow-y-auto scrollbar-hide relative z-10">
+            <div className="flex-1 overflow-y-auto scrollbar-hide relative z-10 animate-pageIn">
               <Routes>
                 <Route path="/login" element={<LoginPage />} />
                 <Route path="/home" element={token ? <HomePage /> : <Navigate to="/login" />} />

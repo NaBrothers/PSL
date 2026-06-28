@@ -5,6 +5,8 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import { ColorText } from '@/components/ColorText'
 import SquadView from '@/components/SquadView'
 import ReplayHighlights from "@/components/ReplayHighlights"
+import KickoffAnimation from "@/components/KickoffAnimation"
+import MatchResultEffect from "@/components/MatchResultEffect"
 import type { SquadData } from '@/components/SquadView'
 import PlayerMatchDetail from "@/components/PlayerMatchDetail"
 import type { PlayerStat } from "@/components/PlayerMatchDetail"
@@ -106,6 +108,7 @@ export default function MatchPage() {
   const [tenResult, setTenResult] = useState<any>(null)
   const [oddsResult, setOddsResult] = useState<any>(null)
   const [loading, setLoading] = useState(false)
+  const [showKickoff, setShowKickoff] = useState(false)
   const [phase, setPhase] = useState<Phase>('select')
   const [broadcasts, setBroadcasts] = useState<string[][]>([])
   const [opponentSquad, setOpponentSquad] = useState<SquadData | null>(null)
@@ -140,6 +143,9 @@ export default function MatchPage() {
   const startMatch = async () => {
     const target = selectedRef.current
     if (!target) return
+    setShowKickoff(true)
+    await new Promise(r => setTimeout(r, 2500))
+    setShowKickoff(false)
     setLoading(true)
     setResult(null)
     setTenResult(null)
@@ -324,6 +330,7 @@ export default function MatchPage() {
   return (
     <div className="p-4">
       <div className="text-center py-6 mb-4 rounded-xl border border-dark-border bg-gradient-to-b from-dark-card/80 to-transparent relative overflow-hidden">
+        <MatchResultEffect result={result.home_score > result.away_score ? 'win' : result.home_score < result.away_score ? 'lose' : 'tie'} />
         <div className="absolute inset-0 bg-[radial-gradient(ellipse_at_top,rgba(212,168,67,0.05),transparent_60%)]" />
         <div className="relative">
           <div className="text-5xl font-black mb-2">
@@ -479,6 +486,13 @@ export default function MatchPage() {
         <Button variant="outline" className="flex-1" onClick={reset}>返回</Button>
         <Button variant="secondary" className="flex-1" onClick={() => { setResult(null); setTenResult(null); setOddsResult(null); setBroadcasts([]); setPhase('select'); if (selectedRef.current) startMatch() }}>再来一场</Button>
       </div>
+      {showKickoff && selectedRef.current && (
+        <KickoffAnimation
+          homeName="我"
+          awayName={selectedRef.current.name}
+          onComplete={() => {}}
+        />
+      )}
       {/* Player Detail Dialog */}
       <Dialog open={playerDetail !== null} onOpenChange={(open) => { if (!open) setPlayerDetail(null) }}>
         <DialogContent className="max-h-[85vh] overflow-y-auto scrollbar-hide">
