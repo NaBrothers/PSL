@@ -22,6 +22,15 @@ class ChallengePlayRequest(BaseModel):
     mode: str = "quick"
 
 
+@router.get("/challenge/squad")
+def get_challenge_squad(difficulty: str = "简单", _user=Depends(get_current_user)):
+    svc = _challenge_svc()
+    try:
+        return svc.get_npc_squad(difficulty)
+    except ChallengeError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
 @router.post("/challenge/play")
 def play_challenge(req: ChallengePlayRequest, user=Depends(get_current_user)):
     svc = _challenge_svc()

@@ -61,6 +61,109 @@ class ChallengeService:
             "difficulties": difficulties,
         }
 
+    def get_npc_squad(self, difficulty: str = "简单") -> dict:
+        from model.player import Player
+        from psl_core.constants import NPC_STYLE, STARS, FORWARD, MIDFIELD, GUARD
+        from psl_core.formation import get_formation_positions
+        from psl_core.card import compute_abilities, compute_real_overall, compute_overall
+
+        if difficulty not in DIFFICULTY:
+            raise ChallengeError("Invalid difficulty")
+
+        star = DIFFICULTY[difficulty]["star"]
+
+        npc_idx = time.localtime(time.time()).tm_wday % len(NPC)
+        npc = NPC[npc_idx]
+        formation = npc["formation"]
+        player_ids = npc["players"]
+
+        positions = get_formation_positions(formation)
+
+        cards = []
+        total = 0
+        fwd = 0
+        mid = 0
+        grd = 0
+        fwd_count = 0
+        mid_count = 0
+        grd_count = 0
+
+        for i, pid in enumerate(player_ids):
+            p = Player.getPlayerByID(pid)
+            if p is None:
+                cards.append(None)
+                continue
+            pos = positions[i] if i < len(positions) else "CM"
+            style = NPC_STYLE.get(pos, "normal")
+
+            abilities = compute_abilities(
+                star=star,
+                style=style,
+                position=p.Position,
+                height=int(p.Height) if p.Height else 180,
+                heading_accuracy=p.Heading_Accuracy or 0,
+                jumping=p.Jumping or 0,
+                strength=p.Strength or 0,
+                long_shots=p.Long_Shots or 0,
+                shot_power=p.Shot_Power or 0,
+                finishing=p.Finishing or 0,
+                long_passing=p.Long_Passing or 0,
+                short_passing=p.Short_Passing or 0,
+                dribbling=p.Dribbling or 0,
+                ball_control=p.Ball_Control or 0,
+                balance=p.Balance or 0,
+                sliding_tackle=p.Sliding_Tackle or 0,
+                standing_tackle=p.Standing_Tackle or 0,
+                defensive_awareness=p.Defensive_Awareness or 0,
+                aggression=p.Aggression or 0,
+                interceptions=p.Interceptions or 0,
+                sprint_speed=p.Sprint_Speed or 0,
+                acceleration=p.Acceleration or 0,
+                composure=p.Composure or 0,
+                gk_handling=p.GK_Handling or 0,
+                gk_diving=p.GK_Diving or 0,
+                gk_positioning=p.GK_Positioning or 0,
+                gk_reflexes=p.GK_Reflexes or 0,
+                reactions=p.Reactions or 0,
+            )
+            real_ov = compute_real_overall(abilities, pos)
+            base_ov = compute_overall(p.Overall, star)
+
+            cards.append({
+                "id": 0,
+                "player_id": p.ID,
+                "name": p.Name,
+                "position": pos,
+                "overall": base_ov,
+                "real_overall": real_ov,
+                "star": star,
+                "style": style,
+                "breach": 0,
+                "locked": False,
+                "status": 0,
+            })
+
+            if pos in FORWARD:
+                fwd += real_ov
+                fwd_count += 1
+            elif pos in MIDFIELD:
+                mid += real_ov
+                mid_count += 1
+            elif pos in GUARD or pos == "GK":
+                grd += real_ov
+                grd_count += 1
+            total += real_ov
+
+        return {
+            "formation": formation,
+            "total_ability": total,
+            "forward_ability": fwd // max(fwd_count, 1),
+            "midfield_ability": mid // max(mid_count, 1),
+            "guard_ability": grd // max(grd_count, 1),
+            "positions": positions[:len(player_ids)],
+            "cards": cards,
+        }
+
     def play(self, qq: int, difficulty: str, mode: str = "quick") -> dict:
         from model.user import User
         from model.formation import Formation

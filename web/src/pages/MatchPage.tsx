@@ -3,6 +3,8 @@ import { Button } from '@/components/ui/button'
 import { Card, CardContent } from '@/components/ui/card'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import { ColorText } from '@/components/ColorText'
+import SquadView from '@/components/SquadView'
+import type { SquadData } from '@/components/SquadView'
 import api from '../api/client'
 import { useToast } from '@/components/AppToast'
 
@@ -49,7 +51,7 @@ interface MatchResult {
 }
 
 type Mode = 'quick' | 'watch' | 'ten' | 'odds'
-type Phase = 'select' | 'live' | 'result'
+type Phase = 'select' | 'squad' | 'live' | 'result'
 
 const NAME_COLORS: Record<string, string> = {
   w: 'text-slate-300',
@@ -104,12 +106,33 @@ export default function MatchPage() {
   const [loading, setLoading] = useState(false)
   const [phase, setPhase] = useState<Phase>('select')
   const [broadcasts, setBroadcasts] = useState<string[][]>([])
+  const [opponentSquad, setOpponentSquad] = useState<SquadData | null>(null)
   const liveRef = useRef<HTMLDivElement>(null)
   const { showToast } = useToast()
 
   useEffect(() => {
     api.get('/matches/opponents').then(res => setOpponents(res.data))
   }, [])
+
+  const viewOpponentSquad = async (opponent: Opponent) => {
+    setSelected(opponent)
+    try {
+      const res = await api.get(`/squad/${opponent.id}`)
+      setOpponentSquad(res.data)
+      setPhase('squad')
+    } catch {
+      showToast('无法加载对手阵容')
+    }
+  }
+
+  const startMatchWith = (opponent: Opponent) => {
+    setSelected(opponent)
+    selectedRef.current = opponent
+    startMatch()
+  }
+
+  const selectedRef = useRef<Opponent | null>(null)
+  selectedRef.current = selected
 
   useEffect(() => {
     if (liveRef.current) {
@@ -118,7 +141,8 @@ export default function MatchPage() {
   }, [broadcasts])
 
   const startMatch = async () => {
-    if (!selected) return
+    const target = selectedRef.current
+    if (!target) return
     setLoading(true)
     setResult(null)
     setTenResult(null)
@@ -128,7 +152,7 @@ export default function MatchPage() {
     if (mode === 'watch') {
       setPhase('live')
       const token = localStorage.getItem('psl_token')
-      const es = new EventSource(`/api/matches/watch?opponent_id=${selected.id}&authorization=Bearer ${token}`)
+      const es = new EventSource(`/api/matches/watch?opponent_id=${target.id}&authorization=Bearer ${token}`)
 
       es.onmessage = (event) => {
         const msg = JSON.parse(event.data)
@@ -156,7 +180,7 @@ export default function MatchPage() {
     }
 
     try {
-      const res = await api.post('/matches', { opponent_id: selected.id, mode })
+      const res = await api.post('/matches', { opponent_id: target.id, mode })
       if (mode === 'ten') {
         setTenResult(res.data)
       } else if (mode === 'odds') {
@@ -178,6 +202,7 @@ export default function MatchPage() {
     setOddsResult(null)
     setBroadcasts([])
     setSelected(null)
+    setOpponentSquad(null)
   }
 
   const STAT_LABELS: Record<string, string> = {
@@ -210,6 +235,16 @@ export default function MatchPage() {
     )
   }
 
+  // Squad preview phase
+  if (phase === 'squad' && selected && opponentSquad) {
+    return (
+      <div className="p-4">
+        <SquadView squad={opponentSquad} title={`${selected.name} 的阵容`} />
+        <Button variant="outline" className="w-full mt-4" onClick={() => setPhase('select')}>返回</Button>
+      </div>
+    )
+  }
+
   // Select phase
   if (phase === 'select') {
     return (
@@ -227,46 +262,20 @@ export default function MatchPage() {
         <p className="text-slate-500 text-sm mb-2">选择对手</p>
         <div className="space-y-2 mb-4">
           {opponents.map(o => (
-            <Card
-              key={o.id}
-              className={`cursor-pointer transition-colors ${selected?.id === o.id ? 'border-accent' : 'hover:border-slate-600'}`}
-              onClick={() => setSelected(o)}
-            >
+            <Card key={o.id} className="transition-colors hover:border-slate-600">
               <CardContent className="p-3 flex items-center">
                 <div className="w-8 h-8 rounded-full bg-slate-800 flex items-center justify-center text-accent font-bold text-sm mr-3">
                   {o.name[0]}
                 </div>
-                <span className="text-slate-200 text-sm font-medium">{o.name}</span>
-                <span className="text-slate-600 text-xs ml-auto">#{o.id}</span>
+                <span className="text-slate-200 text-sm font-medium flex-1">{o.name}</span>
+                <Button variant="outline" size="sm" className="text-xs" onClick={() => viewOpponentSquad(o)}>阵容</Button>
+                <Button size="sm" className="text-xs" disabled={loading} onClick={() => startMatchWith(o)}>
+                  开赛
+                </Button>
               </CardContent>
             </Card>
           ))}
         </div>
-
-        {selected && (
-          <div className="text-center mb-4 py-5 rounded-xl border border-gold/20 bg-gradient-to-r from-blue-900/20 via-dark-card/60 to-red-900/20 relative overflow-hidden">
-            <div className="absolute inset-0 bg-[radial-gradient(ellipse_at_center,rgba(79,195,247,0.05),transparent_70%)]" />
-            <div className="flex items-center justify-center gap-6 relative">
-              <div className="text-center">
-                <div className="w-14 h-14 rounded-full bg-gradient-to-br from-accent/30 to-blue-600/20 border-2 border-accent/50 flex items-center justify-center text-accent font-bold text-xl mx-auto mb-1 shadow-[0_0_12px_rgba(79,195,247,0.3)]">我</div>
-                <p className="text-xs text-slate-300 font-medium">主队</p>
-              </div>
-              <div className="flex flex-col items-center">
-                <span className="text-3xl font-black text-gold">VS</span>
-              </div>
-              <div className="text-center">
-                <div className="w-14 h-14 rounded-full bg-gradient-to-br from-red-500/30 to-red-800/20 border-2 border-red-400/50 flex items-center justify-center text-red-400 font-bold text-xl mx-auto mb-1 shadow-[0_0_12px_rgba(239,68,68,0.3)]">
-                  {selected.name[0]}
-                </div>
-                <p className="text-xs text-slate-300 font-medium">{selected.name}</p>
-              </div>
-            </div>
-          </div>
-        )}
-
-        <Button onClick={startMatch} disabled={!selected || loading} size="lg" className="w-full">
-          {loading ? '模拟中...' : '开始比赛'}
-        </Button>
       </div>
     )
   }
