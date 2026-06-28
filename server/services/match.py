@@ -82,6 +82,8 @@ class MatchResultData:
     stats_text: str
     replay_url: Optional[str]
     ratings: Optional[dict] = None
+    home_player_stats: Optional[list] = None
+    away_player_stats: Optional[list] = None
 
 
 @dataclass
@@ -327,6 +329,8 @@ class MatchService:
             stats_text=stats_text,
             replay_url=replay_url,
             ratings=ratings,
+            home_player_stats=result.home_stats.player_stats,
+            away_player_stats=result.away_stats.player_stats,
         )
 
     def _serialize_stats(self, stats) -> dict:

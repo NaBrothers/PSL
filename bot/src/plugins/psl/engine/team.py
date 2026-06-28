@@ -240,7 +240,19 @@ class Team:
       "goals_conceded": player.goals_conceded,
       "psxg_faced": round(player.psxg_faced, 3),
       "goals_prevented": round(player.goals_prevented, 3),
+      "shot_log": player.shot_log,
+      "pass_network": self._resolve_pass_connections(player),
+      "position_samples": player.position_samples,
     }
+
+  def _resolve_pass_connections(self, player):
+    id_to_idx = {id(p): i for i, p in enumerate(self.players)}
+    result = {}
+    for recv_id, count in player.pass_connections.items():
+      idx = id_to_idx.get(recv_id)
+      if idx is not None:
+        result[str(idx)] = count
+    return result
 
   def position_group(self, position):
     if position == "GK":

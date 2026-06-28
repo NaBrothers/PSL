@@ -275,6 +275,8 @@ class ChallengeService:
             "away_stats": away_stats,
             "ratings": ratings,
             "replay_url": replay_url,
+            "home_player_stats": result.home_stats.player_stats,
+            "away_player_stats": result.away_stats.player_stats,
             "times_left": challenge_times.times,
         }
 

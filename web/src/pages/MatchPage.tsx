@@ -5,6 +5,9 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import { ColorText } from '@/components/ColorText'
 import SquadView from '@/components/SquadView'
 import type { SquadData } from '@/components/SquadView'
+import PlayerMatchDetail from "@/components/PlayerMatchDetail"
+import type { PlayerStat } from "@/components/PlayerMatchDetail"
+import { Dialog, DialogContent } from "@/components/ui/dialog"
 import api from '../api/client'
 import { useToast } from '@/components/AppToast'
 
@@ -48,6 +51,8 @@ interface MatchResult {
   stats_text: string
   replay_url: string | null
   ratings: MatchRatings | null
+  home_player_stats: PlayerStat[] | null
+  away_player_stats: PlayerStat[] | null
 }
 
 type Mode = 'quick' | 'watch' | 'ten' | 'odds'
@@ -72,12 +77,8 @@ function ratingColor(rating: number): string {
   return 'text-red-400'
 }
 
-function ratingBg(rating: number): string {
-  if (rating >= 8.0) return 'bg-green-500/20 border-green-500/30'
-  if (rating >= 7.0) return 'bg-lime-500/20 border-lime-500/30'
-  if (rating >= 6.5) return 'bg-yellow-500/20 border-yellow-500/30'
-  if (rating >= 6.0) return 'bg-orange-500/20 border-orange-500/30'
-  return 'bg-red-500/20 border-red-500/30'
+function ratingBg(_rating: number): string {
+  return 'bg-slate-800/50 border-slate-700/50 hover:bg-slate-700/50'
 }
 
 function GoalName({ goal, align = 'left' }: { goal: GoalInfo; align?: 'left' | 'right' }) {
@@ -107,6 +108,7 @@ export default function MatchPage() {
   const [phase, setPhase] = useState<Phase>('select')
   const [broadcasts, setBroadcasts] = useState<string[][]>([])
   const [opponentSquad, setOpponentSquad] = useState<SquadData | null>(null)
+  const [playerDetail, setPlayerDetail] = useState<{player: PlayerStat, side: "home"|"away"} | null>(null)
   const liveRef = useRef<HTMLDivElement>(null)
   const { showToast } = useToast()
 
@@ -416,17 +418,19 @@ export default function MatchPage() {
                   <div className={`text-2xl font-bold ${ratingColor(result.ratings.motm.rating)}`}>{result.ratings.motm.rating}</div>
                 </div>
               )}
+              <p className="text-center text-[10px] text-slate-500 mb-3">点击球员查看详细数据</p>
               <div className="grid grid-cols-2 gap-4">
                 <div>
                   <div className="text-xs text-accent font-medium mb-2 text-center">{result.home_name}</div>
                   <div className="space-y-1.5">
                     {result.ratings.home_ratings.map((p, i) => (
-                      <div key={i} className={`flex items-center justify-between px-2 py-1.5 rounded border ${ratingBg(p.rating)}`}>
+                      <div key={i} className={`flex items-center justify-between px-2 py-1.5 rounded border cursor-pointer hover:opacity-80 ${ratingBg(p.rating)}`} onClick={() => { const ps = result.home_player_stats?.find(s => s.name === p.name); if (ps) setPlayerDetail({player: ps, side: "home"}) }}>
                         <div className="min-w-0 flex-1">
                           <span className="text-xs text-slate-500 mr-1">{p.position}</span>
                           <span className="text-xs truncate"><ColorText text={p.colored_name || p.name} /></span>
                         </div>
                         <span className={`text-sm font-bold ml-1 ${ratingColor(p.rating)}`}>{p.rating}</span>
+                        <span className="text-slate-600 text-xs ml-1">›</span>
                       </div>
                     ))}
                   </div>
@@ -435,12 +439,13 @@ export default function MatchPage() {
                   <div className="text-xs text-red-400 font-medium mb-2 text-center">{result.away_name}</div>
                   <div className="space-y-1.5">
                     {result.ratings.away_ratings.map((p, i) => (
-                      <div key={i} className={`flex items-center justify-between px-2 py-1.5 rounded border ${ratingBg(p.rating)}`}>
+                      <div key={i} className={`flex items-center justify-between px-2 py-1.5 rounded border cursor-pointer hover:opacity-80 ${ratingBg(p.rating)}`} onClick={() => { const ps = result.away_player_stats?.find(s => s.name === p.name); if (ps) setPlayerDetail({player: ps, side: "away"}) }}>
                         <div className="min-w-0 flex-1">
                           <span className="text-xs text-slate-500 mr-1">{p.position}</span>
                           <span className="text-xs truncate"><ColorText text={p.colored_name || p.name} /></span>
                         </div>
                         <span className={`text-sm font-bold ml-1 ${ratingColor(p.rating)}`}>{p.rating}</span>
+                        <span className="text-slate-600 text-xs ml-1">›</span>
                       </div>
                     ))}
                   </div>
@@ -471,6 +476,18 @@ export default function MatchPage() {
         )}
         <Button variant="secondary" className="flex-1" onClick={reset}>再来一场</Button>
       </div>
+      {/* Player Detail Dialog */}
+      <Dialog open={playerDetail !== null} onOpenChange={(open) => { if (!open) setPlayerDetail(null) }}>
+        <DialogContent className="max-h-[85vh] overflow-y-auto scrollbar-hide">
+          {playerDetail && (
+            <PlayerMatchDetail
+              player={playerDetail.player}
+              teamPlayers={(playerDetail.side === "home" ? result.home_player_stats : result.away_player_stats) || []}
+              teamSide={playerDetail.side}
+            />
+          )}
+        </DialogContent>
+      </Dialog>
     </div>
   )
 }

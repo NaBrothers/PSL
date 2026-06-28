@@ -338,6 +338,17 @@ class Game:
         self.possession_action_count = 0
         self.possession_box_touches = 0
         self.current_events = []
+        is_home_offence = self.offence is self.home
+        for p in self.home.players:
+            if is_home_offence:
+                p.position_samples.append((round(p.x, 1), round(p.y, 1)))
+            else:
+                p.position_samples.append((round(Const.WIDTH - p.x, 1), round(Const.LENGTH - p.y, 1)))
+        for p in self.away.players:
+            if is_home_offence:
+                p.position_samples.append((round(Const.WIDTH - p.x, 1), round(Const.LENGTH - p.y, 1)))
+            else:
+                p.position_samples.append((round(p.x, 1), round(p.y, 1)))
         self.reset_action_flag()
         while 1:
             if self.possession_action_count >= 28:
@@ -385,6 +396,7 @@ class Game:
                 shot = shot_context
                 shoot_x = self.ball_holder.shooting(shot.on_target_probability, self.rng)
                 self.record_shot_quality(shot, self.ball_holder)
+                self.ball_holder.shot_log[-1]["target_x"] = round(shoot_x, 1)
                 if shot.distance >= 20:
                     case = Display.print_long_shot(self.ball_holder, int(shot.distance))
                 else:
@@ -709,6 +721,7 @@ class Game:
                         if rand < roll_winner.ability["Heading"] and distance_goal < 25:
                             header_shot = self.create_shot(roll_winner, len(self.getDefencePlayersInArea(roll_winner.x, roll_winner.y, 10)), True)
                             self.record_shot_quality(header_shot, roll_winner)
+                            roll_winner.shot_log[-1]["target_x"] = round(Const.WIDTH / 2, 1)
                             self.record_box_touch(roll_winner)
                             case = Display.print_high_shot(roll_winner)
                             self.printCase(case, "shot", 3, roll_winner, xg=header_shot.raw_xg)
@@ -1280,6 +1293,7 @@ class Game:
             self.offence.big_chances += 1
             shooter.big_chances += 1
         self.record_box_touch(shooter)
+        shooter.shot_log.append({"x": round(shooter.x, 1), "y": round(shooter.y, 1), "xg": round(shot.raw_xg, 3), "in_box": in_box, "outcome": "pending", "target_x": 0, "target_y": 0})
         return shot.raw_xg
 
     def adjust_shot_for_keeper(self, shot, keeper):
@@ -1289,6 +1303,8 @@ class Game:
     def record_shot_result(self, shooter, keeper=None, shot=None, outcome="miss"):
         if outcome != "goal" and getattr(shooter, "big_chances", 0) > 0 and shot is not None and (shot.raw_xg >= 0.16 or shot.goal_probability >= 0.21):
             shooter.big_chances_missed += 1
+        if shooter.shot_log:
+            shooter.shot_log[-1]["outcome"] = outcome
         if shot is None or keeper is None:
             return
         psxg = shot.on_target_probability * self.adjust_shot_for_keeper(shot, keeper)
@@ -1310,6 +1326,9 @@ class Game:
             self.possession_box_touches += 1
 
     def record_pass_stats(self, passer, receiver, distance, long_pass=False, success=False):
+        if success:
+            key = id(receiver)
+            passer.pass_connections[key] = passer.pass_connections.get(key, 0) + 1
         if long_pass:
             passer.long_passes += 1
             self.offence.long_passes += 1

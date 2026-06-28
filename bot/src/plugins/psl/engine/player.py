@@ -76,6 +76,9 @@ class Player:
     self.offsides = 0
     self.goals_detailed = []
     self.shooting_tendency = 1.0
+    self.shot_log = []
+    self.pass_connections = {}
+    self.position_samples = []
 
   def match_ability(self, key):
     value = self.ability[key]
