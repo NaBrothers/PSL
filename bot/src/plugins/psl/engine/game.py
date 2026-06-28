@@ -192,7 +192,7 @@ class Game:
 
     def broadcast_goal(self, scorer):
         score = str(self.home.point) + ":" + str(self.away.point)
-        team = self.offence.coach.name
+        team = self.defence.coach.name
         text = self.commentary.render("narrative", "goal_celebration", scorer=scorer.getName(False), team=team, score=score)
         prefix = "主" + score + "客 " + self.half + str(self.time // 60) + ":" + str(self.time % 60)
         self.broadcast_buffer.append(prefix + " /~$" + text + "/")
