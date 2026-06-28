@@ -141,7 +141,7 @@ def compute_match_ratings(home_player_stats: list, away_player_stats: list) -> d
     best = max(all_rated, key=lambda x: x[0]["rating"])
 
     return {
-        "home_ratings": sorted(home_ratings, key=lambda x: x["rating"], reverse=True),
-        "away_ratings": sorted(away_ratings, key=lambda x: x["rating"], reverse=True),
+        "home_ratings": home_ratings,
+        "away_ratings": away_ratings,
         "motm": {"name": best[0]["name"], "colored_name": best[0]["colored_name"], "team_side": best[1], "rating": best[0]["rating"]},
     }
