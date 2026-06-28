@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { Sparkles, Backpack, Store, Search, Trophy as TrophyIcon, CalendarDays } from 'lucide-react'
 import api from '../api/client'
+import InboxBanner from '@/components/InboxBanner'
 import { cardBorderColor } from '@/lib/card-display'
 
 interface UserInfo {
@@ -48,6 +49,7 @@ export default function HomePage() {
 
   return (
     <div className="p-3 flex flex-col gap-3 h-full">
+      <InboxBanner />
 
 
       {/* Main Banner - Squad */}

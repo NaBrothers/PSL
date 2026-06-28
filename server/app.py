@@ -12,6 +12,7 @@ from server.routes.transfer import router as transfer_router
 from server.routes.player import router as player_router
 from server.routes.league import router as league_router
 from server.routes.challenge import router as challenge_router
+from server.routes.inbox import router as inbox_router
 
 app = FastAPI(title="PSL Web API")
 
@@ -24,6 +25,7 @@ app.include_router(transfer_router)
 app.include_router(player_router)
 app.include_router(league_router)
 app.include_router(challenge_router)
+app.include_router(inbox_router)
 
 os.makedirs(REPLAY_DIR, exist_ok=True)
 app.mount("/replays", StaticFiles(directory=REPLAY_DIR), name="replays")

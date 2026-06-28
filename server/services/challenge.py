@@ -229,6 +229,7 @@ class ChallengeService:
             u.earn(award_money)
             award_msg = f"${award_money}"
 
+
         commentary = CommentaryRenderer(random.Random())
         report = build_report(result, commentary)
         stats_text = format_stats(result)

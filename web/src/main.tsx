@@ -14,6 +14,7 @@ import TransferPage from './pages/TransferPage'
 import LeaguePage from './pages/LeaguePage'
 import ChallengePage from './pages/ChallengePage'
 import SearchPage from './pages/SearchPage'
+import InboxPage from './pages/InboxPage'
 import { ToastProvider } from '@/components/AppToast'
 import StatusHeader from '@/components/StatusHeader'
 
@@ -135,6 +136,7 @@ function App() {
                 <Route path="/league" element={token ? <LeaguePage /> : <Navigate to="/login" />} />
                 <Route path="/challenge" element={token ? <ChallengePage /> : <Navigate to="/login" />} />
                 <Route path="/search" element={token ? <SearchPage /> : <Navigate to="/login" />} />
+                <Route path="/inbox" element={token ? <InboxPage /> : <Navigate to="/login" />} />
                 <Route path="/more" element={token ? <MorePage /> : <Navigate to="/login" />} />
                 <Route path="*" element={<Navigate to={token ? "/home" : "/login"} />} />
               </Routes>

@@ -45,6 +45,8 @@ class BagCardInfo:
     status_text: str
     real_overall: Optional[int] = None
     top_abilities: list = None
+    can_upgrade: bool = False
+    can_breach: bool = False
 
 
 @dataclass
@@ -68,7 +70,7 @@ class BagService:
         self.db = db
 
     def get_bag(self, qq: int, page: int = 1, query: str = "", page_size: int = 20,
-                sort: str = "overall", position: str = "", color: str = "") -> BagPage:
+                sort: str = "overall", position: str = "", color: str = "", upgradable: bool = False) -> BagPage:
         rows = self.db.query_all(
             "SELECT c.ID, c.Player, c.Star, c.Style, c.Status, c.Locked, c.Breach, "
             "c.Ext_Abilities, "
@@ -121,6 +123,28 @@ class BagService:
                 status_text=STATUS_TEXT.get(r[4] or 0, ""),
                 top_abilities=top3,
             ))
+
+        # Compute red dot flags
+        from collections import defaultdict
+        by_player: dict = defaultdict(list)
+        for c in cards:
+            by_player[c.player_id].append(c)
+        for group in by_player.values():
+            if len(group) < 2:
+                continue
+            for c in group:
+                # Can breach: same player, different card exists
+                c.can_breach = True
+                # Can upgrade: same player + star diff == 1 (or both star 1)
+                for other in group:
+                    if other.id == c.id:
+                        continue
+                    if (c.star == 1 and other.star == 1) or abs(c.star - other.star) == 1:
+                        c.can_upgrade = True
+                        break
+
+        if upgradable:
+            cards = [c for c in cards if c.can_upgrade]
 
         if query:
             cards = [c for c in cards if query.lower() in c.name.lower()]

@@ -23,6 +23,8 @@ interface BagCard {
   status: number
   status_text: string
   top_abilities?: { name: string; value: number }[]
+  can_upgrade?: boolean
+  can_breach?: boolean
 }
 
 type DialogMode = 'detail' | 'upgrade' | 'breach' | 'compare-select' | 'compare-view' | 'confirm-recycle' | 'confirm-batch-recycle' | 'confirm-batch-transfer' | null
@@ -40,6 +42,7 @@ export default function BagPage() {
   const [viewMode, setViewMode] = useState<"grid" | "list">("grid")
   const [manageMode, setManageMode] = useState(false)
   const [selected, setSelected] = useState<Set<number>>(new Set())
+  const [filterUpgradable, setFilterUpgradable] = useState(false)
 
   const [detail, setDetail] = useState<any>(null)
   const [dialogMode, setDialogMode] = useState<DialogMode>(null)
@@ -57,8 +60,10 @@ export default function BagPage() {
     pos: string = filterPos,
     col: string = filterColor,
     append: boolean = false,
+    upgradable: boolean = filterUpgradable,
   ) => {
-    const res = await api.get("/bag", { params: { page: p, query: q, sort: s, position: pos, color: col } })
+    const params: any = { page: p, query: q, sort: s, position: pos, color: col, upgradable }
+    const res = await api.get("/bag", { params })
     setCards(prev => (append ? [...prev, ...res.data.cards] : res.data.cards))
     setTotalPages(res.data.total_pages)
     setPage(res.data.page)
@@ -248,8 +253,8 @@ export default function BagPage() {
         onChange={e => { setQuery(e.target.value); loadBag(1, e.target.value, sortBy, filterPos, filterColor, false) }}
         className="mb-2"
       />
-      {/* Position pill buttons */}
-      <div className="flex gap-1.5 mb-2 overflow-x-auto scrollbar-hide">
+      {/* Position pill buttons + upgradable filter */}
+      <div className="flex gap-1.5 mb-2 overflow-x-auto scrollbar-hide items-center">
         {[['', '全部'], ['FWD', '前锋'], ['MID', '中场'], ['DEF', '后卫'], ['GK', '门将']].map(([val, label]) => (
           <button
             key={val}
@@ -261,6 +266,11 @@ export default function BagPage() {
             {label}
           </button>
         ))}
+        <label className="flex items-center gap-1 ml-auto cursor-pointer whitespace-nowrap flex-shrink-0">
+          <input type="checkbox" checked={filterUpgradable} onChange={e => { setFilterUpgradable(e.target.checked); loadBag(1, query, sortBy, filterPos, filterColor, false, e.target.checked) }}
+            className="w-3.5 h-3.5 rounded border-slate-600 bg-slate-800 accent-gold" />
+          <span className="text-xs text-slate-400">可强化</span>
+        </label>
       </div>
       {/* Sort + Color filters */}
       <div className="flex gap-1.5 mb-3">
@@ -294,9 +304,12 @@ export default function BagPage() {
         {viewMode === 'grid' ? (
           <div className="grid grid-cols-3 gap-1.5 mb-3">
             {cards.map(card => (
-              <div key={card.id} className="relative">
+              <div key={card.id} className="relative overflow-visible">
                 {manageMode && (
                   <div className={`absolute -top-1 -left-1 z-10 w-4 h-4 rounded border ${selected.has(card.id) ? 'bg-accent border-accent' : 'border-slate-500 bg-dark-card'}`} />
+                )}
+                {!manageMode && card.can_upgrade && (
+                  <div className="absolute -top-1 -right-1 z-10 w-3 h-3 rounded-full bg-red-500 border-2 border-[#070b16]" />
                 )}
                 <PlayerCard
                   playerId={card.player_id}
@@ -392,8 +405,14 @@ export default function BagPage() {
                 <Button variant="outline" size="sm" onClick={handleLock}>
                   {detail.locked ? '解锁' : '锁定'}
                 </Button>
-                <Button variant="secondary" size="sm" onClick={openUpgrade}>强化</Button>
-                <Button variant="secondary" size="sm" onClick={openBreach}>突破</Button>
+                <Button variant="secondary" size="sm" className="relative" onClick={openUpgrade}>
+                  强化
+                  {cards.find(c => c.id === detail?.id)?.can_upgrade && <span className="absolute -top-1 -right-1 w-2 h-2 rounded-full bg-red-500" />}
+                </Button>
+                <Button variant="secondary" size="sm" className="relative" onClick={openBreach}>
+                  突破
+                  {cards.find(c => c.id === detail?.id)?.can_breach && <span className="absolute -top-1 -right-1 w-2 h-2 rounded-full bg-red-500" />}
+                </Button>
                 <Button variant="destructive" size="sm" onClick={() => setDialogMode('confirm-recycle')}>回收</Button>
                 <Button variant="outline" size="sm" onClick={openCompare}>比较</Button>
               </div>

@@ -149,6 +149,15 @@ class TransferService:
         self.db.execute("UPDATE cards SET Status = 0, User = ? WHERE ID = ?", (qq, card_id))
         self.db.execute("UPDATE users SET Money = Money - ? WHERE QQ = ?", (cost, qq))
         self.db.execute("UPDATE users SET Money = Money + ? WHERE QQ = ?", (cost, seller_qq))
+        # Notify seller
+        from server.services.inbox import InboxService
+        inbox = InboxService(self.db)
+        card_row = self.db.query_one("SELECT p.Name FROM cards c JOIN players p ON c.Player = p.ID WHERE c.ID = ?", (card_id,))
+        card_name = card_row[0] if card_row else "球员"
+        buyer_row = self.db.query_one("SELECT Name FROM users WHERE QQ = ?", (qq,))
+        buyer_name = buyer_row[0] if buyer_row else "某人"
+        inbox.send(seller_qq, "transfer_sold", f"{card_name} 已售出",
+            f"你的 {card_name} 被 {buyer_name} 以 ${cost} 购买", {"card_id": card_id, "cost": cost})
         return {"ok": True, "cost": cost}
 
     def batch_buy(self, qq: int, card_ids: List[int]) -> dict:
