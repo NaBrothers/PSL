@@ -4,6 +4,7 @@ import { Card, CardContent } from '@/components/ui/card'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import { ColorText } from '@/components/ColorText'
 import SquadView from '@/components/SquadView'
+import ReplayHighlights from "@/components/ReplayHighlights"
 import type { SquadData } from '@/components/SquadView'
 import PlayerMatchDetail from "@/components/PlayerMatchDetail"
 import type { PlayerStat } from "@/components/PlayerMatchDetail"
@@ -196,6 +197,7 @@ export default function ChallengePage() {
             <TabsTrigger value="goals" className="flex-1">进球</TabsTrigger>
             <TabsTrigger value="stats" className="flex-1">数据</TabsTrigger>
             {result.ratings && <TabsTrigger value="ratings" className="flex-1">评分</TabsTrigger>}
+            {result.replay_url && <TabsTrigger value="highlights" className="flex-1">集锦</TabsTrigger>}
           </TabsList>
 
           <TabsContent value="report">
@@ -303,12 +305,14 @@ export default function ChallengePage() {
               </CardContent></Card>
             </TabsContent>
           )}
+          {result.replay_url && (
+            <TabsContent value="highlights">
+              <ReplayHighlights replayUrl={result.replay_url} />
+            </TabsContent>
+          )}
         </Tabs>
 
         <div className="flex gap-2 mt-4">
-          {result.replay_url && (
-            <Button variant="outline" className="flex-1" onClick={() => window.open(result.replay_url!, '_blank')}>观看回放</Button>
-          )}
           <Button variant="secondary" className="flex-1" onClick={() => { setResult(null); resetSquadView() }}>返回</Button>
         </div>
       <Dialog open={playerDetail !== null} onOpenChange={(open) => { if (!open) setPlayerDetail(null) }}>
