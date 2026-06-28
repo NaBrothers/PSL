@@ -124,6 +124,7 @@ export default function ChallengePage() {
   const [result, setResult] = useState<ChallengeResult | null>(null)
   const [loading, setLoading] = useState(false)
   const [npcSquad, setNpcSquad] = useState<SquadData | null>(null)
+  const [selectedDifficulty, setSelectedDifficulty] = useState<string | null>(null)
   const [playerDetail, setPlayerDetail] = useState<{player: PlayerStat, side: "home"|"away"} | null>(null)
   const { showToast } = useToast()
 
@@ -132,6 +133,7 @@ export default function ChallengePage() {
   }, [])
 
   const viewNpcSquad = async (difficulty: string) => {
+    setSelectedDifficulty(difficulty)
     try {
       const res = await api.get('/challenge/squad', { params: { difficulty } })
       setNpcSquad(res.data)
@@ -154,6 +156,7 @@ export default function ChallengePage() {
 
   const resetSquadView = () => {
     setNpcSquad(null)
+    setSelectedDifficulty(null)
   }
 
   if (!info) return <div className="flex items-center justify-center h-full text-slate-500">加载中...</div>
@@ -163,7 +166,12 @@ export default function ChallengePage() {
     return (
       <div className="p-4">
         <SquadView squad={npcSquad} title={`${info.npc_name} 的阵容`} />
-        <Button variant="outline" className="w-full mt-4" onClick={resetSquadView}>返回</Button>
+        <div className="flex gap-2 mt-4">
+          <Button variant="outline" className="flex-1" onClick={resetSquadView}>返回</Button>
+          <Button className="flex-1 bg-gold/80 text-black hover:bg-gold font-bold" disabled={loading || info.times_left <= 0} onClick={() => { if (selectedDifficulty) play(selectedDifficulty) }}>
+            {loading ? '进行中...' : '开赛'}
+          </Button>
+        </div>
       </div>
     )
   }
@@ -361,7 +369,8 @@ export default function ChallengePage() {
           return (
             <div
               key={d.key}
-              className={`rounded-xl border bg-gradient-to-r ${colorClass} p-4 flex items-center justify-between`}
+              className={`rounded-xl border bg-gradient-to-r ${colorClass} p-4 flex items-center justify-between cursor-pointer hover:scale-[1.01] transition-transform`}
+              onClick={() => viewNpcSquad(d.key)}
             >
               <div className="flex items-center gap-3">
                 <span className="text-slate-100 font-bold">{d.key}</span>
@@ -372,14 +381,9 @@ export default function ChallengePage() {
                   {d.star > 5 && <span className="text-[9px] text-gold ml-0.5">×{d.star}</span>}
                 </div>
               </div>
-              <div className="flex gap-2">
-                <Button variant="outline" size="sm" className="text-xs" onClick={() => viewNpcSquad(d.key)}>
-                  阵容
-                </Button>
-                <Button size="sm" disabled={loading || info.times_left <= 0} className="bg-gold/80 text-black hover:bg-gold font-bold text-xs" onClick={() => play(d.key)}>
-                  {loading ? '...' : '开赛'}
-                </Button>
-              </div>
+              <Button size="sm" disabled={loading || info.times_left <= 0} className="bg-gold/80 text-black hover:bg-gold font-bold text-xs" onClick={(e) => { e.stopPropagation(); play(d.key) }}>
+                {loading ? '...' : '开赛'}
+              </Button>
             </div>
           )
         })}

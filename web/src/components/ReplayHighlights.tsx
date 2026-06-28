@@ -26,7 +26,7 @@ interface ReplayHeader {
 
 type ReplayLine = ReplayHeader | ReplayFrame
 
-interface Clip { label: string; startIdx: number; endIdx: number }
+interface Clip { label: string; startIdx: number; endIdx: number; icon: string; minute: number; playerName: string }
 interface Props { replayUrl: string }
 
 const PITCH_W = 68, PITCH_H = 105
@@ -38,16 +38,26 @@ const COLOR_MAP: Record<string, string> = { w:'#b8b8b8', g:'#4caf50', b:'#4fc3f7
 
 function lerp(a: number, b: number, t: number) { return a + (b - a) * t }
 
-function extractHighlights(frames: ReplayFrame[]): Clip[] {
+function extractHighlights(frames: ReplayFrame[], header: ReplayHeader | null): Clip[] {
   const clips: Clip[] = []
   for (let i = 0; i < frames.length; i++) {
     const f = frames[i]
     if (f.event_text === 'GOAL' || f.event_text === 'SAVE') {
       const startIdx = Math.max(0, i - 10), endIdx = i
       const minute = Math.floor(f.t / 60)
-      const label = f.event_text === 'GOAL' ? `⚽ ${minute}' 进球 [${f.score[0]}-${f.score[1]}]` : `🧤 ${minute}' 扑救`
-      if (clips.length > 0 && clips[clips.length - 1].endIdx >= startIdx - 2) { clips[clips.length - 1].endIdx = endIdx }
-      else { clips.push({ label, startIdx, endIdx }) }
+      const icon = f.event_text === 'GOAL' ? '⚽' : '🧤'
+      let playerName = ''
+      if (header && f.ball_holder != null && f.ball_team) {
+        if (f.event_text === 'GOAL') {
+          const team = f.ball_team === 'home' ? header.home : header.away
+          playerName = team.players[f.ball_holder]?.name.split(' ').pop() || ''
+        } else {
+          const opposingTeam = f.ball_team === 'home' ? header.away : header.home
+          playerName = opposingTeam.players[0]?.name.split(' ').pop() || ''
+        }
+      }
+      const label = f.event_text === 'GOAL' ? `${minute}' 进球 [${f.score[0]}-${f.score[1]}]` : `${minute}' 扑救`
+      clips.push({ label, startIdx, endIdx, icon, minute, playerName })
     }
   }
   return clips
@@ -100,7 +110,7 @@ export default function ReplayHighlights({ replayUrl }: Props) {
       const h = parsed.find(l => l.type === 'header') as ReplayHeader
       const f = parsed.filter(l => l.type === 'frame') as ReplayFrame[]
       setHeader(h); setFrames(f)
-      const hl = extractHighlights(f); setClips(hl); setLoading(false)
+      const hl = extractHighlights(f, h); setClips(hl); setLoading(false)
       if (hl.length > 0) { setFrameIdx(hl[0].startIdx); setPlaying(true) }
     })
   }, [replayUrl])
@@ -127,11 +137,46 @@ export default function ReplayHighlights({ replayUrl }: Props) {
     const frame = f[idx]
     if (!frame) return
 
-    let home = frame.home, away = frame.away
+    let home = frame.home.map(p => [...p] as [number, number]), away = frame.away.map(p => [...p] as [number, number])
     if (idx < f.length - 1 && interpT > 0 && !frame.cut && !f[idx + 1].cut) {
       const nxt = f[idx + 1]
       home = frame.home.map((p, i) => [lerp(p[0], nxt.home[i][0], interpT), lerp(p[1], nxt.home[i][1], interpT)] as [number, number])
       away = frame.away.map((p, i) => [lerp(p[0], nxt.away[i][0], interpT), lerp(p[1], nxt.away[i][1], interpT)] as [number, number])
+    }
+
+    // GK lateral dive on SAVE/GOAL (move horizontally to ball intercept point)
+    const isSaveFrame = (frame.event_text === 'SAVE' || frame.event_text === 'GOAL') && frame.ball_flight
+    let isAfterSave = false
+    let saveRefFrame: typeof frame | null = null
+    for (let back = 1; back <= 4 && idx - back >= 0; back++) {
+      const prev = f[idx - back]
+      if ((prev.event_text === 'SAVE' || prev.event_text === 'GOAL') && prev.ball_flight) {
+        isAfterSave = true
+        saveRefFrame = prev
+        break
+      }
+      if (prev.cut) break
+    }
+    if (isSaveFrame || isAfterSave) {
+      const saveFrame = isSaveFrame ? frame : saveRefFrame!
+      const bf = saveFrame.ball_flight!
+      const gkTeam = saveFrame.ball_team === 'home' ? 'away' : 'home'
+      const gkPos = gkTeam === 'home' ? home[0] : away[0]
+      const gkY = gkPos[1]
+      // Calculate where ball path crosses GK's y-line
+      const dy = bf.to[1] - bf.from[1]
+      const targetX = dy !== 0
+        ? bf.from[0] + (bf.to[0] - bf.from[0]) * (gkY - bf.from[1]) / dy
+        : bf.to[0]
+      if (isSaveFrame) {
+        const diveT = Math.min(Math.max((interpT - 0.3) / 0.5, 0), 1)
+        if (gkTeam === 'home') { home[0] = [lerp(home[0][0], targetX, diveT), gkY] }
+        else { away[0] = [lerp(away[0][0], targetX, diveT), gkY] }
+      } else {
+        // After save: keep GK at intercept position
+        if (gkTeam === 'home') { home[0] = [targetX, gkY] }
+        else { away[0] = [targetX, gkY] }
+      }
     }
 
     // Field
@@ -261,11 +306,16 @@ export default function ReplayHighlights({ replayUrl }: Props) {
           onChange={e => { setFrameIdx(parseInt(e.target.value)); setPlaying(false) }} />
       )}
       {!fullReplay && clips.length > 0 && (
-        <div className="w-full space-y-1">
-          <p className="text-[10px] text-slate-500 text-center">精彩集锦</p>
-          {clips.map((clip, i) => (
-            <div key={i} onClick={() => goToClip(i)} className={`text-xs px-3 py-1.5 rounded cursor-pointer transition-colors ${i===currentClip ? 'bg-accent/20 text-accent border border-accent/30' : 'bg-slate-800/50 text-slate-400 hover:bg-slate-700/50'}`}>{clip.label}</div>
-          ))}
+        <div className="w-full">
+          <div className="flex gap-2 overflow-x-auto scrollbar-hide pb-1 px-1">
+            {clips.map((clip, i) => (
+              <div key={i} onClick={() => goToClip(i)} className={`flex-shrink-0 w-16 flex flex-col items-center gap-0.5 py-2 px-1 rounded-lg cursor-pointer transition-colors ${i===currentClip ? 'bg-accent/20 border border-accent/30' : 'bg-slate-800/50 hover:bg-slate-700/50'}`}>
+                <span className="text-lg">{clip.icon}</span>
+                <span className={`text-[9px] font-bold ${i===currentClip ? 'text-accent' : 'text-slate-300'}`}>{clip.minute}'</span>
+                <span className="text-[8px] text-slate-400 truncate w-full text-center">{clip.playerName}</span>
+              </div>
+            ))}
+          </div>
         </div>
       )}
       <Button variant="ghost" size="sm" className="text-xs text-slate-500" onClick={() => { setFullReplay(!fullReplay); if (!fullReplay) setFrameIdx(0); else if (clips.length > 0) { setFrameIdx(clips[0].startIdx); setCurrentClip(0) } }}>

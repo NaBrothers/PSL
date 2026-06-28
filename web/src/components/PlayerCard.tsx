@@ -53,18 +53,11 @@ function getFrameKey(overall: number, star: number): string {
 function StarDisplay({ star }: { star: number }) {
   if (star <= 5) {
     return (
-      <div className="flex gap-0.5 justify-center">
-        {Array.from({ length: star }).map((_, i) => (
-          <div key={i} className="w-1.5 h-1.5 bg-cyan-400 rotate-45 opacity-90" />
-        ))}
-      </div>
+      <span className="text-[9px] text-yellow-400 leading-none">{'★'.repeat(star)}</span>
     )
   }
   return (
-    <div className="flex items-center gap-0.5 justify-center">
-      <div className="w-1.5 h-1.5 bg-cyan-400 rotate-45 opacity-90" />
-      <span className="text-[8px] text-cyan-400 font-bold">×{star}</span>
-    </div>
+    <span className="text-[9px] text-yellow-400 leading-none">★×{star}</span>
   )
 }
 

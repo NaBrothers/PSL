@@ -344,10 +344,20 @@ export default function BagPage() {
       <div className="py-2" />
 
       {/* Batch recycle bar */}
-      {manageMode && selected.size > 0 && (
+      {manageMode && (
         <div className="flex items-center justify-between py-2 border-t border-slate-700">
-          <span className="text-sm text-slate-300">已选 {selected.size} 张</span>
-          <div className="flex gap-2"><Button variant="destructive" size="sm" onClick={() => setDialogMode("confirm-batch-recycle")}>回收选中</Button><Button variant="secondary" size="sm" onClick={handleBatchTransfer}>批量上架</Button></div>
+          <div className="flex items-center gap-2">
+            <Button variant="ghost" size="sm" className="text-xs" onClick={() => {
+              if (selected.size === cards.length) { setSelected(new Set()) }
+              else { setSelected(new Set(cards.filter(c => !c.locked && c.status === 0).map(c => c.id))) }
+            }}>
+              {selected.size > 0 && selected.size === cards.filter(c => !c.locked && c.status === 0).length ? '取消全选' : '全选'}
+            </Button>
+            <span className="text-sm text-slate-400">{selected.size > 0 ? `已选 ${selected.size} 张` : ''}</span>
+          </div>
+          {selected.size > 0 && (
+            <div className="flex gap-2"><Button variant="destructive" size="sm" onClick={() => setDialogMode("confirm-batch-recycle")}>回收选中</Button><Button variant="secondary" size="sm" onClick={handleBatchTransfer}>批量上架</Button></div>
+          )}
         </div>
       )}
 

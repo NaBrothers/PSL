@@ -128,12 +128,6 @@ export default function MatchPage() {
     }
   }
 
-  const startMatchWith = (opponent: Opponent) => {
-    setSelected(opponent)
-    selectedRef.current = opponent
-    startMatch()
-  }
-
   const selectedRef = useRef<Opponent | null>(null)
   selectedRef.current = selected
 
@@ -243,7 +237,12 @@ export default function MatchPage() {
     return (
       <div className="p-4">
         <SquadView squad={opponentSquad} title={`${selected.name} 的阵容`} />
-        <Button variant="outline" className="w-full mt-4" onClick={() => setPhase('select')}>返回</Button>
+        <div className="flex gap-2 mt-4">
+          <Button variant="outline" className="flex-1" onClick={() => setPhase('select')}>返回</Button>
+          <Button className="flex-1" disabled={loading} onClick={() => startMatch()}>
+            {loading ? '模拟中...' : '开赛'}
+          </Button>
+        </div>
       </div>
     )
   }
@@ -265,14 +264,13 @@ export default function MatchPage() {
         <p className="text-slate-500 text-sm mb-2">选择对手</p>
         <div className="space-y-2 mb-4">
           {opponents.map(o => (
-            <Card key={o.id} className="transition-colors hover:border-slate-600">
+            <Card key={o.id} className="cursor-pointer transition-colors hover:border-slate-600" onClick={() => viewOpponentSquad(o)}>
               <CardContent className="p-3 flex items-center">
                 <div className="w-8 h-8 rounded-full bg-slate-800 flex items-center justify-center text-accent font-bold text-sm mr-3">
                   {o.name[0]}
                 </div>
                 <span className="text-slate-200 text-sm font-medium flex-1">{o.name}</span>
-                <Button variant="outline" size="sm" className="text-xs" onClick={() => viewOpponentSquad(o)}>阵容</Button>
-                <Button size="sm" className="text-xs" disabled={loading} onClick={() => startMatchWith(o)}>
+                <Button size="sm" className="text-xs ml-2" disabled={loading} onClick={(e) => { e.stopPropagation(); setSelected(o); selectedRef.current = o; startMatch() }}>
                   开赛
                 </Button>
               </CardContent>

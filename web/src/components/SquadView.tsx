@@ -95,13 +95,14 @@ export default function SquadView({ squad, title }: SquadViewProps) {
             >
               {card ? (
                 <div className="flex flex-col items-center">
-                  <div className={`w-12 h-12 rounded-md overflow-hidden border-2 shadow-md ${cardBorderColor(card.overall, card.star)} ${cardBgColor(card.overall, card.star)}`}>
+                  <div className={`relative w-12 h-12 rounded-md overflow-hidden border-2 shadow-md ${cardBorderColor(card.overall, card.star)} ${cardBgColor(card.overall, card.star)}`}>
                     <img
                       src={`/game-assets/avatars/${card.player_id}.png`}
                       alt={card.name}
                       className="w-full h-full object-cover"
                       onError={(e) => { (e.target as HTMLImageElement).style.display = 'none' }}
                     />
+                    <span className="absolute top-0 left-0 text-[7px] text-yellow-400 leading-none bg-black/60 px-0.5 rounded-br">{card.star <= 5 ? '★'.repeat(card.star) : `★${card.star}`}</span>
                   </div>
                   <div className="flex items-center gap-0.5 mt-0.5">
                     <span className={`text-[9px] font-bold px-1 rounded ${positionColor(squad.positions[idx])}`}>{squad.positions[idx]}</span>
