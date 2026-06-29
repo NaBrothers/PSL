@@ -49,6 +49,30 @@ DEFAULTS = {
 
     # Newbie
     "newbie.bonus_money": 50000,
+
+    # Talents
+    "talent.mean": 1.0,
+    "talent.std": 0.2,
+    "talent.min": 0.5,
+    "talent.max": 1.5,
+    "talent.reroll_cost": 50000,
+    "talent.reroll_max": 2,
+    "talent.grade_d_max": 0.7,
+    "talent.grade_c_max": 0.9,
+    "talent.grade_b_max": 1.1,
+    "talent.grade_a_max": 1.3,
+
+    # Style scale per star (特性曲线)
+    "style.scale.1": 2,
+    "style.scale.2": 3,
+    "style.scale.3": 4,
+    "style.scale.4": 6,
+    "style.scale.5": 8,
+    "style.scale.6": 10,
+    "style.scale.7": 13,
+    "style.scale.8": 16,
+    "style.scale.9": 19,
+    "style.scale.10": 22,
 }
 
 # Map Chinese pool keys to config key prefixes
@@ -109,6 +133,30 @@ CONFIG_GROUPS = {
     ],
     "新人福利": [
         {"key": "newbie.bonus_money", "label": "新人启动金", "type": "int"},
+    ],
+    "天赋系统": [
+        {"key": "talent.mean", "label": "天赋均值", "type": "float"},
+        {"key": "talent.std", "label": "天赋标准差", "type": "float"},
+        {"key": "talent.min", "label": "天赋下限", "type": "float"},
+        {"key": "talent.max", "label": "天赋上限", "type": "float"},
+        {"key": "talent.reroll_cost", "label": "重铸费用", "type": "int"},
+        {"key": "talent.reroll_max", "label": "重铸次数上限", "type": "int"},
+        {"key": "talent.grade_d_max", "label": "D级上界", "type": "float"},
+        {"key": "talent.grade_c_max", "label": "C级上界", "type": "float"},
+        {"key": "talent.grade_b_max", "label": "B级上界", "type": "float"},
+        {"key": "talent.grade_a_max", "label": "A级上界", "type": "float"},
+    ],
+    "特性曲线": [
+        {"key": "style.scale.1", "label": "1★特性系数", "type": "int"},
+        {"key": "style.scale.2", "label": "2★特性系数", "type": "int"},
+        {"key": "style.scale.3", "label": "3★特性系数", "type": "int"},
+        {"key": "style.scale.4", "label": "4★特性系数", "type": "int"},
+        {"key": "style.scale.5", "label": "5★特性系数", "type": "int"},
+        {"key": "style.scale.6", "label": "6★特性系数", "type": "int"},
+        {"key": "style.scale.7", "label": "7★特性系数", "type": "int"},
+        {"key": "style.scale.8", "label": "8★特性系数", "type": "int"},
+        {"key": "style.scale.9", "label": "9★特性系数", "type": "int"},
+        {"key": "style.scale.10", "label": "10★特性系数", "type": "int"},
     ],
 }
 

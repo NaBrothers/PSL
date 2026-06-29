@@ -28,3 +28,17 @@ def breach_card(req: UpgradeRequest, user=Depends(get_current_user)):
         return svc.breach(user["qq"], req.main_id, req.sub_id)
     except PlayerOpsError as e:
         raise HTTPException(status_code=400, detail=str(e))
+
+
+class RerollRequest(BaseModel):
+    card_id: int
+    dim_index: int
+
+
+@router.post("/cards/reroll-talent")
+def reroll_talent(req: RerollRequest, user=Depends(get_current_user)):
+    svc = PlayerOpsService(server.database.db)
+    try:
+        return svc.reroll_talent(user["qq"], req.card_id, req.dim_index)
+    except PlayerOpsError as e:
+        raise HTTPException(status_code=400, detail=str(e))

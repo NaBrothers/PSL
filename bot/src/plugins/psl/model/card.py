@@ -10,10 +10,11 @@ from psl_core.card import (
     compute_all_position_ratings,
 )
 from psl_core.constants import STARS, STYLE, GK_STYLE, GOALKEEPER, REAL_ABILITY, STATUS
+from psl_core.talent import generate_talents, revealed_count_for_star, format_talents_bot
 
 
 class Card:
-  def __init__(self, id, player, user, star, style, status, appearance, goal, assist, tackle, save, total_appearance, total_goal, total_assist, total_tackle, total_save, locked, ext_abilities, breach):
+  def __init__(self, id, player, user, star, style, status, appearance, goal, assist, tackle, save, total_appearance, total_goal, total_assist, total_tackle, total_save, locked, ext_abilities, breach, talents_raw=None):
     self.id = id
     self.player = player
     self.user = user
@@ -33,41 +34,57 @@ class Card:
     self.locked = locked
     self.ext_abilities = ext_abilities
     self.breach = breach
+    self.talents_data = json.loads(talents_raw) if isinstance(talents_raw, str) else talents_raw
 
-    self.ability = compute_abilities(
-        star=star,
-        style=style,
-        position=player.Position,
-        height=int(player.Height),
-        heading_accuracy=player.Heading_Accuracy,
-        jumping=player.Jumping,
-        strength=player.Strength,
-        long_shots=player.Long_Shots,
-        shot_power=player.Shot_Power,
-        finishing=player.Finishing,
-        long_passing=player.Long_Passing,
-        short_passing=player.Short_Passing,
-        dribbling=player.Dribbling,
-        ball_control=player.Ball_Control,
-        balance=player.Balance,
-        sliding_tackle=player.Sliding_Tackle,
-        standing_tackle=player.Standing_Tackle,
-        defensive_awareness=player.Defensive_Awareness,
-        aggression=player.Aggression,
-        interceptions=player.Interceptions,
-        sprint_speed=player.Sprint_Speed,
-        acceleration=player.Acceleration,
-        composure=player.Composure,
-        gk_handling=player.GK_Handling,
-        gk_diving=player.GK_Diving,
-        gk_positioning=player.GK_Positioning,
-        gk_reflexes=player.GK_Reflexes,
-        reactions=player.Reactions,
-        ext_abilities=ext_abilities,
-    )
-
+    self.ability = self._compute(talent_mode="display")
     self.overall = compute_overall(self.player.Overall, self.star)
     self.price = compute_price(self.player.Overall, self.star, self.breach)
+
+  def _compute(self, talent_mode="display"):
+    return compute_abilities(
+        star=self.star,
+        style=self.style,
+        position=self.player.Position,
+        height=int(self.player.Height),
+        heading_accuracy=self.player.Heading_Accuracy,
+        jumping=self.player.Jumping,
+        strength=self.player.Strength,
+        long_shots=self.player.Long_Shots,
+        shot_power=self.player.Shot_Power,
+        finishing=self.player.Finishing,
+        long_passing=self.player.Long_Passing,
+        short_passing=self.player.Short_Passing,
+        dribbling=self.player.Dribbling,
+        ball_control=self.player.Ball_Control,
+        balance=self.player.Balance,
+        sliding_tackle=self.player.Sliding_Tackle,
+        standing_tackle=self.player.Standing_Tackle,
+        defensive_awareness=self.player.Defensive_Awareness,
+        aggression=self.player.Aggression,
+        interceptions=self.player.Interceptions,
+        sprint_speed=self.player.Sprint_Speed,
+        acceleration=self.player.Acceleration,
+        composure=self.player.Composure,
+        gk_handling=self.player.GK_Handling,
+        gk_diving=self.player.GK_Diving,
+        gk_positioning=self.player.GK_Positioning,
+        gk_reflexes=self.player.GK_Reflexes,
+        reactions=self.player.Reactions,
+        ext_abilities=self.ext_abilities,
+        talents=self.talents_data,
+        talent_mode=talent_mode,
+    )
+
+  def get_engine_abilities(self):
+    return self._compute(talent_mode="engine")
+
+  def ensure_talents(self):
+    if self.talents_data is not None:
+        return
+    talents = generate_talents()
+    self.talents_data = talents
+    self.set("Talents", json.dumps(talents))
+    self.ability = self._compute(talent_mode="display")
 
   def new(player, user, star=1, style=0, id=0, status=False, locked=False):
     if style == 0:
@@ -75,7 +92,8 @@ class Card:
         style = random.choice(list(GK_STYLE.keys()))
       else:
         style = random.choice(list(STYLE.keys()))
-    return Card(id, player, user, star, style, status, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, locked, {}, 0)
+    talents = generate_talents()
+    return Card(id, player, user, star, style, status, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, locked, {}, 0, talents)
 
   def set(self, attr, value):
       setattr(self, attr, value)
@@ -109,7 +127,8 @@ class Card:
             locked = data[16]
             ext_abilities = json.loads(data[17]) if data[17] is not None else {}
             breach = data[18]
-            card = Card(id, player, user, star, style, status, appearance, goal, assist, tackle, save, total_appearance, total_goal, total_assist, total_tackle, total_save, locked, ext_abilities, breach)
+            talents_raw = data[19] if len(data) > 19 else None
+            card = Card(id, player, user, star, style, status, appearance, goal, assist, tackle, save, total_appearance, total_goal, total_assist, total_tackle, total_save, locked, ext_abilities, breach, talents_raw)
         cursor.close()
         return card
 
@@ -146,14 +165,19 @@ class Card:
               locked = data[16]
               ext_abilities = json.loads(data[17]) if data[17] is not None else {}
               breach = data[18]
-              card = Card(id, player, user, star, style, status, appearance, goal, assist, tackle, save, total_appearance, total_goal, total_assist, total_tackle, total_save, locked, ext_abilities, breach)
+              talents_raw = data[19] if len(data) > 19 else None
+              card = Card(id, player, user, star, style, status, appearance, goal, assist, tackle, save, total_appearance, total_goal, total_assist, total_tackle, total_save, locked, ext_abilities, breach, talents_raw)
               cards.append(card)
-        
+
         cursor.close()
         return cards
 
   def format(self):
     return self.player.Position.ljust(3) + " " + self.getNameWithColor() + " " + str(self.overall) + " " + STARS[self.star]["star"] + " ◆+" + str(self.breach) + " " + self.getStyle() + " " + self.printPrice() + " " + self.getStatus()
+
+  def format_talents(self):
+    is_gk = self.player.Position in GOALKEEPER
+    return format_talents_bot(self.talents_data, is_gk, self.star)
 
   def getStatus(self):
     if self.status != 0:
@@ -200,7 +224,7 @@ class Card:
 
   def printPrice(self):
     return format_price(self.price)
-  
+
   def formatPrice(price):
     return format_price(price)
 

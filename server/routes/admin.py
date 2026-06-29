@@ -3,7 +3,7 @@
 import server.database
 from fastapi import APIRouter, HTTPException, Depends
 from pydantic import BaseModel
-from typing import List, Optional
+from typing import List, Optional, Union
 from server.dependencies import get_current_user
 from server.services.game_config import GameConfigService
 from server.services.inbox import InboxService
@@ -36,7 +36,7 @@ def get_config(user=Depends(_require_admin)):
 
 class ConfigUpdateRequest(BaseModel):
     key: str
-    value: float | int | str
+    value: Union[float, int, str]
 
 
 @router.post("/config")

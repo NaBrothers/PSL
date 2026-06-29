@@ -22,7 +22,7 @@ class Player:
     self.coach = coach
     self.position = position
     # 格式 ability["Short_Passing"] 具体请看Card
-    self.ability = card.ability
+    self.ability = card.get_engine_abilities()
     self.x = default_x
     self.y = default_y
     self.default_x = default_x

@@ -8,16 +8,16 @@ GOALKEEPER = ["GK"]
 POSITIONS_CN = ["前锋", "中场", "后卫", "门将"]
 
 STARS = {
-    1: {"star": "★", "ability": 0, "cost": 0, "count": 1},
-    2: {"star": "★×2", "ability": 1, "cost": 200, "count": 2},
-    3: {"star": "★×3", "ability": 2, "cost": 400, "count": 3},
-    4: {"star": "★×4", "ability": 4, "cost": 600, "count": 5},
-    5: {"star": "★×5", "ability": 6, "cost": 800, "count": 8},
-    6: {"star": "★×6", "ability": 8, "cost": 1000, "count": 13},
-    7: {"star": "★×7", "ability": 11, "cost": 1200, "count": 21},
-    8: {"star": "★×8", "ability": 14, "cost": 1400, "count": 34},
-    9: {"star": "★×9", "ability": 17, "cost": 1600, "count": 55},
-    10: {"star": "★×10", "ability": 21, "cost": 1800, "count": 89},
+    1: {"star": "★", "ability": 0, "cost": 0, "count": 1, "style_scale": 2},
+    2: {"star": "★×2", "ability": 1, "cost": 200, "count": 2, "style_scale": 3},
+    3: {"star": "★×3", "ability": 2, "cost": 400, "count": 3, "style_scale": 4},
+    4: {"star": "★×4", "ability": 4, "cost": 600, "count": 5, "style_scale": 6},
+    5: {"star": "★×5", "ability": 6, "cost": 800, "count": 8, "style_scale": 8},
+    6: {"star": "★×6", "ability": 8, "cost": 1000, "count": 13, "style_scale": 10},
+    7: {"star": "★×7", "ability": 11, "cost": 1200, "count": 21, "style_scale": 13},
+    8: {"star": "★×8", "ability": 14, "cost": 1400, "count": 34, "style_scale": 16},
+    9: {"star": "★×9", "ability": 17, "cost": 1600, "count": 55, "style_scale": 19},
+    10: {"star": "★×10", "ability": 21, "cost": 1800, "count": 89, "style_scale": 22},
 }
 
 COLOR = {

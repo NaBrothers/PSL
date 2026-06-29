@@ -7,6 +7,7 @@ import random
 from dataclasses import dataclass
 
 from psl_core.constants import STARS, STYLE, GK_STYLE, GOALKEEPER, ABILITIES, GK_ABILITIES
+from psl_core.talent import revealed_count_for_star, get_talent_grade, get_dims
 
 BOT_SRC = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))), "bot", "src", "plugins", "psl")
 if BOT_SRC not in sys.path:
@@ -66,7 +67,26 @@ class PlayerOpsService:
             card1.set("locked", True)
         user.spend(cost)
 
-        return {"success": True, "new_star": target_star, "cost": cost, "remaining_money": user.money}
+        talent_revealed = None
+        card1.ensure_talents()
+        old_reveal = revealed_count_for_star(target_star - 1)
+        new_reveal = revealed_count_for_star(target_star)
+        if new_reveal > old_reveal:
+            is_gk = card1.player.Position in GOALKEEPER
+            dims = get_dims(is_gk)
+            order = card1.talents_data["o"]
+            newly_revealed_dim = order[new_reveal - 1]
+            mult = card1.talents_data["t"][newly_revealed_dim]
+            talent_revealed = {
+                "dimension_name": dims[newly_revealed_dim]["name"],
+                "grade": get_talent_grade(mult),
+                "dim_index": newly_revealed_dim,
+            }
+
+        result = {"success": True, "new_star": target_star, "cost": cost, "remaining_money": user.money}
+        if talent_revealed:
+            result["talent_revealed"] = talent_revealed
+        return result
 
     def breach(self, qq: int, main_id: int, sub_id: int) -> dict:
         from model.card import Card
@@ -120,4 +140,64 @@ class PlayerOpsService:
             "boosted_ability": ability_name,
             "boost_amount": base_amount + addition_amount,
             "style_bonus": addition_amount > 0,
+        }
+
+    def reroll_talent(self, qq: int, card_id: int, dim_index: int) -> dict:
+        from model.card import Card
+        from model.user import User
+        from server.services.game_config import GameConfigService
+        import server.database
+
+        config = GameConfigService(server.database.db)
+        reroll_cost = int(config.get("talent.reroll_cost"))
+        reroll_max = int(config.get("talent.reroll_max"))
+
+        card = Card.getCardByID(card_id)
+        if card is None or card.user.qq != qq:
+            raise PlayerOpsError("Card not found or not owned")
+
+        card.ensure_talents()
+        talents = card.talents_data
+
+        if talents["rc"] >= reroll_max:
+            raise PlayerOpsError(f"Reroll limit reached ({reroll_max})")
+
+        order = talents["o"]
+        revealed = talents["r"]
+        reveal_position = None
+        for i in range(revealed):
+            if order[i] == dim_index:
+                reveal_position = i
+                break
+        if reveal_position is None:
+            raise PlayerOpsError("Dimension not yet revealed")
+
+        user = User.getUserByQQ(qq)
+        if user.money < reroll_cost:
+            raise PlayerOpsError(f"Insufficient funds: need {reroll_cost}, have {user.money}")
+
+        t_min = float(config.get("talent.min"))
+        t_max = float(config.get("talent.max"))
+        mean = float(config.get("talent.mean"))
+        std = float(config.get("talent.std"))
+        new_mult = round(max(t_min, min(t_max, random.gauss(mean, std))), 2)
+        talents["t"][dim_index] = new_mult
+        talents["rc"] += 1
+
+        card.set("Talents", json.dumps(talents))
+        card.talents_data = talents
+        user.spend(reroll_cost)
+
+        is_gk = card.player.Position in GOALKEEPER
+        dims = get_dims(is_gk)
+        new_grade = get_talent_grade(new_mult)
+
+        return {
+            "success": True,
+            "dimension_name": dims[dim_index]["name"],
+            "new_grade": new_grade,
+            "reroll_count": talents["rc"],
+            "reroll_max": reroll_max,
+            "cost": reroll_cost,
+            "remaining_money": user.money,
         }

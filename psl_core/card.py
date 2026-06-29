@@ -7,6 +7,7 @@ from typing import Dict, List, Optional, Tuple
 from psl_core.constants import (
     STARS, STYLE, GK_STYLE, GOALKEEPER, REAL_ABILITY, POSITION_MAP, ABILITIES, GK_ABILITIES,
 )
+from psl_core.talent import get_talent_multiplier_for_ability
 
 
 def compute_abilities(
@@ -39,22 +40,30 @@ def compute_abilities(
     gk_reflexes: int,
     reactions: int,
     ext_abilities: Optional[Dict[str, int]] = None,
+    talents: Optional[Dict] = None,
+    talent_mode: str = "display",
 ) -> Dict[str, int]:
-    star_bonus = STARS[star]["ability"]
+    base_star_bonus = STARS[star]["ability"]
+    is_gk = position in GOALKEEPER
+
+    def _bonus(ability_key: str) -> int:
+        mult = get_talent_multiplier_for_ability(ability_key, talents, is_gk, talent_mode, star)
+        return int(base_star_bonus * mult)
+
     ability = {
-        "Heading": star_bonus + int((heading_accuracy + jumping + strength + height - 100) / 4),
-        "Long_Shot": star_bonus + int((long_shots + shot_power) / 2),
-        "Finishing": star_bonus + int((finishing * 2 + shot_power) / 3),
-        "Long_Passing": star_bonus + int(long_passing),
-        "Short_Passing": star_bonus + int(short_passing),
-        "Dribbling": star_bonus + int((dribbling * 2 + ball_control * 2 + balance) / 5),
-        "Tackling": star_bonus + int((sliding_tackle + standing_tackle) / 2),
-        "Defence": star_bonus + int((defensive_awareness * 2 + aggression + interceptions * 2) / 5),
-        "Speed": star_bonus + int((sprint_speed + acceleration) / 2),
-        "IQ": star_bonus + int(composure),
-        "GK_Saving": star_bonus + int((gk_handling + gk_diving) / 2),
-        "GK_Positioning": star_bonus + int(gk_positioning),
-        "GK_Reaction": star_bonus + int((gk_reflexes * 2 + reactions) / 3),
+        "Heading": _bonus("Heading") + int((heading_accuracy + jumping + strength + height - 100) / 4),
+        "Long_Shot": _bonus("Long_Shot") + int((long_shots + shot_power) / 2),
+        "Finishing": _bonus("Finishing") + int((finishing * 2 + shot_power) / 3),
+        "Long_Passing": _bonus("Long_Passing") + int(long_passing),
+        "Short_Passing": _bonus("Short_Passing") + int(short_passing),
+        "Dribbling": _bonus("Dribbling") + int((dribbling * 2 + ball_control * 2 + balance) / 5),
+        "Tackling": _bonus("Tackling") + int((sliding_tackle + standing_tackle) / 2),
+        "Defence": _bonus("Defence") + int((defensive_awareness * 2 + aggression + interceptions * 2) / 5),
+        "Speed": _bonus("Speed") + int((sprint_speed + acceleration) / 2),
+        "IQ": _bonus("IQ") + int(composure),
+        "GK_Saving": _bonus("GK_Saving") + int((gk_handling + gk_diving) / 2),
+        "GK_Positioning": _bonus("GK_Positioning") + int(gk_positioning),
+        "GK_Reaction": _bonus("GK_Reaction") + int((gk_reflexes * 2 + reactions) / 3),
     }
 
     if ext_abilities:
@@ -64,11 +73,12 @@ def compute_abilities(
 
     styles = GK_STYLE.get(style) if position in GOALKEEPER else STYLE.get(style)
     if styles:
+        style_scale = STARS[star]["style_scale"]
         for key, bonus in styles.items():
             if key == "name":
                 continue
             if key in ability:
-                ability[key] += bonus * star
+                ability[key] += round(bonus * style_scale / 3)
 
     return ability
 

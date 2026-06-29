@@ -135,3 +135,18 @@ export function ratingDiffText(diff: number): string {
   if (diff < 0) return `▼${Math.abs(diff)}`
   return ''
 }
+
+export const TALENT_GRADE_COLORS: Record<string, string> = {
+  SSS: 'text-transparent bg-clip-text bg-[linear-gradient(90deg,#ef4444,#f97316,#eab308,#22c55e,#06b6d4,#3b82f6,#a855f7,#ec4899)]',
+  SS: 'text-pink-400',
+  S: 'text-purple-400',
+  A: 'text-blue-400',
+  B: 'text-slate-300',
+  C: 'text-orange-400',
+  D: 'text-red-400',
+  '?': 'text-slate-600',
+}
+
+export function talentGradeColor(grade: string): string {
+  return TALENT_GRADE_COLORS[grade] || 'text-slate-500'
+}

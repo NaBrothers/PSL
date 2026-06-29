@@ -1,4 +1,4 @@
-import { abilityColor, normalizePositionRating, ratingDiffClass, ratingDiffText } from '@/lib/card-display'
+import { abilityColor, normalizePositionRating, ratingDiffClass, ratingDiffText, talentGradeColor } from '@/lib/card-display'
 import RadarChart, { computeRadarValues, RADAR_LABELS, RADAR_LABELS_GK } from '@/components/RadarChart'
 
 interface PlayerCardDetailProps {
@@ -26,6 +26,8 @@ export default function PlayerCardDetail({ detail }: PlayerCardDetailProps) {
     ["LRB", null, "CB", null, "LRB"],
     [null, null, "GK", null, null],
   ]
+
+  const talentDims = detail.talents?.dimensions || []
 
   return (
     <div className="space-y-3 relative">
@@ -92,13 +94,34 @@ export default function PlayerCardDetail({ detail }: PlayerCardDetailProps) {
 
       {detail.abilities && (
         <div className="border-t border-slate-700 pt-2">
-          <div className="grid grid-cols-2 gap-x-4 gap-y-1 text-sm">
-            {Object.entries(detail.abilities as Record<string, {value: number; name: string; ext: number; style_boosted?: boolean}>).map(([key, ab]) => (
-              <div key={key} className="flex justify-between">
-                <span className={ab.style_boosted ? "text-amber-400" : "text-slate-400"}>{ab.name}</span>
-                <span><span className={`font-bold ${abilityColor(ab.value)}`}>{ab.value}</span>{ab.ext > 0 && <span className="text-green-400 text-xs ml-0.5">(+{ab.ext})</span>}</span>
+          <div className="flex gap-3">
+            {/* Left: abilities in 2-col grid */}
+            <div className="flex-1 min-w-0">
+              <div className="grid grid-cols-2 gap-x-4 gap-y-0.5 text-[13px]">
+                {Object.entries(detail.abilities as Record<string, {value: number; name: string; ext: number; style_boosted?: boolean}>).map(([key, ab]) => (
+                  <div key={key} className="flex justify-between">
+                    <span className={ab.style_boosted ? "text-amber-400" : "text-slate-400"}>{ab.name}</span>
+                    <span><span className={`font-bold ${abilityColor(ab.value)}`}>{ab.value}</span>{ab.ext > 0 && <span className="text-green-400 text-[10px] ml-0.5">(+{ab.ext})</span>}</span>
+                  </div>
+                ))}
               </div>
-            ))}
+            </div>
+            {/* Right: talent grades */}
+            {talentDims.length > 0 && (
+              <div className="w-[88px] flex-shrink-0 border-l border-slate-700 pl-3">
+                <p className="text-[10px] text-slate-500 mb-1">天赋 {detail.talents.revealed_count}/{detail.talents.total}</p>
+                <div className="space-y-0.5">
+                  {talentDims.map((dim: any) => (
+                    <div key={dim.key} className="flex justify-between items-center text-[13px]">
+                      <span className="text-slate-400">{dim.name}</span>
+                      <span className={`font-bold ${talentGradeColor(dim.grade)}`}>
+                        {dim.revealed ? dim.grade : '???'}
+                      </span>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
           </div>
         </div>
       )}

@@ -194,7 +194,8 @@ class BagService:
             "p.Shot_Power, p.Jumping, p.Stamina, p.Strength, p.Long_Shots, "
             "p.Aggression, p.Interceptions, p.Positioning, p.Vision, p.Penalties, "
             "p.Composure, p.Defensive_Awareness, p.Standing_Tackle, p.Sliding_Tackle, "
-            "p.GK_Diving, p.GK_Handling, p.GK_Kicking, p.GK_Positioning, p.GK_Reflexes "
+            "p.GK_Diving, p.GK_Handling, p.GK_Kicking, p.GK_Positioning, p.GK_Reflexes, "
+            "c.Talents "
             "FROM cards c JOIN players p ON c.Player = p.ID WHERE c.ID = ?",
             (card_id,)
         )
@@ -208,6 +209,16 @@ class BagService:
         base_overall = row[20]
         height_str = row[22] or "180"
         height_val = int(height_str) if str(height_str).isdigit() else 180
+
+        from psl_core.talent import generate_talents, get_talent_display
+        from psl_core.constants import GOALKEEPER as _GOALKEEPER
+        talents_raw = row[59] if len(row) > 59 else None
+        talents_data = json.loads(talents_raw) if talents_raw else None
+        if talents_data is None:
+            talents_data = generate_talents()
+            self.db.execute("UPDATE cards SET Talents = ? WHERE ID = ?", (json.dumps(talents_data), card_id))
+
+        is_gk = position in _GOALKEEPER
 
         abilities = compute_abilities(
             star=star,
@@ -239,10 +250,11 @@ class BagService:
             gk_reflexes=row[58] or 0,
             reactions=row[38] or 0,
             ext_abilities=ext,
+            talents=talents_data,
+            talent_mode="display",
         )
 
         ABILITY_NAMES = {**ABILITIES, **GK_ABILITIES, "IQ": "球商"}
-
 
         from psl_core.constants import STYLE as _STYLE, GK_STYLE as _GK_STYLE, GOALKEEPER as _GK
         _sd = _GK_STYLE.get(style) if position in _GK else _STYLE.get(style)
@@ -254,6 +266,8 @@ class BagService:
             item["diff"] = item["rating"] - overall_with_star
 
         price = compute_price(base_overall, star, row[6] or 0)
+
+        talent_display = get_talent_display(talents_data, is_gk, star)
 
         return {
             "id": row[0], "player_id": row[1], "star": star, "style": style,
@@ -269,6 +283,13 @@ class BagService:
             "season": {"appearance": row[7], "goal": row[8], "assist": row[9], "tackle": row[10], "save": row[11]},
             "career": {"appearance": row[12], "goal": row[13], "assist": row[14], "tackle": row[15], "save": row[16]},
             "ext_abilities": ext,
+            "talents": {
+                "dimensions": talent_display,
+                "revealed_count": min(star, 6),
+                "total": 6,
+                "reroll_count": talents_data.get("rc", 0),
+                "reroll_max": 2,
+            },
         }
 
     def lock_card(self, card_id: int, qq: int) -> bool:
