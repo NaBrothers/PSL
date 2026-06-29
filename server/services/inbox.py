@@ -18,13 +18,15 @@ class InboxService:
         )
 
     def broadcast(self, msg_type: str, title: str, content: str = "", data: Optional[dict] = None):
-        self.send(0, msg_type, title, content, data)
+        rows = self.db.query_all("SELECT QQ FROM users")
+        for row in rows:
+            self.send(row[0], msg_type, title, content, data)
 
     def get_messages(self, user_qq: int, page: int = 1, page_size: int = 20):
         offset = (page - 1) * page_size
         rows = self.db.query_all(
             "SELECT ID, Type, Title, Content, Data, Read, CreatedAt FROM inbox "
-            "WHERE User = ? OR User = 0 ORDER BY CreatedAt DESC LIMIT ? OFFSET ?",
+            "WHERE User = ? ORDER BY CreatedAt DESC LIMIT ? OFFSET ?",
             (user_qq, page_size, offset)
         )
         return [
@@ -42,7 +44,7 @@ class InboxService:
 
     def get_unread_count(self, user_qq: int) -> int:
         row = self.db.query_one(
-            "SELECT COUNT(*) FROM inbox WHERE (User = ? OR User = 0) AND Read = 0",
+            "SELECT COUNT(*) FROM inbox WHERE User = ? AND Read = 0",
             (user_qq,)
         )
         return row[0] if row else 0
@@ -55,12 +57,12 @@ class InboxService:
             )
         else:
             self.db.execute(
-                "UPDATE inbox SET Read = 1 WHERE User = ? AND User != 0 AND Read = 0",
+                "UPDATE inbox SET Read = 1 WHERE User = ? AND Read = 0",
                 (user_qq,)
             )
 
     def delete_read(self, user_qq: int):
         self.db.execute(
-            "DELETE FROM inbox WHERE User = ? AND User != 0 AND Read = 1",
+            "DELETE FROM inbox WHERE User = ? AND Read = 1",
             (user_qq,)
         )
