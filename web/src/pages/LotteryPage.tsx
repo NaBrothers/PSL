@@ -1,9 +1,8 @@
+import { useNavigate } from 'react-router-dom'
 import { useState, useEffect } from 'react'
 import { Button } from '@/components/ui/button'
-import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog'
 import api from '../api/client'
-import { overallColor } from '@/lib/card-display'
-import PlayerCardDetail from '@/components/PlayerCardDetail'
+
 import PlayerCard from '@/components/PlayerCard'
 import { useToast } from '@/components/AppToast'
 import { haptic, hapticSuccess } from '@/lib/haptic'
@@ -80,6 +79,7 @@ function poolTab(key: string): TabKey {
 }
 
 export default function LotteryPage() {
+  const navigate = useNavigate()
   const [pools, setPools] = useState<PoolInfo[]>([])
   const [rewardPacks, setRewardPacks] = useState<{name: string; count: number}[]>([])
   const [drawn, setDrawn] = useState<DrawnCard[]>([])
@@ -88,7 +88,6 @@ export default function LotteryPage() {
   const [loading, setLoading] = useState(false)
   const [lastDraw, setLastDraw] = useState<{pool: string; count: number; isReward: boolean}>({pool: "", count: 1, isReward: false})
   const [animating, setAnimating] = useState(true)
-  const [detail, setDetail] = useState<any>(null)
   const [tab, setTab] = useState<TabKey>('basic')
   const { showToast } = useToast()
 
@@ -162,7 +161,7 @@ export default function LotteryPage() {
                   style={c.style}
                   topAbilities={c.top_abilities}
                   size="sm"
-                  onClick={() => api.get(`/cards/${c.id}`).then(res => setDetail(res.data))}
+                  onClick={() => navigate(`/cards/${c.id}`)}
                 />
               </div>
             ))}
@@ -179,18 +178,6 @@ export default function LotteryPage() {
           )}
         </div>
 
-        <Dialog open={detail !== null} onOpenChange={(open) => { if (!open) setDetail(null) }}>
-          <DialogContent className="max-h-[85vh] overflow-y-auto scrollbar-hide">
-            <DialogHeader>
-              <DialogTitle className="flex items-center gap-2 flex-wrap">
-                <span className="text-slate-500 text-sm">[{detail?.id}]</span>
-                <span className={overallColor(detail?.overall || 0, detail?.star)}>{detail?.name}</span>
-                <span className={`font-bold ${overallColor(detail?.overall || 0, detail?.star)}`}>{detail?.overall}</span>
-              </DialogTitle>
-            </DialogHeader>
-            <PlayerCardDetail detail={detail} />
-          </DialogContent>
-        </Dialog>
       </div>
       </>
     )

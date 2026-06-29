@@ -1,14 +1,13 @@
 import { useEffect, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
+import { useNavigate } from 'react-router-dom'
 import { Button } from '@/components/ui/button'
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog'
 import { Input } from '@/components/ui/input'
 import { Grid3X3, List } from 'lucide-react'
 import api from '../api/client'
 import { overallColor, rarityBorder, STYLE_NAMES } from '@/lib/card-display'
-import PlayerCardDetail from '@/components/PlayerCardDetail'
 import PlayerCard from '@/components/PlayerCard'
-import CompareView from '@/components/CompareView'
 
 interface BagCard {
   id: number
@@ -27,14 +26,14 @@ interface BagCard {
   can_breach?: boolean
 }
 
-type DialogMode = 'detail' | 'upgrade' | 'breach' | 'compare-select' | 'compare-view' | 'confirm-recycle' | 'confirm-batch-recycle' | 'confirm-batch-transfer' | null
+type DialogMode = 'confirm-batch-recycle' | 'confirm-batch-transfer' | null
 
 export default function BagPage() {
+  const navigate = useNavigate()
   const [cards, setCards] = useState<BagCard[]>([])
   const [page, setPage] = useState(1)
   const [totalPages, setTotalPages] = useState(1)
   const [total, setTotal] = useState(0)
-  const [compareData, setCompareData] = useState<any>(null)
   const [query, setQuery] = useState("")
   const [sortBy, setSortBy] = useState("overall")
   const [filterPos, setFilterPos] = useState("")
@@ -44,9 +43,7 @@ export default function BagPage() {
   const [selected, setSelected] = useState<Set<number>>(new Set())
   const [filterUpgradable, setFilterUpgradable] = useState(false)
 
-  const [detail, setDetail] = useState<any>(null)
   const [dialogMode, setDialogMode] = useState<DialogMode>(null)
-  const [subCards, setSubCards] = useState<any[]>([])
   const [opResult, setOpResult] = useState<string>("")
   const [showToast, setShowToast] = useState(false)
   const [loadingMore, setLoadingMore] = useState(false)
@@ -113,28 +110,9 @@ export default function BagPage() {
       next.has(card.id) ? next.delete(card.id) : next.add(card.id)
       setSelected(next)
     } else {
-      api.get(`/cards/${card.id}`).then(res => {
-        setDetail(res.data)
-        setDialogMode('detail')
-        setOpResult('')
-      })
+      sessionStorage.setItem('card_nav_ids', JSON.stringify(cards.map(c => c.id)))
+      navigate(`/cards/${card.id}`)
     }
-  }
-
-  const handleLock = async () => {
-    if (!detail) return
-    const res = await api.post(`/cards/${detail.id}/lock`)
-    setDetail({ ...detail, locked: res.data.locked })
-    loadBag(1)
-  }
-
-  const handleRecycleSingle = async () => {
-    if (!detail) return
-    const res = await api.post('/cards/recycle', { ids: [detail.id] })
-    setOpResult(`回收成功！获得 $${res.data.earned}`)
-    setDialogMode(null)
-    setDetail(null)
-    loadBag(1)
   }
 
   const handleBatchRecycle = async () => {
@@ -176,65 +154,6 @@ export default function BagPage() {
     setManageMode(false)
     setDialogMode(null)
     loadBag(1)
-  }
-
-  const openUpgrade = () => {
-    if (!detail) return
-    api.get('/bag', { params: { page: 1, query: detail.name } }).then(res => {
-      const subs = res.data.cards.filter((c: BagCard) => c.id !== detail.id && c.name === detail.name)
-      setSubCards(subs)
-      setDialogMode('upgrade')
-    })
-  }
-
-  const openBreach = () => {
-    if (!detail) return
-    api.get('/bag', { params: { page: 1, query: detail.name } }).then(res => {
-      const subs = res.data.cards.filter((c: BagCard) => c.id !== detail.id && c.name === detail.name)
-      setSubCards(subs)
-      setDialogMode('breach')
-    })
-  }
-
-  const doUpgrade = async (subId: number) => {
-    try {
-      const res = await api.post("/cards/upgrade", { main_id: detail.id, sub_id: subId })
-      setOpResult(`强化成功！新星级: ${"★".repeat(res.data.new_star)}`)
-      setDialogMode("detail")
-      loadBag(1).catch(() => {})
-      api.get(`/cards/${detail.id}`).then(r => setDetail(r.data)).catch(() => {})
-    } catch (e: any) {
-      setOpResult(e.response?.data?.detail || "强化失败")
-      setDialogMode("detail")
-    }
-  }
-
-  const doBreach = async (subId: number) => {
-    try {
-      const res = await api.post("/cards/breach", { main_id: detail.id, sub_id: subId })
-      setOpResult(`突破成功！「${res.data.boosted_ability}」+${res.data.boost_amount}${res.data.style_bonus ? " (风格加成!)" : ""}`)
-      setDialogMode("detail")
-      loadBag(1).catch(() => {})
-      api.get(`/cards/${detail.id}`).then(r => setDetail(r.data)).catch(() => {})
-    } catch (e: any) {
-      setOpResult(e.response?.data?.detail || "突破失败")
-      setDialogMode("detail")
-    }
-  }
-
-
-  const openCompare = () => {
-    if (!detail) return
-    api.get("/bag", { params: { page: 1, query: "", sort: "overall", position: "", color: "", for_position: detail.position } }).then(r => {
-      setSubCards(r.data.cards.filter((c: BagCard) => c.id !== detail.id))
-    })
-    setDialogMode("compare-select")
-  }
-
-  const doCompare = async (otherId: number) => {
-    const res = await api.get(`/cards/${detail.id}/compare/${otherId}`)
-    setCompareData(res.data)
-    setDialogMode("compare-view")
   }
   return (
     <div className="p-4 flex flex-col h-full">
@@ -399,98 +318,6 @@ export default function BagPage() {
         document.body
       )}
 
-      {/* Detail Dialog */}
-      <Dialog open={dialogMode === 'detail'} onOpenChange={(open) => { if (!open) { setDialogMode(null); setDetail(null) } }}>
-        <DialogContent className="max-h-[85vh] overflow-y-auto scrollbar-hide">
-          <DialogHeader>
-            <DialogTitle className="flex items-center gap-2 flex-wrap">
-              <span className="text-slate-500 text-sm">[{detail?.id}]</span>
-              <span className="text-slate-400 text-sm">{detail?.position}</span>
-              <span className={overallColor(detail?.overall || 0, detail?.star)}>{detail?.name}</span>
-              <span className={`font-bold ${overallColor(detail?.overall || 0, detail?.star)}`}>{detail?.overall}</span>
-            </DialogTitle>
-          </DialogHeader>
-          {detail && (
-            <div className="space-y-3">
-              <PlayerCardDetail detail={detail} />
-              <div className="border-t border-slate-700 pt-3 grid grid-cols-5 gap-2">
-                <Button variant="outline" size="sm" onClick={handleLock}>
-                  {detail.locked ? '解锁' : '锁定'}
-                </Button>
-                <Button variant="secondary" size="sm" className="relative" onClick={openUpgrade}>
-                  强化
-                  {cards.find(c => c.id === detail?.id)?.can_upgrade && <span className="absolute -top-1 -right-1 w-2 h-2 rounded-full bg-red-500" />}
-                </Button>
-                <Button variant="secondary" size="sm" className="relative" onClick={openBreach}>
-                  突破
-                  {cards.find(c => c.id === detail?.id)?.can_breach && <span className="absolute -top-1 -right-1 w-2 h-2 rounded-full bg-red-500" />}
-                </Button>
-                <Button variant="destructive" size="sm" onClick={() => setDialogMode('confirm-recycle')}>回收</Button>
-                <Button variant="outline" size="sm" onClick={openCompare}>比较</Button>
-              </div>
-            </div>
-          )}
-        </DialogContent>
-      </Dialog>
-
-      {/* Upgrade Dialog */}
-      <Dialog open={dialogMode === 'upgrade'} onOpenChange={(open) => { if (!open) setDialogMode('detail') }}>
-        <DialogContent>
-          <DialogHeader><DialogTitle>选择副卡（强化）</DialogTitle></DialogHeader>
-          <p className="text-xs text-slate-500 mb-2">选择同球员的副卡，星级+1</p>
-          {subCards.length === 0 ? (
-            <p className="text-slate-500 text-sm text-center py-4">没有可用的同球员副卡</p>
-          ) : (
-            <div className="space-y-1 max-h-60 overflow-y-auto scrollbar-hide">
-              {subCards.map((c: BagCard) => (
-                <div key={c.id} onClick={() => doUpgrade(c.id)} className="flex items-center gap-2 p-2 rounded-md hover:bg-slate-800 cursor-pointer">
-                  <span className="text-slate-500 text-xs">[{c.id}]</span>
-                  <span className="text-slate-200 text-sm flex-1">{c.name}</span>
-                  {c.style && <span className="text-emerald-400 text-[10px]">{STYLE_NAMES[c.style] || c.style}</span>}
-                  <span className="text-yellow-400 text-xs">{c.star <= 5 ? '★'.repeat(c.star) : `★${c.star}`}</span>
-                  <span className={`text-sm font-bold ${overallColor(c.overall, c.star)}`}>{c.overall}</span>
-                </div>
-              ))}
-            </div>
-          )}
-        </DialogContent>
-      </Dialog>
-
-      {/* Breach Dialog */}
-      <Dialog open={dialogMode === 'breach'} onOpenChange={(open) => { if (!open) setDialogMode('detail') }}>
-        <DialogContent>
-          <DialogHeader><DialogTitle>选择副卡（突破）</DialogTitle></DialogHeader>
-          <p className="text-xs text-slate-500 mb-2">选择同球员的副卡，随机提升一项能力</p>
-          {subCards.length === 0 ? (
-            <p className="text-slate-500 text-sm text-center py-4">没有可用的同球员副卡</p>
-          ) : (
-            <div className="space-y-1 max-h-60 overflow-y-auto scrollbar-hide">
-              {subCards.map((c: BagCard) => (
-                <div key={c.id} onClick={() => doBreach(c.id)} className="flex items-center gap-2 p-2 rounded-md hover:bg-slate-800 cursor-pointer">
-                  <span className="text-slate-500 text-xs">[{c.id}]</span>
-                  <span className="text-slate-200 text-sm flex-1">{c.name}</span>
-                  {c.style && <span className="text-emerald-400 text-[10px]">{STYLE_NAMES[c.style] || c.style}</span>}
-                  <span className="text-yellow-400 text-xs">{c.star <= 5 ? '★'.repeat(c.star) : `★${c.star}`}</span>
-                  <span className={`text-sm font-bold ${overallColor(c.overall, c.star)}`}>{c.overall}</span>
-                </div>
-              ))}
-            </div>
-          )}
-        </DialogContent>
-      </Dialog>
-
-      {/* Confirm single recycle */}
-      <Dialog open={dialogMode === 'confirm-recycle'} onOpenChange={(open) => { if (!open) setDialogMode('detail') }}>
-        <DialogContent>
-          <DialogHeader><DialogTitle>确认回收</DialogTitle></DialogHeader>
-          <p className="text-sm text-slate-300 mb-4">确定回收 [{detail?.id}] {detail?.name}？此操作不可撤销。</p>
-          <div className="flex gap-2">
-            <Button variant="outline" className="flex-1" onClick={() => setDialogMode('detail')}>取消</Button>
-            <Button variant="destructive" className="flex-1" onClick={handleRecycleSingle}>确认回收</Button>
-          </div>
-        </DialogContent>
-      </Dialog>
-
       {/* Confirm batch recycle */}
       <Dialog open={dialogMode === 'confirm-batch-recycle'} onOpenChange={(open) => { if (!open) setDialogMode(null) }}>
         <DialogContent>
@@ -530,37 +357,6 @@ export default function BagPage() {
           </div>
         </DialogContent>
       </Dialog>
-
-      {/* Compare select */}
-      <Dialog open={dialogMode === "compare-select"} onOpenChange={(open) => { if (!open) setDialogMode("detail") }}>
-        <DialogContent>
-          <DialogHeader><DialogTitle>选择对比球员</DialogTitle></DialogHeader>
-          <Input placeholder="搜索球员..." className="mb-2" onChange={e => {
-            const q = e.target.value
-            if (q.length > 0) {
-              api.get("/bag", { params: { page: 1, query: q } }).then(r => setSubCards(r.data.cards.filter((c: BagCard) => c.id !== detail?.id)))
-            } else if (detail) {
-              api.get("/bag", { params: { page: 1, query: "", sort: "overall", position: "", color: "", for_position: detail.position } }).then(r => {
-                setSubCards(r.data.cards.filter((c: BagCard) => c.id !== detail.id))
-              })
-            }
-          }} />
-          <div className="space-y-1 max-h-60 overflow-y-auto scrollbar-hide">
-            {subCards.map((c: BagCard) => (
-              <div key={c.id} onClick={() => doCompare(c.id)} className="flex items-center gap-2 p-2 rounded-md hover:bg-slate-800 cursor-pointer">
-                <span className="text-slate-500 text-xs">[{c.id}]</span>
-                <span className="text-slate-400 text-xs">{c.position}</span>
-                <span className="text-slate-200 text-sm flex-1">{c.name}</span>
-                {c.style && <span className="text-emerald-400 text-[10px]">{STYLE_NAMES[c.style] || c.style}</span>}
-                <span className="text-yellow-400 text-xs">{c.star <= 5 ? "★".repeat(c.star) : `★${c.star}`}</span>
-                <span className={`text-sm font-bold ${overallColor(c.overall, c.star)}`}>{c.overall}</span>
-              </div>
-            ))}
-          </div>
-        </DialogContent>
-      </Dialog>
-
-      <CompareView data={compareData} open={dialogMode === "compare-view"} onClose={() => { setDialogMode("detail"); setCompareData(null) }} />
     </div>
   )
 }

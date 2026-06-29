@@ -277,6 +277,26 @@ class BagService:
 
         talent_display = get_talent_display(talents_data, is_gk, star)
 
+        owner_qq_row = self.db.query_one("SELECT User FROM cards WHERE ID = ?", (card_id,))
+        can_upgrade = False
+        can_breach = False
+        if owner_qq_row:
+            dupes = self.db.query_one(
+                "SELECT COUNT(*) FROM cards WHERE Player = ? AND User = ? AND ID != ? AND Status = 0 AND Locked = 0",
+                (row[1], owner_qq_row[0], card_id)
+            )
+            if dupes and dupes[0] > 0:
+                can_breach = True
+                # can_upgrade requires star diff == 1 or both star 1
+                upgrade_check = self.db.query_one(
+                    "SELECT COUNT(*) FROM cards WHERE Player = ? AND User = ? AND ID != ? AND Status = 0 AND Locked = 0 "
+                    "AND (ABS(Star - ?) = 1 OR (Star = 1 AND ? = 1))",
+                    (row[1], owner_qq_row[0], card_id, star, star)
+                )
+                if upgrade_check and upgrade_check[0] > 0:
+                    can_upgrade = True
+
+
         return {
             "id": row[0], "player_id": row[1], "star": star, "style": style,
             "style_name": get_style_name(style, position),
@@ -285,6 +305,7 @@ class BagService:
             "name": row[18], "position": position, "age": row[21],
             "height": row[22], "weight": row[23], "nationality": row[24],
             "price": price,
+            "can_upgrade": can_upgrade, "can_breach": can_breach, "owner_qq": owner_qq_row[0] if owner_qq_row else 0,
             "abilities": {k: {"value": v, "name": ABILITY_NAMES.get(k, k), "ext": ext.get(k, 0), "style_boosted": k in style_keys} for k, v in abilities.items()},
             "position_ratings": position_ratings[:3],
             "all_position_ratings": position_ratings,

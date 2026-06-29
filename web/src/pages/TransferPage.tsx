@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
+import { useNavigate } from 'react-router-dom'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent } from '@/components/ui/card'
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog'
@@ -7,7 +8,6 @@ import { Tabs, TabsList, TabsTrigger, TabsContent } from '@/components/ui/tabs'
 import api from '../api/client'
 import { useToast } from '@/components/AppToast'
 import { overallColor, STYLE_NAMES } from '@/lib/card-display'
-import PlayerCardDetail from '@/components/PlayerCardDetail'
 
 interface TransferItem {
   card_id: number
@@ -121,6 +121,7 @@ export default function TransferPage() {
 }
 
 function MarketTab() {
+  const navigate = useNavigate()
   const [items, setItems] = useState<TransferItem[]>([])
   const [me, setMe] = useState<{ qq: number } | null>(null)
   const [page, setPage] = useState(1)
@@ -136,9 +137,6 @@ function MarketTab() {
 
   const [selectMode, setSelectMode] = useState(false)
   const [selected, setSelected] = useState<Set<number>>(new Set())
-
-  const [detailId, setDetailId] = useState<number | null>(null)
-  const [detail, setDetail] = useState<any>(null)
 
   const listRef = useRef<HTMLDivElement | null>(null)
   const { showToast } = useToast()
@@ -212,13 +210,9 @@ function MarketTab() {
     })
   }
 
-  const openDetail = async (cardId: number) => {
+  const openDetail = (cardId: number) => {
     if (selectMode) { toggleSelect(cardId); return }
-    setDetailId(cardId)
-    try {
-      const res = await api.get(`/cards/${cardId}`)
-      setDetail(res.data)
-    } catch { setDetail(null) }
+    navigate(`/cards/${cardId}`)
   }
 
   const activeFilters = [
@@ -364,14 +358,6 @@ function MarketTab() {
             </div>
           </div>
           <Button className="mt-3" onClick={() => setShowFilter(false)}>确认</Button>
-        </DialogContent>
-      </Dialog>
-
-      {/* Card detail dialog */}
-      <Dialog open={detailId !== null} onOpenChange={(open) => { if (!open) { setDetailId(null); setDetail(null) } }}>
-        <DialogContent className="max-h-[70vh] overflow-y-auto scrollbar-hide">
-          <DialogHeader><DialogTitle>球员详情</DialogTitle></DialogHeader>
-          <PlayerCardDetail detail={detail} />
         </DialogContent>
       </Dialog>
     </>

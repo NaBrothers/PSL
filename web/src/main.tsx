@@ -16,6 +16,7 @@ import ChallengePage from './pages/ChallengePage'
 import SearchPage from './pages/SearchPage'
 import InboxPage from './pages/InboxPage'
 import AdminPage from './pages/AdminPage'
+import CardDetailPage from './pages/CardDetailPage'
 import { ToastProvider } from '@/components/AppToast'
 import StatusHeader from '@/components/StatusHeader'
 import api from './api/client'
@@ -143,6 +144,7 @@ function App() {
                 <Route path="/search" element={token ? <SearchPage /> : <Navigate to="/login" />} />
                 <Route path="/inbox" element={token ? <InboxPage /> : <Navigate to="/login" />} />
                 <Route path="/admin" element={token ? <AdminPage /> : <Navigate to="/login" />} />
+                <Route path="/cards/:id" element={token ? <CardDetailPage /> : <Navigate to="/login" />} />
                 <Route path="/more" element={token ? <MorePage /> : <Navigate to="/login" />} />
                 <Route path="*" element={<Navigate to={token ? "/home" : "/login"} />} />
               </Routes>

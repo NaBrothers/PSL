@@ -1,10 +1,11 @@
+import { useNavigate } from 'react-router-dom'
 import { useState, useEffect } from 'react'
 import { Button } from '@/components/ui/button'
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog'
 import { Input } from '@/components/ui/input'
 import api from '../api/client'
 import { cardBorderColor, overallColor } from '@/lib/card-display'
-import PlayerCardDetail from '@/components/PlayerCardDetail'
+
 import CompareView from '@/components/CompareView'
 
 interface CardInfo {
@@ -73,6 +74,7 @@ function cardBgColor(_overall: number, _star?: number): string {
 }
 
 export default function SquadPage() {
+  const navigate = useNavigate()
   const [squad, setSquad] = useState<SquadData | null>(null)
   const [selectedSlot, setSelectedSlot] = useState<number | null>(null)
   const [replaceCandidates, setReplaceCandidates] = useState<BagCard[]>([])
@@ -80,7 +82,6 @@ export default function SquadPage() {
   const [searchQuery, setSearchQuery] = useState('')
   const [compareData, setCompareData] = useState<any>(null)
   const [popupSlot, setPopupSlot] = useState<number | null>(null)
-  const [detail, setDetail] = useState<any>(null)
 
   const loadSquad = () => {
     api.get('/squad').then(res => setSquad(res.data))
@@ -110,8 +111,14 @@ export default function SquadPage() {
     setPopupSlot(null)
     const card = squad?.cards[idx]
     if (!card) return
-    api.get(`/cards/${card.id}`).then(res => setDetail(res.data))
+    navigate(`/cards/${card.id}`)
   }
+
+
+
+
+
+
 
   const handleReplace = async (candidateId: number) => {
     if (selectedSlot === null || !squad) return
@@ -320,19 +327,6 @@ export default function SquadPage() {
 
 
 
-      {/* Player detail dialog */}
-      <Dialog open={detail !== null} onOpenChange={(open) => { if (!open) setDetail(null) }}>
-        <DialogContent className="max-h-[85vh] overflow-y-auto scrollbar-hide">
-          <DialogHeader>
-            <DialogTitle className="flex items-center gap-2 flex-wrap">
-              <span className="text-slate-500 text-sm">[{detail?.id}]</span>
-              <span className={overallColor(detail?.overall || 0, detail?.star)}>{detail?.name}</span>
-              <span className={`font-bold ${overallColor(detail?.overall || 0, detail?.star)}`}>{detail?.overall}</span>
-            </DialogTitle>
-          </DialogHeader>
-          <PlayerCardDetail detail={detail} />
-        </DialogContent>
-      </Dialog>
 
       <CompareView data={compareData} open={compareData !== null} onClose={() => setCompareData(null)} />
     </div>
