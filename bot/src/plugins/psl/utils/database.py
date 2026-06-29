@@ -17,8 +17,11 @@ class SQLiteCursor:
         self._rows = None
         self._index = 0
 
-    def execute(self, sql):
-        self._cursor.execute(sql)
+    def execute(self, sql, params=None):
+        if params:
+            self._cursor.execute(sql, params)
+        else:
+            self._cursor.execute(sql)
         if sql.strip().upper().startswith("SELECT"):
             self._rows = self._cursor.fetchall()
             self._index = 0

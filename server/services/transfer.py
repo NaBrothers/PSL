@@ -1,7 +1,7 @@
 """Transfer service - market operations."""
 
-from dataclasses import dataclass
-from typing import List, Optional
+from datetime import datetime, timezone
+from typing import List
 
 from psl_core.constants import STARS, FORWARD, MIDFIELD, GUARD, GOALKEEPER, STYLE, GK_STYLE
 from psl_core.card import compute_overall, compute_price, compute_abilities, get_style_name
@@ -14,6 +14,34 @@ class TransferError(Exception):
 class TransferService:
     def __init__(self, db):
         self.db = db
+
+    def _get_fee_percent(self) -> float:
+        from server.services.game_config import GameConfigService
+        cfg = GameConfigService(self.db)
+        return cfg.get("transfer.fee_percent")
+
+    def _record_trade(self, card_id: int, player_id: int, star: int,
+                      seller_qq: int, buyer_qq: int, price: int, fee: int, source: str):
+        now = datetime.now(timezone.utc).isoformat()
+        self.db.execute(
+            "INSERT INTO trade_history (CardID, PlayerID, Star, SellerQQ, BuyerQQ, Price, Fee, Source, CreatedAt) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (card_id, player_id, star, seller_qq, buyer_qq, price, fee, source, now)
+        )
+
+    def get_reference_price(self, player_id: int, star: int) -> dict:
+        from server.services.game_config import GameConfigService
+        cfg = GameConfigService(self.db)
+        n = int(cfg.get("transfer.reference_count"))
+        rows = self.db.query_all(
+            "SELECT Price FROM trade_history WHERE PlayerID = ? AND Star = ? ORDER BY CreatedAt DESC LIMIT ?",
+            (player_id, star, n)
+        )
+        if not rows:
+            return {"has_data": False, "price": 0, "count": 0}
+        prices = [r[0] for r in rows]
+        avg = sum(prices) // len(prices)
+        return {"has_data": True, "price": avg, "count": len(prices)}
 
     def list_market(self, page: int = 1, page_size: int = 20, query: str = "",
                     position: str = "", min_star: int = 0, style: str = "",
@@ -117,9 +145,23 @@ class TransferService:
                 price = compute_price(price_row[2], price_row[0], price_row[1] or 0)
             else:
                 price = 1000
-        self.db.execute("INSERT INTO transfer (User, Card, Cost) VALUES (?, ?, ?)", (qq, card_id, price))
+
+        now = datetime.now(timezone.utc).isoformat()
+        self.db.execute("INSERT INTO transfer (User, Card, Cost, CreatedAt) VALUES (?, ?, ?, ?)",
+                        (qq, card_id, price, now))
         self.db.execute("UPDATE cards SET Status = 1 WHERE ID = ?", (card_id,))
-        return {"ok": True, "price": price}
+
+        # Try to match against active bid orders
+        match_result = self._match_listing_to_bids(qq, card_id, price)
+        if match_result:
+            return {"ok": True, "price": price, "matched": True, "match_detail": match_result}
+        return {"ok": True, "price": price, "matched": False}
+
+    def _match_listing_to_bids(self, seller_qq: int, card_id: int, price: int) -> dict:
+        """Try to match a newly listed card against active bid orders."""
+        from server.services.bid import BidService
+        bid_svc = BidService(self.db)
+        return bid_svc.match_listing(seller_qq, card_id, price)
 
     def batch_list(self, qq: int, cards: List[dict]) -> dict:
         results = []
@@ -128,7 +170,8 @@ class TransferService:
             price = item.get("price", 0)
             try:
                 res = self.list_card(qq, card_id, price)
-                results.append({"card_id": card_id, "ok": True, "price": res["price"]})
+                results.append({"card_id": card_id, "ok": True, "price": res["price"],
+                                "matched": res.get("matched", False)})
             except TransferError as e:
                 results.append({"card_id": card_id, "ok": False, "error": str(e)})
         return {"results": results}
@@ -145,20 +188,41 @@ class TransferService:
         buyer_money = self.db.query_one("SELECT Money FROM users WHERE QQ = ?", (qq,))
         if buyer_money[0] < cost:
             raise TransferError("Insufficient funds")
+
+        fee_percent = self._get_fee_percent()
+        fee = int(cost * fee_percent / 100)
+        seller_income = cost - fee
+
         self.db.execute("DELETE FROM transfer WHERE Card = ?", (card_id,))
         self.db.execute("UPDATE cards SET Status = 0, User = ? WHERE ID = ?", (qq, card_id))
         self.db.execute("UPDATE users SET Money = Money - ? WHERE QQ = ?", (cost, qq))
-        self.db.execute("UPDATE users SET Money = Money + ? WHERE QQ = ?", (cost, seller_qq))
+        self.db.execute("UPDATE users SET Money = Money + ? WHERE QQ = ?", (seller_income, seller_qq))
+
+        # Record trade history
+        card_info = self.db.query_one(
+            "SELECT c.Player, c.Star, p.Name FROM cards c JOIN players p ON c.Player = p.ID WHERE c.ID = ?",
+            (card_id,)
+        )
+        player_id = card_info[0] if card_info else 0
+        star = card_info[1] if card_info else 1
+        card_name = card_info[2] if card_info else "球员"
+        self._record_trade(card_id, player_id, star, seller_qq, qq, cost, fee, "market")
+
         # Notify seller
         from server.services.inbox import InboxService
         inbox = InboxService(self.db)
-        card_row = self.db.query_one("SELECT p.Name FROM cards c JOIN players p ON c.Player = p.ID WHERE c.ID = ?", (card_id,))
-        card_name = card_row[0] if card_row else "球员"
         buyer_row = self.db.query_one("SELECT Name FROM users WHERE QQ = ?", (qq,))
         buyer_name = buyer_row[0] if buyer_row else "某人"
-        inbox.send(seller_qq, "transfer_sold", f"{card_name} 已售出",
-            f"你的 {card_name} 被 {buyer_name} 以 ${cost} 购买", {"card_id": card_id, "cost": cost})
-        return {"ok": True, "cost": cost}
+        if fee > 0:
+            inbox.send(seller_qq, "transfer_sold", f"{card_name} 已售出",
+                f"你的 {card_name} 被 {buyer_name} 以 ${cost} 购买（税 ${fee}，实收 ${seller_income}）",
+                {"card_id": card_id, "cost": cost, "fee": fee})
+        else:
+            inbox.send(seller_qq, "transfer_sold", f"{card_name} 已售出",
+                f"你的 {card_name} 被 {buyer_name} 以 ${cost} 购买",
+                {"card_id": card_id, "cost": cost})
+
+        return {"ok": True, "cost": cost, "fee": fee}
 
     def batch_buy(self, qq: int, card_ids: List[int]) -> dict:
         results = []

@@ -148,7 +148,7 @@ async def _test_transfer_market_buy_sell_and_self_reclaim(core_modules, make_use
     assert sold.user.qq == buyer.qq
     assert sold.status == 0
     assert User.getUserByQQ(buyer.qq).money == 40000
-    assert User.getUserByQQ(seller.qq).money == 10000
+    assert User.getUserByQQ(seller.qq).money == 9500  # 10000 - 5% tax
     assert Offline.get(seller)
 
     with pytest.raises(FinishException):

@@ -42,7 +42,8 @@ DEFAULTS = {
     "league.individual_award.money": 25000,
 
     # Transfer
-    "transfer.fee_percent": 0,
+    "transfer.fee_percent": 5,
+    "transfer.reference_count": 5,
 
     # Upgrade
     "upgrade.cost_percent": 0.1,
@@ -127,6 +128,7 @@ CONFIG_GROUPS = {
     ],
     "转会市场": [
         {"key": "transfer.fee_percent", "label": "交易税(%)", "type": "float"},
+        {"key": "transfer.reference_count", "label": "参考价取最近N笔", "type": "int"},
     ],
     "强化系统": [
         {"key": "upgrade.cost_percent", "label": "强化费用比例", "type": "float"},

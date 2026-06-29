@@ -52,6 +52,7 @@ export default function BagPage() {
   const [loadingMore, setLoadingMore] = useState(false)
   const listRef = useRef<HTMLDivElement | null>(null)
   const [batchTransferPrices, setBatchTransferPrices] = useState<Record<number, string>>({})
+  const [refPrices, setRefPrices] = useState<Record<number, number>>({})
 
   const loadBag = async (
     p: number = page,
@@ -145,10 +146,21 @@ export default function BagPage() {
     loadBag(1)
   }
 
-  const handleBatchTransfer = () => {
+  const handleBatchTransfer = async () => {
     const prices: Record<number, string> = {}
     for (const id of Array.from(selected)) { prices[id] = '' }
     setBatchTransferPrices(prices)
+    const refs: Record<number, number> = {}
+    for (const id of Array.from(selected)) {
+      const card = cards.find(c => c.id === id)
+      if (card) {
+        try {
+          const res = await api.get('/transfer/reference-price', { params: { player_id: card.player_id, star: card.star } })
+          if (res.data.has_data) refs[id] = res.data.price
+        } catch { /* ignore */ }
+      }
+    }
+    setRefPrices(refs)
     setDialogMode('confirm-batch-transfer')
   }
 
@@ -500,12 +512,15 @@ export default function BagPage() {
             {cards.filter(c => selected.has(c.id)).map(c => (
               <div key={c.id} className="flex items-center gap-2">
                 <span className="text-slate-200 text-sm flex-1 truncate">{c.name} ★{c.star} {c.overall}</span>
-                <Input
-                  className="w-24 h-7 text-xs"
-                  placeholder="默认身价"
-                  value={batchTransferPrices[c.id] || ""}
-                  onChange={e => setBatchTransferPrices(p => ({ ...p, [c.id]: e.target.value.replace(/\D/g, "") }))}
-                />
+                <div className="flex flex-col items-end gap-0.5">
+                  {refPrices[c.id] && <span className="text-[10px] text-slate-500">参考 ${refPrices[c.id].toLocaleString()}</span>}
+                  <Input
+                    className="w-24 h-7 text-xs"
+                    placeholder={refPrices[c.id] ? `${refPrices[c.id]}` : "默认身价"}
+                    value={batchTransferPrices[c.id] || ""}
+                    onChange={e => setBatchTransferPrices(p => ({ ...p, [c.id]: e.target.value.replace(/\D/g, "") }))}
+                  />
+                </div>
               </div>
             ))}
           </div>

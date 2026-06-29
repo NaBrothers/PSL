@@ -79,13 +79,15 @@ class BagService:
             "p.Finishing, p.Long_Passing, p.Short_Passing, p.Dribbling, p.Ball_Control, "
             "p.Balance, p.Sliding_Tackle, p.Standing_Tackle, p.Defensive_Awareness, "
             "p.Aggression, p.Interceptions, p.Sprint_Speed, p.Acceleration, "
-            "p.Composure, p.GK_Handling, p.GK_Diving, p.GK_Positioning, p.GK_Reflexes, p.Reactions "
+            "p.Composure, p.GK_Handling, p.GK_Diving, p.GK_Positioning, p.GK_Reflexes, p.Reactions, "
+            "c.Talents "
             "FROM cards c JOIN players p ON c.Player = p.ID "
             "WHERE c.User = ?",
             (qq,)
         )
 
         import json as _json
+        from psl_core.talent import generate_talents
         STATUS_TEXT = {0: "", 1: "转会中", 2: "首发"}
         ABILITY_NAMES = {"Heading": "头球", "Finishing": "终结", "Short_Passing": "短传",
             "Dribbling": "盘带", "Tackling": "抢断", "Defence": "防守", "Speed": "速度",
@@ -97,6 +99,11 @@ class BagService:
             ov = compute_overall(r[10], r[2])
             pos = (r[9] or "").split(",")[0].strip()
             ext = _json.loads(r[7]) if r[7] else {}
+            talents_raw = r[36] if len(r) > 36 else None
+            talents_data = _json.loads(talents_raw) if talents_raw else None
+            if talents_data is None:
+                talents_data = generate_talents()
+                self.db.execute("UPDATE cards SET Talents = ? WHERE ID = ?", (_json.dumps(talents_data), r[0]))
             height_str = r[11] or "180"
             height_val = int(height_str) if str(height_str).isdigit() else 180
             abilities = compute_abilities(
@@ -110,6 +117,7 @@ class BagService:
                 acceleration=r[29] or 0, composure=r[30] or 0, gk_handling=r[31] or 0,
                 gk_diving=r[32] or 0, gk_positioning=r[33] or 0, gk_reflexes=r[34] or 0,
                 reactions=r[35] or 0, ext_abilities=ext,
+                talents=talents_data, talent_mode='display',
             )
             # Get top 3 abilities (exclude GK stats for non-GK)
             exclude = {"GK_Saving", "GK_Positioning", "GK_Reaction"} if pos not in GOALKEEPER else {"Heading", "Finishing", "Long_Shot", "Tackling"}
