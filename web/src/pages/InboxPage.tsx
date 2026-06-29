@@ -2,6 +2,7 @@ import { useState, useEffect } from 'react'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent } from '@/components/ui/card'
 import { Mail, DollarSign, Trophy, Megaphone, Gift, Check } from 'lucide-react'
+import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog'
 import api from '../api/client'
 
 interface Message {
@@ -33,6 +34,7 @@ const TYPE_COLORS: Record<string, string> = {
 export default function InboxPage() {
   const [messages, setMessages] = useState<Message[]>([])
   const [loading, setLoading] = useState(true)
+  const [selected, setSelected] = useState<Message | null>(null)
 
   useEffect(() => {
     api.get('/inbox').then(res => { setMessages(res.data.messages); setLoading(false) })
@@ -92,7 +94,7 @@ export default function InboxPage() {
               <Card
                 key={msg.id}
                 className={`transition-colors ${!msg.read ? 'border-slate-600' : 'border-slate-800 opacity-60'}`}
-                onClick={() => !msg.read && markRead(msg.id)}
+                onClick={() => { setSelected(msg); if (!msg.read) markRead(msg.id) }}
               >
                 <CardContent className="p-3 flex items-start gap-3">
                   <div className={`w-8 h-8 rounded-lg flex items-center justify-center flex-shrink-0 ${colorClass}`}>
@@ -112,6 +114,18 @@ export default function InboxPage() {
           })}
         </div>
       )}
+      {/* Message Detail Dialog */}
+      <Dialog open={selected !== null} onOpenChange={(open) => { if (!open) setSelected(null) }}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle className="text-sm">{selected?.title}</DialogTitle>
+          </DialogHeader>
+          <div className="text-sm text-slate-300 whitespace-pre-wrap leading-relaxed">
+            {selected?.content || '无详细内容'}
+          </div>
+          <p className="text-[10px] text-slate-600 mt-2">{selected ? formatTime(selected.created_at) : ''}</p>
+        </DialogContent>
+      </Dialog>
     </div>
   )
 }
