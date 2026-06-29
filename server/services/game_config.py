@@ -22,6 +22,7 @@ DEFAULTS = {
     "pool.intermediate_goalkeeper.cost": 5000,
     "pool.intermediate_goalkeeper.ten_cost": 45000,
     "pool.advanced.cost": 7500,
+    "pool.advanced.ten_cost": 0,
 
     # Pool thresholds
     "pool.intermediate.min_overall": 83,
@@ -127,7 +128,10 @@ class GameConfigService:
             val = json.loads(row[0])
             self._cache[key] = val
             return val
-        return DEFAULTS.get(key)
+        if key in DEFAULTS:
+            self.set(key, DEFAULTS[key])
+            return DEFAULTS[key]
+        raise KeyError(f"Game config key not found: {key}")
 
     def set(self, key: str, value: Any):
         self._cache[key] = value

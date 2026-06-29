@@ -5,15 +5,12 @@ from utils.date import Date
 import json
 
 def _get_daily_attempts():
-    try:
-        cursor = g_database.cursor()
-        cursor.execute('SELECT Value FROM "global" WHERE Name = ?', ("config:challenge.daily_attempts",))
-        row = cursor.fetchone()
-        cursor.close()
-        if row:
-            return json.loads(row[0])
-    except:
-        pass
+    cursor = g_database.cursor()
+    cursor.execute('SELECT Value FROM "global" WHERE Name = ?', ("config:challenge.daily_attempts",))
+    row = cursor.fetchone()
+    cursor.close()
+    if row:
+        return json.loads(row[0])
     return Const.TIMES_EVERYDAY
 
 class ChallengeTimes:

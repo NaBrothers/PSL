@@ -22,18 +22,17 @@ league_matcher = on_startswith(msg="联赛", rule=to_me(), priority=1)
 
 import json as _json
 
-def _league_config(key, default):
-    try:
-        from utils.database import g_database
-        cursor = g_database.cursor()
-        cursor.execute('SELECT Value FROM "global" WHERE Name = ?', (f"config:{key}",))
-        row = cursor.fetchone()
-        cursor.close()
-        if row:
-            return _json.loads(row[0])
-    except:
-        pass
-    return default
+def _league_config(key, default=None):
+    from utils.database import g_database
+    cursor = g_database.cursor()
+    cursor.execute('SELECT Value FROM "global" WHERE Name = ?', (f"config:{key}",))
+    row = cursor.fetchone()
+    cursor.close()
+    if row:
+        return _json.loads(row[0])
+    if default is not None:
+        return default
+    raise RuntimeError(f"Config key not found in DB: {key}")
 
 
 
