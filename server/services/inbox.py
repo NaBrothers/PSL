@@ -50,17 +50,17 @@ class InboxService:
     def mark_read(self, user_qq: int, message_id: Optional[int] = None):
         if message_id:
             self.db.execute(
-                "UPDATE inbox SET Read = 1 WHERE ID = ? AND (User = ? OR User = 0)",
+                "UPDATE inbox SET Read = 1 WHERE ID = ? AND User = ?",
                 (message_id, user_qq)
             )
         else:
             self.db.execute(
-                "UPDATE inbox SET Read = 1 WHERE (User = ? OR User = 0) AND Read = 0",
+                "UPDATE inbox SET Read = 1 WHERE User = ? AND User != 0 AND Read = 0",
                 (user_qq,)
             )
 
     def delete_read(self, user_qq: int):
         self.db.execute(
-            "DELETE FROM inbox WHERE (User = ? OR User = 0) AND Read = 1",
+            "DELETE FROM inbox WHERE User = ? AND User != 0 AND Read = 1",
             (user_qq,)
         )

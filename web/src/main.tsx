@@ -1,4 +1,4 @@
-import React, { useState, createContext, useContext } from 'react'
+import React, { useState, useEffect, createContext, useContext } from 'react'
 import ReactDOM from 'react-dom/client'
 import { BrowserRouter, Routes, Route, Navigate, useNavigate, useLocation } from 'react-router-dom'
 import './index.css'
@@ -15,8 +15,10 @@ import LeaguePage from './pages/LeaguePage'
 import ChallengePage from './pages/ChallengePage'
 import SearchPage from './pages/SearchPage'
 import InboxPage from './pages/InboxPage'
+import AdminPage from './pages/AdminPage'
 import { ToastProvider } from '@/components/AppToast'
 import StatusHeader from '@/components/StatusHeader'
+import api from './api/client'
 
 
 interface AuthCtx {
@@ -70,12 +72,15 @@ function TabBar() {
 function MorePage() {
   const navigate = useNavigate()
   const { setToken } = useAuth()
+  const [isAdmin, setIsAdmin] = useState(false)
+  useEffect(() => { api.get('/admin/stats').then(() => setIsAdmin(true)).catch(() => {}) }, [])
   const pages = [
     { path: '/lottery', label: '抽卡', desc: '开启卡包获取球员' },
     { path: '/transfer', label: '转会市场', desc: '买卖球员卡' },
     { path: '/league', label: '联赛', desc: '查看积分榜和赛程' },
     { path: '/challenge', label: '每日挑战', desc: '挑战NPC赢取奖励' },
     { path: '/search', label: '全局查询', desc: '搜索全服球员卡' },
+    ...(isAdmin ? [{ path: '/admin', label: '管理后台', desc: '系统配置与管理' }] : []),
   ]
   return (
     <div className="p-4 relative z-10">
@@ -137,6 +142,7 @@ function App() {
                 <Route path="/challenge" element={token ? <ChallengePage /> : <Navigate to="/login" />} />
                 <Route path="/search" element={token ? <SearchPage /> : <Navigate to="/login" />} />
                 <Route path="/inbox" element={token ? <InboxPage /> : <Navigate to="/login" />} />
+                <Route path="/admin" element={token ? <AdminPage /> : <Navigate to="/login" />} />
                 <Route path="/more" element={token ? <MorePage /> : <Navigate to="/login" />} />
                 <Route path="*" element={<Navigate to={token ? "/home" : "/login"} />} />
               </Routes>

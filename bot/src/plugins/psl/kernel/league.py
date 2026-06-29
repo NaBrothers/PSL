@@ -20,6 +20,23 @@ import math
 import random
 league_matcher = on_startswith(msg="联赛", rule=to_me(), priority=1)
 
+import json as _json
+
+def _league_config(key, default):
+    try:
+        from utils.database import g_database
+        cursor = g_database.cursor()
+        cursor.execute('SELECT Value FROM "global" WHERE Name = ?', (f"config:{key}",))
+        row = cursor.fetchone()
+        cursor.close()
+        if row:
+            return _json.loads(row[0])
+    except:
+        pass
+    return default
+
+
+
 return_text = '''联赛 比赛：开始下一轮比赛
 联赛 赛程：查看赛程
 联赛 积分：查看积分榜
@@ -233,9 +250,9 @@ async def get_award(league, cur_user, winners):
     text = "赛季已结束，获得以下奖励：\n"
     text += "===== 第" + str(i+1) + "名 =====\n"
     user = league.entries[i].user
-    award_money = (12-i)*1000*5
+    award_money = (12-i) * _league_config("league.season_reward.money_multiplier", 5000)
     text += "球币：$" + str(award_money) + "\n"
-    user.earn((12-i)*1000*5)
+    user.earn((12-i) * _league_config("league.season_reward.money_multiplier", 5000))
     if i == 0:
       award_card = 3
       award_count = 5
@@ -295,7 +312,7 @@ async def get_award(league, cur_user, winners):
 
   for winner,prize in winners:
       award[winner.user.qq] += "===== " + prize + " =====\n"
-      award_money = 5000*5
+      award_money = _league_config("league.individual_award.money", 25000)
       winner.user.earn(award_money)
       award[winner.user.qq] += "球币：$" + str(award_money) + "\n"
       award_card = 2
@@ -427,18 +444,23 @@ async def start_game(user, mode):
     entry.set("home_goal", game.home.goals)
     entry.set("away_goal", game.away.goals)
 
+    _win = _league_config("league.match_reward.win_money", 2000)
+    _lose = _league_config("league.match_reward.lose_money", 1000)
+    _tie = _league_config("league.match_reward.tie_money", 1500)
+    _goal_bonus = _league_config("league.match_reward.goal_bonus", 100)
+    _goal_cap = _league_config("league.match_reward.goal_bonus_cap", 5)
     if entry.home_goal > entry.away_goal:
-      home_money = 2000
-      away_money = 1000
+      home_money = _win
+      away_money = _lose
     elif entry.home_goal == entry.away_goal:
-      home_money = 1500
-      away_money = 1500
+      home_money = _tie
+      away_money = _tie
     else:
-      home_money = 1000
-      away_money = 2000
+      home_money = _lose
+      away_money = _win
 
-    home_money += 100 * min(5, entry.home_goal)
-    away_money += 100 * min(5, entry.away_goal)
+    home_money += _goal_bonus * min(_goal_cap, entry.home_goal)
+    away_money += _goal_bonus * min(_goal_cap, entry.away_goal)
 
     entry.home.earn(home_money)
     entry.away.earn(away_money)

@@ -63,12 +63,17 @@ class LotteryService:
         from model.item import Item
 
         pools = []
+        from server.services.game_config import GameConfigService, POOL_KEY_MAP
+        config = GameConfigService(self.db)
         for key, pool in g_pool.items():
             if not pool.get("visible", False):
                 continue
+            cfg_base = POOL_KEY_MAP.get(key)
+            cost = config.get(f"{cfg_base}.cost") if cfg_base else pool["cost"]
+            ten_cost = config.get(f"{cfg_base}.ten_cost") if cfg_base else pool.get("ten_cost", 0)
             pools.append(PoolInfo(
-                key=key, name=pool["name"], cost=pool["cost"],
-                ten_cost=pool.get("ten_cost", 0), visible=True,
+                key=key, name=pool["name"], cost=cost or pool["cost"],
+                ten_cost=ten_cost or pool.get("ten_cost", 0), visible=True,
             ))
 
         reward_packs = []
@@ -93,12 +98,17 @@ class LotteryService:
         if user is None:
             raise LotteryError("User not found")
 
+        from server.services.game_config import GameConfigService, POOL_KEY_MAP
+        config = GameConfigService(self.db)
+        cfg_base = POOL_KEY_MAP.get(pool_key)
+        pool_cost = config.get(f"{cfg_base}.cost") if cfg_base else pool["cost"]
+        pool_ten_cost = config.get(f"{cfg_base}.ten_cost") if cfg_base else pool.get("ten_cost")
         if count == 10:
-            if "ten_cost" not in pool:
+            if not pool_ten_cost:
                 raise LotteryError("Pool does not support 10x draw")
-            cost = pool["ten_cost"]
+            cost = pool_ten_cost
         else:
-            cost = pool["cost"] * count
+            cost = (pool_cost or pool["cost"]) * count
 
         if user.money < cost:
             raise InsufficientFunds(f"Need {cost}, have {user.money}")

@@ -37,7 +37,11 @@ class PlayerOpsService:
             raise PlayerOpsError("Max star reached")
 
         target_star = max(card1.star, card2.star) + 1
-        cost = int(max(card1.price, card2.price) * 0.1)
+        from server.services.game_config import GameConfigService
+        import server.database
+        config = GameConfigService(server.database.db)
+        cost_pct = config.get("upgrade.cost_percent") or 0.1
+        cost = int(max(card1.price, card2.price) * cost_pct)
 
         from model.user import User
         user = User.getUserByQQ(qq)
