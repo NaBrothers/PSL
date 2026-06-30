@@ -130,11 +130,12 @@ function MarketTab() {
   const [totalPages, setTotalPages] = useState(1)
   const [loadingMore, setLoadingMore] = useState(false)
 
-  const [query, setQuery] = useState('')
-  const [position, setPosition] = useState('')
-  const [minStar, setMinStar] = useState(0)
-  const [style, setStyle] = useState('')
-  const [sortBy, setSortBy] = useState('overall')
+  const [searchParams, setSearchParams] = useSearchParams()
+  const [query, setQuery] = useState(searchParams.get('q') || '')
+  const [position, setPosition] = useState(searchParams.get('pos') || '')
+  const [minStar, setMinStar] = useState(parseInt(searchParams.get('star') || '0'))
+  const [style, setStyle] = useState(searchParams.get('style') || '')
+  const [sortBy, setSortBy] = useState(searchParams.get('sort') || 'overall')
   const [showFilter, setShowFilter] = useState(false)
 
   const [selectMode, setSelectMode] = useState(false)
@@ -160,7 +161,6 @@ function MarketTab() {
     setTotalPages(res.data.total_pages)
   }
 
-  const [searchParams] = useSearchParams()
 
   useEffect(() => {
     const pid = searchParams.get('player_id')
@@ -176,6 +176,14 @@ function MarketTab() {
   }, [])
 
   useEffect(() => {
+    const params: Record<string, string> = {}
+    if (query) params.q = query
+    if (position) params.pos = position
+    if (minStar) params.star = String(minStar)
+    if (style) params.style = style
+    if (sortBy !== 'overall') params.sort = sortBy
+    if (selectedPlayer) params.player_id = String(selectedPlayer.player_id)
+    setSearchParams(params, { replace: true })
     if (selectedPlayer) loadMarket(1, false)
     else loadMarketPlayers()
     setSelected(new Set())

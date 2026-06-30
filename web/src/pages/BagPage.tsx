@@ -1,4 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
+import { useSearchParams } from 'react-router-dom'
+
 import { createPortal } from 'react-dom'
 import { useNavigate } from 'react-router-dom'
 import { Button } from '@/components/ui/button'
@@ -34,10 +36,11 @@ export default function BagPage() {
   const [page, setPage] = useState(1)
   const [totalPages, setTotalPages] = useState(1)
   const [total, setTotal] = useState(0)
-  const [query, setQuery] = useState("")
-  const [sortBy, setSortBy] = useState("overall")
-  const [filterPos, setFilterPos] = useState("")
-  const [filterColor, setFilterColor] = useState("")
+  const [_searchParams, setSearchParams] = useSearchParams()
+  const [query, setQuery] = useState(new URLSearchParams(window.location.search).get("q") || "")
+  const [sortBy, setSortBy] = useState(new URLSearchParams(window.location.search).get("sort") || "overall")
+  const [filterPos, setFilterPos] = useState(new URLSearchParams(window.location.search).get("pos") || "")
+  const [filterColor, setFilterColor] = useState(new URLSearchParams(window.location.search).get("color") || "")
   const [viewMode, setViewMode] = useState<"grid" | "list">("grid")
   const [manageMode, setManageMode] = useState(false)
   const [selected, setSelected] = useState<Set<number>>(new Set())
@@ -67,6 +70,15 @@ export default function BagPage() {
     setPage(res.data.page)
     setTotal(res.data.total)
   }
+
+  useEffect(() => {
+    const params: Record<string, string> = {}
+    if (query) params.q = query
+    if (sortBy !== 'overall') params.sort = sortBy
+    if (filterPos) params.pos = filterPos
+    if (filterColor) params.color = filterColor
+    setSearchParams(params, { replace: true })
+  }, [query, sortBy, filterPos, filterColor])
 
   useEffect(() => {
     loadBag(1)
