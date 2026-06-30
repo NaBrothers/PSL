@@ -333,6 +333,9 @@ export default function CardDetailPage() {
         <DialogContent className="max-h-[70vh] overflow-y-auto scrollbar-hide">
           <DialogHeader><DialogTitle>市场行情</DialogTitle></DialogHeader>
           <MarketInfo playerName={detail.name} playerId={detail.player_id} star={detail.star} />
+          <Button className="w-full mt-3" variant="outline" onClick={() => { setDialogMode(null); navigate(`/transfer?player_id=${detail.player_id}&name=${encodeURIComponent(detail.name)}`) }}>
+            在市场中查看该球员
+          </Button>
         </DialogContent>
       </Dialog>
     </div>

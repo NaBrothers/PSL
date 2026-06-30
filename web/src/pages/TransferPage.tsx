@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
-import { useNavigate } from 'react-router-dom'
+import { useNavigate, useSearchParams } from 'react-router-dom'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent } from '@/components/ui/card'
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog'
@@ -160,8 +160,18 @@ function MarketTab() {
     setTotalPages(res.data.total_pages)
   }
 
+  const [searchParams] = useSearchParams()
+
   useEffect(() => {
-    loadMarketPlayers()
+    const pid = searchParams.get('player_id')
+    const pname = searchParams.get('name')
+    if (pid) {
+      const player = { player_id: parseInt(pid), name: pname || '', position: '', overall: 0, listing_count: 0, min_price: 0 }
+      setSelectedPlayer(player)
+      loadMarket(1, false, parseInt(pid), 0)
+    } else {
+      loadMarketPlayers()
+    }
     api.get('/me').then(res => setMe({ qq: res.data.qq }))
   }, [])
 
