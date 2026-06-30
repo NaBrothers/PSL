@@ -113,13 +113,13 @@ class TransferService:
             if star and r[4] != star:
                 continue
             first_pos = (r[8] or "").split(",")[0].strip()
-            star = r[4]
+            card_star = r[4]
             style_key = r[5]
-            overall = compute_overall(r[9], star)
+            overall = compute_overall(r[9], card_star)
             height_val = int(r[11]) if r[11] and str(r[11]).isdigit() else 180
 
             abilities = compute_abilities(
-                star=star, style=style_key, position=first_pos, height=height_val,
+                star=card_star, style=style_key, position=first_pos, height=height_val,
                 heading_accuracy=r[12] or 0, jumping=r[13] or 0, strength=r[14] or 0,
                 long_shots=r[15] or 0, shot_power=r[16] or 0, finishing=r[17] or 0,
                 long_passing=r[18] or 0, short_passing=r[19] or 0, dribbling=r[20] or 0,
@@ -134,7 +134,7 @@ class TransferService:
             items.append({
                 "card_id": r[0], "cost": r[1], "seller_qq": r[2], "seller_name": r[10] or "",
                 "player_name": r[7], "position": first_pos, "overall": overall,
-                "star": star, "style": style_key, "style_name": get_style_name(style_key, first_pos),
+                "star": card_star, "style": style_key, "style_name": get_style_name(style_key, first_pos),
                 "breach": r[6] or 0, "abilities": abilities,
             })
 
