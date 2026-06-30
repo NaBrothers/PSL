@@ -145,6 +145,7 @@ function MarketTab() {
   const [playerStar, setPlayerStar] = useState(0)
 
   const listRef = useRef<HTMLDivElement | null>(null)
+  const isFirstRender = useRef(true)
   const { showToast } = useToast()
 
   const loadMarketPlayers = async () => {
@@ -176,13 +177,17 @@ function MarketTab() {
   }, [])
 
   useEffect(() => {
+    if (isFirstRender.current) {
+      isFirstRender.current = false
+      return
+    }
     const params: Record<string, string> = {}
     if (query) params.q = query
     if (position) params.pos = position
     if (minStar) params.star = String(minStar)
     if (style) params.style = style
     if (sortBy !== 'overall') params.sort = sortBy
-    if (selectedPlayer) params.player_id = String(selectedPlayer.player_id)
+    if (selectedPlayer) { params.player_id = String(selectedPlayer.player_id); params.name = selectedPlayer.name || '' }
     setSearchParams(params, { replace: true })
     if (selectedPlayer) loadMarket(1, false)
     else loadMarketPlayers()
