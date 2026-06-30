@@ -139,13 +139,21 @@ function MarketTab() {
 
   const [selectMode, setSelectMode] = useState(false)
   const [selected, setSelected] = useState<Set<number>>(new Set())
+  const [marketPlayers, setMarketPlayers] = useState<any[]>([])
+  const [selectedPlayer, setSelectedPlayer] = useState<any>(null)
+  const [playerStar, setPlayerStar] = useState(0)
 
   const listRef = useRef<HTMLDivElement | null>(null)
   const { showToast } = useToast()
 
-  const loadMarket = async (p: number = 1, append: boolean = false) => {
+  const loadMarketPlayers = async () => {
+    const res = await api.get('/transfer/players', { params: { query, position } })
+    setMarketPlayers(res.data.players || [])
+  }
+
+  const loadMarket = async (p: number = 1, append: boolean = false, pid?: number, st?: number) => {
     const res = await api.get('/transfer', {
-      params: { page: p, page_size: 20, query, position, min_star: minStar, style, sort_by: sortBy }
+      params: { page: p, page_size: 20, query, position, min_star: minStar, style, sort_by: sortBy, player_id: pid ?? (selectedPlayer?.player_id || 0), star: st ?? playerStar }
     })
     setItems(prev => (append ? [...prev, ...res.data.items] : res.data.items))
     setPage(res.data.page)
@@ -153,12 +161,13 @@ function MarketTab() {
   }
 
   useEffect(() => {
-    loadMarket()
+    loadMarketPlayers()
     api.get('/me').then(res => setMe({ qq: res.data.qq }))
   }, [])
 
   useEffect(() => {
-    loadMarket(1, false)
+    if (selectedPlayer) loadMarket(1, false)
+    else loadMarketPlayers()
     setSelected(new Set())
   }, [query, position, minStar, style, sortBy])
 
@@ -262,9 +271,48 @@ function MarketTab() {
       </div>
 
       {/* List */}
+      {/* Player detail header */}
+      {selectedPlayer && (
+        <div className="px-3 pb-2">
+          <button className="text-xs text-accent mb-2" onClick={() => { setSelectedPlayer(null); setItems([]); loadMarketPlayers() }}>← 返回球员列表</button>
+          <div className="flex items-center gap-3 mb-2">
+            <img src={`/game-assets/avatars/${selectedPlayer.player_id}.png`} className="w-10 h-10 rounded-lg bg-[#20293a] object-cover" onError={(e: any) => { e.target.style.display='none' }} />
+            <div>
+              <div className="text-sm font-bold text-slate-100">{selectedPlayer.name}</div>
+              <div className="text-[10px] text-slate-500">{selectedPlayer.position} · OVR {selectedPlayer.overall} · {selectedPlayer.listing_count}件在售</div>
+            </div>
+          </div>
+          <div className="flex gap-1 overflow-x-auto scrollbar-hide">
+            {[0,1,2,3,4,5,6,7,8,9,10].map(s => (
+              <button key={s} onClick={() => { setPlayerStar(s); loadMarket(1, false, selectedPlayer.player_id, s) }}
+                className={`px-2 py-1 rounded text-xs whitespace-nowrap ${playerStar === s ? 'bg-gold/80 text-black' : 'bg-slate-800 text-slate-400'}`}>
+                {s === 0 ? '全部' : `${s}★`}
+              </button>
+            ))}
+          </div>
+        </div>
+      )}
+
       <div ref={listRef} className="flex-1 overflow-y-auto scrollbar-hide px-3 space-y-2 pb-20">
         {items.length === 0 ? (
           <div className="text-center py-12"><p className="text-slate-500">暂无球员在售</p></div>
+        ) : !selectedPlayer ? (
+          <div className="space-y-1.5">
+            {marketPlayers.map(p => (
+              <div key={p.player_id} className="flex items-center gap-3 p-3 bg-slate-800/50 border border-slate-700/50 rounded-lg cursor-pointer hover:border-slate-600 transition-colors" onClick={() => { setSelectedPlayer(p); setPlayerStar(0); loadMarket(1, false, p.player_id, 0) }}>
+                <img src={`/game-assets/avatars/${p.player_id}.png`} className="w-10 h-10 rounded-lg bg-[#20293a] object-cover" onError={(e: any) => { e.target.style.display='none' }} />
+                <div className="flex-1 min-w-0">
+                  <div className="text-sm text-slate-200 font-medium">{p.name}</div>
+                  <div className="text-[10px] text-slate-500">{p.position} · OVR {p.overall}</div>
+                </div>
+                <div className="text-right">
+                  <div className="text-xs text-gold font-bold">${p.min_price?.toLocaleString()}</div>
+                  <div className="text-[10px] text-slate-500">{p.listing_count}件在售</div>
+                </div>
+              </div>
+            ))}
+            {marketPlayers.length === 0 && <p className="text-center text-slate-500 text-sm py-8">暂无在售球员</p>}
+          </div>
         ) : items.map(item => {
           const isMine = me?.qq === item.seller_qq
           const isSelected = selected.has(item.card_id)
