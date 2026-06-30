@@ -43,9 +43,44 @@ class TransferService:
         avg = sum(prices) // len(prices)
         return {"has_data": True, "price": avg, "count": len(prices)}
 
+    def list_market_players(self, query: str = "", position: str = "") -> dict:
+        """Group market listings by player for the first-level view."""
+        rows = self.db.query_all(
+            "SELECT c.Player, p.Name, p.Position, p.Overall, "
+            "COUNT(*) as listing_count, MIN(t.Cost) as min_price, "
+            "MAX(c.Star) as max_star "
+            "FROM transfer t "
+            "JOIN cards c ON t.Card = c.ID "
+            "JOIN players p ON c.Player = p.ID "
+            "GROUP BY c.Player "
+            "ORDER BY p.Overall DESC"
+        )
+        items = []
+        for r in rows:
+            p_name = r[1] or ""
+            p_pos = (r[2] or "").split(",")[0].strip()
+            if query and query.lower() not in p_name.lower():
+                continue
+            if position:
+                from psl_core.constants import FORWARD, MIDFIELD, GUARD, GOALKEEPER
+                pos_groups = {"FWD": FORWARD, "MID": MIDFIELD, "DEF": GUARD, "GK": GOALKEEPER}
+                allowed = pos_groups.get(position, [])
+                if allowed and p_pos not in allowed:
+                    continue
+            items.append({
+                "player_id": r[0],
+                "name": p_name,
+                "position": p_pos,
+                "overall": r[3],
+                "listing_count": r[4],
+                "min_price": r[5],
+                "max_star": r[6],
+            })
+        return {"players": items}
+
     def list_market(self, page: int = 1, page_size: int = 20, query: str = "",
                     position: str = "", min_star: int = 0, style: str = "",
-                    sort_by: str = "overall") -> dict:
+                    sort_by: str = "overall", player_id: int = 0, star: int = 0) -> dict:
         rows = self.db.query_all(
             "SELECT t.Card, t.Cost, t.User, c.Player, c.Star, c.Style, c.Breach, "
             "p.Name, p.Position, p.Overall, u.Name, p.Height, "
@@ -62,6 +97,10 @@ class TransferService:
 
         items = []
         for r in rows:
+            if player_id and r[3] != player_id:
+                continue
+            if star and r[4] != star:
+                continue
             first_pos = (r[8] or "").split(",")[0].strip()
             star = r[4]
             style_key = r[5]

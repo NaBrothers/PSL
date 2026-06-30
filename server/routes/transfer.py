@@ -12,13 +12,21 @@ def _svc():
     return TransferService(server.database.db)
 
 
+@router.get("/transfer/players")
+def list_market_players(query: str = "", position: str = "", user=Depends(get_current_user)):
+    svc = _svc()
+    return svc.list_market_players(query=query, position=position)
+
+
 @router.get("/transfer")
 def list_market(page: int = 1, page_size: int = 20, query: str = "",
                 position: str = "", min_star: int = 0, style: str = "",
-                sort_by: str = "overall", user=Depends(get_current_user)):
+                sort_by: str = "overall", player_id: int = 0, star: int = 0,
+                user=Depends(get_current_user)):
     svc = _svc()
     return svc.list_market(page=page, page_size=page_size, query=query,
-                           position=position, min_star=min_star, style=style, sort_by=sort_by)
+                           position=position, min_star=min_star, style=style,
+                           sort_by=sort_by, player_id=player_id, star=star)
 
 
 class ListRequest(BaseModel):
