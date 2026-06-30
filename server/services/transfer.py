@@ -43,17 +43,28 @@ class TransferService:
         avg = sum(prices) // len(prices)
         return {"has_data": True, "price": avg, "count": len(prices)}
 
-    def list_market_players(self, query: str = "", position: str = "") -> dict:
+    def list_market_players(self, query: str = "", position: str = "", min_star: int = 0, style: str = "") -> dict:
         """Group market listings by player for the first-level view."""
+        where_clauses = []
+        params = []
+        if min_star > 0:
+            where_clauses.append("c.Star >= ?")
+            params.append(min_star)
+        if style:
+            where_clauses.append("c.Style = ?")
+            params.append(style)
+        where_sql = (" WHERE " + " AND ".join(where_clauses)) if where_clauses else ""
         rows = self.db.query_all(
             "SELECT c.Player, p.Name, p.Position, p.Overall, "
             "COUNT(*) as listing_count, MIN(t.Cost) as min_price, "
             "MAX(c.Star) as max_star "
             "FROM transfer t "
             "JOIN cards c ON t.Card = c.ID "
-            "JOIN players p ON c.Player = p.ID "
-            "GROUP BY c.Player "
-            "ORDER BY p.Overall DESC"
+            "JOIN players p ON c.Player = p.ID"
+            + where_sql +
+            " GROUP BY c.Player "
+            "ORDER BY p.Overall DESC",
+            tuple(params)
         )
         items = []
         for r in rows:

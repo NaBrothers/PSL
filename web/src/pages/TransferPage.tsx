@@ -147,7 +147,7 @@ function MarketTab() {
   const { showToast } = useToast()
 
   const loadMarketPlayers = async () => {
-    const res = await api.get('/transfer/players', { params: { query, position } })
+    const res = await api.get('/transfer/players', { params: { query, position, min_star: minStar, style } })
     setMarketPlayers(res.data.players || [])
   }
 

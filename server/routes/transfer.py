@@ -13,9 +13,9 @@ def _svc():
 
 
 @router.get("/transfer/players")
-def list_market_players(query: str = "", position: str = "", user=Depends(get_current_user)):
+def list_market_players(query: str = "", position: str = "", min_star: int = 0, style: str = "", user=Depends(get_current_user)):
     svc = _svc()
-    return svc.list_market_players(query=query, position=position)
+    return svc.list_market_players(query=query, position=position, min_star=min_star, style=style)
 
 
 @router.get("/transfer")
