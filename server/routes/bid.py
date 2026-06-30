@@ -17,7 +17,7 @@ def _svc():
 
 class CreateBidRequest(BaseModel):
     player_name: Optional[str] = None
-    min_star: int = 1
+    star: int = 0
     position: Optional[str] = None
     style: Optional[str] = None
     max_price: int
@@ -46,7 +46,7 @@ def create_bid(req: CreateBidRequest, user=Depends(get_current_user)):
         return svc.create_bid(
             buyer_qq=user["qq"],
             player_name=req.player_name,
-            min_star=req.min_star,
+            min_star=req.star,
             position=req.position,
             style=req.style,
             max_price=req.max_price,

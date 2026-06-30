@@ -28,7 +28,7 @@ interface BidItem {
   buyer_qq: number
   buyer_name: string
   player_name: string
-  min_star: number
+  star: number
   position: string
   style: string
   max_price: number
@@ -334,7 +334,7 @@ function MarketTab() {
               </div>
             </div>
             <div>
-              <p className="text-xs text-slate-500 mb-2">最低星级</p>
+              <p className="text-xs text-slate-500 mb-2">指定星级</p>
               <div className="flex flex-wrap gap-2">
                 {[0, 3, 5, 7, 9].map(s => (
                   <button key={s}
@@ -375,7 +375,7 @@ function BidHallTab() {
 
   // Create bid form
   const [bidPlayerName, setBidPlayerName] = useState('')
-  const [bidMinStar, setBidMinStar] = useState(1)
+  const [bidStar, setBidStar] = useState(1)
   const [bidPosition, setBidPosition] = useState('')
   const [bidStyle, setBidStyle] = useState('')
   const [bidMaxPrice, setBidMaxPrice] = useState('')
@@ -420,7 +420,7 @@ function BidHallTab() {
     try {
       const res = await api.post('/bids/create', {
         player_name: bidPlayerName || null,
-        min_star: bidMinStar,
+        star: bidStar,
         position: bidPosition || null,
         style: bidStyle || null,
         max_price: price, quantity: parseInt(bidQuantity) || 1,
@@ -476,7 +476,7 @@ function BidHallTab() {
 
   const resetBidForm = () => {
     setBidPlayerName('')
-    setBidMinStar(1)
+    setBidStar(1)
     setBidPosition('')
     setBidStyle('')
     setBidMaxPrice(''); setBidQuantity('1')
@@ -526,8 +526,8 @@ function BidHallTab() {
                     {bid.player_name && (
                       <span className="bg-blue-900/50 text-blue-300 text-xs px-2 py-0.5 rounded-full">{bid.player_name}</span>
                     )}
-                    {bid.min_star > 1 && (
-                      <span className="bg-yellow-900/50 text-yellow-300 text-xs px-2 py-0.5 rounded-full">≥{bid.min_star}★</span>
+                    {bid.star > 1 && (
+                      <span className="bg-yellow-900/50 text-yellow-300 text-xs px-2 py-0.5 rounded-full">≥{bid.star}★</span>
                     )}
                     {bid.position && (
                       <span className="bg-green-900/50 text-green-300 text-xs px-2 py-0.5 rounded-full">{positionLabel(bid.position)}</span>
@@ -535,7 +535,7 @@ function BidHallTab() {
                     {bid.style && (
                       <span className="bg-purple-900/50 text-purple-300 text-xs px-2 py-0.5 rounded-full">{STYLE_NAMES[bid.style] || bid.style}</span>
                     )}
-                    {!bid.player_name && !bid.position && bid.min_star <= 1 && !bid.style && (
+                    {!bid.player_name && !bid.position && bid.star <= 1 && !bid.style && (
                       <span className="bg-slate-700 text-slate-400 text-xs px-2 py-0.5 rounded-full">不限</span>
                     )}
                   </div>
@@ -592,13 +592,13 @@ function BidHallTab() {
               </div>
             </div>
             <div>
-              <p className="text-xs text-slate-500 mb-1">最低星级</p>
+              <p className="text-xs text-slate-500 mb-1">指定星级</p>
               <div className="flex flex-wrap gap-2">
-                {[1, 3, 5, 7, 9].map(s => (
+                {[0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10].map(s => (
                   <button key={s}
-                    className={`px-3 py-1 rounded-full text-xs ${bidMinStar === s ? 'bg-blue-600 text-white' : 'bg-slate-700 text-slate-300'}`}
-                    onClick={() => setBidMinStar(s)}
-                  >{s === 1 ? '不限' : `≥${s}★`}</button>
+                    className={`px-3 py-1 rounded-full text-xs ${bidStar === s ? 'bg-blue-600 text-white' : 'bg-slate-700 text-slate-300'}`}
+                    onClick={() => setBidStar(s)}
+                  >{s === 0 ? '不限' : `${s}★`}</button>
                 ))}
               </div>
             </div>

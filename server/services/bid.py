@@ -50,7 +50,7 @@ class BidService:
 
         if bid["player_name"] and bid["player_name"].lower() != player_name.lower():
             return False
-        if bid["min_star"] and star < bid["min_star"]:
+        if bid["star"] and star < bid["star"]:
             return False
         if bid["position"]:
             allowed = POS_GROUPS.get(bid["position"], [])
@@ -60,7 +60,7 @@ class BidService:
             return False
         return True
 
-    def create_bid(self, buyer_qq: int, player_name: Optional[str], min_star: int,
+    def create_bid(self, buyer_qq: int, player_name: Optional[str], star: int,
                    position: Optional[str], style: Optional[str], max_price: int, quantity: int = 1) -> dict:
         if max_price <= 0:
             raise BidError("Price must be positive")
@@ -71,20 +71,20 @@ class BidService:
 
         now = datetime.now(timezone.utc).isoformat()
         self.db.execute(
-            "INSERT INTO bid_orders (BuyerQQ, PlayerName, MinStar, Position, Style, MaxPrice, Quantity, Filled, Status, CreatedAt) "
+            "INSERT INTO bid_orders (BuyerQQ, PlayerName, Star, Position, Style, MaxPrice, Quantity, Filled, Status, CreatedAt) "
             "VALUES (?, ?, ?, ?, ?, ?, ?, 0, 0, ?)",
-            (buyer_qq, player_name or None, min_star or 1, position or None, style or None, max_price, quantity, now)
+            (buyer_qq, player_name or None, star or 0, position or None, style or None, max_price, quantity, now)
         )
         bid_id = self.db.query_one("SELECT last_insert_rowid()")[0]
 
         # Try to match against current market listings
-        match_result = self._match_bid_to_market(bid_id, buyer_qq, player_name, min_star, position, style, max_price)
+        match_result = self._match_bid_to_market(bid_id, buyer_qq, player_name, star, position, style, max_price)
         if match_result:
             return {"ok": True, "bid_id": bid_id, "matched": True, "match_detail": match_result}
         return {"ok": True, "bid_id": bid_id, "matched": False}
 
     def _match_bid_to_market(self, bid_id: int, buyer_qq: int, player_name: Optional[str],
-                             min_star: int, position: Optional[str], style: Optional[str],
+                             star: int, position: Optional[str], style: Optional[str],
                              max_price: int) -> Optional[dict]:
         """Try to match a new bid against existing market listings. Lowest price first."""
         rows = self.db.query_all(
@@ -105,7 +105,7 @@ class BidService:
 
             if player_name and player_name.lower() != p_name.lower():
                 continue
-            if min_star and star < min_star:
+            if star and star < star:
                 continue
             if position:
                 allowed = POS_GROUPS.get(position, [])
@@ -138,20 +138,20 @@ class BidService:
         first_pos = (p_position or "").split(",")[0].strip()
 
         bids = self.db.query_all(
-            "SELECT ID, BuyerQQ, PlayerName, MinStar, Position, Style, MaxPrice "
+            "SELECT ID, BuyerQQ, PlayerName, Star, Position, Style, MaxPrice "
             "FROM bid_orders WHERE Status = 0 AND MaxPrice >= ? "
             "ORDER BY MaxPrice DESC, CreatedAt ASC",
             (price,)
         )
 
         for bid in bids:
-            bid_id, buyer_qq, bid_player, bid_min_star, bid_pos, bid_style, bid_max_price = bid
+            bid_id, buyer_qq, bid_player, bid_star, bid_pos, bid_style, bid_max_price = bid
             if buyer_qq == seller_qq:
                 continue
 
             if bid_player and bid_player.lower() != p_name.lower():
                 continue
-            if bid_min_star and star < bid_min_star:
+            if bid_star and star != bid_star:
                 continue
             if bid_pos:
                 allowed = POS_GROUPS.get(bid_pos, [])
@@ -226,7 +226,7 @@ class BidService:
     def supply_card(self, seller_qq: int, bid_id: int, card_id: int) -> dict:
         """A seller supplies a card to fulfill a bid order directly."""
         bid = self.db.query_one(
-            "SELECT ID, BuyerQQ, PlayerName, MinStar, Position, Style, MaxPrice, Status "
+            "SELECT ID, BuyerQQ, PlayerName, Star, Position, Style, MaxPrice, Status "
             "FROM bid_orders WHERE ID = ?",
             (bid_id,)
         )
@@ -258,7 +258,7 @@ class BidService:
         # Verify card matches bid conditions
         bid_dict = {
             "player_name": bid[2],
-            "min_star": bid[3],
+            "star": bid[3],
             "position": bid[4],
             "style": bid[5],
         }
@@ -270,8 +270,8 @@ class BidService:
 
         if bid_dict["player_name"] and bid_dict["player_name"].lower() != p_name.lower():
             raise BidError("Card does not match bid: player name mismatch")
-        if bid_dict["min_star"] and star < bid_dict["min_star"]:
-            raise BidError("Card does not match bid: star too low")
+        if bid_dict["star"] and star != bid_dict["star"]:
+            raise BidError("Card does not match bid: star mismatch")
         if bid_dict["position"]:
             allowed = POS_GROUPS.get(bid_dict["position"], [])
             if allowed and first_pos not in allowed:
@@ -335,7 +335,7 @@ class BidService:
     def list_bids(self, page: int = 1, page_size: int = 20, my_qq: int = 0) -> dict:
         """List active bid orders."""
         rows = self.db.query_all(
-            "SELECT b.ID, b.BuyerQQ, b.PlayerName, b.MinStar, b.Position, b.Style, "
+            "SELECT b.ID, b.BuyerQQ, b.PlayerName, b.Star, b.Position, b.Style, "
             "b.MaxPrice, b.CreatedAt, u.Name, b.Quantity, b.Filled "
             "FROM bid_orders b JOIN users u ON b.BuyerQQ = u.QQ "
             "WHERE b.Status = 0 ORDER BY b.MaxPrice DESC, b.CreatedAt ASC"
@@ -347,7 +347,7 @@ class BidService:
                 "bid_id": r[0],
                 "buyer_qq": r[1],
                 "player_name": r[2] or "",
-                "min_star": r[3] or 1,
+                "star": r[3] or 1,
                 "position": r[4] or "",
                 "style": r[5] or "",
                 "max_price": r[6],
@@ -369,13 +369,13 @@ class BidService:
     def get_supply_candidates(self, seller_qq: int, bid_id: int, page: int = 1, page_size: int = 20) -> dict:
         """Get cards from seller's bag that satisfy the bid conditions."""
         bid = self.db.query_one(
-            "SELECT PlayerName, MinStar, Position, Style FROM bid_orders WHERE ID = ? AND Status = 0",
+            "SELECT PlayerName, Star, Position, Style FROM bid_orders WHERE ID = ? AND Status = 0",
             (bid_id,)
         )
         if not bid:
             raise BidError("Bid order not found or not active")
 
-        player_name, min_star, position, style = bid
+        player_name, star, position, style = bid
 
         # Query seller's available cards
         rows = self.db.query_all(
@@ -392,7 +392,7 @@ class BidService:
 
             if player_name and player_name.lower() != p_name.lower():
                 continue
-            if min_star and star < min_star:
+            if star and star < star:
                 continue
             if position:
                 allowed = POS_GROUPS.get(position, [])
