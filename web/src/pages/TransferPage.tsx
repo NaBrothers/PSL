@@ -292,7 +292,7 @@ function MarketTab() {
       {/* Player detail header */}
       {selectedPlayer && (
         <div className="px-3 pb-2">
-          <button className="text-xs text-accent mb-2" onClick={() => { setSelectedPlayer(null); setItems([]); loadMarketPlayers() }}>← 返回球员列表</button>
+          <button className="text-xs text-accent mb-2" onClick={() => { setSelectedPlayer(null); setItems([]); loadMarketPlayers(); setSearchParams(prev => { const next = new URLSearchParams(prev); next.delete('player_id'); next.delete('name'); return next }, { replace: true }) }}>← 返回球员列表</button>
           <div className="flex items-center gap-3 mb-2">
             <img src={`/game-assets/avatars/${selectedPlayer.player_id}.png`} className="w-10 h-10 rounded-lg bg-[#20293a] object-cover" onError={(e: any) => { e.target.style.display='none' }} />
             <div>
@@ -315,7 +315,7 @@ function MarketTab() {
         {!selectedPlayer ? (
           <div className="space-y-1.5">
             {marketPlayers.map(p => (
-              <div key={p.player_id} className="flex items-center gap-3 p-3 bg-slate-800/50 border border-slate-700/50 rounded-lg cursor-pointer hover:border-slate-600 transition-colors" onClick={() => { setSelectedPlayer(p); setPlayerStar(0); loadMarket(1, false, p.player_id, 0) }}>
+              <div key={p.player_id} className="flex items-center gap-3 p-3 bg-slate-800/50 border border-slate-700/50 rounded-lg cursor-pointer hover:border-slate-600 transition-colors" onClick={() => { setSelectedPlayer(p); setPlayerStar(0); loadMarket(1, false, p.player_id, 0); setSearchParams(prev => { const next = new URLSearchParams(prev); next.set('player_id', String(p.player_id)); next.set('name', p.name); return next }, { replace: true }) }}>
                 <img src={`/game-assets/avatars/${p.player_id}.png`} className="w-10 h-10 rounded-lg bg-[#20293a] object-cover" onError={(e: any) => { e.target.style.display='none' }} />
                 <div className="flex-1 min-w-0">
                   <div className="text-sm text-slate-200 font-medium">{p.name}</div>
