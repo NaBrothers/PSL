@@ -294,9 +294,7 @@ function MarketTab() {
       )}
 
       <div ref={listRef} className="flex-1 overflow-y-auto scrollbar-hide px-3 space-y-2 pb-20">
-        {items.length === 0 ? (
-          <div className="text-center py-12"><p className="text-slate-500">暂无球员在售</p></div>
-        ) : !selectedPlayer ? (
+        {!selectedPlayer ? (
           <div className="space-y-1.5">
             {marketPlayers.map(p => (
               <div key={p.player_id} className="flex items-center gap-3 p-3 bg-slate-800/50 border border-slate-700/50 rounded-lg cursor-pointer hover:border-slate-600 transition-colors" onClick={() => { setSelectedPlayer(p); setPlayerStar(0); loadMarket(1, false, p.player_id, 0) }}>
