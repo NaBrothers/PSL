@@ -86,7 +86,6 @@ class SquadService:
             )
 
         cards: List[Optional[CardInfo]]
-    bench: List[Optional[CardInfo]] = None = []
         bench: List[Optional[CardInfo]] = []
         for row in team_rows[:18]:
             card_id = row[0]
