@@ -46,7 +46,7 @@ def create_bid(req: CreateBidRequest, user=Depends(get_current_user)):
         return svc.create_bid(
             buyer_qq=user["qq"],
             player_name=req.player_name,
-            min_star=req.star,
+            star=req.star,
             position=req.position,
             style=req.style,
             max_price=req.max_price,
