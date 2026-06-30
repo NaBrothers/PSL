@@ -7,7 +7,7 @@ from psl_core.formation import compute_formation_abilities, get_formation_positi
 
 
 class Formation():
-  PLAYERS_COUNT = 11
+  PLAYERS_COUNT = 18
 
   def __init__(self, data:list):
     self.user = User.getUserByQQ(data[0][1])

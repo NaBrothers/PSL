@@ -35,6 +35,7 @@ class SquadResponse(BaseModel):
     guard_ability: int
     positions: List[str]
     cards: List[Optional[CardInfoSchema]]
+    bench: Optional[List[Optional[CardInfoSchema]]] = None
 
 
 class FormationRequest(BaseModel):

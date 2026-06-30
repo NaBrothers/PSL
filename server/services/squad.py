@@ -49,6 +49,7 @@ class SquadData:
     guard_ability: int
     positions: List[str]
     cards: List[Optional[CardInfo]]
+    bench: List[Optional[CardInfo]] = None
 
 
 @dataclass
@@ -73,24 +74,41 @@ class SquadService:
         team_rows = self.db.query_all(
             "SELECT Card, Position FROM team WHERE user = ? ORDER BY position", (qq,)
         )
-        if not team_rows:
-            for i in range(11):
-                self.db.execute(
-                    "INSERT INTO team (user, card, position) VALUES (?, 0, ?)", (qq, i)
-                )
+        if not team_rows or len(team_rows) < 18:
+            existing_positions = set(r[1] for r in team_rows) if team_rows else set()
+            for i in range(18):
+                if i not in existing_positions:
+                    self.db.execute(
+                        "INSERT INTO team (user, card, position) VALUES (?, 0, ?)", (qq, i)
+                    )
             team_rows = self.db.query_all(
                 "SELECT Card, Position FROM team WHERE user = ? ORDER BY position", (qq,)
             )
 
-        cards: List[Optional[CardInfo]] = []
-        for row in team_rows[:11]:
+        cards: List[Optional[CardInfo]]
+    bench: List[Optional[CardInfo]] = None = []
+        bench: List[Optional[CardInfo]] = []
+        for row in team_rows[:18]:
             card_id = row[0]
             slot_idx = row[1]
-            if card_id == 0:
-                cards.append(None)
+            if slot_idx < 11:
+                if card_id == 0:
+                    cards.append(None)
+                else:
+                    card_info = self._get_card_info(card_id, positions[slot_idx] if slot_idx < len(positions) else "CM")
+                    cards.append(card_info)
             else:
-                card_info = self._get_card_info(card_id, positions[slot_idx] if slot_idx < len(positions) else "CM")
-                cards.append(card_info)
+                if card_id == 0:
+                    bench.append(None)
+                else:
+                    card_info = self._get_card_info(card_id, "SUB")
+                    bench.append(card_info)
+
+        # Pad to correct lengths
+        while len(cards) < 11:
+            cards.append(None)
+        while len(bench) < 7:
+            bench.append(None)
 
         real_overalls = [c.real_overall if c else None for c in cards]
         total, fwd, mid, grd = compute_formation_abilities(positions, real_overalls)
@@ -102,6 +120,7 @@ class SquadService:
             guard_ability=grd,
             positions=positions[:11],
             cards=cards,
+            bench=bench,
         )
 
     def change_formation(self, qq: int, new_formation: str) -> str:
@@ -202,13 +221,26 @@ class SquadService:
             result[slot_index] = best[0]
             selected_players.add(best[1])
 
+        # Pick 7 bench players (highest overall from remaining)
+        bench_result = [0] * 7
+        remaining = [r for r in bag_rows if r[1] not in selected_players]
+        remaining.sort(key=lambda r: self._card_score_for_slot(r, "CM"), reverse=True)
+        for i in range(min(7, len(remaining))):
+            bench_result[i] = remaining[i][0]
+            selected_players.add(remaining[i][1])
+
         for i in range(11):
             self.db.execute(
                 "UPDATE team SET card = ? WHERE user = ? AND position = ?",
                 (result[i], qq, i)
             )
+        for i in range(7):
+            self.db.execute(
+                "UPDATE team SET card = ? WHERE user = ? AND position = ?",
+                (bench_result[i], qq, 11 + i)
+            )
 
-        active_ids = [r for r in result if r != 0]
+        active_ids = [r for r in result + bench_result if r != 0]
         if active_ids:
             placeholders = ",".join("?" * len(active_ids))
             self.db.execute(
