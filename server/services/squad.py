@@ -85,7 +85,7 @@ class SquadService:
                 "SELECT Card, Position FROM team WHERE user = ? ORDER BY position", (qq,)
             )
 
-        cards: List[Optional[CardInfo]]
+        cards: List[Optional[CardInfo]] = []
         bench: List[Optional[CardInfo]] = []
         for row in team_rows[:18]:
             card_id = row[0]
