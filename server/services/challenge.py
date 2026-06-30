@@ -228,6 +228,15 @@ class ChallengeService:
             award_money = awards[match_result]["money"]
             u.earn(award_money)
             award_msg = f"${award_money}"
+            # Give item rewards (card packs)
+            if "item" in awards[match_result]:
+                from model.item import Item
+                from psl_core.constants import ITEM
+                for item_type_key, sub_items in awards[match_result]["item"].items():
+                    for sub_item_key, amount in sub_items.items():
+                        Item.addItem(u, item_type_key, sub_item_key, amount)
+                        pack_name = ITEM[item_type_key]["item"][sub_item_key]["name"]
+                        award_msg += f" + {pack_name}卡包x{amount}"
 
 
         commentary = CommentaryRenderer(random.Random())
