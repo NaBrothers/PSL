@@ -61,7 +61,7 @@ class BidService:
         return True
 
     def create_bid(self, buyer_qq: int, player_name: Optional[str], min_star: int,
-                   position: Optional[str], style: Optional[str], max_price: int) -> dict:
+                   position: Optional[str], style: Optional[str], max_price: int, quantity: int = 1) -> dict:
         if max_price <= 0:
             raise BidError("Price must be positive")
 
@@ -71,9 +71,9 @@ class BidService:
 
         now = datetime.now(timezone.utc).isoformat()
         self.db.execute(
-            "INSERT INTO bid_orders (BuyerQQ, PlayerName, MinStar, Position, Style, MaxPrice, Status, CreatedAt) "
-            "VALUES (?, ?, ?, ?, ?, ?, 0, ?)",
-            (buyer_qq, player_name or None, min_star or 1, position or None, style or None, max_price, now)
+            "INSERT INTO bid_orders (BuyerQQ, PlayerName, MinStar, Position, Style, MaxPrice, Quantity, Filled, Status, CreatedAt) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, 0, 0, ?)",
+            (buyer_qq, player_name or None, min_star or 1, position or None, style or None, max_price, quantity, now)
         )
         bid_id = self.db.query_one("SELECT last_insert_rowid()")[0]
 
@@ -188,9 +188,13 @@ class BidService:
         # Update bid order
         now = datetime.now(timezone.utc).isoformat()
         self.db.execute(
-            "UPDATE bid_orders SET Status = 1, MatchedAt = ?, MatchedCardID = ? WHERE ID = ?",
+            "UPDATE bid_orders SET Filled = Filled + 1, MatchedAt = ?, MatchedCardID = ? WHERE ID = ?",
             (now, card_id, bid_id)
         )
+        # Check if fully filled
+        row = self.db.query_one("SELECT Quantity, Filled FROM bid_orders WHERE ID = ?", (bid_id,))
+        if row and row[1] >= row[0]:
+            self.db.execute("UPDATE bid_orders SET Status = 1 WHERE ID = ?", (bid_id,))
 
         # Record trade
         self._record_trade(card_id, player_id, star, seller_qq, buyer_qq, price, fee, source)
@@ -291,9 +295,13 @@ class BidService:
 
         now = datetime.now(timezone.utc).isoformat()
         self.db.execute(
-            "UPDATE bid_orders SET Status = 1, MatchedAt = ?, MatchedCardID = ? WHERE ID = ?",
+            "UPDATE bid_orders SET Filled = Filled + 1, MatchedAt = ?, MatchedCardID = ? WHERE ID = ?",
             (now, card_id, bid_id)
         )
+        # Check if fully filled
+        row = self.db.query_one("SELECT Quantity, Filled FROM bid_orders WHERE ID = ?", (bid_id,))
+        if row and row[1] >= row[0]:
+            self.db.execute("UPDATE bid_orders SET Status = 1 WHERE ID = ?", (bid_id,))
 
         self._record_trade(card_id, player_id, star, seller_qq, buyer_qq, max_price, fee, "bid_supply")
 
@@ -328,7 +336,7 @@ class BidService:
         """List active bid orders."""
         rows = self.db.query_all(
             "SELECT b.ID, b.BuyerQQ, b.PlayerName, b.MinStar, b.Position, b.Style, "
-            "b.MaxPrice, b.CreatedAt, u.Name "
+            "b.MaxPrice, b.CreatedAt, u.Name, b.Quantity, b.Filled "
             "FROM bid_orders b JOIN users u ON b.BuyerQQ = u.QQ "
             "WHERE b.Status = 0 ORDER BY b.MaxPrice DESC, b.CreatedAt ASC"
         )
@@ -346,6 +354,8 @@ class BidService:
                 "created_at": r[7],
                 "buyer_name": r[8] or "",
                 "is_mine": r[1] == my_qq,
+                "quantity": r[9] or 1,
+                "filled": r[10] or 0,
             })
 
         total = len(items)

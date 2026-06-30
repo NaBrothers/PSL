@@ -34,6 +34,8 @@ interface BidItem {
   max_price: number
   created_at: string
   is_mine: boolean
+  quantity: number
+  filled: number
 }
 
 interface SupplyCandidate {
@@ -377,6 +379,7 @@ function BidHallTab() {
   const [bidPosition, setBidPosition] = useState('')
   const [bidStyle, setBidStyle] = useState('')
   const [bidMaxPrice, setBidMaxPrice] = useState('')
+  const [bidQuantity, setBidQuantity] = useState('1')
   const [playerSuggestions, setPlayerSuggestions] = useState<string[]>([])
   const [showSuggestions, setShowSuggestions] = useState(false)
 
@@ -420,7 +423,7 @@ function BidHallTab() {
         min_star: bidMinStar,
         position: bidPosition || null,
         style: bidStyle || null,
-        max_price: price,
+        max_price: price, quantity: parseInt(bidQuantity) || 1,
       })
       if (res.data.matched) {
         showToast(`求购已自动成交：${res.data.match_detail.card_name}，花费 $${res.data.match_detail.price}`)
@@ -476,7 +479,7 @@ function BidHallTab() {
     setBidMinStar(1)
     setBidPosition('')
     setBidStyle('')
-    setBidMaxPrice('')
+    setBidMaxPrice(''); setBidQuantity('1')
     setPlayerSuggestions([])
     setShowSuggestions(false)
   }
@@ -539,7 +542,7 @@ function BidHallTab() {
                   <div className="text-xs text-slate-500">{formatTimeAgo(bid.created_at)}</div>
                 </div>
                 <div className="text-right flex-shrink-0">
-                  <div className="text-yellow-400 font-bold text-sm mb-1">${bid.max_price.toLocaleString()}</div>
+                  <div className="text-yellow-400 font-bold text-sm mb-1">${bid.max_price.toLocaleString()} {bid.quantity > 1 && <span className="text-slate-400 text-xs font-normal">×{bid.quantity}{bid.filled > 0 && ` (已成交${bid.filled})`}</span>}</div>
                   {bid.is_mine ? (
                     <Button size="sm" variant="outline" className="h-6 text-xs px-2"
                       onClick={() => handleCancelBid(bid.bid_id)}>
@@ -624,6 +627,16 @@ function BidHallTab() {
                 placeholder="最多愿意出多少钱"
                 value={bidMaxPrice}
                 onChange={e => setBidMaxPrice(e.target.value)}
+              />
+            </div>
+            <div>
+              <p className="text-xs text-slate-500 mb-1">求购数量</p>
+              <Input
+                type="number"
+                placeholder="想买几张"
+                value={bidQuantity}
+                onChange={e => setBidQuantity(e.target.value)}
+                min="1"
               />
             </div>
           </div>

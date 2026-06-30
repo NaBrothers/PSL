@@ -21,6 +21,7 @@ class CreateBidRequest(BaseModel):
     position: Optional[str] = None
     style: Optional[str] = None
     max_price: int
+    quantity: int = 1
 
 
 class CancelBidRequest(BaseModel):

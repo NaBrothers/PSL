@@ -155,6 +155,8 @@ CREATE TABLE IF NOT EXISTS bid_orders (
   Position TEXT,
   Style TEXT,
   MaxPrice INTEGER NOT NULL,
+  Quantity INTEGER DEFAULT 1,
+  Filled INTEGER DEFAULT 0,
   Status INTEGER DEFAULT 0,
   CreatedAt TEXT NOT NULL DEFAULT (datetime('now')),
   MatchedAt TEXT,
