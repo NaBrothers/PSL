@@ -29,6 +29,7 @@ export default function CardDetailPage() {
 
   const [detail, setDetail] = useState<any>(null)
   const [me, setMe] = useState<{ qq: number } | null>(null)
+  const [hasMarketListings, setHasMarketListings] = useState(false)
   const [dialogMode, setDialogMode] = useState<DialogMode>(null)
   const [subCards, setSubCards] = useState<any[]>([])
   const [compareData, setCompareData] = useState<any>(null)
@@ -41,7 +42,7 @@ export default function CardDetailPage() {
   const isOwner = me && detail && detail.owner_qq === me.qq
 
   const loadDetail = (cardId: string) => {
-    api.get(`/cards/${cardId}`).then(res => setDetail(res.data)).catch(() => setDetail(null))
+    api.get(`/cards/${cardId}`).then(res => { setDetail(res.data); api.get("/transfer/players", { params: { query: res.data.name } }).then(r => setHasMarketListings((r.data.players || []).length > 0)).catch(() => {}) }).catch(() => setDetail(null))
   }
 
   useEffect(() => {
@@ -168,7 +169,7 @@ export default function CardDetailPage() {
     { key: 'lock', label: detail.locked ? '解锁' : '锁定', icon: detail.locked ? Unlock : Lock, action: handleLock, disabled: !isOwner },
     { key: 'recycle', label: '回收', icon: Trash2, action: () => setDialogMode('recycle'), disabled: !isOwner },
     { key: 'compare', label: '比较', icon: GitCompare, action: openCompare, disabled: false },
-    { key: 'market', label: '市场', icon: TrendingUp, action: () => setDialogMode('market'), disabled: false },
+    { key: 'market', label: '市场', icon: TrendingUp, action: () => setDialogMode('market'), disabled: false, badge: hasMarketListings },
   ]
 
   return (

@@ -33,7 +33,7 @@ export default function MarketInfo({ playerName, playerId, star }: MarketInfoPro
     setLoading(true)
     Promise.all([
       api.get('/transfer/reference-price', { params: { player_id: playerId, star } }),
-      api.get('/transfer', { params: { query: playerName, page_size: 10 } }),
+      api.get('/transfer', { params: { player_id: playerId, page_size: 10 } }),
       api.get('/bids', { params: { page_size: 50 } }),
     ]).then(([refRes, listRes, bidRes]) => {
       setRefPrice(refRes.data)
