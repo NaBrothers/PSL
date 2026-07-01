@@ -132,7 +132,7 @@ export default function SquadPage() {
 
   const handleReplace = async (candidateId: number) => {
     if (selectedSlot === null || !squad) return
-    const currentCard = squad.cards[selectedSlot]
+    const currentCard = selectedSlot < 11 ? squad.cards[selectedSlot] : squad.bench?.[selectedSlot - 11]
     if (!currentCard) {
       await api.post('/squad/assign', { slot: selectedSlot, card_id: candidateId })
     } else {
@@ -152,7 +152,7 @@ export default function SquadPage() {
 
   const handleCompare = async (candidateId: number) => {
     if (selectedSlot === null || !squad) return
-    const currentCard = squad.cards[selectedSlot]
+    const currentCard = selectedSlot < 11 ? squad.cards[selectedSlot] : squad.bench?.[selectedSlot - 11]
     if (!currentCard) return
     const res = await api.get(`/cards/${currentCard.id}/compare/${candidateId}`)
     setCompareData(res.data)
