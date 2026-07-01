@@ -91,7 +91,8 @@ export default function SquadPage() {
   useEffect(() => { loadSquad() }, [])
 
   const handleSlotClick = (idx: number) => {
-    if (!squad?.cards[idx]) {
+    const card = idx < 11 ? squad?.cards[idx] : squad?.bench?.[idx - 11]
+    if (!card) {
       openReplaceDialog(idx)
     } else {
       setPopupSlot(idx)
@@ -102,7 +103,7 @@ export default function SquadPage() {
     setPopupSlot(null)
     setSelectedSlot(idx)
     setSearchQuery("")
-    const pos = squad?.positions[idx] || "CM"
+    const pos = idx < 11 ? (squad?.positions[idx] || "CM") : ""
     api.get("/bag", { params: { page: 1, page_size: 500, query: "", for_position: pos } }).then(res => {
       setReplaceCandidates(res.data.cards.filter((c: BagCard) => c.status === 0))
     })
@@ -110,7 +111,7 @@ export default function SquadPage() {
 
   const openDetail = (idx: number) => {
     setPopupSlot(null)
-    const card = squad?.cards[idx]
+    const card = idx < 11 ? squad?.cards[idx] : squad?.bench?.[idx - 11]
     if (!card) return
     navigate(`/cards/${card.id}`)
   }
@@ -263,7 +264,7 @@ export default function SquadPage() {
           <p className="text-xs text-slate-500 mb-2 font-medium">替补席</p>
           <div className="flex gap-2 overflow-x-auto scrollbar-hide pb-2">
             {squad.bench.map((card, idx) => (
-              <div key={idx} className="flex-shrink-0 w-16 flex flex-col items-center">
+              <div key={idx} className="flex-shrink-0 w-16 flex flex-col items-center cursor-pointer" onClick={() => handleSlotClick(11 + idx)}>
                 {card ? (
                   <>
                     <div className={`relative w-12 h-12 rounded-md overflow-hidden border-2 shadow-md ${cardBorderColor(card.overall, card.star)} bg-[#20293a]`}>
@@ -274,7 +275,7 @@ export default function SquadPage() {
                     <span className="text-[8px] text-white/80 text-center truncate w-full">{card.name.split(' ').pop()}</span>
                   </>
                 ) : (
-                  <div className="w-12 h-12 rounded-md bg-slate-700/40 border-2 border-dashed border-slate-600/50 flex items-center justify-center text-slate-500 text-xs">+</div>
+                  <div className="w-12 h-12 rounded-md bg-slate-700/40 border-2 border-dashed border-slate-600/50 flex items-center justify-center text-slate-500 text-xs" onClick={() => openReplaceDialog(11 + idx)}>+</div>
                 )}
               </div>
             ))}
