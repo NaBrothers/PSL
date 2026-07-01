@@ -84,6 +84,7 @@ export default function SquadPage() {
   const [compareData, setCompareData] = useState<any>(null)
   const [popupSlot, setPopupSlot] = useState<number | null>(null)
   const [benchOpen, setBenchOpen] = useState(false)
+  const [benchPopup, setBenchPopup] = useState<number | null>(null)
 
   const loadSquad = () => {
     api.get('/squad').then(res => setSquad(res.data))
@@ -277,11 +278,11 @@ export default function SquadPage() {
             <div className="bg-slate-900/95 border border-slate-700 rounded-l-lg p-2 shadow-xl max-h-[70vh] overflow-y-auto">
               <div className="flex flex-col gap-2 w-14">
                 {squad.bench.map((card, idx) => (
-                  <div key={idx} className="flex flex-col items-center cursor-pointer relative" onClick={() => handleSlotClick(11 + idx)}>
-                    {popupSlot === 11 + idx && card && (
+                  <div key={idx} className="flex flex-col items-center cursor-pointer relative" onClick={(e) => { e.stopPropagation(); if (card) { setBenchPopup(benchPopup === idx ? null : idx) } else { openReplaceDialog(11 + idx) } }}>
+                    {benchPopup === idx && card && (
                       <div className="absolute -left-20 top-0 flex flex-col gap-1 bg-slate-900/95 border border-gold/30 rounded-lg px-2 py-1.5 shadow-lg whitespace-nowrap z-[100]">
-                        <button className="text-[10px] text-accent font-medium px-2 py-0.5 rounded hover:bg-slate-700/50" onClick={(e) => { e.stopPropagation(); openDetail(11 + idx) }}>详情</button>
-                        <button className="text-[10px] text-gold font-medium px-2 py-0.5 rounded hover:bg-slate-700/50" onClick={(e) => { e.stopPropagation(); openReplaceDialog(11 + idx) }}>替换</button>
+                        <button className="text-[10px] text-accent font-medium px-2 py-0.5 rounded hover:bg-slate-700/50" onClick={(e) => { e.stopPropagation(); setBenchPopup(null); openDetail(11 + idx) }}>详情</button>
+                        <button className="text-[10px] text-gold font-medium px-2 py-0.5 rounded hover:bg-slate-700/50" onClick={(e) => { e.stopPropagation(); setBenchPopup(null); openReplaceDialog(11 + idx) }}>替换</button>
                       </div>
                     )}
                     {card ? (
