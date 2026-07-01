@@ -176,8 +176,8 @@ export default function SquadPage() {
   )
 
   return (
-    <div className="p-4">
-      <div className="max-w-md mx-auto">
+    <div className="p-4 flex flex-col h-full overflow-hidden">
+      <div className="max-w-md mx-auto flex-1 min-h-0 flex flex-col">
         {/* Header */}
         <div className="flex items-center justify-between mb-3">
           <h1 className="text-lg font-bold text-slate-100">阵容</h1>
@@ -266,16 +266,12 @@ export default function SquadPage() {
       {/* Bench - collapsible */}
       {squad?.bench && (
         <div className="max-w-md mx-auto border-t border-slate-700/50 mt-2">
-          <button className="w-full flex items-center justify-between py-2 px-1" onClick={() => setBenchOpen(!benchOpen)}>
-            <span className="text-xs text-slate-500 font-medium">替补席 ({squad.bench.filter(Boolean).length}/7)</span>
-            <span className="text-xs text-slate-600">{benchOpen ? '收起 ▲' : '展开 ▼'}</span>
-          </button>
           {benchOpen && (
           <div className="flex gap-2 overflow-x-auto scrollbar-hide pb-2">
             {squad.bench.map((card, idx) => (
               <div key={idx} className="flex-shrink-0 w-16 flex flex-col items-center cursor-pointer relative" onClick={() => handleSlotClick(11 + idx)}>
                 {popupSlot === 11 + idx && card && (
-                  <div className="absolute -top-8 left-1/2 -translate-x-1/2 flex gap-1 bg-slate-900/95 border border-gold/30 rounded-lg px-2 py-1.5 shadow-lg whitespace-nowrap z-[100]">
+                  <div className="absolute -bottom-8 left-1/2 -translate-x-1/2 flex gap-1 bg-slate-900/95 border border-gold/30 rounded-lg px-2 py-1.5 shadow-lg whitespace-nowrap z-[100]">
                     <button className="text-[10px] text-accent font-medium px-2 py-0.5 rounded hover:bg-slate-700/50" onClick={(e) => { e.stopPropagation(); openDetail(11 + idx) }}>详情</button>
                     <button className="text-[10px] text-gold font-medium px-2 py-0.5 rounded hover:bg-slate-700/50" onClick={(e) => { e.stopPropagation(); openReplaceDialog(11 + idx) }}>替换</button>
                   </div>
@@ -296,6 +292,10 @@ export default function SquadPage() {
             ))}
           </div>
           )}
+          <button className="w-full flex items-center justify-between py-2 px-1" onClick={() => setBenchOpen(!benchOpen)}>
+            <span className="text-xs text-slate-500 font-medium">替补席 ({squad.bench.filter(Boolean).length}/7)</span>
+            <span className="text-xs text-slate-600">{benchOpen ? '收起 ▼' : '展开 ▲'}</span>
+          </button>
         </div>
       )}
 
