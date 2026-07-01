@@ -268,7 +268,13 @@ export default function SquadPage() {
           <p className="text-xs text-slate-500 mb-2 font-medium">替补席</p>
           <div className="flex gap-2 overflow-x-auto scrollbar-hide pb-2">
             {squad.bench.map((card, idx) => (
-              <div key={idx} className="flex-shrink-0 w-16 flex flex-col items-center cursor-pointer" onClick={() => { const c = squad?.bench?.[idx]; if (c) navigate(`/cards/${c.id}`); else openReplaceDialog(11 + idx) }}>
+              <div key={idx} className="flex-shrink-0 w-16 flex flex-col items-center cursor-pointer relative" onClick={() => handleSlotClick(11 + idx)}>
+                {popupSlot === 11 + idx && card && (
+                  <div className="absolute -top-8 left-1/2 -translate-x-1/2 flex gap-1 bg-slate-900/95 border border-gold/30 rounded-lg px-2 py-1.5 shadow-lg whitespace-nowrap z-50">
+                    <button className="text-[10px] text-accent font-medium px-2 py-0.5 rounded hover:bg-slate-700/50" onClick={(e) => { e.stopPropagation(); openDetail(11 + idx) }}>详情</button>
+                    <button className="text-[10px] text-gold font-medium px-2 py-0.5 rounded hover:bg-slate-700/50" onClick={(e) => { e.stopPropagation(); openReplaceDialog(11 + idx) }}>替换</button>
+                  </div>
+                )}
                 {card ? (
                   <>
                     <div className={`relative w-12 h-12 rounded-md overflow-hidden border-2 shadow-md ${cardBorderColor(card.overall, card.star)} bg-[#20293a]`}>

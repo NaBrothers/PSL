@@ -220,13 +220,19 @@ class SquadService:
             result[slot_index] = best[0]
             selected_players.add(best[1])
 
-        # Pick 7 bench players (highest overall from remaining)
+        # Pick 7 bench players (highest overall from remaining, no duplicate players)
         bench_result = [0] * 7
         remaining = [r for r in bag_rows if r[1] not in selected_players]
         remaining.sort(key=lambda r: self._card_score_for_slot(r, "CM"), reverse=True)
-        for i in range(min(7, len(remaining))):
-            bench_result[i] = remaining[i][0]
-            selected_players.add(remaining[i][1])
+        bench_idx = 0
+        for r in remaining:
+            if bench_idx >= 7:
+                break
+            if r[1] in selected_players:
+                continue
+            bench_result[bench_idx] = r[0]
+            selected_players.add(r[1])
+            bench_idx += 1
 
         for i in range(11):
             self.db.execute(
