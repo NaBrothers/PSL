@@ -265,9 +265,9 @@ export default function SquadPage() {
 
       {/* Bench - right side panel */}
       {squad?.bench && (
-        <div className="absolute right-0 top-1/2 -translate-y-1/2 z-40 flex items-center">
+        <div className="absolute right-0 top-1/2 -translate-y-1/2 z-40 flex items-center" onClick={(e) => e.stopPropagation()}>
           <button
-            className="bg-gold/90 border border-gold border-r-0 rounded-l-lg px-1.5 py-4 text-[10px] text-black font-bold"
+            className="bg-slate-800/90 border border-slate-700 border-r-0 rounded-l-lg px-1.5 py-4 text-[10px] text-slate-400"
             style={{ writingMode: 'vertical-rl' }}
             onClick={() => setBenchOpen(!benchOpen)}
           >
