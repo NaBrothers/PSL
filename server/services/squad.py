@@ -192,6 +192,19 @@ class SquadService:
         self.db.execute("UPDATE cards SET status = 2 WHERE id = ?", (card_id,))
         return SwapResult(success=True, message="Assign successful")
 
+    def unassign_player(self, qq: int, slot: int) -> SwapResult:
+        team_rows = self.db.query_all(
+            "SELECT Card FROM team WHERE user = ? ORDER BY position", (qq,)
+        )
+        if slot < 0 or slot >= len(team_rows):
+            raise SquadError("Invalid slot")
+        card_id = team_rows[slot][0]
+        if card_id == 0:
+            raise SquadError("Slot is already empty")
+        self.db.execute("UPDATE team SET card = 0 WHERE user = ? AND position = ?", (qq, slot))
+        self.db.execute("UPDATE cards SET status = 0 WHERE id = ?", (card_id,))
+        return SwapResult(success=True, message="Unassign successful")
+
     def auto_squad(self, qq: int) -> SquadData:
         user_row = self.db.query_one("SELECT Formation FROM users WHERE qq = ?", (qq,))
         formation = (user_row[0] if user_row else None) or "442"

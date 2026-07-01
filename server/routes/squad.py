@@ -107,3 +107,17 @@ def assign_player(req: AssignRequest, user=Depends(get_current_user)):
     except SquadError as e:
         raise HTTPException(status_code=400, detail=str(e))
     return svc.get_squad(user["qq"])
+
+
+class UnassignRequest(BaseModel):
+    slot: int
+
+
+@router.post("/squad/unassign", response_model=SquadResponse)
+def unassign_player(req: UnassignRequest, user=Depends(get_current_user)):
+    svc = _squad_svc()
+    try:
+        svc.unassign_player(user["qq"], req.slot)
+    except SquadError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    return svc.get_squad(user["qq"])

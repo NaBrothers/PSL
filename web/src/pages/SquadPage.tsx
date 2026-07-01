@@ -124,6 +124,13 @@ export default function SquadPage() {
     navigate(`/cards/${card.id}`)
   }
 
+  const handleUnassign = async (idx: number) => {
+    setPopupSlot(null)
+    setBenchPopup(null)
+    await api.post('/squad/unassign', { slot: idx })
+    loadSquad()
+  }
+
 
 
 
@@ -230,6 +237,7 @@ export default function SquadPage() {
                   <div className="absolute bottom-full mb-1 flex gap-1 bg-slate-900/95 border border-gold/30 rounded-lg px-2 py-1.5 shadow-lg whitespace-nowrap z-50" onClick={e => e.stopPropagation()}>
                     <button className="text-[10px] text-accent font-medium px-2 py-0.5 rounded hover:bg-slate-700/50" onClick={() => openDetail(idx)}>详情</button>
                     <button className="text-[10px] text-gold font-medium px-2 py-0.5 rounded hover:bg-slate-700/50" onClick={() => openReplaceDialog(idx)}>替换</button>
+                    <button className="text-[10px] text-red-400 font-medium px-2 py-0.5 rounded hover:bg-slate-700/50" onClick={() => handleUnassign(idx)}>下场</button>
                   </div>
                 )}
                 {card ? (
@@ -314,6 +322,7 @@ export default function SquadPage() {
           >
             <button className="text-[10px] text-accent font-medium px-2 py-0.5 rounded hover:bg-slate-700/50" onClick={() => { const idx = benchPopup; setBenchPopup(null); openDetail(11 + idx) }}>详情</button>
             <button className="text-[10px] text-gold font-medium px-2 py-0.5 rounded hover:bg-slate-700/50" onClick={() => { const idx = benchPopup; setBenchPopup(null); openReplaceDialog(11 + idx) }}>替换</button>
+            <button className="text-[10px] text-red-400 font-medium px-2 py-0.5 rounded hover:bg-slate-700/50" onClick={() => { const idx = benchPopup; setBenchPopup(null); handleUnassign(11 + idx) }}>下场</button>
           </div>
         </div>,
         document.body
