@@ -275,7 +275,7 @@ export default function SquadPage() {
             替补 {squad.bench.filter(Boolean).length}/7 {benchOpen ? '›' : '‹'}
           </button>
           {benchOpen && (
-            <div className="bg-slate-900/95 border border-slate-700 rounded-l-lg p-2 shadow-xl max-h-[70vh] overflow-y-auto">
+            <div className="bg-slate-900/95 border border-slate-700 rounded-l-lg p-2 shadow-xl">
               <div className="flex flex-col gap-2 w-14">
                 {squad.bench.map((card, idx) => (
                   <div key={idx} className="flex flex-col items-center cursor-pointer relative" onClick={(e) => { e.stopPropagation(); if (card) { setBenchPopup(benchPopup === idx ? null : idx) } else { openReplaceDialog(11 + idx) } }}>
