@@ -1,5 +1,6 @@
 import { useNavigate } from 'react-router-dom'
 import { useState, useEffect } from 'react'
+import { createPortal } from 'react-dom'
 import { Button } from '@/components/ui/button'
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog'
 import { Input } from '@/components/ui/input'
@@ -279,13 +280,6 @@ export default function SquadPage() {
               <div className="flex flex-col gap-2 w-14">
                 {squad.bench.map((card, idx) => (
                   <div key={idx} className="flex flex-col items-center cursor-pointer relative" onClick={(e) => { e.stopPropagation(); if (card) { setBenchPopup(prev => prev === idx ? null : idx) } else { openReplaceDialog(11 + idx) } }}>
-                    {benchPopup === idx && card && (
-                      <div className="fixed left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 flex flex-col gap-1 bg-slate-900 border-2 border-gold rounded-lg px-4 py-3 shadow-2xl whitespace-nowrap z-[9999]" onClick={e => e.stopPropagation()}>
-                        <button className="text-sm text-accent font-medium px-3 py-1.5 rounded hover:bg-slate-700/50" onClick={(e) => { e.stopPropagation(); setBenchPopup(null); openDetail(11 + idx) }}>详情</button>
-                        <button className="text-sm text-gold font-medium px-3 py-1.5 rounded hover:bg-slate-700/50" onClick={(e) => { e.stopPropagation(); setBenchPopup(null); openReplaceDialog(11 + idx) }}>替换</button>
-                        <button className="text-sm text-slate-400 font-medium px-3 py-1.5 rounded hover:bg-slate-700/50" onClick={(e) => { e.stopPropagation(); setBenchPopup(null) }}>取消</button>
-                      </div>
-                    )}
                     {card ? (
                       <div className={`w-11 h-11 rounded-md overflow-hidden border-2 shadow-md ${cardBorderColor(card.overall, card.star)} bg-[#20293a]`}>
                         <img src={`/game-assets/avatars/${card.player_id}.png`} alt={card.name} className="w-full h-full object-cover" onError={(e) => { (e.target as HTMLImageElement).style.display = 'none' }} />
@@ -302,7 +296,19 @@ export default function SquadPage() {
         </div>
       )}
 
-      {/* Replace Dialog */}
+      {/* Bench popup - rendered via portal to avoid transform containing block */}
+      {benchPopup !== null && squad?.bench?.[benchPopup] && createPortal(
+        <div className="fixed inset-0 z-[9999] flex items-center justify-center" onClick={() => setBenchPopup(null)}>
+          <div className="bg-slate-900 border-2 border-gold rounded-lg px-4 py-3 shadow-2xl flex flex-col gap-2" onClick={e => e.stopPropagation()}>
+            <div className="text-xs text-slate-300 text-center mb-1">{squad.bench[benchPopup]!.name}</div>
+            <button className="text-sm text-accent font-medium px-3 py-1.5 rounded hover:bg-slate-700/50" onClick={() => { const idx = benchPopup; setBenchPopup(null); openDetail(11 + idx) }}>详情</button>
+            <button className="text-sm text-gold font-medium px-3 py-1.5 rounded hover:bg-slate-700/50" onClick={() => { const idx = benchPopup; setBenchPopup(null); openReplaceDialog(11 + idx) }}>替换</button>
+            <button className="text-sm text-slate-400 font-medium px-3 py-1.5 rounded hover:bg-slate-700/50" onClick={() => setBenchPopup(null)}>取消</button>
+          </div>
+        </div>,
+        document.body
+      )}
+
       {/* Replace Dialog */}
       <Dialog open={selectedSlot !== null} onOpenChange={(open) => { if (!open) setSelectedSlot(null) }}>
         <DialogContent className="max-h-[70vh] flex flex-col">
