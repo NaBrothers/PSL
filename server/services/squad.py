@@ -233,10 +233,10 @@ class SquadService:
             result[slot_index] = best[0]
             selected_players.add(best[1])
 
-        # Pick 7 bench players (highest overall from remaining, no duplicate players)
+        # Pick 7 bench players (highest base overall from remaining, no duplicate players)
         bench_result = [0] * 7
         remaining = [r for r in bag_rows if r[1] not in selected_players]
-        remaining.sort(key=lambda r: self._card_score_for_slot(r, "CM"), reverse=True)
+        remaining.sort(key=lambda r: self._card_base_overall(r), reverse=True)
         bench_idx = 0
         for r in remaining:
             if bench_idx >= 7:
@@ -273,6 +273,12 @@ class SquadService:
         real_ov = self._compute_real_overall_for_card(card_id, slot)
         fit_bonus = self._get_position_fit_bonus(player_id, slot)
         return real_ov + fit_bonus
+
+    def _card_base_overall(self, card_row) -> int:
+        card_id, player_id, star, style, status, ext_abilities, breach = card_row
+        row = self.db.query_one("SELECT Overall FROM players WHERE ID = ?", (player_id,))
+        base = row[0] if row else 80
+        return compute_overall(base, star)
 
     def _get_position_fit_bonus(self, player_id: int, slot: str) -> int:
         row = self.db.query_one("SELECT Position FROM players WHERE ID = ?", (player_id,))
