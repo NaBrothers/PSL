@@ -265,7 +265,7 @@ export default function BagPage() {
                   topAbilities={card.top_abilities}
                   size="sm"
                   selected={selected.has(card.id)}
-                  badge={card.status === 2 ? '首发' : card.status === 1 ? '转会中' : card.locked ? '🔒' : undefined}
+                  badge={card.status_text || (card.locked ? '🔒' : undefined)}
                   onClick={() => handleCardClick(card)}
                 />
               </div>
@@ -289,8 +289,7 @@ export default function BagPage() {
                 <span className={`text-sm font-bold ${overallColor(card.overall, card.star)}`}>{card.overall}</span>
                 {card.style && <span className="text-emerald-400 text-[10px]">{STYLE_NAMES[card.style] || card.style}</span>}
                 {card.locked && <span className="text-xs">🔒</span>}
-                {card.status === 2 && <span className="text-accent text-[10px]">首发</span>}
-                {card.status === 1 && <span className="text-orange-400 text-[10px]">转会中</span>}
+                {card.status_text && <span className={card.status_text === '首发' ? 'text-accent text-[10px]' : 'text-sky-400 text-[10px]'}>{card.status_text}</span>}
               </div>
             ))}
           </div>

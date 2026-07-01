@@ -88,11 +88,13 @@ class BagService:
 
         import json as _json
         from psl_core.talent import generate_talents
-        STATUS_TEXT = {0: "", 1: "转会中", 2: "首发"}
         ABILITY_NAMES = {"Heading": "头球", "Finishing": "终结", "Short_Passing": "短传",
             "Dribbling": "盘带", "Tackling": "抢断", "Defence": "防守", "Speed": "速度",
             "Long_Shot": "远射", "Long_Passing": "长传", "IQ": "球商",
             "GK_Saving": "扑救", "GK_Positioning": "站位", "GK_Reaction": "反应"}
+
+        team_slots = self.db.query_all("SELECT card, position FROM team WHERE user = ?", (qq,))
+        card_slot_map = {r[0]: r[1] for r in team_slots if r[0] != 0}
 
         cards = []
         for r in rows:
@@ -124,11 +126,19 @@ class BagService:
             ability_list = [(ABILITY_NAMES.get(k, k), v) for k, v in abilities.items() if k not in exclude]
             ability_list.sort(key=lambda x: -x[1])
             top3 = [{"name": a[0], "value": a[1]} for a in ability_list[:3]]
+            card_status = r[4] or 0
+            if card_status == 2:
+                slot = card_slot_map.get(r[0])
+                status_text = "替补" if slot is not None and slot >= 11 else "首发"
+            elif card_status == 1:
+                status_text = "转会中"
+            else:
+                status_text = ""
             cards.append(BagCardInfo(
                 id=r[0], player_id=r[1], name=r[8], position=pos,
                 overall=ov, real_overall=ov, star=r[2], style=r[3],
-                breach=r[6], locked=bool(r[5]), status=r[4] or 0,
-                status_text=STATUS_TEXT.get(r[4] or 0, ""),
+                breach=r[6], locked=bool(r[5]), status=card_status,
+                status_text=status_text,
                 top_abilities=top3,
             ))
 
