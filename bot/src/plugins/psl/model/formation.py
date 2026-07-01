@@ -39,4 +39,4 @@ class Formation():
       return compute_formation_abilities(positions, real_overalls)
 
   def isValid(self):
-    return None not in self.cards
+    return None not in self.cards[:11]
