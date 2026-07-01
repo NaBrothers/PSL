@@ -289,7 +289,7 @@ export default function SquadPage() {
                         </div>
                         <div className="flex items-center gap-0.5 mt-0.5">
                           <span className={`text-[8px] font-bold px-0.5 rounded ${positionColor(card.position.split(',')[0].split('/')[0].trim())}`}>{card.position.split(',')[0].split('/')[0].trim()}</span>
-                          <span className={`text-[9px] font-bold ${overallColor(card.overall, card.star)}`}>{card.real_overall}</span>
+                          <span className={`text-[9px] font-bold ${overallColor(card.overall, card.star)}`}>{card.overall}</span>
                         </div>
                         <span className="text-[7px] text-white/90 text-center font-medium leading-tight max-w-[52px] truncate">{card.name.split(' ').pop()}</span>
                       </div>
