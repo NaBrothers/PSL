@@ -176,8 +176,8 @@ export default function SquadPage() {
   )
 
   return (
-    <div className="p-4 flex flex-col h-full overflow-hidden">
-      <div className="max-w-md mx-auto flex-1 min-h-0 flex flex-col">
+    <div className="p-4">
+      <div className="max-w-md mx-auto">
         {/* Header */}
         <div className="flex items-center justify-between mb-3">
           <h1 className="text-lg font-bold text-slate-100">阵容</h1>
