@@ -1,4 +1,5 @@
 import { useState, useEffect, useRef } from 'react'
+import { useSearchParams } from 'react-router-dom'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent } from '@/components/ui/card'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
@@ -101,6 +102,7 @@ function GoalName({ goal, align = 'left' }: { goal: GoalInfo; align?: 'left' | '
 }
 
 export default function MatchPage() {
+  const [searchParams, setSearchParams] = useSearchParams()
   const [opponents, setOpponents] = useState<Opponent[]>([])
   const [selected, setSelected] = useState<Opponent | null>(null)
   const [mode, setMode] = useState<Mode>('quick')
@@ -118,7 +120,17 @@ export default function MatchPage() {
   const { showToast } = useToast()
 
   useEffect(() => {
-    api.get('/matches/opponents').then(res => setOpponents(res.data))
+    api.get('/matches/opponents').then(res => {
+      setOpponents(res.data)
+      const squadId = searchParams.get('squad')
+      if (squadId) {
+        const opp = res.data.find((o: Opponent) => o.id === Number(squadId))
+        if (opp) {
+          setSelected(opp)
+          api.get(`/squad/${opp.id}`).then(r => { setOpponentSquad(r.data); setPhase('squad') }).catch(() => {})
+        }
+      }
+    })
     api.get('/squad').then(res => setHomeSquad(res.data)).catch(() => {})
   }, [])
 
@@ -128,6 +140,7 @@ export default function MatchPage() {
       const res = await api.get(`/squad/${opponent.id}`)
       setOpponentSquad(res.data)
       setPhase('squad')
+      setSearchParams({ squad: String(opponent.id) })
     } catch {
       showToast('无法加载对手阵容')
     }
@@ -267,7 +280,7 @@ export default function MatchPage() {
       <div className="p-4">
         <SquadView squad={opponentSquad} title={`${selected.name} 的阵容`} />
         <div className="flex gap-2 mt-4">
-          <Button variant="outline" className="flex-1" onClick={() => setPhase('select')}>返回</Button>
+          <Button variant="outline" className="flex-1" onClick={() => { setPhase('select'); setSearchParams({}) }}>返回</Button>
           <Button className="flex-1" disabled={loading} onClick={() => startMatch()}>
             {loading ? '模拟中...' : '开赛'}
           </Button>
