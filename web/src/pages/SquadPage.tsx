@@ -282,13 +282,20 @@ export default function SquadPage() {
                 {squad.bench.map((card, idx) => (
                   <div key={idx} className="flex flex-col items-center cursor-pointer relative" onClick={(e) => { e.stopPropagation(); if (card) { const rect = e.currentTarget.getBoundingClientRect(); setBenchPopupPos({x: rect.left, y: rect.top + rect.height / 2}); setBenchPopup(prev => prev === idx ? null : idx) } else { openReplaceDialog(11 + idx) } }}>
                     {card ? (
-                      <div className={`w-11 h-11 rounded-md overflow-hidden border-2 shadow-md ${cardBorderColor(card.overall, card.star)} bg-[#20293a]`}>
-                        <img src={`/game-assets/avatars/${card.player_id}.png`} alt={card.name} className="w-full h-full object-cover" onError={(e) => { (e.target as HTMLImageElement).style.display = 'none' }} />
+                      <div className="flex flex-col items-center">
+                        <div className={`relative w-11 h-11 rounded-md overflow-hidden border-2 shadow-md ${cardBorderColor(card.overall, card.star)} bg-[#20293a]`}>
+                          <img src={`/game-assets/avatars/${card.player_id}.png`} alt={card.name} className="w-full h-full object-cover" onError={(e) => { (e.target as HTMLImageElement).style.display = 'none' }} />
+                          <span className="absolute top-0 left-0 text-[6px] text-yellow-400 leading-none bg-black/60 px-0.5 rounded-br">{card.star <= 5 ? '★'.repeat(card.star) : `★${card.star}`}</span>
+                        </div>
+                        <div className="flex items-center gap-0.5 mt-0.5">
+                          <span className={`text-[8px] font-bold px-0.5 rounded ${positionColor(card.position)}`}>{card.position}</span>
+                          <span className={`text-[9px] font-bold ${overallColor(card.overall, card.star)}`}>{card.real_overall}</span>
+                        </div>
+                        <span className="text-[7px] text-white/90 text-center font-medium leading-tight max-w-[52px] truncate">{card.name.split(' ').pop()}</span>
                       </div>
                     ) : (
                       <div className="w-11 h-11 rounded-md bg-slate-700/40 border-2 border-dashed border-slate-600/50 flex items-center justify-center text-slate-500 text-[10px]">+</div>
                     )}
-                    <span className="text-[8px] text-slate-400 truncate w-full text-center">{card?.name.split(' ').pop() || ''}</span>
                   </div>
                 ))}
               </div>
@@ -328,7 +335,7 @@ export default function SquadPage() {
             {filteredCandidates.map(c => (
               <div
                 key={c.id}
-                onClick={() => { const cur = squad?.cards[selectedSlot!]; cur ? handleCompare(c.id) : handleReplace(c.id) }}
+                onClick={() => { const cur = selectedSlot! < 11 ? squad?.cards[selectedSlot!] : squad?.bench?.[selectedSlot! - 11]; cur ? handleCompare(c.id) : handleReplace(c.id) }}
                 className="flex items-center gap-2 p-2 rounded-md hover:bg-slate-800 transition-colors cursor-pointer"
               >
                 <span className="text-slate-500 w-8 text-xs">{c.position}</span>
