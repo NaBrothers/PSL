@@ -1,3 +1,5 @@
+import { useState } from 'react'
+import { useNavigate } from 'react-router-dom'
 import { overallColor, cardBorderColor } from '@/lib/card-display'
 
 const FORWARD_POS = ["ST", "RW", "RS", "LW", "CF", "LS", "LF", "RF"]
@@ -38,6 +40,7 @@ interface SquadData {
   guard_ability: number
   positions: string[]
   cards: (CardInfo | null)[]
+  bench?: (CardInfo | null)[]
 }
 
 interface SquadViewProps {
@@ -59,69 +62,117 @@ const FORMATION_COORDS: Record<string, [number, number][]> = {
 }
 
 export default function SquadView({ squad, title }: SquadViewProps) {
+  const navigate = useNavigate()
   const coords = FORMATION_COORDS[squad.formation] || FORMATION_COORDS["442"]
+  const [benchOpen, setBenchOpen] = useState(false)
+  const benchCards = squad.bench?.filter(Boolean) || []
 
   return (
-    <div className="max-w-md mx-auto">
-      {title && (
-        <div className="flex items-center justify-between mb-2">
-          <h2 className="text-sm font-bold text-slate-200">{title}</h2>
-          <span className="text-xs text-slate-500">{squad.formation}</span>
+    <div className="relative">
+      <div className="max-w-md mx-auto">
+        {title && (
+          <div className="flex items-center justify-between mb-2">
+            <h2 className="text-sm font-bold text-slate-200">{title}</h2>
+            <span className="text-xs text-slate-500">{squad.formation}</span>
+          </div>
+        )}
+
+        <div className="flex gap-3 text-xs mb-2">
+          <span className="text-red-400">前场 {squad.forward_ability}</span>
+          <span className="text-green-400">中场 {squad.midfield_ability}</span>
+          <span className="text-blue-400">后场 {squad.guard_ability}</span>
+          <span className="text-yellow-400 ml-auto">总 {squad.total_ability}</span>
+        </div>
+
+        <div className="relative w-full aspect-[68/105] bg-gradient-to-b from-green-900 to-green-800 rounded-xl border border-green-700/50 overflow-hidden shadow-lg">
+          <div className="absolute inset-0 flex items-center justify-center">
+            <div className="w-20 h-20 border border-white/15 rounded-full" />
+          </div>
+          <div className="absolute top-0 left-1/2 -translate-x-1/2 w-36 h-14 border-b border-l border-r border-white/15" />
+          <div className="absolute bottom-0 left-1/2 -translate-x-1/2 w-36 h-14 border-t border-l border-r border-white/15" />
+          <div className="absolute top-1/2 left-0 right-0 border-t border-white/15" />
+
+          {squad.cards.map((card, idx) => {
+            const [x, y] = coords[idx] || [50, 50]
+            return (
+              <div
+                key={idx}
+                className="absolute flex flex-col items-center -translate-x-1/2 -translate-y-1/2 cursor-pointer"
+                style={{ left: `${x}%`, top: `${y}%` }}
+                onClick={() => card && navigate(`/cards/${card.id}`)}
+              >
+                {card ? (
+                  <div className="flex flex-col items-center">
+                    <div className={`relative w-12 h-12 rounded-md overflow-hidden border-2 shadow-md ${cardBorderColor(card.overall, card.star)} ${cardBgColor(card.overall, card.star)}`}>
+                      <img
+                        src={`/game-assets/avatars/${card.player_id}.png`}
+                        alt={card.name}
+                        className="w-full h-full object-cover"
+                        onError={(e) => { (e.target as HTMLImageElement).style.display = 'none' }}
+                      />
+                      <span className="absolute top-0 left-0 text-[7px] text-yellow-400 leading-none bg-black/60 px-0.5 rounded-br">{card.star <= 5 ? '★'.repeat(card.star) : `★${card.star}`}</span>
+                    </div>
+                    <div className="flex items-center gap-0.5 mt-0.5">
+                      <span className={`text-[9px] font-bold px-1 rounded ${positionColor(squad.positions[idx])}`}>{squad.positions[idx]}</span>
+                      <span className={`text-[10px] font-bold ${overallColor(card.overall, card.star)}`}>{card.real_overall}</span>
+                    </div>
+                    <span className="text-[8px] text-white/90 text-center font-medium leading-tight max-w-[60px] truncate">{card.name}</span>
+                  </div>
+                ) : (
+                  <>
+                    <div className="w-11 h-11 rounded-full bg-slate-700/60 border-2 border-dashed border-slate-500/60 flex items-center justify-center text-slate-400 text-sm">
+                      ?
+                    </div>
+                    <span className="text-[9px] text-slate-500 mt-0.5">{squad.positions[idx]}</span>
+                  </>
+                )}
+              </div>
+            )
+          })}
+        </div>
+      </div>
+
+      {/* Bench panel */}
+      {benchCards.length > 0 && (
+        <div className="absolute right-0 top-1/2 -translate-y-1/2 z-40 flex items-center">
+          <button
+            className="bg-slate-800/90 border border-slate-700 border-r-0 rounded-l-lg px-1.5 py-4 text-[10px] text-slate-400"
+            style={{ writingMode: 'vertical-rl' }}
+            onClick={() => setBenchOpen(!benchOpen)}
+          >
+            替补 {benchCards.length}/7 {benchOpen ? '›' : '‹'}
+          </button>
+          {benchOpen && (
+            <div className="bg-slate-900/95 border border-slate-700 rounded-l-lg p-2 shadow-xl">
+              <div className="flex flex-col gap-2 w-14">
+                {(squad.bench || []).map((card, idx) => (
+                  <div
+                    key={idx}
+                    className="flex flex-col items-center cursor-pointer"
+                    onClick={() => card && navigate(`/cards/${card.id}`)}
+                  >
+                    {card ? (
+                      <div className="flex flex-col items-center">
+                        <div className={`relative w-11 h-11 rounded-md overflow-hidden border-2 shadow-md ${cardBorderColor(card.overall, card.star)} bg-[#20293a]`}>
+                          <img src={`/game-assets/avatars/${card.player_id}.png`} alt={card.name} className="w-full h-full object-cover" onError={(e) => { (e.target as HTMLImageElement).style.display = 'none' }} />
+                          <span className="absolute top-0 left-0 text-[6px] text-yellow-400 leading-none bg-black/60 px-0.5 rounded-br">{card.star <= 5 ? '★'.repeat(card.star) : `★${card.star}`}</span>
+                        </div>
+                        <div className="flex items-center gap-0.5 mt-0.5">
+                          <span className={`text-[8px] font-bold px-0.5 rounded ${positionColor(card.position.split(',')[0].split('/')[0].trim())}`}>{card.position.split(',')[0].split('/')[0].trim()}</span>
+                          <span className={`text-[9px] font-bold ${overallColor(card.overall, card.star)}`}>{card.overall}</span>
+                        </div>
+                        <span className="text-[7px] text-white/90 text-center font-medium leading-tight max-w-[52px] truncate">{card.name.split(' ').pop()}</span>
+                      </div>
+                    ) : (
+                      <div className="w-11 h-11 rounded-md bg-slate-700/40 border-2 border-dashed border-slate-600/50 flex items-center justify-center text-slate-500 text-[10px]">+</div>
+                    )}
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
         </div>
       )}
-
-      <div className="flex gap-3 text-xs mb-2">
-        <span className="text-red-400">前场 {squad.forward_ability}</span>
-        <span className="text-green-400">中场 {squad.midfield_ability}</span>
-        <span className="text-blue-400">后场 {squad.guard_ability}</span>
-        <span className="text-yellow-400 ml-auto">总 {squad.total_ability}</span>
-      </div>
-
-      <div className="relative w-full aspect-[68/105] bg-gradient-to-b from-green-900 to-green-800 rounded-xl border border-green-700/50 overflow-hidden shadow-lg">
-        <div className="absolute inset-0 flex items-center justify-center">
-          <div className="w-20 h-20 border border-white/15 rounded-full" />
-        </div>
-        <div className="absolute top-0 left-1/2 -translate-x-1/2 w-36 h-14 border-b border-l border-r border-white/15" />
-        <div className="absolute bottom-0 left-1/2 -translate-x-1/2 w-36 h-14 border-t border-l border-r border-white/15" />
-        <div className="absolute top-1/2 left-0 right-0 border-t border-white/15" />
-
-        {squad.cards.map((card, idx) => {
-          const [x, y] = coords[idx] || [50, 50]
-          return (
-            <div
-              key={idx}
-              className="absolute flex flex-col items-center -translate-x-1/2 -translate-y-1/2"
-              style={{ left: `${x}%`, top: `${y}%` }}
-            >
-              {card ? (
-                <div className="flex flex-col items-center">
-                  <div className={`relative w-12 h-12 rounded-md overflow-hidden border-2 shadow-md ${cardBorderColor(card.overall, card.star)} ${cardBgColor(card.overall, card.star)}`}>
-                    <img
-                      src={`/game-assets/avatars/${card.player_id}.png`}
-                      alt={card.name}
-                      className="w-full h-full object-cover"
-                      onError={(e) => { (e.target as HTMLImageElement).style.display = 'none' }}
-                    />
-                    <span className="absolute top-0 left-0 text-[7px] text-yellow-400 leading-none bg-black/60 px-0.5 rounded-br">{card.star <= 5 ? '★'.repeat(card.star) : `★${card.star}`}</span>
-                  </div>
-                  <div className="flex items-center gap-0.5 mt-0.5">
-                    <span className={`text-[9px] font-bold px-1 rounded ${positionColor(squad.positions[idx])}`}>{squad.positions[idx]}</span>
-                    <span className={`text-[10px] font-bold ${overallColor(card.overall, card.star)}`}>{card.real_overall}</span>
-                  </div>
-                  <span className="text-[8px] text-white/90 text-center font-medium leading-tight max-w-[60px] truncate">{card.name}</span>
-                </div>
-              ) : (
-                <>
-                  <div className="w-11 h-11 rounded-full bg-slate-700/60 border-2 border-dashed border-slate-500/60 flex items-center justify-center text-slate-400 text-sm">
-                    ?
-                  </div>
-                  <span className="text-[9px] text-slate-500 mt-0.5">{squad.positions[idx]}</span>
-                </>
-              )}
-            </div>
-          )
-        })}
-      </div>
     </div>
   )
 }
