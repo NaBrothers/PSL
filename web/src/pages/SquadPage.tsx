@@ -104,8 +104,12 @@ export default function SquadPage() {
     setSelectedSlot(idx)
     setSearchQuery("")
     const pos = idx < 11 ? (squad?.positions[idx] || "CM") : ""
+    const inSquadIds = new Set([
+      ...(squad?.cards || []).filter(Boolean).map((c: any) => c.id),
+      ...(squad?.bench || []).filter(Boolean).map((c: any) => c.id),
+    ])
     api.get("/bag", { params: { page: 1, page_size: 500, query: "", for_position: pos } }).then(res => {
-      setReplaceCandidates(res.data.cards.filter((c: BagCard) => c.status === 0))
+      setReplaceCandidates(res.data.cards.filter((c: BagCard) => c.status === 0 && !inSquadIds.has(c.id)))
     })
   }
 
@@ -264,7 +268,7 @@ export default function SquadPage() {
           <p className="text-xs text-slate-500 mb-2 font-medium">替补席</p>
           <div className="flex gap-2 overflow-x-auto scrollbar-hide pb-2">
             {squad.bench.map((card, idx) => (
-              <div key={idx} className="flex-shrink-0 w-16 flex flex-col items-center cursor-pointer" onClick={() => handleSlotClick(11 + idx)}>
+              <div key={idx} className="flex-shrink-0 w-16 flex flex-col items-center cursor-pointer" onClick={() => { const c = squad?.bench?.[idx]; if (c) navigate(`/cards/${c.id}`); else openReplaceDialog(11 + idx) }}>
                 {card ? (
                   <>
                     <div className={`relative w-12 h-12 rounded-md overflow-hidden border-2 shadow-md ${cardBorderColor(card.overall, card.star)} bg-[#20293a]`}>
