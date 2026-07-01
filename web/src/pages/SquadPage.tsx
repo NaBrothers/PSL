@@ -86,6 +86,7 @@ export default function SquadPage() {
   const [popupSlot, setPopupSlot] = useState<number | null>(null)
   const [benchOpen, setBenchOpen] = useState(false)
   const [benchPopup, setBenchPopup] = useState<number | null>(null)
+  const [benchPopupPos, setBenchPopupPos] = useState<{x: number, y: number} | null>(null)
 
   const loadSquad = () => {
     api.get('/squad').then(res => setSquad(res.data))
@@ -279,7 +280,7 @@ export default function SquadPage() {
             <div className="bg-slate-900/95 border border-slate-700 rounded-l-lg p-2 shadow-xl">
               <div className="flex flex-col gap-2 w-14">
                 {squad.bench.map((card, idx) => (
-                  <div key={idx} className="flex flex-col items-center cursor-pointer relative" onClick={(e) => { e.stopPropagation(); if (card) { setBenchPopup(prev => prev === idx ? null : idx) } else { openReplaceDialog(11 + idx) } }}>
+                  <div key={idx} className="flex flex-col items-center cursor-pointer relative" onClick={(e) => { e.stopPropagation(); if (card) { const rect = e.currentTarget.getBoundingClientRect(); setBenchPopupPos({x: rect.left, y: rect.top + rect.height / 2}); setBenchPopup(prev => prev === idx ? null : idx) } else { openReplaceDialog(11 + idx) } }}>
                     {card ? (
                       <div className={`w-11 h-11 rounded-md overflow-hidden border-2 shadow-md ${cardBorderColor(card.overall, card.star)} bg-[#20293a]`}>
                         <img src={`/game-assets/avatars/${card.player_id}.png`} alt={card.name} className="w-full h-full object-cover" onError={(e) => { (e.target as HTMLImageElement).style.display = 'none' }} />
@@ -297,13 +298,15 @@ export default function SquadPage() {
       )}
 
       {/* Bench popup - rendered via portal to avoid transform containing block */}
-      {benchPopup !== null && squad?.bench?.[benchPopup] && createPortal(
-        <div className="fixed inset-0 z-[9999] flex items-center justify-center" onClick={() => setBenchPopup(null)}>
-          <div className="bg-slate-900 border-2 border-gold rounded-lg px-4 py-3 shadow-2xl flex flex-col gap-2" onClick={e => e.stopPropagation()}>
-            <div className="text-xs text-slate-300 text-center mb-1">{squad.bench[benchPopup]!.name}</div>
-            <button className="text-sm text-accent font-medium px-3 py-1.5 rounded hover:bg-slate-700/50" onClick={() => { const idx = benchPopup; setBenchPopup(null); openDetail(11 + idx) }}>详情</button>
-            <button className="text-sm text-gold font-medium px-3 py-1.5 rounded hover:bg-slate-700/50" onClick={() => { const idx = benchPopup; setBenchPopup(null); openReplaceDialog(11 + idx) }}>替换</button>
-            <button className="text-sm text-slate-400 font-medium px-3 py-1.5 rounded hover:bg-slate-700/50" onClick={() => setBenchPopup(null)}>取消</button>
+      {benchPopup !== null && squad?.bench?.[benchPopup] && benchPopupPos && createPortal(
+        <div className="fixed inset-0 z-[9999]" onClick={() => setBenchPopup(null)}>
+          <div
+            className="absolute flex gap-1 bg-slate-900/95 border border-gold/30 rounded-lg px-2 py-1.5 shadow-lg whitespace-nowrap"
+            style={{ left: benchPopupPos.x - 4, top: benchPopupPos.y, transform: 'translate(-100%, -50%)' }}
+            onClick={e => e.stopPropagation()}
+          >
+            <button className="text-[10px] text-accent font-medium px-2 py-0.5 rounded hover:bg-slate-700/50" onClick={() => { const idx = benchPopup; setBenchPopup(null); openDetail(11 + idx) }}>详情</button>
+            <button className="text-[10px] text-gold font-medium px-2 py-0.5 rounded hover:bg-slate-700/50" onClick={() => { const idx = benchPopup; setBenchPopup(null); openReplaceDialog(11 + idx) }}>替换</button>
           </div>
         </div>,
         document.body
