@@ -263,43 +263,44 @@ export default function SquadPage() {
         </div>
       </div>
 
-      {/* Bench - collapsible */}
+      {/* Bench - right side panel */}
       {squad?.bench && (
-        <div className="max-w-md mx-auto border-t border-slate-700/50 mt-2">
-          {benchOpen && (
-          <div className="flex gap-2 overflow-x-auto scrollbar-hide pb-2">
-            {squad.bench.map((card, idx) => (
-              <div key={idx} className="flex-shrink-0 w-16 flex flex-col items-center cursor-pointer relative" onClick={() => handleSlotClick(11 + idx)}>
-                {popupSlot === 11 + idx && card && (
-                  <div className="absolute -bottom-8 left-1/2 -translate-x-1/2 flex gap-1 bg-slate-900/95 border border-gold/30 rounded-lg px-2 py-1.5 shadow-lg whitespace-nowrap z-[100]">
-                    <button className="text-[10px] text-accent font-medium px-2 py-0.5 rounded hover:bg-slate-700/50" onClick={(e) => { e.stopPropagation(); openDetail(11 + idx) }}>详情</button>
-                    <button className="text-[10px] text-gold font-medium px-2 py-0.5 rounded hover:bg-slate-700/50" onClick={(e) => { e.stopPropagation(); openReplaceDialog(11 + idx) }}>替换</button>
-                  </div>
-                )}
-                {card ? (
-                  <>
-                    <div className={`relative w-12 h-12 rounded-md overflow-hidden border-2 shadow-md ${cardBorderColor(card.overall, card.star)} bg-[#20293a]`}>
-                      <img src={`/game-assets/avatars/${card.player_id}.png`} alt={card.name} className="w-full h-full object-cover" onError={(e) => { (e.target as HTMLImageElement).style.display = 'none' }} />
-                      <span className="absolute top-0 left-0 text-[7px] text-yellow-400 leading-none bg-black/60 px-0.5 rounded-br">{card.star <= 5 ? '\u2605'.repeat(card.star) : `\u2605${card.star}`}</span>
-                    </div>
-                    <span className={`text-[9px] font-bold mt-0.5 ${overallColor(card.overall, card.star)}`}>{card.real_overall}</span>
-                    <span className="text-[8px] text-white/80 text-center truncate w-full">{card.name.split(' ').pop()}</span>
-                  </>
-                ) : (
-                  <div className="w-12 h-12 rounded-md bg-slate-700/40 border-2 border-dashed border-slate-600/50 flex items-center justify-center text-slate-500 text-xs" onClick={() => openReplaceDialog(11 + idx)}>+</div>
-                )}
-              </div>
-            ))}
-          </div>
-          )}
-          <button className="w-full flex items-center justify-between py-2 px-1" onClick={() => setBenchOpen(!benchOpen)}>
-            <span className="text-xs text-slate-500 font-medium">替补席 ({squad.bench.filter(Boolean).length}/7)</span>
-            <span className="text-xs text-slate-600">{benchOpen ? '收起 ▼' : '展开 ▲'}</span>
+        <div className="fixed right-0 top-1/2 -translate-y-1/2 z-40 flex items-center">
+          <button
+            className="bg-slate-800/90 border border-slate-700 border-r-0 rounded-l-lg px-1 py-3 text-[10px] text-slate-400 writing-vertical"
+            style={{ writingMode: 'vertical-rl' }}
+            onClick={() => setBenchOpen(!benchOpen)}
+          >
+            替补 {squad.bench.filter(Boolean).length}/7 {benchOpen ? '›' : '‹'}
           </button>
+          {benchOpen && (
+            <div className="bg-slate-900/95 border border-slate-700 rounded-l-lg p-2 shadow-xl max-h-[70vh] overflow-y-auto">
+              <div className="flex flex-col gap-2 w-14">
+                {squad.bench.map((card, idx) => (
+                  <div key={idx} className="flex flex-col items-center cursor-pointer relative" onClick={() => handleSlotClick(11 + idx)}>
+                    {popupSlot === 11 + idx && card && (
+                      <div className="absolute -left-20 top-0 flex flex-col gap-1 bg-slate-900/95 border border-gold/30 rounded-lg px-2 py-1.5 shadow-lg whitespace-nowrap z-[100]">
+                        <button className="text-[10px] text-accent font-medium px-2 py-0.5 rounded hover:bg-slate-700/50" onClick={(e) => { e.stopPropagation(); openDetail(11 + idx) }}>详情</button>
+                        <button className="text-[10px] text-gold font-medium px-2 py-0.5 rounded hover:bg-slate-700/50" onClick={(e) => { e.stopPropagation(); openReplaceDialog(11 + idx) }}>替换</button>
+                      </div>
+                    )}
+                    {card ? (
+                      <div className={`w-11 h-11 rounded-md overflow-hidden border-2 shadow-md ${cardBorderColor(card.overall, card.star)} bg-[#20293a]`}>
+                        <img src={`/game-assets/avatars/${card.player_id}.png`} alt={card.name} className="w-full h-full object-cover" onError={(e) => { (e.target as HTMLImageElement).style.display = 'none' }} />
+                      </div>
+                    ) : (
+                      <div className="w-11 h-11 rounded-md bg-slate-700/40 border-2 border-dashed border-slate-600/50 flex items-center justify-center text-slate-500 text-[10px]">+</div>
+                    )}
+                    <span className="text-[8px] text-slate-400 truncate w-full text-center">{card?.name.split(' ').pop() || ''}</span>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
         </div>
       )}
 
-            {/* Replace Dialog */}
+      {/* Replace Dialog */}
       {/* Replace Dialog */}
       <Dialog open={selectedSlot !== null} onOpenChange={(open) => { if (!open) setSelectedSlot(null) }}>
         <DialogContent className="max-h-[70vh] flex flex-col">
