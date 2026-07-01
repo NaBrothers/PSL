@@ -176,7 +176,7 @@ export default function SquadPage() {
   )
 
   return (
-    <div className="p-4">
+    <div className="p-4 relative">
       <div className="max-w-md mx-auto">
         {/* Header */}
         <div className="flex items-center justify-between mb-3">
@@ -265,7 +265,7 @@ export default function SquadPage() {
 
       {/* Bench - right side panel */}
       {squad?.bench && (
-        <div className="fixed right-0 top-1/2 -translate-y-1/2 z-40 flex items-center">
+        <div className="absolute right-0 top-1/2 -translate-y-1/2 z-40 flex items-center">
           <button
             className="bg-gold/90 border border-gold border-r-0 rounded-l-lg px-1.5 py-4 text-[10px] text-black font-bold"
             style={{ writingMode: 'vertical-rl' }}
