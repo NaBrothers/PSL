@@ -97,6 +97,8 @@ class MatchV2:
 
         # Phase 2: possession tracking for transitions
         self._possession_changed_tick = -99
+        self._last_ball_holder_idx = -1
+        self._last_ball_holder_team = None
 
         # Stats & trace
         self.match_stats = MatchStats()
@@ -207,6 +209,18 @@ class MatchV2:
 
     def _tick(self):
         """Execute one simulation tick."""
+        # Reset _ticks_with_ball when holder changes
+        current_holder = self.ball.holder_idx
+        current_team = self.ball.holder_team
+        if current_holder != self._last_ball_holder_idx or current_team != self._last_ball_holder_team:
+            # New holder - reset their counter
+            if current_holder >= 0 and current_team:
+                team = self.home if current_team == "home" else self.away
+                if current_holder < len(team.players):
+                    team.players[current_holder]._ticks_with_ball = 0
+            self._last_ball_holder_idx = current_holder
+            self._last_ball_holder_team = current_team
+
         # 1. Handle dead ball
         if self.ball.state == BallState.DEAD:
             if self.ball.tick_dead():
@@ -364,6 +378,9 @@ class MatchV2:
         elif action.action_type == ActionType.CARRY:
             self._execute_carry(holder, action, holder_team, opponents)
         elif action.action_type == ActionType.CROSS:
+            self._execute_cross(holder, action, holder_team, opponents)
+        elif action.action_type == ActionType.HOLD:
+            self._execute_hold(holder, action, holder_team)
             self._execute_cross(holder, action, holder_team, opponents)
 
     def _execute_pass(
@@ -582,6 +599,10 @@ class MatchV2:
             crosser.pos, target, "pass", on_target=False
         )
 
+
+    def _execute_hold(self, holder, action, holder_team):
+        """Execute HOLD: player keeps the ball, no action this tick."""
+        self.trace.log_action(self.tick, holder_team.side, holder.name, "hold")
     def _resolve_flight_arrival(self):
         """Resolve what happens when a ball flight completes."""
         flight = self.ball.flight

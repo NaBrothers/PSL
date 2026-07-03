@@ -40,9 +40,9 @@ class EngineConfig:
     tackle_base_success: float = 0.45
 
     # Shot parameters
-    shot_on_target_base: float = 0.38
-    gk_save_base: float = 0.75
-    shot_max_distance: float = 32.0  # max effective shooting distance
+    shot_on_target_base: float = 0.36
+    gk_save_base: float = 0.73
+    shot_max_distance: float = 28.0  # max effective shooting distance
     shot_ideal_distance: float = 18.0  # ideal shooting distance
 
     # Pressing
@@ -96,7 +96,7 @@ class EngineConfig:
     # =========================================================================
     # Phase 2: Cross action
     # =========================================================================
-    cross_zone_x_threshold: float = 0.70  # x-fraction threshold for cross zone
+    cross_zone_x_threshold: float = 0.82  # x-fraction threshold for cross zone
     cross_base_success: float = 0.50  # base cross success rate
     cross_target_box_depth: float = 18.0  # how deep into box crosses target
 

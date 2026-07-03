@@ -847,6 +847,24 @@ class Player:
             if action.score > 0.01:
                 actions.append(action)
 
+        # HOLD: keep the ball, control, observe (simulates ball preparation time)
+        if not self.is_goalkeeper:
+            hold_base = 0.55
+            # Just received ball? Higher hold score (stop and control)
+            if getattr(self, '_ticks_with_ball', 0) <= 1:
+                hold_base = 0.85  # strongly prefer holding when just received
+            # Under pressure? Less hold, more urgency to pass
+            pressers = sum(1 for o in opponents if distance(self.pos, o.pos) < config.press_radius)
+            if pressers > 0:
+                hold_base *= 0.6
+            # Defenders hold less (clear quickly)
+            if self.is_defender:
+                hold_base *= 0.8
+            hold_score = apply_unified_scoring(hold_base, phase, "hold", self.position)
+            if hold_score > 0.01:
+                hold_target = pitch.clamp(self.pos[0], self.pos[1])
+                actions.append(Action(ActionType.HOLD, hold_target, -1, hold_score, 0.99))
+
         # Goalkeeper special: always prefer distribution
         if self.is_goalkeeper and not actions:
             if attacking_right:
@@ -867,6 +885,10 @@ class Player:
         phase: str = "attacking",
     ) -> Optional[Action]:
         """Choose an action for a player on the ball."""
+        # Track how long we've been holding the ball (reset externally when holder changes)
+        if not hasattr(self, '_ticks_with_ball'):
+            self._ticks_with_ball = 0
+        self._ticks_with_ball += 1
         actions = self.generate_actions(teammates, opponents, config, pitch, attacking_right, phase)
         if not actions:
             # Fallback: just carry forward

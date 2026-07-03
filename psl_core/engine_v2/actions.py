@@ -127,9 +127,9 @@ def score_short_pass(
     # Utility: passes forward in attack are more valuable
     forward_bonus = 0.0
     if target_player.pos[0] > passer.pos[0]:
-        forward_bonus = 0.2
+        forward_bonus = 0.1
 
-    raw_score = success_prob + forward_bonus
+    raw_score = success_prob * 0.85 + forward_bonus
 
     # Apply unified framework
     score = apply_unified_scoring(raw_score, phase, "short_pass", passer.position)
@@ -163,7 +163,7 @@ def score_long_pass(
     if target_player.pos[0] > passer.pos[0]:
         forward_bonus = 0.3
 
-    raw_score = success_prob * 0.8 + forward_bonus
+    raw_score = success_prob * 0.7 + forward_bonus
     score = apply_unified_scoring(raw_score, phase, "long_pass", passer.position)
 
     return Action(ActionType.LONG_PASS, target_player.pos, target_player.index, score, success_prob)
@@ -257,7 +257,7 @@ def score_carry(
     success_prob = max(0.80, min(0.97, success_prob))
 
     # Score based on forward progress potential
-    raw_score = success_prob * 0.7
+    raw_score = success_prob * 1.1
 
     # Bonus if moving toward goal
     score = apply_unified_scoring(raw_score, phase, "carry", carrier.position)
