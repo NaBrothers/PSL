@@ -938,19 +938,20 @@ class Player:
             if action.score > 0.01:
                 actions.append(action)
 
-        # HOLD: keep the ball, control, observe (simulates ball preparation time)
+        # HOLD: default action - player keeps ball, moves with it, observes
+        # Only pass/shoot/dribble when a genuinely good opportunity exists
         if not self.is_goalkeeper:
-            hold_base = 0.55
-            # Just received ball? Higher hold score (stop and control)
+            hold_base = 1.0  # HOLD is the default (high base)
+            # Just received? Even more likely to hold (settling ball)
             if getattr(self, '_ticks_with_ball', 0) <= 1:
-                hold_base = 0.85  # strongly prefer holding when just received
-            # Under pressure? Less hold, more urgency to pass
-            pressers = sum(1 for o in opponents if distance(self.pos, o.pos) < config.press_radius)
+                hold_base = 1.3
+            # Held for a long time? Start looking to release
+            elif getattr(self, '_ticks_with_ball', 0) > 4:
+                hold_base = 0.7  # can not hold forever, must do something
+            # Under heavy pressure? Need to release faster
+            pressers = sum(1 for o in opponents if distance(self.pos, o.pos) < config.contest_radius * 2.5)
             if pressers > 0:
-                hold_base *= 0.6
-            # Defenders hold less (clear quickly)
-            if self.is_defender:
-                hold_base *= 0.8
+                hold_base *= 0.5  # urgent, need to pass or dribble
             hold_score = apply_unified_scoring(hold_base, phase, "hold", self.position)
             if hold_score > 0.01:
                 hold_target = pitch.clamp(self.pos[0], self.pos[1])
