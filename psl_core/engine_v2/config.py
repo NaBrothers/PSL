@@ -110,7 +110,7 @@ class EngineConfig:
     # =========================================================================
     # Phase 2: Vision system
     # =========================================================================
-    vision_base_fov: float = 90.0  # base field of view in degrees
+    vision_base_fov: float = 140.0  # base field of view in degrees
     vision_iq_bonus_factor: float = 0.5  # degrees per IQ point added to FOV
 
     # =========================================================================

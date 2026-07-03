@@ -298,6 +298,9 @@ class MatchV2:
 
         # Execute the action
         self._execute_action(holder, action, holder_team, opponents)
+        # HOLD means "do nothing else this tick"
+        if action.action_type == ActionType.HOLD:
+            return
 
     def _tick_flight(self):
         """Process a tick where the ball is in flight."""

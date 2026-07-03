@@ -111,8 +111,8 @@ def score_short_pass(
     ability = passer.abilities.get("Short_Passing", 50) / 100.0
     base = config.short_pass_base_success
 
-    # Distance penalty
-    dist_factor = max(0.3, 1.0 - (dist - 10.0) / 40.0)
+    # Distance penalty (gentle - real players can pass 30m accurately)
+    dist_factor = max(0.5, 1.0 - (dist - 15.0) / 60.0)
 
     # Opponent proximity penalty (check if any defender is close to pass lane)
     intercept_risk = 0.0
@@ -124,12 +124,26 @@ def score_short_pass(
     success_prob = base * (0.4 + 0.6 * ability) * dist_factor * max(0.3, 1.0 - intercept_risk)
     success_prob = max(0.1, min(0.95, success_prob))
 
-    # Utility: passes forward in attack are more valuable
-    forward_bonus = 0.0
-    if target_player.pos[0] > passer.pos[0]:
-        forward_bonus = 0.1
+    # Score = success_prob * target value
+    # Target value based on: role (attacker > mid > def) + forward progress
+    # This naturally makes forward passes to attackers most valuable
+    role_value = 0.5  # default
+    if target_player.is_goalkeeper:
+        role_value = 0.05
+    elif target_player.is_defender:
+        role_value = 0.25
+    elif target_player.is_midfielder:
+        role_value = 0.55
+    elif target_player.is_attacker:
+        role_value = 0.85
 
-    raw_score = success_prob * 0.85 + forward_bonus
+    # Forward progress bonus (relative to passer)
+    dx = target_player.pos[0] - passer.pos[0]
+    progress_bonus = max(0, dx / 50.0) * 0.3  # up to +0.3 for 50m forward
+
+    position_value = min(1.0, role_value + progress_bonus)
+
+    raw_score = success_prob * position_value
 
     # Apply unified framework
     score = apply_unified_scoring(raw_score, phase, "short_pass", passer.position)
@@ -327,7 +341,7 @@ def score_cross(
     # Check if player is in crossing position (wide + deep)
     x_progress = crosser.pos[0] / pitch.length if attacking_right else (1.0 - crosser.pos[0] / pitch.length)
     y_from_center = abs(crosser.pos[1] - pitch.width / 2.0)
-    is_wide = y_from_center > pitch.width * 0.25  # more than 25% away from center
+    is_wide = (crosser.pos[1] < 15.0 or crosser.pos[1] > pitch.width - 15.0)
 
     if x_progress < config.cross_zone_x_threshold or not is_wide:
         return Action(ActionType.CROSS, target_pos, -1, 0.0, 0.0)
