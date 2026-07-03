@@ -74,6 +74,16 @@ DEFAULTS = {
     "style.scale.8": 16,
     "style.scale.9": 19,
     "style.scale.10": 22,
+
+    # Engine V2
+    "engine_v2.engine_version": "v1",
+    "engine_v2.tick_duration": 2.0,
+    "engine_v2.shot_on_target_base": 0.52,
+    "engine_v2.gk_save_base": 0.66,
+    "engine_v2.press_radius": 12.0,
+    "engine_v2.shot_max_distance": 35.0,
+    "engine_v2.player_max_speed": 8.0,
+    "engine_v2.iq_noise_factor": 1.0,
 }
 
 # Map Chinese pool keys to config key prefixes
@@ -159,6 +169,16 @@ CONFIG_GROUPS = {
         {"key": "style.scale.8", "label": "8★特性系数", "type": "int"},
         {"key": "style.scale.9", "label": "9★特性系数", "type": "int"},
         {"key": "style.scale.10", "label": "10★特性系数", "type": "int"},
+    ],
+    "比赛引擎V2": [
+        {"key": "engine_v2.engine_version", "label": "引擎版本(v1/v2)", "type": "str"},
+        {"key": "engine_v2.tick_duration", "label": "Tick时长(秒)", "type": "float"},
+        {"key": "engine_v2.shot_on_target_base", "label": "射正基准概率", "type": "float"},
+        {"key": "engine_v2.gk_save_base", "label": "门将扑救基准", "type": "float"},
+        {"key": "engine_v2.press_radius", "label": "逼抢半径(米)", "type": "float"},
+        {"key": "engine_v2.shot_max_distance", "label": "最大射门距离(米)", "type": "float"},
+        {"key": "engine_v2.player_max_speed", "label": "球员最大速度(米/tick)", "type": "float"},
+        {"key": "engine_v2.iq_noise_factor", "label": "球商噪声系数", "type": "float"},
     ],
 }
 

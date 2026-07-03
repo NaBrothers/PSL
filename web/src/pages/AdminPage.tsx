@@ -31,8 +31,16 @@ export default function AdminPage() {
   }, [])
 
   const updateConfig = async (key: string, value: any, type: string) => {
-    const parsed = type === 'float' ? parseFloat(value) : parseInt(value)
-    if (isNaN(parsed)) return
+    let parsed: any
+    if (type === 'str') {
+      parsed = value
+    } else if (type === 'float') {
+      parsed = parseFloat(value)
+      if (isNaN(parsed)) return
+    } else {
+      parsed = parseInt(value)
+      if (isNaN(parsed)) return
+    }
     await api.post('/admin/config', { key, value: parsed })
     showToast(`${key} 已更新`)
     api.get('/admin/config').then(r => setConfigGroups(r.data.groups))
@@ -66,6 +74,7 @@ export default function AdminPage() {
         <TabsList className="w-full mb-3">
           <TabsTrigger value="stats" className="flex-1 text-xs">总览</TabsTrigger>
           <TabsTrigger value="config" className="flex-1 text-xs">配置</TabsTrigger>
+          <TabsTrigger value="engine" className="flex-1 text-xs">引擎</TabsTrigger>
           <TabsTrigger value="players" className="flex-1 text-xs">玩家</TabsTrigger>
           <TabsTrigger value="actions" className="flex-1 text-xs">操作</TabsTrigger>
         </TabsList>
@@ -103,7 +112,7 @@ export default function AdminPage() {
 
         <TabsContent value="config">
           <div className="space-y-4 max-h-[60vh] overflow-y-auto scrollbar-hide">
-            {configGroups.map(group => (
+            {configGroups.filter(g => g.name !== '比赛引擎V2').map(group => (
               <div key={group.name}>
                 <h3 className="text-sm font-bold text-slate-300 mb-2">{group.name}</h3>
                 <div className="space-y-1.5">
@@ -111,7 +120,33 @@ export default function AdminPage() {
                     <div key={item.key} className="flex items-center gap-2">
                       <span className="text-xs text-slate-400 flex-1 min-w-0 truncate">{item.label}</span>
                       <Input
-                        type="number"
+                        type={item.type === 'str' ? 'text' : 'number'}
+                        defaultValue={item.value}
+                        className="w-24 h-7 text-xs"
+                        onBlur={e => {
+                          if (e.target.value !== String(item.value)) updateConfig(item.key, e.target.value, item.type)
+                        }}
+                      />
+                      {item.value !== item.default && <span className="text-[9px] text-orange-400">已改</span>}
+                    </div>
+                  ))}
+                </div>
+              </div>
+            ))}
+          </div>
+        </TabsContent>
+
+        <TabsContent value="engine">
+          <div className="space-y-4 max-h-[60vh] overflow-y-auto scrollbar-hide">
+            {configGroups.filter(g => g.name === '比赛引擎V2').map(group => (
+              <div key={group.name}>
+                <h3 className="text-sm font-bold text-slate-300 mb-2">{group.name}</h3>
+                <div className="space-y-1.5">
+                  {group.items.map(item => (
+                    <div key={item.key} className="flex items-center gap-2">
+                      <span className="text-xs text-slate-400 flex-1 min-w-0 truncate">{item.label}</span>
+                      <Input
+                        type={item.type === 'str' ? 'text' : 'number'}
                         defaultValue={item.value}
                         className="w-24 h-7 text-xs"
                         onBlur={e => {

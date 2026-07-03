@@ -3,6 +3,7 @@
 import sys
 import os
 import re
+import json
 import time as time_mod
 from dataclasses import dataclass, field
 from typing import List, Optional
@@ -10,6 +11,8 @@ from typing import List, Optional
 BOT_SRC = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))), "bot", "src", "plugins", "psl")
 if BOT_SRC not in sys.path:
     sys.path.insert(0, BOT_SRC)
+
+from psl_core.engine_v2.match import MatchV2, MatchResult as V2MatchResult
 
 
 def _strip_color(text: str) -> str:
@@ -108,7 +111,170 @@ class MatchService:
     def __init__(self, db):
         self.db = db
 
+    def _should_use_v2(self) -> bool:
+        """Check if engine v2 should be used based on config."""
+        from server.services.game_config import GameConfigService
+        try:
+            svc = GameConfigService(self.db)
+            version = svc.get("engine_v2.engine_version")
+            return version == "v2"
+        except Exception:
+            return False
+
+    def _run_v2_match(self, home_qq: int, away_qq: int) -> MatchResultData:
+        """Run a match using engine v2."""
+        from server.services.squad import SquadService
+        from server.services.bag import BagService
+        from server.services.game_config import GameConfigService
+        from psl_core.card import compute_abilities
+
+        squad_svc = SquadService(self.db)
+        bag_svc = BagService(self.db)
+        config_svc = GameConfigService(self.db)
+
+        home_squad = squad_svc.get_squad(home_qq)
+        away_squad = squad_svc.get_squad(away_qq)
+
+        if any(c is None for c in home_squad.cards):
+            raise FormationIncomplete("Home formation incomplete")
+        if any(c is None for c in away_squad.cards):
+            raise FormationIncomplete("Away formation incomplete")
+
+        def _build_cards(squad, qq):
+            cards = []
+            for card_info in squad.cards:
+                detail = bag_svc.get_card_detail(card_info.id, qq)
+                abilities = {k: v["value"] for k, v in detail["abilities"].items()}
+                cards.append({
+                    "name": card_info.name,
+                    "player_id": card_info.player_id,
+                    "position": card_info.position,
+                    "color": "gold" if card_info.star >= 7 else "silver" if card_info.star >= 4 else "bronze",
+                    "overall": card_info.real_overall,
+                    "abilities": abilities,
+                })
+            return cards
+
+        home_cards = _build_cards(home_squad, home_qq)
+        away_cards = _build_cards(away_squad, away_qq)
+
+        # Get user names
+        user1_row = self.db.query_one("SELECT Name FROM users WHERE qq = ?", (home_qq,))
+        user2_row = self.db.query_one("SELECT Name FROM users WHERE qq = ?", (away_qq,))
+        home_name = user1_row[0] if user1_row else f"User {home_qq}"
+        away_name = user2_row[0] if user2_row else f"User {away_qq}"
+
+        # Run match
+        match = MatchV2(
+            home_cards, away_cards,
+            home_squad.formation, away_squad.formation,
+            config_service=config_svc,
+        )
+        result = match.run()
+        replay_data = match.get_replay_data()
+
+        # Save replay
+        replay_dir = os.path.join(
+            os.environ.get("PSL_PROJECT_DIR", os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))),
+            "data", "replays"
+        )
+        os.makedirs(replay_dir, exist_ok=True)
+        ts = time_mod.strftime("%Y%m%d_%H%M%S")
+        score = f"{result.home_score}-{result.away_score}"
+        filename = f"{ts}_{home_name.replace(' ', '_')}_{away_name.replace(' ', '_')}_{score}.jsonl"
+        filepath = os.path.join(replay_dir, filename)
+        with open(filepath, "w", encoding="utf-8") as f:
+            for frame in replay_data:
+                f.write(json.dumps(frame, ensure_ascii=False) + "\n")
+
+        # Build replay URL
+        replay_url = "/replays/" + os.path.basename(filepath) if filepath else None
+
+
+
+
+
+
+        # Convert goals
+        goals = [
+            GoalInfo(
+                minute=g["minute"],
+                team_side=g["team_side"],
+                scorer=g["scorer"],
+                assister=g["assister"] if g.get("assister") else None,
+                scorer_color=g.get("scorer_color", "w"),
+                assister_color=g.get("assister_color") if g.get("assister") else None,
+            )
+            for g in result.goals
+        ]
+
+        # Build stats in the same format as existing code
+        home_stats = self._v2_stats_to_dict(result.home_stats)
+        away_stats = self._v2_stats_to_dict(result.away_stats)
+
+        # Build ratings in the format expected by frontend
+        home_ratings_list = [{"name": r.get("name", ""), "position": r.get("position", ""), "rating": r.get("rating", 6.0)} for r in result.home_ratings]
+        away_ratings_list = [{"name": r.get("name", ""), "position": r.get("position", ""), "rating": r.get("rating", 6.0)} for r in result.away_ratings]
+        all_players = [(r, "home") for r in home_ratings_list] + [(r, "away") for r in away_ratings_list]
+        motm_player = max(all_players, key=lambda x: x[0]["rating"]) if all_players else None
+        ratings = {
+            "home_ratings": home_ratings_list,
+            "away_ratings": away_ratings_list,
+            "motm": {"name": motm_player[0]["name"], "team_side": motm_player[1], "rating": motm_player[0]["rating"]} if motm_player else None,
+        }
+
+        return MatchResultData(
+            home_name=home_name,
+            away_name=away_name,
+            home_score=result.home_score,
+            away_score=result.away_score,
+            home_stats=home_stats,
+            away_stats=away_stats,
+            goals=goals,
+            events=[],
+            report=f"{home_name} {result.home_score} - {result.away_score} {away_name}",
+            stats_text="",
+            replay_url=replay_url,
+            ratings=ratings,
+            home_player_stats=result.home_player_stats,
+            away_player_stats=result.away_player_stats,
+        )
+
+    def _v2_stats_to_dict(self, stats: dict) -> dict:
+        """Convert engine v2 stats dict to the standard serialized format."""
+        passes = stats.get("passes", 0)
+        passes_completed = stats.get("passes_completed", 0)
+        return {
+            "possession": stats.get("possession", 50.0),
+            "shots": stats.get("shots", 0),
+            "shots_on_target": stats.get("shots_on_target", 0),
+            "shots_in_box": 0,
+            "passes": passes,
+            "pass_success_rate": round(passes_completed / max(passes, 1) * 100, 1),
+            "final_third_entries": 0,
+            "box_entries": 0,
+            "progressive_passes": 0,
+            "crosses": 0,
+            "corners": 0,
+            "dribbles": stats.get("dribbles", 0),
+            "carries": 0,
+            "tackles": stats.get("tackles", 0),
+            "pressures": 0,
+            "interceptions": stats.get("interceptions", 0),
+            "blocks": 0,
+            "turnovers": 0,
+            "saves": stats.get("saves", 0),
+            "xg": 0,
+            "post_shot_xg": 0,
+            "key_passes": 0,
+            "box_touches": 0,
+            "big_chances": 0,
+            "offsides": 0,
+        }
+
     def run_quick_match(self, home_qq: int, away_qq: int) -> MatchResultData:
+        if self._should_use_v2():
+            return self._run_v2_match(home_qq, away_qq)
         game = self._create_game(home_qq, away_qq)
         return self._run_and_collect(game)
 
