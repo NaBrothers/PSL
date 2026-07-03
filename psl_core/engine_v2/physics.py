@@ -70,3 +70,49 @@ def player_speed(speed_ability: int, max_speed: float, min_speed: float) -> floa
 def clamp(value: float, lo: float, hi: float) -> float:
     """Clamp value between lo and hi."""
     return max(lo, min(hi, value))
+
+
+# =========================================================================
+# Phase 2: Angle/direction utilities
+# =========================================================================
+
+def angle_between_points(
+    origin: Tuple[float, float], target: Tuple[float, float]
+) -> float:
+    """Get angle in degrees from origin to target (0=right, 90=up, etc.)."""
+    dx = target[0] - origin[0]
+    dy = target[1] - origin[1]
+    return math.degrees(math.atan2(dy, dx))
+
+
+def angle_diff(a1: float, a2: float) -> float:
+    """Signed angle difference in degrees, normalized to [-180, 180]."""
+    diff = a2 - a1
+    while diff > 180.0:
+        diff -= 360.0
+    while diff < -180.0:
+        diff += 360.0
+    return diff
+
+
+def is_in_fov(
+    facing_angle: float,
+    target_angle: float,
+    half_fov: float,
+) -> bool:
+    """Check if target_angle is within half_fov of facing_angle (all in degrees)."""
+    diff = abs(angle_diff(facing_angle, target_angle))
+    return diff <= half_fov
+
+
+def midpoint(p1: Tuple[float, float], p2: Tuple[float, float]) -> Tuple[float, float]:
+    """Midpoint between two points."""
+    return ((p1[0] + p2[0]) / 2.0, (p1[1] + p2[1]) / 2.0)
+
+
+def point_along(
+    origin: Tuple[float, float], angle_deg: float, dist: float
+) -> Tuple[float, float]:
+    """Get point at given distance and angle from origin."""
+    rad = math.radians(angle_deg)
+    return (origin[0] + dist * math.cos(rad), origin[1] + dist * math.sin(rad))

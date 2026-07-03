@@ -1,4 +1,4 @@
-"""Player match ratings calculation."""
+"""Player match ratings calculation (Phase 2)."""
 
 from __future__ import annotations
 
@@ -11,6 +11,7 @@ def compute_player_rating(player: Player, team_goals: int, team_conceded: int) -
     """Compute a match rating for a player (1.0 - 10.0 scale).
 
     Based on contributions during the match.
+    Phase 2 additions: carries, crosses, headers.
     """
     base = 6.0
 
@@ -40,13 +41,26 @@ def compute_player_rating(player: Player, team_goals: int, team_conceded: int) -
     # Goalkeeper saves
     if player.is_goalkeeper:
         base += player.saves * 0.3
-        # Penalty for conceding
         base -= team_conceded * 0.2
 
     # Dribbles
     if player.dribbles_attempted > 0:
         dribble_rate = player.dribbles_completed / player.dribbles_attempted
         base += dribble_rate * 0.2
+
+    # Phase 2: Carries
+    if player.carries_attempted > 0:
+        carry_rate = player.carries_completed / player.carries_attempted
+        base += carry_rate * 0.15
+
+    # Phase 2: Crosses
+    if player.crosses_attempted > 0:
+        cross_rate = player.crosses_completed / player.crosses_attempted
+        base += cross_rate * 0.2
+
+    # Phase 2: Headers
+    if player.headers_won > 0:
+        base += min(0.3, player.headers_won * 0.1)
 
     # Clamp between 1.0 and 10.0
     return max(1.0, min(10.0, round(base, 1)))

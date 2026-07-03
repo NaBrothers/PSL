@@ -11,13 +11,23 @@ class BallState(Enum):
     HELD = "held"
     IN_FLIGHT = "in_flight"
     DEAD = "dead"  # Out of play, waiting for restart
+    CONTESTED = "contested"  # Loose ball, players racing to it
+
+
+class BallOwnership(Enum):
+    HOME_POSSESSED = "home_possessed"
+    AWAY_POSSESSED = "away_possessed"
+    CONTESTED = "contested"
 
 
 class FlightType(Enum):
-    SHORT_PASS = "pass"
-    LONG_PASS = "pass"
+    SHORT_PASS = "short_pass"
+    LONG_PASS = "long_pass"
     SHOT = "shot"
-    CLEARANCE = "pass"
+    CLEARANCE = "clearance"
+    CROSS = "cross"
+    HEADER = "header"
+    GK_DISTRIBUTION = "gk_distribution"
 
 
 @dataclass
@@ -32,6 +42,7 @@ class BallFlight:
     passer_idx: int = -1
     passer_team: str = ""  # "home" or "away"
     on_target: bool = False  # for shots: whether aimed at goal
+    is_aerial: bool = False  # whether ball is in the air (triggers heading contest)
 
     @property
     def progress(self) -> float:
@@ -60,10 +71,16 @@ class Ball:
     holder_team: str = ""  # "home" or "away"
     flight: Optional[BallFlight] = None
 
+    # Ownership state (Phase 2)
+    ownership: BallOwnership = BallOwnership.CONTESTED
+
     # Dead ball info
     dead_reason: str = ""  # "goal_kick", "corner", "throw_in", "kickoff", "goal"
     restart_ticks: int = 0  # ticks until restart
     restart_team: str = ""  # team that gets possession on restart
+
+    # Contested ball info (Phase 2)
+    contested_ticks: int = 0  # how many ticks ball has been contested
 
     def set_held(self, player_idx: int, team: str, position: Tuple[float, float]):
         """Ball is now held by a player."""
@@ -72,6 +89,11 @@ class Ball:
         self.holder_idx = player_idx
         self.holder_team = team
         self.flight = None
+        self.ownership = (
+            BallOwnership.HOME_POSSESSED if team == "home"
+            else BallOwnership.AWAY_POSSESSED
+        )
+        self.contested_ticks = 0
 
     def set_flight(self, flight: BallFlight):
         """Ball is now in flight."""
@@ -79,6 +101,7 @@ class Ball:
         self.flight = flight
         self.holder_idx = -1
         self.holder_team = ""
+        # Ownership stays with passer's team during flight
 
     def set_dead(self, reason: str, restart_team: str, restart_ticks: int = 2):
         """Ball is dead (out of play)."""
@@ -89,6 +112,17 @@ class Ball:
         self.flight = None
         self.holder_idx = -1
         self.holder_team = ""
+        self.contested_ticks = 0
+
+    def set_contested(self, position: Tuple[float, float]):
+        """Ball is loose / contested."""
+        self.state = BallState.CONTESTED
+        self.position = position
+        self.holder_idx = -1
+        self.holder_team = ""
+        self.flight = None
+        self.ownership = BallOwnership.CONTESTED
+        self.contested_ticks = 0
 
     def tick_flight(self) -> bool:
         """Advance flight by one tick. Returns True if flight completed."""
@@ -103,3 +137,8 @@ class Ball:
         if self.restart_ticks > 0:
             self.restart_ticks -= 1
         return self.restart_ticks <= 0
+
+    def tick_contested(self) -> int:
+        """Increment contested timer. Returns current contested ticks."""
+        self.contested_ticks += 1
+        return self.contested_ticks

@@ -1,8 +1,18 @@
-"""Main match loop: orchestrates the tick-based simulation."""
+"""Main match loop: orchestrates the tick-based simulation (Phase 2).
+
+Phase 2 changes:
+- Three-state ball ownership (HOME_POSSESSED / AWAY_POSSESSED / CONTESTED)
+- Team phase detection (5 states)
+- Aerial/heading contest system
+- Goalkeeper model integration
+- CARRY and CROSS action execution
+- Formation dynamics
+"""
 
 from __future__ import annotations
 
 import random
+import math
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -10,11 +20,13 @@ from psl_core.constants import FORMATION
 
 from .config import EngineConfig, load_config_from_service
 from .pitch import Pitch, Zone
-from .ball import Ball, BallState, BallFlight, FlightType
+from .ball import Ball, BallState, BallOwnership, BallFlight, FlightType
 from .player import Player, PlayerState
-from .team import Team
+from .team import Team, TeamPhase
 from .actions import Action, ActionType
-from .physics import distance, move_toward, direction
+from .physics import distance, move_toward, direction, player_speed
+from .vision import get_visible_targets
+from .goalkeeper import compute_gk_save_probability, should_rush_out, choose_distribution
 from .stats import MatchStats
 from .trace import MatchTrace
 from .rating import compute_team_ratings
@@ -38,7 +50,7 @@ class MatchResult:
 
 
 class MatchV2:
-    """Tick-based football match simulation engine.
+    """Tick-based football match simulation engine (Phase 2).
 
     Usage:
         match = MatchV2(home_cards, away_cards, "442", "433")
@@ -55,17 +67,7 @@ class MatchV2:
         config: Optional[EngineConfig] = None,
         config_service=None,
     ):
-        """Initialize match.
-
-        Args:
-            home_cards: list of 11 dicts with keys: name, player_id, position, color,
-                        and 13 ability keys (Finishing, Short_Passing, etc.)
-            away_cards: same format as home_cards
-            home_formation: formation string like "442"
-            away_formation: formation string like "433"
-            config: optional EngineConfig override
-            config_service: optional GameConfigService for loading config from DB
-        """
+        """Initialize match."""
         if config is not None:
             self.config = config
         elif config_service is not None:
@@ -93,6 +95,9 @@ class MatchV2:
         self.last_passer_idx = -1
         self.last_passer_team = ""
 
+        # Phase 2: possession tracking for transitions
+        self._possession_changed_tick = -99
+
         # Stats & trace
         self.match_stats = MatchStats()
         self.trace = MatchTrace()
@@ -112,7 +117,6 @@ class MatchV2:
         players = []
         formation_data = FORMATION.get(formation_key)
         if formation_data is None:
-            # Fallback to 442
             formation_data = FORMATION["442"]
             formation_key = "442"
 
@@ -150,9 +154,7 @@ class MatchV2:
             attacking_right=(side == "home"),
         )
 
-        # Setup formation positions
         team.setup_formation(self.pitch, formation_data)
-
         return team
 
     def run(self) -> MatchResult:
@@ -200,7 +202,6 @@ class MatchV2:
             self.tick = t
             self._tick()
 
-            # Record frame at intervals or on events
             if (t - start_tick) % self.config.frame_interval == 0:
                 self._record_frame()
 
@@ -215,28 +216,58 @@ class MatchV2:
         # 2. Handle ball in flight
         if self.ball.state == BallState.IN_FLIGHT:
             self._tick_flight()
+            self._update_team_phases()
             self._move_players()
             return
 
-        # 3. Ball is held - the holder makes a decision
+        # 3. Handle contested ball (Phase 2)
+        if self.ball.state == BallState.CONTESTED:
+            self._tick_contested()
+            self._update_team_phases()
+            self._move_players()
+            return
+
+        # 4. Ball is held - the holder makes a decision
         if self.ball.state == BallState.HELD:
             self._tick_held()
 
-        # 4. Move off-ball players
+        # 5. Update team phases
+        self._update_team_phases()
+
+        # 6. Move off-ball players
         self._move_players()
 
-        # 5. Check for contests (pressing player reaches ball carrier)
+        # 7. Check for contests (pressing player reaches ball carrier)
         self._check_contests()
 
-        # 6. Track possession
+        # 8. Track possession
         if self.ball.holder_team:
             self.match_stats.record_possession(self.ball.holder_team)
+
+    def _update_team_phases(self):
+        """Update both teams' phase states based on current ball ownership."""
+        ball_contested = self.ball.ownership == BallOwnership.CONTESTED
+
+        home_has_ball = self.ball.holder_team == "home" or (
+            self.ball.flight and self.ball.flight.passer_team == "home"
+            and self.ball.state == BallState.IN_FLIGHT
+        )
+        away_has_ball = self.ball.holder_team == "away" or (
+            self.ball.flight and self.ball.flight.passer_team == "away"
+            and self.ball.state == BallState.IN_FLIGHT
+        )
+
+        self.home.update_phase(home_has_ball, ball_contested, self.config)
+        self.away.update_phase(away_has_ball, ball_contested, self.config)
 
     def _tick_held(self):
         """Process a tick where a player holds the ball."""
         holder_team = self.home if self.ball.holder_team == "home" else self.away
         holder = holder_team.players[self.ball.holder_idx]
         opponents = self.away if self.ball.holder_team == "home" else self.home
+
+        # Get team phase for scoring
+        phase = holder_team.phase_name
 
         # Holder chooses action
         action = holder.choose_action(
@@ -245,6 +276,7 @@ class MatchV2:
             self.config,
             self.pitch,
             holder_team.attacking_right,
+            phase=phase,
         )
 
         if action is None:
@@ -258,12 +290,66 @@ class MatchV2:
         completed = self.ball.tick_flight()
 
         if not completed:
-            # Check for interceptions along the way
             self._check_interceptions()
             return
 
         # Flight complete - resolve arrival
         self._resolve_flight_arrival()
+
+    def _tick_contested(self):
+        """Process a tick where the ball is contested (loose).
+
+        Players race to ball based on Speed.
+        Distant players pre-position based on IQ.
+        """
+        self.ball.tick_contested()
+        ball_pos = self.ball.position
+
+        # Find closest player from each team
+        home_closest = self.home.get_closest_to(ball_pos, exclude_gk=True)
+        away_closest = self.away.get_closest_to(ball_pos, exclude_gk=True)
+
+        # Players within race radius compete
+        home_racers = self.home.get_players_in_radius(ball_pos, self.config.contested_race_radius)
+        away_racers = self.away.get_players_in_radius(ball_pos, self.config.contested_race_radius)
+
+        # Find the absolute closest player
+        best_player = None
+        best_team = None
+        best_dist = float("inf")
+
+        for p in home_racers:
+            d = distance(p.pos, ball_pos)
+            if d < best_dist:
+                best_dist = d
+                best_player = p
+                best_team = self.home
+
+        for p in away_racers:
+            d = distance(p.pos, ball_pos)
+            if d < best_dist:
+                best_dist = d
+                best_player = p
+                best_team = self.away
+
+        # If someone is close enough, they win the ball
+        if best_player and best_dist < self.config.contest_radius:
+            self._give_ball(best_player, best_team)
+            self._possession_changed_tick = self.tick
+            self.trace.log_event(
+                self.tick, "contested_won",
+                player=best_player.name, team=best_team.side,
+            )
+            return
+
+        # Otherwise, players race toward ball
+        for p in home_racers + away_racers:
+            if not p.is_goalkeeper:
+                p.target_pos = ball_pos
+
+        # If contested too long (> 5 ticks), award to closest
+        if self.ball.contested_ticks > 5 and best_player and best_team:
+            self._give_ball(best_player, best_team)
 
     def _execute_action(self, holder: Player, action: Action, holder_team: Team, opponents: Team):
         """Execute a player's chosen action."""
@@ -275,6 +361,10 @@ class MatchV2:
             self._execute_shot(holder, action, holder_team, opponents)
         elif action.action_type == ActionType.DRIBBLE:
             self._execute_dribble(holder, action, holder_team, opponents)
+        elif action.action_type == ActionType.CARRY:
+            self._execute_carry(holder, action, holder_team, opponents)
+        elif action.action_type == ActionType.CROSS:
+            self._execute_cross(holder, action, holder_team, opponents)
 
     def _execute_pass(
         self, passer: Player, action: Action, passer_team: Team, opponents: Team, is_long: bool
@@ -288,6 +378,9 @@ class MatchV2:
         dist = distance(passer.pos, action.target)
         ticks_needed = max(1, round(dist / speed))
 
+        # Only very long passes (>40m) are truly aerial
+        is_aerial = is_long and dist > 40.0
+
         flight = BallFlight(
             origin=passer.pos,
             target=action.target,
@@ -296,12 +389,12 @@ class MatchV2:
             ticks_total=ticks_needed,
             passer_idx=passer.index,
             passer_team=passer_team.side,
+            is_aerial=is_aerial,
         )
 
         self.last_passer_idx = passer.index
         self.last_passer_team = passer_team.side
 
-        # Release ball
         passer.state = PlayerState.OFF_BALL
         self.ball.set_flight(flight)
 
@@ -311,7 +404,6 @@ class MatchV2:
             target=action.target, target_player=action.target_player_idx,
         )
 
-        # Set pending ball flight for replay
         ft = "pass"
         self._pending_ball_flight = build_ball_flight_data(
             passer.pos, action.target, ft, on_target=False
@@ -321,14 +413,11 @@ class MatchV2:
         """Execute a shot action."""
         shooter.shots += 1
 
-        # Determine if on target
         on_target = random.random() < action.success_prob
         if on_target:
             shooter.shots_on_target += 1
 
-        # Determine shot target (add inaccuracy if not on target)
         if on_target:
-            # Aim within goal posts
             goal_y_min = self.pitch.goal_y_min
             goal_y_max = self.pitch.goal_y_max
             target_y = random.uniform(goal_y_min + 0.5, goal_y_max - 0.5)
@@ -337,7 +426,6 @@ class MatchV2:
             else:
                 target = (0.0, target_y)
         else:
-            # Miss: aim wide or high (outside goal)
             if shooter_team.attacking_right:
                 target_x = self.config.pitch_length + random.uniform(0.5, 3.0)
             else:
@@ -370,24 +458,65 @@ class MatchV2:
             on_target=on_target, distance=round(dist, 1),
         )
 
-        # Replay data
         self._pending_ball_flight = build_ball_flight_data(
             shooter.pos, target, "shot", on_target=on_target
         )
-        self._pending_event_text = f"{'🎯' if on_target else '💨'} {shooter.name} shoots!"
+        self._pending_event_text = f"{'SHOT ON TARGET' if on_target else 'SHOT'} {shooter.name} shoots!"
+
+    def _execute_carry(self, carrier: Player, action: Action, carrier_team: Team, opponents: Team):
+        """Execute a CARRY action (open space forward movement).
+
+        Speed determines distance (8-15m). Success 85-95%.
+        """
+        carrier.carries_attempted += 1
+
+        success = random.random() < action.success_prob
+
+        if success:
+            carrier.carries_completed += 1
+            # Move carrier toward target
+            speed = carrier.get_move_speed(self.config)
+            carry_dist = self.config.carry_min_distance + (
+                self.config.carry_max_distance - self.config.carry_min_distance
+            ) * carrier.speed_value / 100.0
+            new_pos = move_toward(carrier.pos, action.target, min(speed, carry_dist))
+            new_pos = self.pitch.clamp(new_pos[0], new_pos[1])
+            carrier.distance_covered += distance(carrier.pos, new_pos)
+            carrier.pos = new_pos
+            self.ball.position = new_pos
+
+            self.trace.log_action(
+                self.tick, carrier_team.side, carrier.name, "carry",
+                success=True, distance=round(distance(carrier.pos, new_pos), 1),
+            )
+        else:
+            # Carry failed - ball goes loose
+            carrier.state = PlayerState.OFF_BALL
+            loose_pos = (
+                carrier.pos[0] + random.uniform(-3, 3),
+                carrier.pos[1] + random.uniform(-3, 3),
+            )
+            loose_pos = self.pitch.clamp(loose_pos[0], loose_pos[1])
+            self.ball.set_contested(loose_pos)
+            self._possession_changed_tick = self.tick
+            self.trace.log_action(
+                self.tick, carrier_team.side, carrier.name, "carry", success=False,
+            )
 
     def _execute_dribble(self, dribbler: Player, action: Action, dribbler_team: Team, opponents: Team):
-        """Execute a dribble action."""
+        """Execute a DRIBBLE action (1v1 take-on under pressure).
+
+        Dribbling vs Tackling contest. Displacement 3-5m. Success 40-70%.
+        """
         dribbler.dribbles_attempted += 1
 
-        # Check if successful
         success = random.random() < action.success_prob
 
         if success:
             dribbler.dribbles_completed += 1
-            # Move dribbler toward target
-            speed = dribbler.get_move_speed(self.config) * self.config.dribble_speed_factor
-            new_pos = move_toward(dribbler.pos, action.target, speed)
+            # Move dribbler past defender (3-5m)
+            dribble_dist = random.uniform(3.0, 5.0)
+            new_pos = move_toward(dribbler.pos, action.target, dribble_dist)
             new_pos = self.pitch.clamp(new_pos[0], new_pos[1])
             dribbler.distance_covered += distance(dribbler.pos, new_pos)
             dribbler.pos = new_pos
@@ -398,20 +527,60 @@ class MatchV2:
             )
         else:
             # Dribble failed - loss of possession
-            # Find closest opponent to take ball
             closest_opp = opponents.get_closest_to(dribbler.pos, exclude_gk=True)
             if closest_opp:
                 closest_opp.tackles_attempted += 1
                 closest_opp.tackles_won += 1
                 self._give_ball(closest_opp, opponents)
+                self._possession_changed_tick = self.tick
                 self.trace.log_action(
                     self.tick, dribbler_team.side, dribbler.name, "dribble",
                     success=False, tackled_by=closest_opp.name
                 )
-                self._pending_event_text = f"{closest_opp.name} tackles {dribbler.name}"
             else:
-                # No one nearby - ball just goes loose, re-held
-                pass
+                # Ball goes loose
+                dribbler.state = PlayerState.OFF_BALL
+                self.ball.set_contested(dribbler.pos)
+                self._possession_changed_tick = self.tick
+
+    def _execute_cross(self, crosser: Player, action: Action, crosser_team: Team, opponents: Team):
+        """Execute a CROSS action (aerial delivery into box).
+
+        Uses Long_Passing for accuracy. Ball is aerial -> triggers heading contest.
+        """
+        crosser.crosses_attempted += 1
+        crosser.passes_attempted += 1
+
+        target = action.target
+        dist = distance(crosser.pos, target)
+        speed = self.config.ball_long_pass_speed
+        ticks_needed = max(1, round(dist / speed))
+
+        flight = BallFlight(
+            origin=crosser.pos,
+            target=target,
+            flight_type=FlightType.CROSS,
+            speed=speed,
+            ticks_total=ticks_needed,
+            passer_idx=crosser.index,
+            passer_team=crosser_team.side,
+            is_aerial=True,  # Crosses are always aerial
+        )
+
+        self.last_passer_idx = crosser.index
+        self.last_passer_team = crosser_team.side
+
+        crosser.state = PlayerState.OFF_BALL
+        self.ball.set_flight(flight)
+
+        self.trace.log_action(
+            self.tick, crosser_team.side, crosser.name, "cross",
+            target=target,
+        )
+
+        self._pending_ball_flight = build_ball_flight_data(
+            crosser.pos, target, "pass", on_target=False
+        )
 
     def _resolve_flight_arrival(self):
         """Resolve what happens when a ball flight completes."""
@@ -426,40 +595,199 @@ class MatchV2:
             self._resolve_shot_arrival(flight)
             return
 
-        # It's a pass - check if out of bounds
+        # Check if out of bounds
         if self.pitch.is_out_of_bounds(target_pos[0], target_pos[1]):
             self._handle_out_of_bounds(target_pos, flight)
             return
 
-        # Find intended receiver or closest player from passer's team
+        # Aerial ball -> heading contest (Phase 2)
+        if flight.is_aerial:
+            self._resolve_aerial_arrival(flight)
+            return
+
+        # Ground pass - find receiver
         passer_team = self.home if flight.passer_team == "home" else self.away
         opp_team = self.away if flight.passer_team == "home" else self.home
 
-        # Find closest teammate to target
         receiver = passer_team.get_closest_to(target_pos, exclude_indices=[flight.passer_idx])
         closest_opp = opp_team.get_closest_to(target_pos)
 
         if receiver is None:
-            # No one to receive, opponent gets it
             if closest_opp:
                 self._give_ball(closest_opp, opp_team)
+                self._possession_changed_tick = self.tick
             return
 
         recv_dist = distance(receiver.pos, target_pos)
         opp_dist = distance(closest_opp.pos, target_pos) if closest_opp else 999
 
-        # Determine who gets the ball
         if opp_dist < recv_dist and opp_dist < 5.0:
-            # Opponent intercepts
             if closest_opp:
                 closest_opp.interceptions += 1
                 self._give_ball(closest_opp, opp_team)
+                self._possession_changed_tick = self.tick
                 self.trace.log_event(self.tick, "interception", player=closest_opp.name)
         else:
-            # Receiver gets it - pass successful
             passer = passer_team.players[flight.passer_idx]
             passer.passes_completed += 1
+            # If this was a cross, mark it completed
+            if flight.flight_type == FlightType.CROSS:
+                passer.crosses_completed += 1
             self._give_ball(receiver, passer_team)
+
+    def _resolve_aerial_arrival(self, flight: BallFlight):
+        """Resolve an aerial ball arrival - heading contest (Phase 2).
+
+        All players within heading_contest_radius compete.
+        Each rolls: Heading * random(0.8, 1.2) / (distance_to_landing + 1)
+        Winner can: header shot, headed pass, or ball drops loose.
+        """
+        target_pos = flight.target
+        passer_team = self.home if flight.passer_team == "home" else self.away
+        opp_team = self.away if flight.passer_team == "home" else self.home
+
+        # Find all players within heading contest radius
+        home_in_range = self.home.get_players_in_radius(target_pos, self.config.heading_contest_radius)
+        away_in_range = self.away.get_players_in_radius(target_pos, self.config.heading_contest_radius)
+
+        all_contestants = []
+        for p in home_in_range:
+            all_contestants.append((p, self.home))
+        for p in away_in_range:
+            all_contestants.append((p, self.away))
+
+        if not all_contestants:
+            # No one near landing point - ball goes loose
+            self.ball.set_contested(target_pos)
+            self._possession_changed_tick = self.tick
+            return
+
+        # Each player rolls: Heading * random(0.8, 1.2) / (dist + 1)
+        best_roll = -1.0
+        winner = None
+        winner_team = None
+
+        for p, team in all_contestants:
+            heading = p.abilities.get("Heading", 50)
+            d = distance(p.pos, target_pos)
+            roll = heading * random.uniform(0.8, 1.2) / (d + 1.0)
+            p.headers_attempted += 1
+            if roll > best_roll:
+                best_roll = roll
+                winner = p
+                winner_team = team
+
+        if winner is None:
+            self.ball.set_contested(target_pos)
+            return
+
+        winner.headers_won += 1
+
+        # Determine what winner does with the header
+        # Check if passer gets an assist (pass completed)
+        passer = passer_team.players[flight.passer_idx]
+        if winner_team == passer_team and winner.index != passer.index:
+            passer.passes_completed += 1
+            if flight.flight_type == FlightType.CROSS:
+                passer.crosses_completed += 1
+
+        # Winner options:
+        # 1. Header shot (if near goal)
+        # 2. Headed pass (give ball to winner)
+        # 3. Ball drops loose (CONTESTED)
+        if winner_team:
+            goal_center = (
+                self.pitch.away_goal_center() if winner_team.attacking_right
+                else self.pitch.home_goal_center()
+            )
+            dist_to_goal = distance(winner.pos, goal_center)
+
+            # Header shot if close to goal
+            if dist_to_goal < self.config.heading_shot_distance and not winner.is_goalkeeper:
+                self._execute_header_shot(winner, winner_team, goal_center)
+            elif random.random() < self.config.heading_loose_ball_prob:
+                # Ball drops loose
+                loose_pos = self.pitch.clamp(
+                    target_pos[0] + random.uniform(-3, 3),
+                    target_pos[1] + random.uniform(-3, 3),
+                )
+                self.ball.set_contested(loose_pos)
+                self._possession_changed_tick = self.tick
+                self.trace.log_event(
+                    self.tick, "header_loose",
+                    player=winner.name,
+                )
+            else:
+                # Winner controls the ball
+                self._give_ball(winner, winner_team)
+
+        self.trace.log_event(
+            self.tick, "aerial_contest",
+            winner=winner.name if winner else "",
+            contestants=len(all_contestants),
+        )
+
+    def _execute_header_shot(self, header: Player, header_team: Team, goal_center: Tuple[float, float]):
+        """Execute a header shot on goal."""
+        header.shots += 1
+
+        heading = header.abilities.get("Heading", 50) / 100.0
+        finishing = header.abilities.get("Finishing", 50) / 100.0
+        ability = (heading * 0.6 + finishing * 0.4)
+
+        dist = distance(header.pos, goal_center)
+        dist_factor = max(0.3, 1.0 - dist / self.config.heading_shot_distance)
+
+        on_target_prob = 0.45 * (0.4 + 0.6 * ability) * dist_factor
+        on_target_prob = max(0.1, min(0.70, on_target_prob))
+
+        on_target = random.random() < on_target_prob
+        if on_target:
+            header.shots_on_target += 1
+
+        if on_target:
+            target_y = random.uniform(self.pitch.goal_y_min + 0.5, self.pitch.goal_y_max - 0.5)
+            if header_team.attacking_right:
+                target = (self.config.pitch_length, target_y)
+            else:
+                target = (0.0, target_y)
+        else:
+            if header_team.attacking_right:
+                target_x = self.config.pitch_length + random.uniform(0.5, 3.0)
+            else:
+                target_x = -random.uniform(0.5, 3.0)
+            target_y = random.uniform(self.pitch.goal_y_min - 3, self.pitch.goal_y_max + 3)
+            target = (target_x, target_y)
+
+        dist_to_target = distance(header.pos, target)
+        ticks_needed = max(1, round(dist_to_target / self.config.ball_shot_speed))
+
+        flight = BallFlight(
+            origin=header.pos,
+            target=target,
+            flight_type=FlightType.SHOT,
+            speed=self.config.ball_shot_speed,
+            ticks_total=ticks_needed,
+            passer_idx=header.index,
+            passer_team=header_team.side,
+            on_target=on_target,
+        )
+
+        self.last_passer_idx = header.index
+        self.last_passer_team = header_team.side
+
+        header.state = PlayerState.OFF_BALL
+        self.ball.set_flight(flight)
+
+        self.trace.log_action(
+            self.tick, header_team.side, header.name, "header_shot",
+            on_target=on_target,
+        )
+
+        self._pending_ball_flight = build_ball_flight_data(
+            header.pos, target, "shot", on_target=on_target
+        )
+        self._pending_event_text = f"HEADER! {header.name} heads for goal!"
 
     def _resolve_shot_arrival(self, flight: BallFlight):
         """Resolve a shot arriving at (or near) the goal."""
@@ -469,30 +797,19 @@ class MatchV2:
 
         target_pos = flight.target
 
-        # Check if on target (within goal bounds)
         if not flight.on_target:
-            # Shot missed - goal kick
             self._pending_event_text = f"{shooter.name}'s shot goes wide!"
             self.ball.set_dead("goal_kick", defending_team.side, self.config.goal_kick_restart_ticks)
-            self._record_frame()  # Always record on shot event
+            self._record_frame()
             return
 
-        # Shot is on target - check GK save
+        # Shot is on target - use GK model (Phase 2)
         gk = defending_team.goalkeeper
-        gk_saving = gk.abilities.get("GK_Saving", 50) / 100.0
-        gk_positioning = gk.abilities.get("GK_Positioning", 50) / 100.0
-        gk_reaction = gk.abilities.get("GK_Reaction", 50) / 100.0
 
-        # GK save probability
-        gk_overall = (gk_saving * 0.5 + gk_positioning * 0.3 + gk_reaction * 0.2)
-        save_prob = self.config.gk_save_base * (0.3 + 0.7 * gk_overall)
-
-        # Distance from GK to shot target affects save probability
-        gk_dist = distance(gk.pos, target_pos)
-        if gk_dist > 5.0:
-            save_prob *= max(0.3, 1.0 - (gk_dist - 5.0) / 15.0)
-
-        save_prob = max(0.05, min(0.85, save_prob))
+        # Compute save probability using the 3-stage GK model
+        save_prob = compute_gk_save_probability(
+            gk, target_pos, flight.origin, self.config
+        )
 
         if random.random() < save_prob:
             # SAVE!
@@ -510,7 +827,6 @@ class MatchV2:
         """Record a goal."""
         scorer.goals += 1
 
-        # Check for assist
         assister_name = ""
         assister_color = ""
         if self.last_passer_team == scoring_team.side and self.last_passer_idx != scorer.index:
@@ -549,7 +865,6 @@ class MatchV2:
         # Reset for kickoff
         self.ball.set_dead("kickoff", conceding_team.side, 3)
 
-        # Reset positions to formation
         home_formation_data = FORMATION.get(self.home_formation_key, FORMATION["442"])
         away_formation_data = FORMATION.get(self.away_formation_key, FORMATION["442"])
         self.home.setup_formation(self.pitch, home_formation_data)
@@ -564,14 +879,13 @@ class MatchV2:
         opp_team = self.away if self.ball.holder_team == "home" else self.home
         holder = holder_team.players[self.ball.holder_idx]
 
-        # Find opponents close enough for a contest
         for opp in opp_team.players:
             if opp.is_goalkeeper:
                 continue
             d = distance(opp.pos, holder.pos)
             if d < self.config.contest_radius:
                 self._resolve_contest(holder, opp, holder_team, opp_team)
-                return  # One contest per tick max
+                return
 
     def _resolve_contest(
         self, holder: Player, challenger: Player, holder_team: Team, opp_team: Team
@@ -581,13 +895,10 @@ class MatchV2:
         challenger.state = PlayerState.CONTEST
         challenger.tackles_attempted += 1
 
-        # Contest: Dribbling vs Tackling
         dribbling = holder.abilities.get("Dribbling", 50)
         tackling = challenger.abilities.get("Tackling", 50)
 
-        # Probability holder keeps ball
         holder_strength = dribbling / (dribbling + tackling + 1)
-        # Add some randomness
         holder_strength += random.uniform(-0.1, 0.1)
         holder_strength = max(0.15, min(0.85, holder_strength))
 
@@ -600,12 +911,31 @@ class MatchV2:
         else:
             # Challenger wins ball
             challenger.tackles_won += 1
-            self._give_ball(challenger, opp_team)
-            holder.state = PlayerState.OFF_BALL
-            self.trace.log_event(
-                self.tick, "tackle",
-                tackler=challenger.name, dispossessed=holder.name
-            )
+
+            # Phase 2: sometimes ball goes loose instead of clean tackle
+            if random.random() < 0.25:
+                # Ball goes loose - CONTESTED
+                holder.state = PlayerState.OFF_BALL
+                challenger.state = PlayerState.OFF_BALL
+                loose_pos = self.pitch.clamp(
+                    holder.pos[0] + random.uniform(-3, 3),
+                    holder.pos[1] + random.uniform(-2, 2),
+                )
+                self.ball.set_contested(loose_pos)
+                self._possession_changed_tick = self.tick
+                self.trace.log_event(
+                    self.tick, "tackle_loose",
+                    tackler=challenger.name, dispossessed=holder.name,
+                )
+            else:
+                # Clean tackle - challenger gets ball
+                self._give_ball(challenger, opp_team)
+                holder.state = PlayerState.OFF_BALL
+                self._possession_changed_tick = self.tick
+                self.trace.log_event(
+                    self.tick, "tackle",
+                    tackler=challenger.name, dispossessed=holder.name,
+                )
 
     def _check_interceptions(self):
         """Check if any defender intercepts a ball in flight."""
@@ -620,17 +950,15 @@ class MatchV2:
         for opp in opp_team.players:
             d = distance(opp.pos, ball_pos)
             if d < self.config.interception_radius:
-                # Check interception chance
                 defence = opp.abilities.get("Defence", 50) / 100.0
                 intercept_chance = self.config.interception_base_chance * (0.5 + defence)
-                # Closer = higher chance
                 proximity_bonus = max(0, 1.0 - d / self.config.interception_radius) * 0.15
                 total_chance = intercept_chance + proximity_bonus
 
                 if random.random() < total_chance:
-                    # Intercepted!
                     opp.interceptions += 1
                     self._give_ball(opp, opp_team)
+                    self._possession_changed_tick = self.tick
                     self.trace.log_event(self.tick, "interception", player=opp.name)
                     return
 
@@ -638,37 +966,51 @@ class MatchV2:
         """Move all players and update their targets."""
         home_has_ball = self.ball.holder_team == "home" or (
             self.ball.flight and self.ball.flight.passer_team == "home"
+            and self.ball.state == BallState.IN_FLIGHT
         )
         away_has_ball = self.ball.holder_team == "away" or (
             self.ball.flight and self.ball.flight.passer_team == "away"
+            and self.ball.state == BallState.IN_FLIGHT
         )
 
-        # Update targets
+        # Get ball carrier info for intelligent off-ball decisions
+        ball_carrier = None
+        if self.ball.state == BallState.HELD and self.ball.holder_team:
+            holder_team = self.home if self.ball.holder_team == "home" else self.away
+            ball_carrier = holder_team.players[self.ball.holder_idx]
+
+        # Update targets with Phase 2 intelligent AI
         self.home.update_off_ball(
-            self.ball.position, home_has_ball, self.config, self.pitch
+            self.ball.position, home_has_ball, self.config, self.pitch,
+            ball_carrier=ball_carrier if home_has_ball else None,
+            opponents=self.away.players if home_has_ball else self.home.players,
         )
         self.away.update_off_ball(
-            self.ball.position, away_has_ball, self.config, self.pitch
+            self.ball.position, away_has_ball, self.config, self.pitch,
+            ball_carrier=ball_carrier if away_has_ball else None,
+            opponents=self.home.players if away_has_ball else self.away.players,
         )
 
         # Assign pressers for defending team
         if self.ball.state == BallState.HELD:
             if self.ball.holder_team == "home":
-                self.away.assign_presser(self.ball.position, self.config, self.pitch)
+                self.away.assign_pressers(self.ball.position, self.config, self.pitch)
             else:
-                self.home.assign_presser(self.ball.position, self.config, self.pitch)
+                self.home.assign_pressers(self.ball.position, self.config, self.pitch)
 
-        # Move
+        # Move all players
         self.home.move_all(self.config, self.pitch)
         self.away.move_all(self.config, self.pitch)
 
     def _give_ball(self, player: Player, team: Team):
         """Give the ball to a specific player."""
         # Clear previous holder state
-        if self.ball.holder_team == "home":
-            self.home.players[self.ball.holder_idx].state = PlayerState.OFF_BALL
-        elif self.ball.holder_team == "away":
-            self.away.players[self.ball.holder_idx].state = PlayerState.OFF_BALL
+        if self.ball.holder_team == "home" and self.ball.holder_idx >= 0:
+            if self.ball.holder_idx < len(self.home.players):
+                self.home.players[self.ball.holder_idx].state = PlayerState.OFF_BALL
+        elif self.ball.holder_team == "away" and self.ball.holder_idx >= 0:
+            if self.ball.holder_idx < len(self.away.players):
+                self.away.players[self.ball.holder_idx].state = PlayerState.OFF_BALL
 
         player.state = PlayerState.ON_BALL
         self.ball.set_held(player.index, team.side, player.pos)
@@ -679,25 +1021,17 @@ class MatchV2:
         other_team = "away" if passer_team_side == "home" else "home"
 
         if self.pitch.is_over_goal_line(pos[0]):
-            # Over goal line
             if flight.flight_type == FlightType.SHOT:
-                # Already handled in shot resolution
                 self.ball.set_dead("goal_kick", other_team, self.config.goal_kick_restart_ticks)
             else:
-                # Was it deflected by defender? Simplified: if pass from attacking team
-                # goes over their attacking goal line = goal kick
-                # goes over own goal line = corner for opponent
                 attacking_right = (passer_team_side == "home" and self.home.attacking_right) or \
                                   (passer_team_side == "away" and self.away.attacking_right)
                 if (attacking_right and pos[0] >= self.config.pitch_length) or \
                    (not attacking_right and pos[0] <= 0):
-                    # Attacking team put it over opponent's goal line = goal kick
                     self.ball.set_dead("goal_kick", other_team, self.config.goal_kick_restart_ticks)
                 else:
-                    # Over own goal line = corner for opponent
                     self.ball.set_dead("corner", other_team, self.config.goal_kick_restart_ticks)
         else:
-            # Over touchline = throw-in for other team
             self.ball.set_dead("throw_in", other_team, self.config.throw_in_restart_ticks)
 
     def _restart_play(self):
@@ -706,9 +1040,7 @@ class MatchV2:
         reason = self.ball.dead_reason
 
         if reason == "kickoff":
-            # Kickoff from center
             self.ball.position = self.pitch.center
-            # Give to a midfielder
             closest = restart_team.get_closest_to(self.pitch.center, exclude_gk=True)
             if closest:
                 closest.pos = (self.pitch.center[0], self.pitch.center[1])
@@ -716,21 +1048,16 @@ class MatchV2:
                 self._pending_cut = True
 
         elif reason == "goal_kick":
-            # GK takes goal kick
+            # GK takes goal kick - use distribution model (Phase 2)
             gk = restart_team.goalkeeper
-            self._give_ball(gk, restart_team)
-            # Position ball at 6-yard box
             if restart_team.attacking_right:
-                self.ball.position = (6.0, self.pitch.width / 2.0)
                 gk.pos = (6.0, self.pitch.width / 2.0)
             else:
-                self.ball.position = (self.config.pitch_length - 6.0, self.pitch.width / 2.0)
                 gk.pos = (self.config.pitch_length - 6.0, self.pitch.width / 2.0)
+            self._give_ball(gk, restart_team)
+            self.ball.position = gk.pos
 
         elif reason == "corner":
-            # Corner kick - give to closest outfield player
-            # Place ball in corner
-            opp_team = self.away if restart_team.side == "home" else self.home
             if restart_team.attacking_right:
                 corner_pos = (self.config.pitch_length - 0.5, random.choice([0.5, self.config.pitch_width - 0.5]))
             else:
@@ -743,9 +1070,7 @@ class MatchV2:
                 self._give_ball(closest, restart_team)
 
         elif reason == "throw_in":
-            # Simplified: just give possession to closest player of restart team
             ball_pos = self.ball.position
-            # Clamp ball to touchline
             ball_pos = self.pitch.clamp(ball_pos[0], ball_pos[1])
             self.ball.position = ball_pos
             closest = restart_team.get_closest_to(ball_pos, exclude_gk=True)
@@ -760,7 +1085,6 @@ class MatchV2:
         self.ball.position = self.pitch.center
         team = self.home if team_side == "home" else self.away
 
-        # Find closest midfielder to center
         closest = team.get_closest_to(self.pitch.center, exclude_gk=True)
         if closest:
             closest.pos = self.pitch.center
@@ -801,7 +1125,6 @@ class MatchV2:
         )
         self._replay_frames.append(frame)
 
-        # Clear pending event data
         self._pending_ball_flight = None
         self._pending_event_text = None
         self._pending_pause_ms = None

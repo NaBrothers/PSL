@@ -1,4 +1,4 @@
-"""Match statistics tracking."""
+"""Match statistics tracking (Phase 2)."""
 
 from __future__ import annotations
 
@@ -17,6 +17,9 @@ class MatchStats:
 
     # Events
     goals: List[Dict] = field(default_factory=list)
+
+    # Phase 2: contested events
+    contested_events: int = 0
 
     @property
     def home_possession_pct(self) -> float:
@@ -38,6 +41,10 @@ class MatchStats:
         else:
             # Neutral / dead ball: split equally
             pass
+
+    def record_contested(self):
+        """Record a contested ball event."""
+        self.contested_events += 1
 
     def record_goal(
         self,

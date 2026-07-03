@@ -1,4 +1,11 @@
-"""Action definitions and scoring for player decisions."""
+"""Action definitions and scoring for player decisions (Phase 2).
+
+All actions use the unified scoring framework:
+    score = base_score(situation, abilities) * tactic_weight[phase][action] * role_modifier[action]
+
+For Phase 2, tactic_weight and role_modifier default to 1.0.
+The multiplication is present so Phase 3 can fill them.
+"""
 
 from __future__ import annotations
 
@@ -19,7 +26,25 @@ class ActionType(Enum):
     LONG_PASS = "long_pass"
     SHOOT = "shoot"
     DRIBBLE = "dribble"
-    HOLD = "hold"  # keeper holds
+    CARRY = "carry"
+    CROSS = "cross"
+    HOLD = "hold"  # keeper holds / player holds position
+
+
+class OffBallAttackAction(Enum):
+    HOLD_POSITION = "hold_position"
+    FIND_SPACE = "find_space"
+    MAKE_RUN = "make_run"
+    DROP_DEEP = "drop_deep"
+    GO_WIDE = "go_wide"
+
+
+class OffBallDefendAction(Enum):
+    PRESS = "press"
+    BLOCK_LANE = "block_lane"
+    MAN_MARK = "man_mark"
+    COVER = "cover"
+    HOLD_SHAPE = "hold_shape"
 
 
 @dataclass
@@ -32,11 +57,48 @@ class Action:
     success_prob: float = 0.0  # probability of success
 
 
+# =========================================================================
+# Tactic weight / role modifier stubs (Phase 3 fills these)
+# =========================================================================
+
+def get_tactic_weight(phase: str, action_type: str) -> float:
+    """Get tactic weight for an action in a given phase.
+
+    Phase 2: always returns 1.0.
+    Phase 3 will implement per-tactic lookup tables.
+    """
+    return 1.0
+
+
+def get_role_modifier(position: str, action_type: str) -> float:
+    """Get role modifier for a player position performing an action.
+
+    Phase 2: always returns 1.0.
+    Phase 3 will implement per-role modifiers.
+    """
+    return 1.0
+
+
+def apply_unified_scoring(base_score: float, phase: str, action_type: str, position: str) -> float:
+    """Apply the unified scoring framework.
+
+    score = base_score * tactic_weight[phase][action] * role_modifier[action]
+    """
+    tactic_w = get_tactic_weight(phase, action_type)
+    role_m = get_role_modifier(position, action_type)
+    return base_score * tactic_w * role_m
+
+
+# =========================================================================
+# On-ball action scoring
+# =========================================================================
+
 def score_short_pass(
     passer: "Player",
     target_player: "Player",
     config: "EngineConfig",
     opponents: List["Player"],
+    phase: str = "attacking",
 ) -> Action:
     """Score a short pass action."""
     from .physics import distance
@@ -66,7 +128,11 @@ def score_short_pass(
     forward_bonus = 0.0
     if target_player.pos[0] > passer.pos[0]:
         forward_bonus = 0.2
-    score = success_prob + forward_bonus
+
+    raw_score = success_prob + forward_bonus
+
+    # Apply unified framework
+    score = apply_unified_scoring(raw_score, phase, "short_pass", passer.position)
 
     return Action(ActionType.SHORT_PASS, target_player.pos, target_player.index, score, success_prob)
 
@@ -76,6 +142,7 @@ def score_long_pass(
     target_player: "Player",
     config: "EngineConfig",
     opponents: List["Player"],
+    phase: str = "attacking",
 ) -> Action:
     """Score a long pass action."""
     from .physics import distance
@@ -95,7 +162,9 @@ def score_long_pass(
     forward_bonus = 0.0
     if target_player.pos[0] > passer.pos[0]:
         forward_bonus = 0.3
-    score = success_prob * 0.8 + forward_bonus
+
+    raw_score = success_prob * 0.8 + forward_bonus
+    score = apply_unified_scoring(raw_score, phase, "long_pass", passer.position)
 
     return Action(ActionType.LONG_PASS, target_player.pos, target_player.index, score, success_prob)
 
@@ -105,6 +174,7 @@ def score_shoot(
     goal_center: Tuple[float, float],
     config: "EngineConfig",
     pitch: "Pitch",
+    phase: str = "attacking",
 ) -> Action:
     """Score a shot action."""
     from .physics import distance, angle_to_goal
@@ -140,11 +210,59 @@ def score_shoot(
     on_target_prob = config.shot_on_target_base * (0.4 + 0.6 * ability) * dist_factor * angle_factor
     on_target_prob = max(0.05, min(0.90, on_target_prob))
 
-    # Overall success = on_target * (1 - save_chance)
-    # Save chance is handled during resolution, not scoring
-    score = on_target_prob * dist_factor * 2.5  # shots are high-reward
+    raw_score = on_target_prob * dist_factor * 3.5  # shots are high-reward
+    score = apply_unified_scoring(raw_score, phase, "shoot", shooter.position)
 
     return Action(ActionType.SHOOT, goal_center, -1, score, on_target_prob)
+
+
+def score_carry(
+    carrier: "Player",
+    forward_target: Tuple[float, float],
+    config: "EngineConfig",
+    nearby_opponents: List["Player"],
+    attacking_right: bool,
+    phase: str = "attacking",
+) -> Action:
+    """Score a CARRY action (open space forward movement).
+
+    CARRY is triggered when no defender is ahead within press_radius.
+    Success rate: 85-95% (Speed-driven).
+    Displacement: 8-15m (Speed-driven).
+    """
+    from .physics import distance
+
+    # Check if there's a defender ahead blocking the path
+    has_defender_ahead = False
+    for opp in nearby_opponents:
+        d = distance(carrier.pos, opp.pos)
+        if d < config.carry_defender_check_radius:
+            # Check if defender is in front (in carrying direction)
+            if attacking_right:
+                if opp.pos[0] > carrier.pos[0] and abs(opp.pos[1] - carrier.pos[1]) < 8.0:
+                    has_defender_ahead = True
+                    break
+            else:
+                if opp.pos[0] < carrier.pos[0] and abs(opp.pos[1] - carrier.pos[1]) < 8.0:
+                    has_defender_ahead = True
+                    break
+
+    if has_defender_ahead:
+        # Can't carry in open space - defender blocking
+        return Action(ActionType.CARRY, forward_target, -1, 0.0, 0.0)
+
+    # Speed-driven success probability (85-95%)
+    speed = carrier.abilities.get("Speed", 50) / 100.0
+    success_prob = config.carry_base_success * (0.9 + 0.1 * speed)
+    success_prob = max(0.80, min(0.97, success_prob))
+
+    # Score based on forward progress potential
+    raw_score = success_prob * 0.7
+
+    # Bonus if moving toward goal
+    score = apply_unified_scoring(raw_score, phase, "carry", carrier.position)
+
+    return Action(ActionType.CARRY, forward_target, -1, score, success_prob)
 
 
 def score_dribble(
@@ -152,26 +270,77 @@ def score_dribble(
     forward_target: Tuple[float, float],
     config: "EngineConfig",
     nearby_opponents: List["Player"],
+    phase: str = "attacking",
 ) -> Action:
-    """Score a dribble action."""
+    """Score a DRIBBLE action (1v1 take-on under pressure).
+
+    DRIBBLE is only scored when a defender is pressing.
+    Dribbling vs Tackling contest. Success: 40-70%.
+    Displacement: 3-5m past beaten defender.
+    """
     from .physics import distance
 
-    dribbling = dribbler.abilities.get("Dribbling", 50) / 100.0
-    base = config.dribble_base_success
+    if not nearby_opponents:
+        return Action(ActionType.DRIBBLE, forward_target, -1, 0.0, 0.0)
 
-    # Opponent pressure
-    pressure = 0.0
+    # Find closest opponent (the one being dribbled past)
+    closest_opp = None
+    closest_dist = float("inf")
     for opp in nearby_opponents:
         d = distance(dribbler.pos, opp.pos)
-        if d < config.press_radius:
-            pressure += max(0, 1.0 - d / config.press_radius) * 0.3
+        if d < closest_dist:
+            closest_dist = d
+            closest_opp = opp
 
-    success_prob = base * (0.4 + 0.6 * dribbling) * max(0.2, 1.0 - pressure)
-    success_prob = max(0.1, min(0.90, success_prob))
+    if closest_opp is None or closest_dist > config.press_radius:
+        return Action(ActionType.DRIBBLE, forward_target, -1, 0.0, 0.0)
 
-    score = success_prob * 0.7  # dribbling is moderate reward
+    # Dribbling vs Tackling contest
+    dribbling = dribbler.abilities.get("Dribbling", 50) / 100.0
+    tackling = closest_opp.abilities.get("Tackling", 50) / 100.0
+
+    # Success probability: 40-70% range
+    success_prob = 0.40 + 0.30 * (dribbling / (dribbling + tackling + 0.01))
+    success_prob = max(0.35, min(0.72, success_prob))
+
+    raw_score = success_prob * 0.65  # dribbling is risky
+    score = apply_unified_scoring(raw_score, phase, "dribble", dribbler.position)
 
     return Action(ActionType.DRIBBLE, forward_target, -1, score, success_prob)
+
+
+def score_cross(
+    crosser: "Player",
+    target_pos: Tuple[float, float],
+    config: "EngineConfig",
+    opponents: List["Player"],
+    attacking_right: bool,
+    pitch: "Pitch",
+    phase: str = "attacking",
+) -> Action:
+    """Score a CROSS action (wide position aerial delivery into box).
+
+    Cross is from wide positions near byline, uses Long_Passing for accuracy.
+    """
+    from .physics import distance
+
+    # Check if player is in crossing position (wide + deep)
+    x_progress = crosser.pos[0] / pitch.length if attacking_right else (1.0 - crosser.pos[0] / pitch.length)
+    y_from_center = abs(crosser.pos[1] - pitch.width / 2.0)
+    is_wide = y_from_center > pitch.width * 0.25  # more than 25% away from center
+
+    if x_progress < config.cross_zone_x_threshold or not is_wide:
+        return Action(ActionType.CROSS, target_pos, -1, 0.0, 0.0)
+
+    # Long_Passing determines cross accuracy
+    long_passing = crosser.abilities.get("Long_Passing", 50) / 100.0
+    success_prob = config.cross_base_success * (0.5 + 0.5 * long_passing)
+    success_prob = max(0.25, min(0.80, success_prob))
+
+    raw_score = success_prob * 1.2  # crosses are high-value in attacking position
+    score = apply_unified_scoring(raw_score, phase, "cross", crosser.position)
+
+    return Action(ActionType.CROSS, target_pos, -1, score, success_prob)
 
 
 def select_action_iq_weighted(

@@ -1,4 +1,4 @@
-"""Debug trace output for match analysis."""
+"""Debug trace output for match analysis (Phase 2)."""
 
 from __future__ import annotations
 
@@ -34,7 +34,7 @@ class MatchTrace:
         self.log(tick, "action", team=team, player=player_name, action=action_type, **kwargs)
 
     def log_event(self, tick: int, event_type: str, **kwargs):
-        """Log a match event (goal, save, etc.)."""
+        """Log a match event (goal, save, aerial_contest, contested_won, etc.)."""
         self.log(tick, event_type, **kwargs)
 
     def to_dict(self) -> Dict:
@@ -62,3 +62,14 @@ class MatchTrace:
             "total_entries": len(self.entries),
             "event_counts": event_counts,
         }
+
+    def get_events_by_type(self, event_type: str) -> List[TraceEntry]:
+        """Get all events of a specific type."""
+        return [e for e in self.entries if e.event_type == event_type]
+
+    def get_actions_by_type(self, action_type: str) -> List[TraceEntry]:
+        """Get all action entries of a specific action type."""
+        return [
+            e for e in self.entries
+            if e.event_type == "action" and e.data.get("action") == action_type
+        ]

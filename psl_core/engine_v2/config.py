@@ -41,8 +41,8 @@ class EngineConfig:
 
     # Shot parameters
     shot_on_target_base: float = 0.55
-    gk_save_base: float = 0.64
-    shot_max_distance: float = 35.0  # max effective shooting distance
+    gk_save_base: float = 0.63
+    shot_max_distance: float = 40.0  # max effective shooting distance
     shot_ideal_distance: float = 18.0  # ideal shooting distance
 
     # Pressing
@@ -71,6 +71,77 @@ class EngineConfig:
     stamina_enabled: bool = False
     stamina_drain_per_tick: float = 0.01
     stamina_sprint_multiplier: float = 2.0
+
+    # =========================================================================
+    # Phase 2: Formation Dynamics
+    # =========================================================================
+    formation_advance_factor: float = 0.15  # how aggressively team pushes up with ball
+    formation_side_shift_factor: float = 0.12  # how much team shifts toward ball side
+    compactness: float = 1.0  # vertical tightness (0.5=spread, 1.5=compact)
+    width: float = 1.0  # horizontal spread (0.5=narrow, 1.5=wide)
+
+    # =========================================================================
+    # Phase 2: Transition detection
+    # =========================================================================
+    transition_ticks: int = 3  # ticks a transition state lasts after possession change
+
+    # =========================================================================
+    # Phase 2: Carry action
+    # =========================================================================
+    carry_min_distance: float = 8.0  # min carry distance (meters)
+    carry_max_distance: float = 15.0  # max carry distance (meters)
+    carry_base_success: float = 0.90  # base carry success rate
+    carry_defender_check_radius: float = 12.0  # radius to check for defenders ahead
+
+    # =========================================================================
+    # Phase 2: Cross action
+    # =========================================================================
+    cross_zone_x_threshold: float = 0.70  # x-fraction threshold for cross zone
+    cross_base_success: float = 0.50  # base cross success rate
+    cross_target_box_depth: float = 18.0  # how deep into box crosses target
+
+    # =========================================================================
+    # Phase 2: Aerial / Heading
+    # =========================================================================
+    heading_contest_radius: float = 8.0  # radius within which players compete for aerial ball
+    heading_shot_distance: float = 18.0  # max distance from goal for header shot
+    heading_loose_ball_prob: float = 0.20  # probability ball drops loose after header
+
+    # =========================================================================
+    # Phase 2: Vision system
+    # =========================================================================
+    vision_base_fov: float = 90.0  # base field of view in degrees
+    vision_iq_bonus_factor: float = 0.5  # degrees per IQ point added to FOV
+
+    # =========================================================================
+    # Phase 2: Goalkeeper model
+    # =========================================================================
+    gk_position_error_factor: float = 0.05  # meters of error per (100-Positioning) point
+    gk_reaction_delay_factor: float = 0.005  # fraction of delay per (100-Reaction) point
+    gk_rush_distance: float = 20.0  # distance threshold for GK rush decision
+    gk_rush_success_base: float = 0.50  # base rush-out success
+
+    # =========================================================================
+    # Phase 2: Off-ball movement
+    # =========================================================================
+    find_space_radius: float = 15.0  # radius to search for space
+    make_run_distance: float = 20.0  # distance for forward runs
+    drop_deep_distance: float = 12.0  # distance to drop back toward carrier
+    go_wide_y_target: float = 8.0  # y-distance from sideline for go-wide
+    press_close_speed_bonus: float = 1.2  # speed multiplier when pressing
+    block_lane_offset: float = 5.0  # meters offset for lane blocking
+    cover_depth: float = 8.0  # meters behind pressing teammate
+
+    # =========================================================================
+    # Phase 2: Contested ball
+    # =========================================================================
+    contested_race_radius: float = 15.0  # radius within which players race to loose ball
+    contested_preposition_factor: float = 0.5  # IQ factor for pre-positioning
+
+    # =========================================================================
+    # Phase 2: Tactic weights (all 1.0 for Phase 2, Phase 3 fills)
+    # =========================================================================
+    # These are placeholders - Phase 3 will replace with per-tactic values
 
     def goal_y_min(self) -> float:
         """Y coordinate of near goal post."""
