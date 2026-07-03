@@ -40,9 +40,9 @@ class EngineConfig:
     tackle_base_success: float = 0.45
 
     # Shot parameters
-    shot_on_target_base: float = 0.55
-    gk_save_base: float = 0.63
-    shot_max_distance: float = 40.0  # max effective shooting distance
+    shot_on_target_base: float = 0.38
+    gk_save_base: float = 0.75
+    shot_max_distance: float = 32.0  # max effective shooting distance
     shot_ideal_distance: float = 18.0  # ideal shooting distance
 
     # Pressing
@@ -54,7 +54,7 @@ class EngineConfig:
     decision_temperature: float = 1.0  # softmax temperature base
 
     # Formation positioning
-    formation_pull_strength: float = 0.3  # how strongly players return to formation
+    formation_pull_strength: float = 0.5  # how strongly players return to formation
     forward_bias_attack: float = 8.0  # meters forward bias when attacking
     compact_factor: float = 0.7  # how compact team stays (0=spread, 1=tight)
 
@@ -75,9 +75,9 @@ class EngineConfig:
     # =========================================================================
     # Phase 2: Formation Dynamics
     # =========================================================================
-    formation_advance_factor: float = 0.15  # how aggressively team pushes up with ball
-    formation_side_shift_factor: float = 0.12  # how much team shifts toward ball side
-    compactness: float = 1.0  # vertical tightness (0.5=spread, 1.5=compact)
+    formation_advance_factor: float = 0.08  # how aggressively team pushes up with ball
+    formation_side_shift_factor: float = 0.06  # how much team shifts toward ball side
+    compactness: float = 1.3  # vertical tightness (0.5=spread, 1.5=compact)
     width: float = 1.0  # horizontal spread (0.5=narrow, 1.5=wide)
 
     # =========================================================================

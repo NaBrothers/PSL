@@ -222,27 +222,32 @@ class Player:
         self._execute_off_ball_attack(chosen, ball_pos, config, pitch, attacking_right, ball_carrier, opponents)
 
     def _score_hold_position(self, ball_pos, config, pitch, attacking_right) -> float:
-        """Score for holding formation position."""
-        # Higher score for defenders and when ball is far
+        """Score for holding formation position. Maintains team layers."""
         dist_to_ball = distance(self.pos, ball_pos)
-        base = 0.5
+        base = 0.6
         if self.is_defender:
-            base = 0.7
+            base = 0.85
+        if self.is_midfielder:
+            base = 0.65
         if dist_to_ball > 40.0:
-            base += 0.2
+            base += 0.15
         return apply_unified_scoring(base, "attacking", "hold_position", self.position)
 
     def _score_find_space(self, ball_pos, config, pitch, attacking_right, opponents) -> float:
-        """Score for finding open space."""
-        # Good for midfielders in build-up
-        base = 0.55
-        if self.is_midfielder:
-            base = 0.65
+        """Score for finding open space. Mainly for attackers and midfielders near ball."""
+        base = 0.3
+        if self.is_attacker:
+            base = 0.6
+        elif self.is_midfielder:
+            base = 0.45
+        # Defenders rarely leave position to find space
+        if self.is_defender:
+            base = 0.1
 
         # Higher if currently marked
         nearby_opps = sum(1 for o in opponents if distance(self.pos, o.pos) < 8.0)
         if nearby_opps > 0:
-            base += 0.15
+            base += 0.1
 
         return apply_unified_scoring(base, "attacking", "find_space", self.position)
 
@@ -535,15 +540,16 @@ class Player:
         self.target_pos = (tx, ty)
 
     def _score_press(self, ball_pos, config) -> float:
-        """Score for pressing the ball carrier."""
+        """Score for pressing the ball carrier. Only 1-2 closest should press."""
         dist_to_ball = distance(self.pos, ball_pos)
-        if dist_to_ball > config.press_radius * 2:
-            return 0.05
+        if dist_to_ball > config.press_radius * 1.5:
+            return 0.0
 
-        # Closer = higher score
-        proximity = max(0, 1.0 - dist_to_ball / (config.press_radius * 2))
+        proximity = max(0, 1.0 - dist_to_ball / config.press_radius)
         tackling = self.abilities.get("Tackling", 50) / 100.0
-        base = proximity * 0.6 + tackling * 0.3
+        base = proximity * 0.8 + tackling * 0.1
+        if self.is_defender:
+            base *= 0.5
         return apply_unified_scoring(base, "defending", "press", self.position)
 
     def _score_block_lane(self, ball_pos, config, opponents) -> float:
@@ -589,14 +595,15 @@ class Player:
         return apply_unified_scoring(base, "defending", "cover", self.position)
 
     def _score_hold_shape(self, ball_pos, config) -> float:
-        """Score for holding formation shape."""
+        """Score for holding formation shape. Key for maintaining team structure."""
         dist_to_ball = distance(self.pos, ball_pos)
-        base = 0.4
-        # More value when ball is far (don't over-commit)
-        if dist_to_ball > 30.0:
-            base = 0.6
+        base = 0.65
+        if dist_to_ball > 20.0:
+            base = 0.8
+        if dist_to_ball > 40.0:
+            base = 0.95
         if self.is_defender:
-            base += 0.1
+            base += 0.15
         return apply_unified_scoring(base, "defending", "hold_shape", self.position)
 
     def _select_defend_action(
