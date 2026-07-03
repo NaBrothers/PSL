@@ -141,8 +141,27 @@ class Player:
         )
 
     def get_move_speed(self, config: "EngineConfig") -> float:
-        """Get this player's movement speed in meters per tick."""
-        return player_speed(self.speed_value, config.player_max_speed, config.player_min_speed)
+        """Get movement speed based on current action urgency, not always max."""
+        max_speed = player_speed(self.speed_value, config.player_max_speed, config.player_min_speed)
+        
+        # Pressing/sprinting states use high speed
+        if self.state == PlayerState.PRESSING:
+            return max_speed * 0.85
+        
+        # Distance to target determines urgency
+        dist_to_target = distance(self.pos, self.target_pos)
+        
+        # If already near target, barely move (standing/walking)
+        if dist_to_target < 2.0:
+            return max_speed * 0.05  # basically stationary
+        elif dist_to_target < 5.0:
+            return max_speed * 0.2   # walking
+        elif dist_to_target < 10.0:
+            return max_speed * 0.35  # jogging
+        elif dist_to_target < 20.0:
+            return max_speed * 0.55  # running
+        else:
+            return max_speed * 0.7   # fast run
 
     def move_tick(self, config: "EngineConfig", pitch: "Pitch"):
         """Move player toward their target position for one tick."""
@@ -610,16 +629,18 @@ class Player:
         self.target_pos = (tx, ty)
 
     def _score_press(self, ball_pos, config) -> float:
-        """Score for pressing the ball carrier. Only 1-2 closest should press."""
+        """Score for pressing. Only designated presser should press; others hold shape."""
+        # Only press if assigned as presser (flag set by team.assign_pressers)
+        if not getattr(self, '_is_designated_presser', False):
+            return 0.0
+        
         dist_to_ball = distance(self.pos, ball_pos)
-        if dist_to_ball > config.press_radius * 1.5:
+        if dist_to_ball > config.press_radius * 2:
             return 0.0
 
-        proximity = max(0, 1.0 - dist_to_ball / config.press_radius)
+        proximity = max(0, 1.0 - dist_to_ball / (config.press_radius * 2))
         tackling = self.abilities.get("Tackling", 50) / 100.0
-        base = proximity * 0.8 + tackling * 0.1
-        if self.is_defender:
-            base *= 0.5
+        base = 0.9 * proximity + tackling * 0.1  # high score for designated presser
         return apply_unified_scoring(base, "defending", "press", self.position)
 
     def _score_block_lane(self, ball_pos, config, opponents) -> float:
@@ -892,7 +913,7 @@ class Player:
 
         # DRIBBLE: 1v1 take-on when pressed
         if not self.is_goalkeeper:
-            nearby_opps = [o for o in opponents if distance(self.pos, o.pos) < config.press_radius]
+            nearby_opps = [o for o in opponents if distance(self.pos, o.pos) < config.contest_radius * 2.5]
             if nearby_opps:
                 if attacking_right:
                     dx = random.uniform(3.0, 5.0)

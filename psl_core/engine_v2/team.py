@@ -214,20 +214,25 @@ class Team:
     def assign_pressers(
         self, ball_carrier_pos: Tuple[float, float], config: "EngineConfig", pitch: "Pitch"
     ):
-        """Assign one or two closest non-GK players to press the ball carrier."""
-        # Find up to 2 pressers
+        """Assign one closest non-GK player to press the ball carrier."""
+        # Clear all presser flags first
+        for p in self.players:
+            p._is_designated_presser = False
+        
+        # Find closest eligible presser
         candidates = []
         for p in self.players:
             if p.is_goalkeeper or p.state == PlayerState.ON_BALL:
                 continue
             d = distance(p.pos, ball_carrier_pos)
-            if d < config.press_radius:
+            if d < config.press_radius * 2:
                 candidates.append((d, p))
 
         candidates.sort(key=lambda x: x[0])
 
-        # First player presses directly
+        # Only the closest player is designated presser
         if candidates:
+            candidates[0][1]._is_designated_presser = True
             candidates[0][1].decide_press(ball_carrier_pos, config, pitch)
 
     # Keep backward compatibility

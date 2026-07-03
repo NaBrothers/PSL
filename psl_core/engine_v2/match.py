@@ -894,7 +894,7 @@ class MatchV2:
         self.away.setup_formation(self.pitch, away_formation_data)
 
     def _check_contests(self):
-        """Check if any pressing player triggers a contest."""
+        """Check if the designated presser triggers a contest."""
         if self.ball.state != BallState.HELD:
             return
 
@@ -902,8 +902,12 @@ class MatchV2:
         opp_team = self.away if self.ball.holder_team == "home" else self.home
         holder = holder_team.players[self.ball.holder_idx]
 
+        # Only the designated presser can trigger a contest
+        # And only if they are actively pressing (not just standing nearby)
         for opp in opp_team.players:
             if opp.is_goalkeeper:
+                continue
+            if opp.state != PlayerState.PRESSING:
                 continue
             d = distance(opp.pos, holder.pos)
             if d < self.config.contest_radius:
