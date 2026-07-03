@@ -174,6 +174,7 @@ class Player:
         attacking_right: bool,
         ball_carrier: Optional["Player"] = None,
         opponents: Optional[List["Player"]] = None,
+        teammates: Optional[List["Player"]] = None,
     ):
         """Intelligent attacking off-ball decision (Phase 2).
 
@@ -186,6 +187,8 @@ class Player:
         """
         if opponents is None:
             opponents = []
+        if teammates is None:
+            teammates = []
 
         # GK special: always hold position when team has ball
         if self.is_goalkeeper:
@@ -200,11 +203,11 @@ class Player:
         candidates.append((hold_score, OffBallAttackAction.HOLD_POSITION))
 
         # 2. FIND_SPACE
-        space_score = self._score_find_space(ball_pos, config, pitch, attacking_right, opponents)
+        space_score = self._score_find_space(ball_pos, config, pitch, attacking_right, opponents, teammates)
         candidates.append((space_score, OffBallAttackAction.FIND_SPACE))
 
         # 3. MAKE_RUN (only for attackers/midfielders, when conditions met)
-        run_score = self._score_make_run(ball_pos, config, pitch, attacking_right, ball_carrier, opponents)
+        run_score = self._score_make_run(ball_pos, config, pitch, attacking_right, ball_carrier, opponents, teammates)
         candidates.append((run_score, OffBallAttackAction.MAKE_RUN))
 
         # 4. DROP_DEEP
@@ -212,7 +215,7 @@ class Player:
         candidates.append((deep_score, OffBallAttackAction.DROP_DEEP))
 
         # 5. GO_WIDE
-        wide_score = self._score_go_wide(ball_pos, config, pitch, attacking_right, opponents)
+        wide_score = self._score_go_wide(ball_pos, config, pitch, attacking_right, opponents, teammates)
         candidates.append((wide_score, OffBallAttackAction.GO_WIDE))
 
         # Select action using IQ-weighted selection
@@ -220,6 +223,36 @@ class Player:
 
         # Execute chosen action
         self._execute_off_ball_attack(chosen, ball_pos, config, pitch, attacking_right, ball_carrier, opponents)
+
+    def _compute_structure_bonus(self, target_pos, teammates, config, pitch) -> float:
+        """Reward actions that maintain good team structure."""
+        bonus = 1.0
+
+        # 1. Don't go where teammates already are (spacing)
+        for tm in teammates:
+            if tm.index == self.index:
+                continue
+            d = distance(target_pos, tm.pos)
+            if d < 8.0:  # too close to a teammate
+                bonus *= 0.5
+
+        # 2. Stay within your zone (defenders shouldn't run to forward positions)
+        dist_from_home = distance(target_pos, self.formation_pos)
+        max_roam = 25.0 if self.is_attacker else 18.0 if self.is_midfielder else 12.0
+        if dist_from_home > max_roam:
+            bonus *= 0.3
+
+        # 3. Team width reward - if we're going wide and no one else is wide on that side
+        mid_y = pitch.width / 2
+        if abs(target_pos[1] - mid_y) > 20:  # going to a wide position
+            others_wide_same_side = sum(
+                1 for tm in teammates
+                if abs(tm.pos[1] - target_pos[1]) < 10 and tm.index != self.index
+            )
+            if others_wide_same_side == 0:
+                bonus *= 1.4  # reward - we're providing width no one else gives
+
+        return max(0.2, min(1.5, bonus))
 
     def _score_hold_position(self, ball_pos, config, pitch, attacking_right) -> float:
         """Score for holding formation position. Maintains team layers."""
@@ -233,8 +266,10 @@ class Player:
             base += 0.15
         return apply_unified_scoring(base, "attacking", "hold_position", self.position)
 
-    def _score_find_space(self, ball_pos, config, pitch, attacking_right, opponents) -> float:
+    def _score_find_space(self, ball_pos, config, pitch, attacking_right, opponents, teammates=None) -> float:
         """Score for finding open space. Mainly for attackers and midfielders near ball."""
+        if teammates is None:
+            teammates = []
         base = 0.3
         if self.is_attacker:
             base = 0.6
@@ -249,13 +284,20 @@ class Player:
         if nearby_opps > 0:
             base += 0.1
 
+        # Apply team structure bonus
+        target = self._find_best_space(config, pitch, opponents)
+        structure_bonus = self._compute_structure_bonus(target, teammates, config, pitch)
+        base *= structure_bonus
+
         return apply_unified_scoring(base, "attacking", "find_space", self.position)
 
-    def _score_make_run(self, ball_pos, config, pitch, attacking_right, carrier, opponents) -> float:
+    def _score_make_run(self, ball_pos, config, pitch, attacking_right, carrier, opponents, teammates=None) -> float:
         """Score for making a forward run behind the defense.
 
         Conditions: carrier facing + space ahead + player is attacker/midfielder
         """
+        if teammates is None:
+            teammates = []
         if self.is_defender:
             return 0.0
 
@@ -283,6 +325,15 @@ class Player:
         # Speed bonus for making runs
         speed_factor = self.speed_value / 100.0
         base += speed_factor * 0.2
+
+        # Apply team structure bonus using estimated run target
+        run_dist = config.make_run_distance * (0.7 + 0.3 * self.speed_value / 100.0)
+        if attacking_right:
+            target_pos = pitch.clamp(self.pos[0] + run_dist, self.pos[1])
+        else:
+            target_pos = pitch.clamp(self.pos[0] - run_dist, self.pos[1])
+        structure_bonus = self._compute_structure_bonus(target_pos, teammates, config, pitch)
+        base *= structure_bonus
 
         return apply_unified_scoring(base, "attacking", "make_run", self.position)
 
@@ -313,8 +364,10 @@ class Player:
 
         return apply_unified_scoring(base, "attacking", "drop_deep", self.position)
 
-    def _score_go_wide(self, ball_pos, config, pitch, attacking_right, opponents) -> float:
+    def _score_go_wide(self, ball_pos, config, pitch, attacking_right, opponents, teammates=None) -> float:
         """Score for going wide to stretch the defense."""
+        if teammates is None:
+            teammates = []
         # Best for wide players
         base = 0.3
         if self.is_wide:
@@ -325,6 +378,15 @@ class Player:
         if y_from_center > pitch.width * 0.3:
             # Already wide, less value in going wider
             base *= 0.5
+
+        # Apply team structure bonus for the wide target position
+        if self.pos[1] < pitch.width / 2.0:
+            target_y = config.go_wide_y_target
+        else:
+            target_y = pitch.width - config.go_wide_y_target
+        target_pos = pitch.clamp(self.formation_pos[0], target_y)
+        structure_bonus = self._compute_structure_bonus(target_pos, teammates, config, pitch)
+        base *= structure_bonus
 
         return apply_unified_scoring(base, "attacking", "go_wide", self.position)
 
@@ -427,15 +489,23 @@ class Player:
         pitch: "Pitch",
         opponents: List["Player"],
     ) -> Tuple[float, float]:
-        """Find the position with most space (away from defenders) within search radius."""
+        """Find the position with most space (away from defenders) within player's tactical zone."""
         best_pos = self.formation_pos
         best_space = 0.0
 
-        # Sample several candidate positions
-        for _ in range(6):
-            cx = self.pos[0] + random.uniform(-config.find_space_radius, config.find_space_radius)
-            cy = self.pos[1] + random.uniform(-config.find_space_radius, config.find_space_radius)
+        # Constrain search to within max_roam of formation position (tactical zone)
+        max_roam = 25.0 if self.is_attacker else 18.0 if self.is_midfielder else 12.0
+        search_radius = min(config.find_space_radius, max_roam)
+
+        # Sample several candidate positions within tactical zone
+        for _ in range(5):
+            cx = self.formation_pos[0] + random.uniform(-search_radius, search_radius)
+            cy = self.formation_pos[1] + random.uniform(-search_radius, search_radius)
             cx, cy = pitch.clamp(cx, cy)
+
+            # Ensure candidate is within max_roam of formation position
+            if distance((cx, cy), self.formation_pos) > max_roam:
+                continue
 
             # Compute space value: minimum distance to any opponent
             min_opp_dist = min(

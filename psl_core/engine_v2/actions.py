@@ -143,6 +143,13 @@ def score_short_pass(
 
     position_value = min(1.0, role_value + progress_bonus)
 
+    # Penalty for skipping positional lines (def->mid->fwd progression)
+    passer_line = 0 if passer.is_goalkeeper else 1 if passer.is_defender else 2 if passer.is_midfielder else 3
+    target_line = 0 if target_player.is_goalkeeper else 1 if target_player.is_defender else 2 if target_player.is_midfielder else 3
+    line_skip = target_line - passer_line
+    if line_skip > 1:  # skipping a line (e.g., def directly to fwd)
+        position_value *= 0.6  # penalty for bypassing midfield
+
     raw_score = success_prob * position_value
 
     # Apply unified framework
@@ -177,7 +184,15 @@ def score_long_pass(
     if target_player.pos[0] > passer.pos[0]:
         forward_bonus = 0.3
 
-    raw_score = success_prob * 0.7 + forward_bonus
+    # Penalty for skipping positional lines (def->mid->fwd progression)
+    passer_line = 0 if passer.is_goalkeeper else 1 if passer.is_defender else 2 if passer.is_midfielder else 3
+    target_line = 0 if target_player.is_goalkeeper else 1 if target_player.is_defender else 2 if target_player.is_midfielder else 3
+    line_skip = target_line - passer_line
+    line_skip_penalty = 1.0
+    if line_skip > 1:  # skipping a line (e.g., def directly to fwd)
+        line_skip_penalty = 0.6  # penalty for bypassing midfield
+
+    raw_score = (success_prob * 0.7 + forward_bonus) * line_skip_penalty
     score = apply_unified_scoring(raw_score, phase, "long_pass", passer.position)
 
     return Action(ActionType.LONG_PASS, target_player.pos, target_player.index, score, success_prob)

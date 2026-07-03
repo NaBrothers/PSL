@@ -40,8 +40,8 @@ class EngineConfig:
     tackle_base_success: float = 0.45
 
     # Shot parameters
-    shot_on_target_base: float = 0.36
-    gk_save_base: float = 0.73
+    shot_on_target_base: float = 0.32
+    gk_save_base: float = 0.78
     shot_max_distance: float = 28.0  # max effective shooting distance
     shot_ideal_distance: float = 18.0  # ideal shooting distance
 

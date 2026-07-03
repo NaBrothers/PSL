@@ -202,6 +202,7 @@ class Team:
                     ball_pos, config, pitch, self.attacking_right,
                     ball_carrier=ball_carrier,
                     opponents=opponents or [],
+                    teammates=self.players,
                 )
             else:
                 player.state = PlayerState.OFF_BALL

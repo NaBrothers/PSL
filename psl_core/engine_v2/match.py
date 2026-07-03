@@ -384,7 +384,6 @@ class MatchV2:
             self._execute_cross(holder, action, holder_team, opponents)
         elif action.action_type == ActionType.HOLD:
             self._execute_hold(holder, action, holder_team)
-            self._execute_cross(holder, action, holder_team, opponents)
 
     def _execute_pass(
         self, passer: Player, action: Action, passer_team: Team, opponents: Team, is_long: bool
