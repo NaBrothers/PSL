@@ -659,7 +659,7 @@ class MatchV2:
         recv_dist = distance(receiver.pos, target_pos)
         opp_dist = distance(closest_opp.pos, target_pos) if closest_opp else 999
 
-        if opp_dist < recv_dist and opp_dist < 5.0:
+        if opp_dist < recv_dist * 0.5 and opp_dist < 3.0:
             if closest_opp:
                 closest_opp.interceptions += 1
                 self._give_ball(closest_opp, opp_team)

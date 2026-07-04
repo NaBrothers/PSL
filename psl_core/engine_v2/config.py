@@ -60,8 +60,8 @@ class EngineConfig:
 
     # Match balance
     possession_inertia: float = 0.6  # probability of retaining possession on loose ball
-    interception_radius: float = 5.0  # distance within which interception is checked
-    interception_base_chance: float = 0.15  # base interception probability per defender in radius
+    interception_radius: float = 3.0  # distance within which interception is checked
+    interception_base_chance: float = 0.06  # base interception probability per defender in radius
 
     # Out-of-play
     goal_kick_restart_ticks: int = 2  # ticks to wait after goal kick
