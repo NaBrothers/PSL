@@ -1030,10 +1030,24 @@ class Player:
         # tactic_weight slot for Phase 3: release_threshold *= tactic_weight["release_eagerness"]
         release_threshold = max(0.2, min(0.8, release_threshold))
 
+        # Compute goal position for shot evaluation
+        if attacking_right:
+            goal_center = pitch.away_goal_center()
+        else:
+            goal_center = pitch.home_goal_center()
+
         # Time-based settling: player must hold ball for minimum ticks before releasing
         ticks_held = getattr(self, '_ticks_with_ball', 0)
+        
+        # Exception: always allow shots if in shooting range (don't need to settle to shoot)
+        dist_to_goal = distance(self.pos, goal_center)
+        if dist_to_goal <= config.shot_max_distance:
+            action = score_shoot(self, goal_center, config, pitch, phase)
+            if action.score > release_threshold * 0.8:  # lower threshold for shots
+                return action
+        
         if ticks_held <= 4:
-            # Just received: NEVER release (settling ball, observing)
+            # Just received: don't release yet (settling ball, observing)
             return None
         elif ticks_held <= 6:
             # Still settling: only release for exceptional opportunity (shoot)
