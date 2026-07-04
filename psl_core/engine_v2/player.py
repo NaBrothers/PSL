@@ -722,7 +722,18 @@ class Player:
                     chosen_pos = candidates[i][1]
                     break
 
-        self.target_pos = chosen_pos
+        # Clamp: players don't roam too far from formation
+        max_roam = 25.0 if self.is_attacker else 20.0 if self.is_midfielder else 15.0
+        from .physics import distance as _dist
+        roam_dist = _dist(chosen_pos, self.formation_pos)
+        if roam_dist > max_roam:
+            ratio = max_roam / roam_dist
+            self.target_pos = (
+                self.formation_pos[0] + (chosen_pos[0] - self.formation_pos[0]) * ratio,
+                self.formation_pos[1] + (chosen_pos[1] - self.formation_pos[1]) * ratio,
+            )
+        else:
+            self.target_pos = chosen_pos
         return self.target_pos
 
     # =========================================================================
@@ -821,7 +832,20 @@ class Player:
         details = chosen[2]
 
         # Set target position based on choice
-        self.target_pos = details.get("target", self.formation_pos)
+        raw_target = details.get("target", self.formation_pos)
+        # Clamp: defenders don't roam more than max_roam from formation
+        max_roam = 20.0 if self.is_defender else 30.0 if self.is_midfielder else 40.0
+        from .physics import distance as _dist
+        roam_dist = _dist(raw_target, self.formation_pos)
+        if roam_dist > max_roam:
+            # Move toward target but only up to max_roam
+            ratio = max_roam / roam_dist
+            self.target_pos = (
+                self.formation_pos[0] + (raw_target[0] - self.formation_pos[0]) * ratio,
+                self.formation_pos[1] + (raw_target[1] - self.formation_pos[1]) * ratio,
+            )
+        else:
+            self.target_pos = raw_target
 
         # If approaching, set pressing state
         if action_type == "approach":
