@@ -872,20 +872,21 @@ class Player:
             return None  # GK holds briefly
 
         # ---------------------------------------------------------------
-        # Layer 3: Forced decision check (highest priority)
-        # If an opponent is very close and closing, must act immediately
+        # Layer 3: Forced decision check (only after minimum hold time)
+        # Must have ball for at least 3 ticks before forced decision applies
         # ---------------------------------------------------------------
-        pressers = [
-            o for o in opponents
-            if distance(self.pos, o.pos) < config.forced_decision_radius
-            and not o.is_goalkeeper
-        ]
-        if pressers:
-            forced = self._forced_decision(
-                pressers, teammates, opponents, config, pitch, attacking_right, phase
-            )
-            if forced is not None:
-                return forced
+        if self._ticks_with_ball >= 3:
+            pressers = [
+                o for o in opponents
+                if distance(self.pos, o.pos) < config.forced_decision_radius
+                and not o.is_goalkeeper
+            ]
+            if pressers:
+                forced = self._forced_decision(
+                    pressers, teammates, opponents, config, pitch, attacking_right, phase
+                )
+                if forced is not None:
+                    return forced
 
         # ---------------------------------------------------------------
         # Layer 1: Movement with ball (always happens)
@@ -1030,28 +1031,15 @@ class Player:
         # tactic_weight slot for Phase 3: release_threshold *= tactic_weight["release_eagerness"]
         release_threshold = max(0.2, min(0.8, release_threshold))
 
-        # Compute goal position for shot evaluation
-        if attacking_right:
-            goal_center = pitch.away_goal_center()
-        else:
-            goal_center = pitch.home_goal_center()
-
         # Time-based settling: player must hold ball for minimum ticks before releasing
         ticks_held = getattr(self, '_ticks_with_ball', 0)
         
-        # Exception: always allow shots if in shooting range (don't need to settle to shoot)
-        dist_to_goal = distance(self.pos, goal_center)
-        if dist_to_goal <= config.shot_max_distance:
-            action = score_shoot(self, goal_center, config, pitch, phase)
-            if action.score > release_threshold * 0.8:  # lower threshold for shots
-                return action
-        
-        if ticks_held <= 4:
+        if ticks_held <= 2:
             # Just received: don't release yet (settling ball, observing)
             return None
-        elif ticks_held <= 6:
+        elif ticks_held <= 4:
             # Still settling: only release for exceptional opportunity (shoot)
-            release_threshold *= 1.5
+            release_threshold *= 1.3
         elif ticks_held <= 6:
             # Observing: slightly elevated threshold
             release_threshold *= 1.1

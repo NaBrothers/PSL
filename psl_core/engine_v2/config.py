@@ -142,14 +142,14 @@ class EngineConfig:
     # Phase 2: Layered on-ball decision model
     # =========================================================================
     # Release threshold: how good must an opportunity be to trigger passing
-    release_threshold_base: float = 0.45  # x tactic_weight["release_eagerness"] (Phase 3)
+    release_threshold_base: float = 0.25  # x tactic_weight["release_eagerness"] (Phase 3)
 
     # Carrier movement speed (meters per tick while carrying the ball)
-    carrier_jog_speed: float = 3.0  # default jogging with ball
-    carrier_sprint_speed: float = 5.0  # when clear space ahead
+    carrier_jog_speed: float = 4.0  # default jogging with ball
+    carrier_sprint_speed: float = 6.5  # when clear space ahead
 
     # Forced decision distance (opponent approaching)
-    forced_decision_radius: float = 4.5  # must decide when opponent this close and closing
+    forced_decision_radius: float = 2.5  # must decide when opponent this close and closing
 
     # IQ effect on release evaluation
     iq_threshold_adjustment: float = 0.003  # per IQ point, adjusts release threshold
