@@ -9,6 +9,7 @@ interface ReplayFrame {
   home: [number, number][]
   away: [number, number][]
   ball_holder: number | null
+  ball?: [number, number] | null
   ball_team: string | null
   score: [number, number]
   ball_flight?: { from: [number, number]; to: [number, number]; path?: [number, number][]; type: string; on_target?: boolean }
@@ -215,16 +216,18 @@ export default function ReplayHighlights({ replayUrl }: Props) {
 
     // Ball
     let ballX: number, ballY: number
-    if (frame.ball_flight) {
+    const nextBallFrame = f[idx + 1]
+    if (frame.ball && nextBallFrame?.ball && !frame.cut && !nextBallFrame.cut) {
+      // Use explicit ball position with interpolation
+      ballX = lerp(frame.ball[0], nextBallFrame.ball![0], interpT)
+      ballY = lerp(frame.ball[1], nextBallFrame.ball![1], interpT)
+    } else if (frame.ball) {
+      ballX = frame.ball[0]; ballY = frame.ball[1]
+    } else if (frame.ball_flight) {
       const bf = frame.ball_flight, path = bf.path || [bf.from, bf.to]
       const p = Math.min(interpT, 1), segCount = path.length-1
       const scaled = Math.min(p*segCount, segCount-0.0001), seg = Math.floor(scaled), local = scaled-seg
       ballX = lerp(path[seg][0], path[seg+1][0], local); ballY = lerp(path[seg][1], path[seg+1][1], local)
-      let trailColor = 'rgba(255,255,255,0.3)'
-      if (bf.type === 'shot') trailColor = bf.on_target ? '#ff7043' : '#888'
-      ctx.beginPath(); ctx.moveTo(path[0][0]*SCALE_X, path[0][1]*SCALE_Y)
-      for (let i = 1; i < path.length; i++) ctx.lineTo(path[i][0]*SCALE_X, path[i][1]*SCALE_Y)
-      ctx.strokeStyle = trailColor; ctx.lineWidth = 1.5; ctx.setLineDash([3,3]); ctx.stroke(); ctx.setLineDash([])
     } else {
       const holder = frame.ball_team==='home' ? home[frame.ball_holder!] : frame.ball_team==='away' ? away[frame.ball_holder!] : null
       if (holder) { ballX = holder[0]; ballY = holder[1] } else { ballX = PITCH_W/2; ballY = PITCH_H/2 }

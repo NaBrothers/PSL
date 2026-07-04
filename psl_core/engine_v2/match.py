@@ -1188,6 +1188,7 @@ class MatchV2:
             half=self.half,
             home_team=self.home,
             away_team=self.away,
+            ball_pos=self.ball.position,
             ball_holder_idx=self.ball.holder_idx,
             ball_team=self.ball.holder_team if self.ball.holder_team else None,
             home_score=self.home_score,
