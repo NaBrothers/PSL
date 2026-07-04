@@ -358,13 +358,8 @@ class MatchV2:
         # =====================================================================
 
         # Handle wasted tackles first (defender stunned for nothing)
-        for wt in wasted_tackles:
-            wt.defender.apply_stun(self.config)
-            wt.defender.tackles_attempted += 1
-            self.trace.log_event(
-                self.tick, "wasted_tackle",
-                player=wt.defender.name, team=opp_team.side,
-            )
+        # Wasted tackles: no penalty, defender just continues (didn't actually commit)
+        # (Only actual duel losses cause stun)
 
         # Resolve DUEL (carry vs tackle)
         if duel_interaction is not None:

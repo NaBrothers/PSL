@@ -172,9 +172,9 @@ class EngineConfig:
     interception_reach: float = 3.5  # meters - perpendicular distance to pass path
 
     # Unforced errors
-    pass_error_divisor: float = 500.0  # (100-Passing)/divisor = error chance
-    first_touch_error_divisor: float = 400.0  # (100-IQ)/divisor = error chance
-    carry_error_divisor: float = 600.0  # (100-Dribbling)/divisor = error chance
+    pass_error_divisor: float = 800.0  # (100-Passing)/divisor = error chance
+    first_touch_error_divisor: float = 700.0  # (100-IQ)/divisor = error chance
+    carry_error_divisor: float = 900.0  # (100-Dribbling)/divisor = error chance
 
     # Rewards
     goal_reward_constant: float = 0.9  # multiplier for shoot score to make competitive

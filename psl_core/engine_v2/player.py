@@ -518,23 +518,19 @@ class Player:
         })
 
     def _score_clear(self, x_progress: float, pressure: int, config: "EngineConfig") -> float:
-        """Score clearance.
+        """Score clearance. Only a last resort under extreme pressure in own box."""
+        if x_progress > 0.35:
+            return 0.0  # never clear when not deep in own half
 
-        score = 0.1 normally, 0.8 when in own third under pressure
-        """
-        if x_progress > 0.45:
-            # Not in defensive zone, clearance has very low value
-            return config.clear_reward_base * 0.1
-
-        # In own third: high danger when under pressure
-        if x_progress < 0.33 and pressure >= 2:
-            return 0.8
-
-        # In own half with some pressure
-        danger = (0.45 - x_progress) * 2.0  # 0..0.9
-        pressure_factor = min(3.0, pressure) / 3.0  # 0..1
-        score = config.clear_reward_base + danger * pressure_factor * 0.5
-        return score
+        # Only consider clearing under heavy pressure (3+) in own box
+        if x_progress < 0.15 and pressure >= 3:
+            return 0.5  # extreme danger, clear it
+        
+        # Moderate pressure in own third
+        if pressure >= 2:
+            return 0.2  # might clear, but pass is usually better
+        
+        return 0.0  # no pressure = no reason to clear
 
     def _gk_choose(
         self,
