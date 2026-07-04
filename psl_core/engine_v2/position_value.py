@@ -47,9 +47,9 @@ def position_value(
     opp_count = 0
     for ox, oy in opponent_positions:
         d = math.sqrt((x - ox) ** 2 + (y - oy) ** 2)
-        if d < 10.0:
-            opp_count += 1
-    space_factor = 1.0 / (1.0 + opp_count * 0.4)
+        if d < 12.0:
+            opp_count += 1.0 - d / 12.0  # closer opponents count more
+    space_factor = 1.0 / (1.0 + opp_count * 0.8)  # much stronger penalty
 
     # 3. Crowding penalty (too many teammates = redundant)
     tm_count = 0

@@ -470,12 +470,10 @@ class Player:
         on_target_prob = config.shot_on_target_base * (0.4 + 0.6 * ability) * dist_factor * angle_factor
         on_target_prob = max(0.05, min(0.85, on_target_prob))
 
-        # Save estimate (rough estimate using base GK save rate)
-        # Higher estimate = less incentive to shoot from range
-        gk_save_estimate = config.gk_save_base * 0.85
+        # GK save only matters at execution time, not decision time
 
         # Score = on_target_prob * (1 - save_estimate) * goal_reward
-        score = on_target_prob * (1.0 - gk_save_estimate) * config.goal_reward_constant
+        score = on_target_prob * config.goal_reward_constant  # GK ability only affects execution, not decision
 
         return (score, {
             "target": goal_center,
