@@ -40,9 +40,9 @@ class EngineConfig:
     tackle_base_success: float = 0.45
 
     # Shot parameters
-    shot_on_target_base: float = 0.35
-    gk_save_base: float = 0.70
-    shot_max_distance: float = 28.0  # max effective shooting distance
+    shot_on_target_base: float = 0.38
+    gk_save_base: float = 0.80
+    shot_max_distance: float = 22.0  # max effective shooting distance
     shot_ideal_distance: float = 18.0  # ideal shooting distance
 
     # Pressing
@@ -177,7 +177,7 @@ class EngineConfig:
     carry_error_divisor: float = 600.0  # (100-Dribbling)/divisor = error chance
 
     # Rewards
-    goal_reward_constant: float = 2.2  # multiplier for shoot score to make competitive
+    goal_reward_constant: float = 2.5  # multiplier for shoot score to make competitive
     clear_reward_base: float = 0.3  # base for clearance when not under pressure
 
     # Carrier movement (reward-driven model)
