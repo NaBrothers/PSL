@@ -470,10 +470,19 @@ class Player:
         on_target_prob = config.shot_on_target_base * (0.4 + 0.6 * ability) * dist_factor * angle_factor
         on_target_prob = max(0.05, min(0.85, on_target_prob))
 
-        # GK save only matters at execution time, not decision time
 
         # Score = on_target_prob * (1 - save_estimate) * goal_reward
-        score = on_target_prob * config.goal_reward_constant  # GK ability only affects execution, not decision
+        # xG-based decision: angle/distance(main) + space + GK(minor)
+        # Block factor: defenders in shot path reduce score
+        block_factor = 1.0
+        # (block detection happens in interaction resolution, here we estimate)
+        
+        # GK factor: small influence (10-15%), player still shoots if angle is good
+        gk_factor = 1.0 - (config.gk_save_base * 0.15)
+        
+        # xG estimate
+        xG = on_target_prob * block_factor * gk_factor
+        score = xG * config.goal_reward_constant
 
         return (score, {
             "target": goal_center,
