@@ -791,7 +791,11 @@ class Player:
                 approach_target = predicted
             else:
                 approach_target = ball_pos
-            candidates.append((approach_score, "approach", {"target": approach_target}))
+            # Only designated presser approaches at full score. Others stay back.
+            # Phase 3 slot: tactic_weight["pressing_intensity"] controls how many press
+            if getattr(self, '_is_closest_presser', False):
+                candidates.append((approach_score, "approach", {"target": approach_target}))
+            # Non-pressers: don't approach (mark/block/hold are better choices)
 
         # 2. TACKLE: score = success_rate * ball_value - (1-success_rate) * stun_cost
         if ball_carrier and dist_to_ball < config.tackle_range:
