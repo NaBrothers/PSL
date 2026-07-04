@@ -651,10 +651,10 @@ class Player:
                         if perp < 4.0:
                             receive_chance *= 0.5
 
-            # Also reduce receive_chance if too far from ball
+            # Reduce receive_chance if too far from ball (can't get a pass that far)
             dist_to_ball = distance(pos, ball_pos)
-            if dist_to_ball > 40.0:
-                receive_chance *= 0.5
+            if dist_to_ball > 25.0:
+                receive_chance *= max(0.1, 1.0 - (dist_to_ball - 25.0) / 35.0)
 
             score = pv * reachability * receive_chance
             candidates.append((score, pos))
@@ -734,7 +734,7 @@ class Player:
         # 1. APPROACH: score = 0.3 + 0.3*(1.0 - dist/press_radius)
         if dist_to_ball < config.press_radius * 2:
             proximity = max(0.0, 1.0 - dist_to_ball / config.press_radius)
-            approach_score = 0.3 + 0.3 * proximity
+            approach_score = 0.15 + 0.25 * proximity  # only very close defender should approach
             candidates.append((approach_score, "approach", {"target": ball_pos}))
 
         # 2. TACKLE: score = success_rate * ball_value - (1-success_rate) * stun_cost
@@ -757,8 +757,9 @@ class Player:
         if mark_score > 0:
             candidates.append((mark_score, "mark_runner", {"target": mark_target}))
 
-        # 5. HOLD_POSITION: score = 0.35 (baseline safe choice)
-        candidates.append((0.35, "hold_position", {"target": self.formation_pos}))
+        # 5. HOLD_POSITION: baseline — maintaining shape is important
+        hold_score = 0.38 if self.is_defender else 0.30
+        candidates.append((hold_score, "hold_position", {"target": self.formation_pos}))
 
         if not candidates:
             self.target_pos = self.formation_pos
@@ -873,7 +874,7 @@ class Player:
             mark_x = target.pos[0] + offset
         mark_target = pitch.clamp(mark_x, target.pos[1])
 
-        score = threat * 0.4
+        score = threat * 0.6  # marking is important
         return (score, mark_target)
 
     def _gk_position_adjust(
