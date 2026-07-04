@@ -379,25 +379,8 @@ class Player:
                             ability_factor = 0.15 + 0.5 * skill_ratio  # range: 0.15-0.65
                             feasibility *= proximity_decay * ability_factor
 
-            # Multiple defenders nearby = much harder to carry
-            nearby_defenders = sum(
-                1 for opp in opponents
-                if not opp.is_goalkeeper and math.sqrt((opp.pos[0]-self.pos[0])**2 + (opp.pos[1]-self.pos[1])**2) < 6.0
-            )
-            if nearby_defenders >= 2:
-                feasibility *= 0.2  # surrounded = almost impossible to carry
-            elif nearby_defenders == 1:
-                feasibility *= 0.5  # one defender = risky
-            
-            # Near goal line/byline = dead end (can't carry further)
-            if attacking_right:
-                dist_to_byline = pitch.length - target[0]
-            else:
-                dist_to_byline = target[0]
-            if dist_to_byline < 5.0:
-                feasibility *= 0.3  # near byline, nowhere to go
-            elif dist_to_byline < 10.0:
-                feasibility *= 0.6
+            # No additional hard limits — path_feasibility from directional check above
+            # is sufficient. Side defenders and byline handled by position_value naturally.
 
             score = pv * feasibility
             results.append((score, "carry", {"target": target}))
