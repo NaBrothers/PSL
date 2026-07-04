@@ -40,8 +40,8 @@ class EngineConfig:
     tackle_base_success: float = 0.45
 
     # Shot parameters
-    shot_on_target_base: float = 0.60
-    gk_save_base: float = 0.65
+    shot_on_target_base: float = 0.50
+    gk_save_base: float = 0.78
     shot_max_distance: float = 45.0  # max effective shooting distance
     shot_ideal_distance: float = 20.0  # ideal shooting distance
 
@@ -96,7 +96,7 @@ class EngineConfig:
     # =========================================================================
     # Phase 2: Cross action
     # =========================================================================
-    cross_zone_x_threshold: float = 0.82  # x-fraction threshold for cross zone
+    cross_zone_x_threshold: float = 0.82  # DEPRECATED: gate removed; cross determined by target availability
     cross_base_success: float = 0.50  # base cross success rate
     cross_target_box_depth: float = 18.0  # how deep into box crosses target
 
@@ -141,18 +141,18 @@ class EngineConfig:
     # =========================================================================
     # Phase 2: Layered on-ball decision model
     # =========================================================================
-    # Release threshold: how good must an opportunity be to trigger passing
-    release_threshold_base: float = 0.25  # x tactic_weight["release_eagerness"] (Phase 3)
+    # DEPRECATED: release_threshold_base - gate removed; all actions compete equally
+    release_threshold_base: float = 0.25
 
     # Carrier movement speed (meters per tick while carrying the ball)
     carrier_jog_speed: float = 4.0  # default jogging with ball
     carrier_sprint_speed: float = 6.5  # when clear space ahead
 
-    # Forced decision distance (opponent approaching)
-    forced_decision_radius: float = 2.5  # must decide when opponent this close and closing
+    # DEPRECATED: forced_decision_radius - removed; carry feasibility handles close range naturally
+    forced_decision_radius: float = 2.5
 
-    # IQ effect on release evaluation
-    iq_threshold_adjustment: float = 0.003  # per IQ point, adjusts release threshold
+    # DEPRECATED: iq_threshold_adjustment - removed with release_threshold
+    iq_threshold_adjustment: float = 0.003
 
     # =========================================================================
     # Phase 2: Tactic weights (all 1.0 for Phase 2, Phase 3 fills)
@@ -177,7 +177,7 @@ class EngineConfig:
     carry_error_divisor: float = 900.0  # (100-Dribbling)/divisor = error chance
 
     # Rewards
-    goal_reward_constant: float = 1.2  # multiplier for shoot score to make competitive
+    goal_reward_constant: float = 1.0  # multiplier for shoot score to make competitive
     clear_reward_base: float = 0.3  # base for clearance when not under pressure
 
     # Carrier movement (reward-driven model)

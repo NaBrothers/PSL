@@ -6,11 +6,10 @@ All actions use the unified scoring framework:
 For Phase 2, tactic_weight and role_modifier default to 1.0.
 The multiplication is present so Phase 3 can fill them.
 
-Layered decision model:
-- CARRY and HOLD are no longer "chosen" as actions; they are the DEFAULT behavior.
-- Each tick, the ball carrier moves with the ball (implicit carry).
-- Only PASS, SHOOT, DRIBBLE, CROSS are actual "release" decisions evaluated by
-  the layered model (_evaluate_release / _forced_decision in player.py).
+Decision model (reward-driven):
+- All on-ball candidates (carry, pass, shoot, cross, clear) are scored simultaneously.
+- The highest-scoring candidate is chosen (with IQ-based softmax temperature).
+- No threshold gates or forced decisions -- behavior emerges from score competition.
 - The ActionType enum retains CARRY/HOLD for trace logging and backward compatibility.
 """
 
@@ -360,12 +359,15 @@ def score_cross(
     """
     from .physics import distance
 
-    # Check if player is in crossing position (wide + deep)
+    # Check if player is in crossing position (wide)
     x_progress = crosser.pos[0] / pitch.length if attacking_right else (1.0 - crosser.pos[0] / pitch.length)
     y_from_center = abs(crosser.pos[1] - pitch.width / 2.0)
     is_wide = (crosser.pos[1] < 15.0 or crosser.pos[1] > pitch.width - 15.0)
 
-    if x_progress < config.cross_zone_x_threshold or not is_wide:
+    # cross_zone_x_threshold gate removed: cross score is now naturally determined
+    # by whether there's a good target in the box. A low x_progress reduces score
+    # organically via the success_prob distance factor below.
+    if not is_wide:
         return Action(ActionType.CROSS, target_pos, -1, 0.0, 0.0)
 
     # Long_Passing determines cross accuracy

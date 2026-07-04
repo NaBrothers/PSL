@@ -817,21 +817,23 @@ class Player:
         # "Stay" option: score = position_value(current_pos)
         stay_pv = position_value(
             self.pos[0], self.pos[1], pitch, attacking_right,
-            opp_positions, tm_positions, config
+            opp_positions, tm_positions, config,
+            runner_formation_pos=self.formation_pos,
         )
         candidates.append((stay_pv, self.pos))
 
-        # Maximum roam range based on how far from formation
-        max_roam = 25.0 if self.is_attacker else 18.0 if self.is_midfielder else 12.0
+        # Generate 8 structured candidate positions. Role_distance_decay in
+        # position_value provides soft pull; candidate generation range is role-aware
+        # to sample realistic positions (attackers push further, defenders stay compact).
+        fwd_range = 25.0 if self.is_attacker else 18.0 if self.is_midfielder else 12.0
 
-        # Generate 8 structured candidate positions
         # 3 forward positions (different depths)
         forward_candidates = [
-            (self.formation_pos[0] + forward_dir * random.uniform(8, max_roam),
+            (self.formation_pos[0] + forward_dir * random.uniform(8, fwd_range),
              self.formation_pos[1] + random.uniform(-5, 5)),
-            (self.formation_pos[0] + forward_dir * random.uniform(5, 15),
+            (self.formation_pos[0] + forward_dir * random.uniform(5, min(15, fwd_range)),
              self.formation_pos[1] + random.uniform(-8, 8)),
-            (self.formation_pos[0] + forward_dir * random.uniform(12, max_roam),
+            (self.formation_pos[0] + forward_dir * random.uniform(10, fwd_range),
              self.formation_pos[1] + random.uniform(-3, 3)),
         ]
 
@@ -862,10 +864,11 @@ class Player:
         for raw_x, raw_y in all_raw:
             pos = pitch.clamp(raw_x, raw_y)
 
-            # Position value
+            # Position value (with role_distance_decay applied via runner_formation_pos)
             pv = position_value(
                 pos[0], pos[1], pitch, attacking_right,
-                opp_positions, tm_positions, config
+                opp_positions, tm_positions, config,
+                runner_formation_pos=self.formation_pos,
             )
 
             # Receive reachability: can I arrive before defenders?
@@ -943,18 +946,9 @@ class Player:
                     chosen_pos = noisy_candidates[i][1]
                     break
 
-        # Clamp: players don't roam too far from formation
-        max_roam = 25.0 if self.is_attacker else 20.0 if self.is_midfielder else 15.0
-        from .physics import distance as _dist
-        roam_dist = _dist(chosen_pos, self.formation_pos)
-        if roam_dist > max_roam:
-            ratio = max_roam / roam_dist
-            self.target_pos = (
-                self.formation_pos[0] + (chosen_pos[0] - self.formation_pos[0]) * ratio,
-                self.formation_pos[1] + (chosen_pos[1] - self.formation_pos[1]) * ratio,
-            )
-        else:
-            self.target_pos = chosen_pos
+        # Hard roam clamp removed: role_distance_decay in position_value provides
+        # the soft pull toward formation area instead of a hard boundary.
+        self.target_pos = chosen_pos
         return self.target_pos
 
     # =========================================================================
@@ -1005,10 +999,17 @@ class Player:
             if not o.is_goalkeeper and distance(self.formation_pos, o.pos) < zone_radius
         ]
 
-        # 1. APPROACH: only for designated presser
+        # 1. APPROACH: score includes responsibility cost (replaces presser designation)
         if dist_to_ball < config.press_radius * 2:
             proximity = max(0.0, 1.0 - dist_to_ball / config.press_radius)
-            approach_score = 0.3 + 0.4 * proximity
+            # Responsibility cost: if there are attackers in my zone, I should mark
+            # them instead of chasing ball. Only unoccupied defenders approach.
+            nearby_attackers_in_zone = sum(
+                1 for opp in opponents
+                if distance(opp.pos, self.formation_pos) < 20.0 and not opp.is_goalkeeper
+            )
+            responsibility_cost = min(0.7, nearby_attackers_in_zone * 0.35)
+            approach_score = (0.3 + 0.4 * proximity) * (1.0 - responsibility_cost)
             if ball_carrier:
                 lead_dist = config.carrier_speed * 0.5
                 carrier_dir_x = 1.0 if attacking_right else -1.0
@@ -1016,8 +1017,7 @@ class Player:
                 approach_target = predicted
             else:
                 approach_target = ball_pos
-            if getattr(self, '_is_closest_presser', False):
-                candidates.append((approach_score, "approach", {"target": approach_target}))
+            candidates.append((approach_score, "approach", {"target": approach_target}))
 
         # 2. TACKLE: score = success_rate * ball_value - (1-success_rate) * stun_cost
         if ball_carrier and dist_to_ball < config.tackle_range:
@@ -1041,9 +1041,29 @@ class Player:
             if lane_score > 0:
                 candidates.append((lane_score, "block_lane", {"target": lane_target}))
 
-        # 5. HOLD_POSITION: strong when no attackers in zone or ball is far
+        # 5. HOLD_POSITION: use protection_value to find optimal defensive position
+        # between ball and own goal (replaces the three-line retreat system)
+        from .position_value import protection_value
+        if attacking_right:
+            own_goal_x = 0.0
+        else:
+            own_goal_x = config.pitch_length
+
+        # Compute a protective hold target: shift formation_pos toward a position
+        # between ball and own goal based on protection_value
+        # Ideal: ~40% of the way from ball toward own goal, on the y-line of formation
+        ball_to_goal_x = own_goal_x - ball_pos[0]
+        if abs(ball_to_goal_x) > 1.0:
+            # Position at roughly 30-50% between ball and goal, biased by formation y
+            protect_x = ball_pos[0] + ball_to_goal_x * 0.35
+            # Blend formation y with ball y (shift slightly toward ball side)
+            protect_y = self.formation_pos[1] * 0.7 + ball_pos[1] * 0.3
+            hold_target = pitch.clamp(protect_x, protect_y)
+        else:
+            hold_target = self.formation_pos
+
+        # Score is higher when no attackers threaten my zone
         if not attackers_in_zone:
-            # No attacker in zone -- hold position (don't chase ball)
             hold_score = 0.55
         elif dist_to_ball > 30.0:
             hold_score = 0.45
@@ -1051,7 +1071,7 @@ class Player:
             hold_score = 0.30
         else:
             hold_score = 0.15
-        candidates.append((hold_score, "hold_position", {"target": self.formation_pos}))
+        candidates.append((hold_score, "hold_position", {"target": hold_target}))
 
         if not candidates:
             self.target_pos = self.formation_pos
@@ -1070,19 +1090,9 @@ class Player:
 
         # Set target position based on choice
         raw_target = details.get("target", self.formation_pos)
-        # Clamp: defenders don't roam more than max_roam from formation
-        max_roam = 20.0 if self.is_defender else 30.0 if self.is_midfielder else 40.0
-        from .physics import distance as _dist
-        roam_dist = _dist(raw_target, self.formation_pos)
-        if roam_dist > max_roam:
-            # Move toward target but only up to max_roam
-            ratio = max_roam / roam_dist
-            self.target_pos = (
-                self.formation_pos[0] + (raw_target[0] - self.formation_pos[0]) * ratio,
-                self.formation_pos[1] + (raw_target[1] - self.formation_pos[1]) * ratio,
-            )
-        else:
-            self.target_pos = raw_target
+        # Hard roam clamp removed: role_distance_decay in position_value provides
+        # the soft pull toward formation area instead of a hard boundary.
+        self.target_pos = raw_target
 
         # If approaching, set pressing state
         if action_type == "approach":

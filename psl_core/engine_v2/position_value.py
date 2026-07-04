@@ -22,6 +22,7 @@ def position_value(
     opponent_positions: List[Tuple[float, float]],
     teammate_positions: List[Tuple[float, float]],
     config: "EngineConfig",
+    runner_formation_pos: Tuple[float, float] = None,
 ) -> float:
     """Compute the attacking value of position (x, y).
 
@@ -33,6 +34,7 @@ def position_value(
     3. No crowding -- too many teammates nearby = lower
     4. Shooting zone -- bonus if within shooting range
     5. Central bonus -- central positions slightly more valuable than extreme flanks
+    6. Role distance decay -- soft penalty for being far from formation base (optional)
     """
     # Normalize x-progress toward opponent goal (0 = own goal, 1 = opp goal)
     if attacking_right:
@@ -77,12 +79,12 @@ def position_value(
     else:
         goal_x = 0.0
     goal_y = pitch.width / 2.0
-    
+
     # Vector from position to goal center
     dx_to_goal = goal_x - x
     dy_to_goal = goal_y - y
     dist_to_goal_center = math.sqrt(dx_to_goal * dx_to_goal + dy_to_goal * dy_to_goal)
-    
+
     if dist_to_goal_center > 1.0:
         # Angle factor: directly facing goal = 1.0, extreme side = low
         # Use the ratio of x-component to total distance (how direct the path to goal is)
@@ -90,7 +92,7 @@ def position_value(
         zone_weight = 0.3 + 0.7 * directness
     else:
         zone_weight = 1.0  # very close to goal, always high
-    
+
     # Extra penalty for byline area (close to goal line but wide angle)
     if x_progress > 0.85:  # in final 15% of pitch
         y_center_dist = abs(y - pitch.width / 2) / (pitch.width / 2)
@@ -99,6 +101,14 @@ def position_value(
 
     # Combine
     value = goal_proximity * space_factor * crowding_factor * shot_zone_bonus * zone_weight
+
+    # 6. Role distance decay: soft pull toward formation base position
+    if runner_formation_pos is not None:
+        role_dist = math.sqrt(
+            (x - runner_formation_pos[0]) ** 2 + (y - runner_formation_pos[1]) ** 2
+        )
+        role_distance_factor = max(0.2, 1.0 - role_dist / 30.0)
+        value *= role_distance_factor
 
     # Clamp
     return max(0.01, min(1.0, value))
@@ -177,9 +187,48 @@ def position_value_batch(
     opponent_positions: List[Tuple[float, float]],
     teammate_positions: List[Tuple[float, float]],
     config: "EngineConfig",
+    runner_formation_pos: Tuple[float, float] = None,
 ) -> List[float]:
     """Compute position_value for multiple positions (batch helper)."""
     return [
-        position_value(x, y, pitch, attacking_right, opponent_positions, teammate_positions, config)
+        position_value(
+            x, y, pitch, attacking_right, opponent_positions, teammate_positions,
+            config, runner_formation_pos=runner_formation_pos,
+        )
         for x, y in candidates
     ]
+
+
+def protection_value(
+    pos: Tuple[float, float],
+    ball_pos: Tuple[float, float],
+    own_goal_x: float,
+    pitch: "Pitch",
+) -> float:
+    """Value of a defensive position: high when between ball and own goal.
+
+    Returns a float in [0.2, 1.0] representing how good this position is
+    for covering the path from ball to the team's own goal.
+
+    Args:
+        pos: The candidate defensive position (x, y).
+        ball_pos: Current ball position (x, y).
+        own_goal_x: The x-coordinate of own goal (0.0 or pitch.length).
+        pitch: Pitch object for dimensions.
+    """
+    ball_to_goal_x = own_goal_x - ball_pos[0]
+    pos_to_goal_x = own_goal_x - pos[0]
+
+    # Edge case: ball very close to goal line
+    if abs(ball_to_goal_x) < 1.0:
+        return 0.5
+
+    # coverage: 0 = at ball position, 1 = at goal line
+    coverage = pos_to_goal_x / ball_to_goal_x
+
+    if coverage < 0 or coverage > 1:
+        # Behind the ball (wrong side) or behind the goal
+        return 0.2
+
+    # Best around 0.3-0.6 (between ball and goal but not too close to either)
+    return 0.4 + 0.6 * (1.0 - abs(coverage - 0.4) * 2.0)

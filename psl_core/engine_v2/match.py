@@ -256,15 +256,8 @@ class MatchV2:
         defender_actions = {}  # {player.index: action_type}
         defender_new_positions = {}  # {player.index: new_pos}
 
-        # Assign closest 1 player as designated presser (others should mark, not swarm)
-        # Phase 3 slot: number of pressers controlled by tactic_weight["pressing_intensity"]
-        _presser_count = 1  # default: only 1 player presses. Phase 3: tactic adjusts this.
-        _sorted_by_dist = sorted(
-            [p for p in opp_team.players if not p.is_goalkeeper and p.state != PlayerState.STUNNED],
-            key=lambda p: distance(p.pos, self.ball.position)
-        )
-        for i, p in enumerate(_sorted_by_dist):
-            p._is_closest_presser = (i < _presser_count)
+        # Presser assignment removed: approach score now uses responsibility_cost
+        # to naturally limit how many defenders press the ball.
 
         # Defending team players choose
         for opp in opp_team.players:

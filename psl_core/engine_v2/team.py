@@ -115,124 +115,18 @@ class Team:
         pitch: "Pitch",
         opponent_players: list = None,
     ):
-        """Compute dynamic 3-line formation based on ball and possession.
+        """Set formation_pos to the static initial position from formation coordinates.
 
-        Three lines (defence/midfield/attack) move as units:
-        - When attacking: lines push toward opponent goal, following ball
-        - When defending: lines compress toward own goal
-        - Forward line limited by offside (opponent's last defender)
+        The dynamic three-line computation has been removed. Formation positioning
+        is now purely driven by position_value scoring (role_distance_decay provides
+        the soft pull toward base formation area). This method retains the signature
+        for backward compatibility but only ensures formation_pos is set from the
+        static base coordinates established in __init__/setup_formation.
         """
-        # Determine attacking direction
-        if self.attacking_right:
-            own_goal_x = 0.0
-            opp_goal_x = pitch.length
-            ball_progress = ball_pos[0] / pitch.length  # 0=own goal, 1=opp goal
-        else:
-            own_goal_x = pitch.length
-            opp_goal_x = 0.0
-            ball_progress = 1.0 - ball_pos[0] / pitch.length
-
-        # Compute the offside line (opponent's second-last defender position)
-        offside_x = opp_goal_x  # default: at opponent goal line
-        if opponent_players:
-            if self.attacking_right:
-                # We attack right (toward x=pitch.length). Opponent defends near x=pitch.length.
-                # Offside line = 2nd-highest x among opponent outfield players
-                opp_xs = sorted(
-                    [p.pos[0] for p in opponent_players if not p.is_goalkeeper],
-                    reverse=True  # descending: highest x first
-                )
-            else:
-                # We attack left (toward x=0). Opponent defends near x=0.
-                # Offside line = 2nd-lowest x among opponent outfield players
-                opp_xs = sorted(
-                    [p.pos[0] for p in opponent_players if not p.is_goalkeeper],
-                    reverse=False  # ascending: lowest x first
-                )
-            if len(opp_xs) >= 2:
-                offside_x = opp_xs[1]  # second-last defender
-            elif len(opp_xs) >= 1:
-                offside_x = opp_xs[0]
-
-        # =====================================================================
-        # Compute 3-line target x-positions
-        # Each line follows the ball but with offset
-        # =====================================================================
-        has_ball = (self.phase in (TeamPhase.ATTACKING, TeamPhase.TRANSITION_ATK))
-
-        if has_ball:
-            # Attacking: push lines forward following ball
-            # Defence line: behind ball, providing safety
-            if self.attacking_right:
-                def_line_x = max(ball_pos[0] - 35.0, 15.0)  # at least 15m from own goal
-                mid_line_x = max(ball_pos[0] - 15.0, 30.0)
-                atk_line_x = min(ball_pos[0] + 20.0, offside_x - 0.5)  # push up to offside line
-            else:
-                def_line_x = min(ball_pos[0] + 35.0, pitch.length - 15.0)
-                mid_line_x = min(ball_pos[0] + 15.0, pitch.length - 30.0)
-                atk_line_x = max(ball_pos[0] - 20.0, offside_x + 0.5)
-        else:
-            # Defending: compact lines between ball and own goal
-            if self.attacking_right:
-                # Our goal at x=0, defend toward x=0
-                def_line_x = max(min(ball_pos[0] - 15.0, 28.0), 12.0)
-                mid_line_x = max(min(ball_pos[0] + 5.0, 48.0), 28.0)
-                atk_line_x = max(min(ball_pos[0] + 25.0, 70.0), 45.0)
-            else:
-                # Our goal at x=105, defend toward x=105
-                def_line_x = min(max(ball_pos[0] + 15.0, 77.0), 93.0)
-                mid_line_x = min(max(ball_pos[0] - 5.0, 57.0), 77.0)
-                atk_line_x = min(max(ball_pos[0] - 25.0, 35.0), 60.0)
-
-        # Y-shift: team shifts toward ball side
-        center_y = pitch.width / 2.0
-        y_shift = (ball_pos[1] - center_y) * config.formation_side_shift_factor
-
-        # =====================================================================
-        # Assign each player to their line and compute position
-        # =====================================================================
-        for i, player in enumerate(self.players):
-            if i >= len(self._formation_coords):
-                break
-
-            base_x, base_y = self._formation_coords[i]
-
-            # Determine which line this player belongs to based on original position
-            # Using base_x relative to pitch: low base_x = defensive, high = attacking
-            if self.attacking_right:
-                norm_x = base_x / pitch.length  # 0=near own goal, 1=near opp goal
-            else:
-                norm_x = 1.0 - base_x / pitch.length
-
-            if player.is_goalkeeper:
-                # GK stays near own goal
-                if self.attacking_right:
-                    new_x = max(3.0, def_line_x - 15.0)
-                else:
-                    new_x = min(pitch.length - 3.0, def_line_x + 15.0)
-                new_y = base_y + y_shift * 0.2
-            elif norm_x < 0.35:
-                # Defender: use defence line
-                # Keep relative y-spacing within the line
-                line_x = def_line_x
-                new_x = line_x
-                new_y = base_y + y_shift
-            elif norm_x < 0.6:
-                # Midfielder: use midfield line
-                line_x = mid_line_x
-                new_x = line_x
-                new_y = base_y + y_shift
-            else:
-                # Attacker: use attack line (limited by offside)
-                line_x = atk_line_x
-                new_x = line_x
-                new_y = base_y + y_shift
-
-            # Apply width modifier to y-spread
-            dy_from_center = new_y - center_y
-            new_y = center_y + dy_from_center * config.width
-
-            player.formation_pos = pitch.clamp(new_x, new_y)
+        # formation_pos is already set from setup_formation / __init__.
+        # This method is now a no-op; the static base position is the anchor
+        # and all dynamic positioning emerges from PV-driven off-ball decisions.
+        pass
 
     def get_closest_to(
         self,
@@ -270,8 +164,8 @@ class Team:
         opponents: Optional[List[Player]] = None,
     ):
         """Update all off-ball players' targets using Phase 2 intelligent AI."""
-        # Update dynamic formation positions
-        self.compute_dynamic_positions(ball_pos, config, pitch)
+        # Dynamic three-line computation removed; formation_pos is static from setup.
+        # Off-ball positioning is now purely PV-driven.
 
         for player in self.players:
             if player.state == PlayerState.ON_BALL:
