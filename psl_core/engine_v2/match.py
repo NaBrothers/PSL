@@ -881,8 +881,8 @@ class MatchV2:
     def _move_off_ball_players(self, holder_team: Team, opp_team: Team, holder: Player):
         """Move all off-ball players one tick."""
         # Update dynamic formations
-        holder_team.compute_dynamic_positions(self.ball.position, self.config, self.pitch)
-        opp_team.compute_dynamic_positions(self.ball.position, self.config, self.pitch)
+        holder_team.compute_dynamic_positions(self.ball.position, self.config, self.pitch, opponent_players=opp_team.players)
+        opp_team.compute_dynamic_positions(self.ball.position, self.config, self.pitch, opponent_players=holder_team.players)
 
         # Move each player (except holder who already moved)
         for p in holder_team.players:

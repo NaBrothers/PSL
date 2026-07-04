@@ -113,43 +113,114 @@ class Team:
         ball_pos: Tuple[float, float],
         config: "EngineConfig",
         pitch: "Pitch",
+        opponent_players: list = None,
     ):
-        """Compute dynamic formation positions based on ball position.
+        """Compute dynamic 3-line formation based on ball and possession.
 
-        Formation anchor points shift based on ball:
-        - X: team advances/retreats proportionally to ball depth
-        - Y: team shifts toward ball side
-        - Compactness and width parameters adjust spread
+        Three lines (defence/midfield/attack) move as units:
+        - When attacking: lines push toward opponent goal, following ball
+        - When defending: lines compress toward own goal
+        - Forward line limited by offside (opponent's last defender)
         """
-        center_x = pitch.length / 2.0
-        center_y = pitch.width / 2.0
+        # Determine attacking direction
+        if self.attacking_right:
+            own_goal_x = 0.0
+            opp_goal_x = pitch.length
+            ball_progress = ball_pos[0] / pitch.length  # 0=own goal, 1=opp goal
+        else:
+            own_goal_x = pitch.length
+            opp_goal_x = 0.0
+            ball_progress = 1.0 - ball_pos[0] / pitch.length
 
-        # X-shift: team follows ball depth
-        x_shift = (ball_pos[0] - center_x) * config.formation_advance_factor
+        # Compute the offside line (opponent's second-last defender position)
+        offside_x = opp_goal_x  # default: at opponent goal line
+        if opponent_players:
+            opp_xs = sorted(
+                [p.pos[0] for p in opponent_players if not p.is_goalkeeper],
+                reverse=(not self.attacking_right)  # sort toward our attack direction
+            )
+            if len(opp_xs) >= 2:
+                offside_x = opp_xs[1]  # second-last defender
+            elif len(opp_xs) >= 1:
+                offside_x = opp_xs[0]
+
+        # =====================================================================
+        # Compute 3-line target x-positions
+        # Each line follows the ball but with offset
+        # =====================================================================
+        has_ball = (self.phase in (TeamPhase.ATTACKING, TeamPhase.TRANSITION_ATK))
+
+        if has_ball:
+            # Attacking: push lines forward following ball
+            # Defence line: behind ball, providing safety
+            if self.attacking_right:
+                def_line_x = max(ball_pos[0] - 35.0, 15.0)  # at least 15m from own goal
+                mid_line_x = max(ball_pos[0] - 15.0, 30.0)
+                atk_line_x = min(ball_pos[0] + 10.0, offside_x - 1.0)  # respect offside!
+            else:
+                def_line_x = min(ball_pos[0] + 35.0, pitch.length - 15.0)
+                mid_line_x = min(ball_pos[0] + 15.0, pitch.length - 30.0)
+                atk_line_x = max(ball_pos[0] - 10.0, offside_x + 1.0)
+        else:
+            # Defending: compact lines between ball and own goal
+            if self.attacking_right:
+                # Our goal at x=0, defend toward x=0
+                def_line_x = max(min(ball_pos[0] - 10.0, 30.0), 12.0)
+                mid_line_x = max(min(ball_pos[0] + 5.0, 45.0), 25.0)
+                atk_line_x = max(min(ball_pos[0] + 20.0, 60.0), 40.0)
+            else:
+                # Our goal at x=105, defend toward x=105
+                def_line_x = min(max(ball_pos[0] + 10.0, 75.0), 93.0)
+                mid_line_x = min(max(ball_pos[0] - 5.0, 60.0), 80.0)
+                atk_line_x = min(max(ball_pos[0] - 20.0, 45.0), 65.0)
 
         # Y-shift: team shifts toward ball side
+        center_y = pitch.width / 2.0
         y_shift = (ball_pos[1] - center_y) * config.formation_side_shift_factor
 
+        # =====================================================================
+        # Assign each player to their line and compute position
+        # =====================================================================
         for i, player in enumerate(self.players):
             if i >= len(self._formation_coords):
                 break
 
             base_x, base_y = self._formation_coords[i]
 
-            # Apply shifts with compactness/width modifiers
-            # Compactness affects x-spread from center
-            dx_from_center = base_x - center_x
-            new_x = center_x + dx_from_center * config.compactness + x_shift
+            # Determine which line this player belongs to based on original position
+            # Using base_x relative to pitch: low base_x = defensive, high = attacking
+            if self.attacking_right:
+                norm_x = base_x / pitch.length  # 0=near own goal, 1=near opp goal
+            else:
+                norm_x = 1.0 - base_x / pitch.length
 
-            # Width affects y-spread from center
-            dy_from_center = base_y - center_y
-            new_y = center_y + dy_from_center * config.width + y_shift
-
-            # GK should stay near goal, less affected by dynamics
             if player.is_goalkeeper:
-                # GK barely moves with formation dynamics
-                new_x = base_x + x_shift * 0.1
+                # GK stays near own goal
+                if self.attacking_right:
+                    new_x = max(3.0, def_line_x - 15.0)
+                else:
+                    new_x = min(pitch.length - 3.0, def_line_x + 15.0)
                 new_y = base_y + y_shift * 0.2
+            elif norm_x < 0.35:
+                # Defender: use defence line
+                # Keep relative y-spacing within the line
+                line_x = def_line_x
+                new_x = line_x
+                new_y = base_y + y_shift
+            elif norm_x < 0.6:
+                # Midfielder: use midfield line
+                line_x = mid_line_x
+                new_x = line_x
+                new_y = base_y + y_shift
+            else:
+                # Attacker: use attack line (limited by offside)
+                line_x = atk_line_x
+                new_x = line_x
+                new_y = base_y + y_shift
+
+            # Apply width modifier to y-spread
+            dy_from_center = new_y - center_y
+            new_y = center_y + dy_from_center * config.width
 
             player.formation_pos = pitch.clamp(new_x, new_y)
 
