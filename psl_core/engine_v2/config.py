@@ -142,7 +142,7 @@ class EngineConfig:
     # Phase 2: Layered on-ball decision model
     # =========================================================================
     # Release threshold: how good must an opportunity be to trigger passing
-    release_threshold_base: float = 0.22  # x tactic_weight["release_eagerness"] (Phase 3)
+    release_threshold_base: float = 0.45  # x tactic_weight["release_eagerness"] (Phase 3)
 
     # Carrier movement speed (meters per tick while carrying the ball)
     carrier_jog_speed: float = 3.0  # default jogging with ball

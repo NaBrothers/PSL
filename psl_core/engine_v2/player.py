@@ -1030,21 +1030,20 @@ class Player:
         # tactic_weight slot for Phase 3: release_threshold *= tactic_weight["release_eagerness"]
         release_threshold = max(0.2, min(0.8, release_threshold))
 
-        # Time-based settling: players who just received the ball are reluctant to
-        # immediately release (settling, observing). Threshold decreases over time.
+        # Time-based settling: player must hold ball for minimum ticks before releasing
         ticks_held = getattr(self, '_ticks_with_ball', 0)
-        if ticks_held <= 1:
-            # Just received: very reluctant to release (only exceptional opportunities)
-            release_threshold *= 1.2
-        elif ticks_held <= 2:
-            # Settling: still somewhat reluctant
-            release_threshold *= 1.1
-        elif ticks_held <= 3:
+        if ticks_held <= 4:
+            # Just received: NEVER release (settling ball, observing)
+            return None
+        elif ticks_held <= 6:
+            # Still settling: only release for exceptional opportunity (shoot)
+            release_threshold *= 1.5
+        elif ticks_held <= 6:
             # Observing: slightly elevated threshold
             release_threshold *= 1.1
         elif ticks_held > 6:
             # Held too long: increasingly eager to release
-            release_threshold *= max(0.5, 1.0 - (ticks_held - 6) * 0.1)
+            release_threshold *= max(0.6, 1.0 - (ticks_held - 8) * 0.05)
 
         # Progression bonus: if carrier is in attacking third and advancing,
         # be less eager to release (looking for shot opportunity)
