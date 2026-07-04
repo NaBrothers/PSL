@@ -40,10 +40,10 @@ class EngineConfig:
     tackle_base_success: float = 0.45
 
     # Shot parameters
-    shot_on_target_base: float = 0.40
-    gk_save_base: float = 0.80
-    shot_max_distance: float = 50.0  # max effective shooting distance
-    shot_ideal_distance: float = 18.0  # ideal shooting distance
+    shot_on_target_base: float = 0.60
+    gk_save_base: float = 0.65
+    shot_max_distance: float = 45.0  # max effective shooting distance
+    shot_ideal_distance: float = 20.0  # ideal shooting distance
 
     # Pressing
     press_radius: float = 12.0  # distance within which a defender will press
@@ -177,12 +177,20 @@ class EngineConfig:
     carry_error_divisor: float = 900.0  # (100-Dribbling)/divisor = error chance
 
     # Rewards
-    goal_reward_constant: float = 0.9  # multiplier for shoot score to make competitive
+    goal_reward_constant: float = 1.2  # multiplier for shoot score to make competitive
     clear_reward_base: float = 0.3  # base for clearance when not under pressure
 
     # Carrier movement (reward-driven model)
     carrier_speed: float = 3.0  # meters per tick when carrying (jog)
     carrier_sprint_speed_v2: float = 4.5  # meters per tick when clear ahead
+
+    # =========================================================================
+    # Space Model Upgrade
+    # =========================================================================
+    iq_noise_scale: float = 0.3  # noise multiplier for (100-IQ)/100
+    space_creation_radius: float = 10.0  # radius for counting drawn defenders
+    receive_reachability_scale: float = 0.2  # sigmoid steepness for arrival advantage
+    pass_to_space_ball_speed: float = 15.0  # speed of ball for arrival calculations
 
     def goal_y_min(self) -> float:
         """Y coordinate of near goal post."""

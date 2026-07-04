@@ -28,11 +28,11 @@ def position_value(
     Returns a float roughly in [0, 1] where higher = more dangerous for the opponent.
 
     Factors:
-    1. Goal proximity — closer to opponent goal = higher
-    2. Space — fewer opponents nearby = higher
-    3. No crowding — too many teammates nearby = lower
-    4. Shooting zone — bonus if within shooting range
-    5. Central bonus — central positions slightly more valuable than extreme flanks
+    1. Goal proximity -- closer to opponent goal = higher
+    2. Space -- fewer opponents nearby = higher
+    3. No crowding -- too many teammates nearby = lower
+    4. Shooting zone -- bonus if within shooting range
+    5. Central bonus -- central positions slightly more valuable than extreme flanks
     """
     # Normalize x-progress toward opponent goal (0 = own goal, 1 = opp goal)
     if attacking_right:
@@ -95,13 +95,79 @@ def position_value(
     if x_progress > 0.85:  # in final 15% of pitch
         y_center_dist = abs(y - pitch.width / 2) / (pitch.width / 2)
         if y_center_dist > 0.5:  # wide area near goal line
-            zone_weight *= 0.4  # byline/corner area — low value
+            zone_weight *= 0.4  # byline/corner area -- low value
 
     # Combine
     value = goal_proximity * space_factor * crowding_factor * shot_zone_bonus * zone_weight
 
     # Clamp
     return max(0.01, min(1.0, value))
+
+
+def receive_reachability(
+    target_pos: Tuple[float, float],
+    runner_pos: Tuple[float, float],
+    runner_speed: float,
+    opponent_positions: List[Tuple[float, float]],
+    opponent_speeds: List[float],
+    ball_pos: Tuple[float, float],
+    ball_speed: float,
+    config: "EngineConfig",
+) -> float:
+    """Can a teammate reach target_pos before defenders?
+
+    Returns a value in [0, 1]: higher = runner arrives first with good margin.
+    """
+    # Time for runner to reach target
+    dist_runner = math.sqrt(
+        (runner_pos[0] - target_pos[0]) ** 2 + (runner_pos[1] - target_pos[1]) ** 2
+    )
+    time_runner = dist_runner / max(runner_speed, 0.1)
+
+    # Time for ball to reach target
+    dist_ball = math.sqrt(
+        (ball_pos[0] - target_pos[0]) ** 2 + (ball_pos[1] - target_pos[1]) ** 2
+    )
+    time_ball = dist_ball / max(ball_speed, 0.1)
+
+    # Find fastest defender to same point (exclude goalkeepers via caller filtering)
+    time_def = float("inf")
+    for i, (ox, oy) in enumerate(opponent_positions):
+        d = math.sqrt((ox - target_pos[0]) ** 2 + (oy - target_pos[1]) ** 2)
+        opp_spd = opponent_speeds[i] if i < len(opponent_speeds) else 4.0
+        t = d / max(opp_spd, 0.1)
+        if t < time_def:
+            time_def = t
+
+    # Advantage: positive means runner arrives first
+    advantage = time_def - time_runner
+    # Sigmoid-like mapping
+    scale = config.receive_reachability_scale
+    result = 0.5 + advantage * scale
+    return max(0.0, min(1.0, result))
+
+
+def space_creation_value(
+    target_pos: Tuple[float, float],
+    opponent_positions: List[Tuple[float, float]],
+    teammate_positions: List[Tuple[float, float]],
+    config: "EngineConfig",
+) -> float:
+    """Does moving here draw defenders away from teammates?
+
+    Returns a multiplier >= 1.0 (up to 1.3): bonus for drawing pressure.
+    """
+    radius = config.space_creation_radius
+    # Count defenders within radius of target (would be drawn to mark me)
+    drawn_defenders = 0
+    for ox, oy in opponent_positions:
+        d = math.sqrt((ox - target_pos[0]) ** 2 + (oy - target_pos[1]) ** 2)
+        if d < radius:
+            drawn_defenders += 1
+
+    # Those drawn defenders leave space for teammates
+    bonus = 1.0 + drawn_defenders * 0.1  # slight bonus for drawing pressure
+    return min(1.3, bonus)
 
 
 def position_value_batch(

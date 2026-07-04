@@ -135,10 +135,20 @@ class Team:
         # Compute the offside line (opponent's second-last defender position)
         offside_x = opp_goal_x  # default: at opponent goal line
         if opponent_players:
-            opp_xs = sorted(
-                [p.pos[0] for p in opponent_players if not p.is_goalkeeper],
-                reverse=(not self.attacking_right)  # sort toward our attack direction
-            )
+            if self.attacking_right:
+                # We attack right (toward x=pitch.length). Opponent defends near x=pitch.length.
+                # Offside line = 2nd-highest x among opponent outfield players
+                opp_xs = sorted(
+                    [p.pos[0] for p in opponent_players if not p.is_goalkeeper],
+                    reverse=True  # descending: highest x first
+                )
+            else:
+                # We attack left (toward x=0). Opponent defends near x=0.
+                # Offside line = 2nd-lowest x among opponent outfield players
+                opp_xs = sorted(
+                    [p.pos[0] for p in opponent_players if not p.is_goalkeeper],
+                    reverse=False  # ascending: lowest x first
+                )
             if len(opp_xs) >= 2:
                 offside_x = opp_xs[1]  # second-last defender
             elif len(opp_xs) >= 1:
@@ -165,13 +175,13 @@ class Team:
             # Defending: compact lines between ball and own goal
             if self.attacking_right:
                 # Our goal at x=0, defend toward x=0
-                def_line_x = max(min(ball_pos[0] - 10.0, 30.0), 12.0)
-                mid_line_x = max(min(ball_pos[0] + 5.0, 45.0), 25.0)
+                def_line_x = max(min(ball_pos[0] - 15.0, 28.0), 12.0)
+                mid_line_x = max(min(ball_pos[0] + 5.0, 48.0), 28.0)
                 atk_line_x = max(min(ball_pos[0] + 20.0, 60.0), 40.0)
             else:
                 # Our goal at x=105, defend toward x=105
-                def_line_x = min(max(ball_pos[0] + 10.0, 75.0), 93.0)
-                mid_line_x = min(max(ball_pos[0] - 5.0, 60.0), 80.0)
+                def_line_x = min(max(ball_pos[0] + 15.0, 77.0), 93.0)
+                mid_line_x = min(max(ball_pos[0] - 5.0, 57.0), 77.0)
                 atk_line_x = min(max(ball_pos[0] - 20.0, 45.0), 65.0)
 
         # Y-shift: team shifts toward ball side

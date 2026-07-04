@@ -330,7 +330,7 @@ class MatchV2:
                     holder, "carry", opp_team.players, defender_actions, self.config
                 )
 
-        elif holder_action_type == "pass":
+        elif holder_action_type in ("pass", "pass_to_space"):
             # Pass + defender on path = potential interception
             pass_target = holder_details.get("target", holder.pos)
             interception_interaction = detect_interception(
@@ -369,7 +369,7 @@ class MatchV2:
         elif holder_action_type == "carry":
             # No duel -- execute carry
             self._execute_carry_phase3(holder, holder_details, holder_team)
-        elif holder_action_type == "pass":
+        elif holder_action_type in ("pass", "pass_to_space"):
             # Execute pass (interception checked during flight)
             self._execute_pass_phase3(
                 holder, holder_details, holder_team, opp_team,
@@ -535,6 +535,9 @@ class MatchV2:
         dist = distance(passer.pos, target)
         ticks_needed = max(1, math.ceil(dist / speed))
 
+        # Determine if this is a pass_to_space
+        is_space_pass = "intended_receiver" in details and "target_player_idx" not in details
+
         flight = BallFlight(
             origin=passer.pos,
             target=target,
@@ -543,6 +546,7 @@ class MatchV2:
             ticks_total=ticks_needed,
             passer_idx=passer.index,
             passer_team=passer_team.side,
+            is_pass_to_space=is_space_pass,
         )
 
         self.last_passer_idx = passer.index
@@ -550,10 +554,12 @@ class MatchV2:
         passer.state = PlayerState.OFF_BALL
         self.ball.set_flight(flight)
 
+        action_name = "pass_to_space" if is_space_pass else ("long_pass" if is_long else "short_pass")
         self.trace.log_action(
             self.tick, passer_team.side, passer.name,
-            "long_pass" if is_long else "short_pass",
-            target=target, target_player=details.get("target_player_idx", -1),
+            action_name,
+            target=target,
+            target_player=details.get("target_player_idx", details.get("intended_receiver", -1)),
         )
 
         self._pending_ball_flight = build_ball_flight_data(
@@ -703,6 +709,11 @@ class MatchV2:
                     passer_team.players[flight.passer_idx].passes_completed += 1
             return
 
+        # Pass-to-space: first-to-arrive from EITHER team gets the ball
+        if flight.is_pass_to_space:
+            self._resolve_pass_to_space_arrival(flight, target_pos, passer_team, opp_team)
+            return
+
         # Normal pass: find intended receiver or closest teammate
         target_player_idx = -1
         # Find closest teammate to target
@@ -732,6 +743,17 @@ class MatchV2:
                 self.trace.log_event(
                     self.tick, "error",
                     player=best_receiver.name, error_type="first_touch",
+                )
+                return
+
+            # Offside check: was receiver ahead of 2nd-last defender when pass was made?
+            opp_team_for_offside = self.away if passer_team.side == "home" else self.home
+            if self._is_offside(best_receiver, passer_team, opp_team_for_offside):
+                # Offside! Ball goes to opponent (indirect free kick)
+                self.ball.set_dead("offside", opp_team_for_offside.side, restart_ticks=2)
+                self.trace.log_event(
+                    self.tick, "offside",
+                    player=best_receiver.name, team=passer_team.side,
                 )
                 return
 
@@ -776,6 +798,86 @@ class MatchV2:
         else:
             # GOAL!
             self._score_goal(shooter, shooter_team, defending_team)
+
+    def _resolve_pass_to_space_arrival(
+        self, flight: BallFlight, target_pos: Tuple[float, float],
+        passer_team: Team, opp_team: Team
+    ):
+        """Resolve a pass-to-space arrival.
+
+        First-to-arrive from EITHER team gets the ball.
+        If defender closer -> interception.
+        If attacker closer -> successful pass completion.
+        """
+        # Find closest player from passer's team (excluding passer)
+        best_tm = None
+        best_tm_dist = float("inf")
+        for p in passer_team.players:
+            if p.index == flight.passer_idx:
+                continue
+            d = distance(p.pos, target_pos)
+            if d < best_tm_dist:
+                best_tm_dist = d
+                best_tm = p
+
+        # Find closest player from defending team
+        best_opp = None
+        best_opp_dist = float("inf")
+        for p in opp_team.players:
+            d = distance(p.pos, target_pos)
+            if d < best_opp_dist:
+                best_opp_dist = d
+                best_opp = p
+
+        # Determine who arrives first
+        if best_opp and best_opp_dist < best_tm_dist:
+            # Defender arrives first -> interception
+            best_opp.interceptions += 1
+            self._give_ball(best_opp, opp_team)
+            self.trace.log_event(
+                self.tick, "interception",
+                player=best_opp.name, team=opp_team.side,
+                context="pass_to_space",
+            )
+        elif best_tm and best_tm_dist < 10.0:
+            # Teammate arrives first and is close enough to receive
+            # First touch error check
+            iq = best_tm.abilities.get("IQ", 50)
+            touch_error_chance = (100 - iq) / self.config.first_touch_error_divisor
+            if random.random() < touch_error_chance:
+                best_tm.unforced_errors += 1
+                loose_pos = self.pitch.clamp(
+                    target_pos[0] + random.uniform(-4, 4),
+                    target_pos[1] + random.uniform(-4, 4),
+                )
+                self.ball.set_contested(loose_pos)
+                self.match_stats.record_contested()
+                self.trace.log_event(
+                    self.tick, "error",
+                    player=best_tm.name, error_type="first_touch",
+                )
+                return
+
+            # Offside check
+            if self._is_offside(best_tm, passer_team, opp_team):
+                self.ball.set_dead("offside", opp_team.side, restart_ticks=2)
+                self.trace.log_event(
+                    self.tick, "offside",
+                    player=best_tm.name, team=passer_team.side,
+                )
+                return
+
+            # Successful pass to space
+            self._give_ball(best_tm, passer_team)
+            passer_team.players[flight.passer_idx].passes_completed += 1
+            self.trace.log_action(
+                self.tick, passer_team.side, best_tm.name, "receive_space_pass",
+                success=True,
+            )
+        else:
+            # No one close enough -- ball goes contested
+            self.ball.set_contested(target_pos)
+            self.match_stats.record_contested()
 
     def _score_goal(self, scorer: Player, scoring_team: Team, conceding_team: Team):
         """Record a goal."""
@@ -937,6 +1039,57 @@ class MatchV2:
     # Ball possession
     # -------------------------------------------------------------------------
 
+    def _is_offside(self, receiver, attacking_team, defending_team) -> bool:
+        """Check if receiver is in an offside position.
+
+        Offside = receiver is ahead of 2nd-last defender AND ahead of ball
+        AND in opponent's half.
+        """
+        if receiver.is_goalkeeper:
+            return False
+
+        # Determine direction
+        if attacking_team.attacking_right:
+            # Attacking right: offside = receiver.x > 2nd-last defender.x AND receiver.x > ball.x
+            # AND receiver in opponent half (x > 52.5)
+            if receiver.pos[0] <= self.pitch.length / 2:
+                return False  # in own half, can't be offside
+
+            # Find 2nd-last defender x (defenders sorted ascending, offside line = 2nd value)
+            def_xs = sorted(
+                [p.pos[0] for p in defending_team.players if not p.is_goalkeeper],
+                reverse=False  # ascending: [smallest_x, ..., largest_x]
+            )
+            # The last defender is at def_xs[0] (furthest back toward their goal on the left)
+            # Wait - attacking right means opponent goal is at x=105, and defenders protect it
+            # Defenders closer to their goal (x approaching 105) = furthest back
+            # For offside: we need 2nd-last defender from the goal line
+            # Sort defenders descending (furthest from our goal = closest to theirs)
+            def_xs_desc = sorted(
+                [p.pos[0] for p in defending_team.players if not p.is_goalkeeper],
+                reverse=True  # descending: [closest_to_their_goal, ...]
+            )
+            # 2nd-last = index 1 (the one behind the last defender)
+            offside_line = def_xs_desc[1] if len(def_xs_desc) >= 2 else def_xs_desc[0] if def_xs_desc else self.pitch.length
+
+            # Offside if receiver ahead of both offside line AND ball
+            return receiver.pos[0] > offside_line and receiver.pos[0] > self.ball.position[0]
+        else:
+            # Attacking left: offside = receiver.x < 2nd-last defender.x AND receiver.x < ball.x
+            if receiver.pos[0] >= self.pitch.length / 2:
+                return False
+
+            # Defenders protecting goal at x=0
+            # Last defender = smallest x (closest to goal at x=0)
+            # 2nd-last = second smallest x
+            def_xs_asc = sorted(
+                [p.pos[0] for p in defending_team.players if not p.is_goalkeeper],
+                reverse=False  # ascending: [closest_to_goal, ...]
+            )
+            offside_line = def_xs_asc[1] if len(def_xs_asc) >= 2 else def_xs_asc[0] if def_xs_asc else 0.0
+
+            return receiver.pos[0] < offside_line and receiver.pos[0] < self.ball.position[0]
+
     def _give_ball(self, player: Player, team: Team):
         """Give the ball to a specific player."""
         # Clear previous holder state
@@ -1005,6 +1158,23 @@ class MatchV2:
             ball_pos = self.ball.position
             ball_pos = self.pitch.clamp(ball_pos[0], ball_pos[1])
             self.ball.position = ball_pos
+            closest = restart_team.get_closest_to(ball_pos, exclude_gk=True)
+            if closest:
+                self._give_ball(closest, restart_team)
+
+        elif reason == "offside":
+            # Free kick to defending team from offside position
+            ball_pos = self.ball.position
+            ball_pos = self.pitch.clamp(ball_pos[0], ball_pos[1])
+            self.ball.position = ball_pos
+            closest = restart_team.get_closest_to(ball_pos, exclude_gk=True)
+            if closest:
+                self._give_ball(closest, restart_team)
+
+        else:
+            # Fallback: give ball to closest player on restart team
+            ball_pos = self.ball.position
+            ball_pos = self.pitch.clamp(ball_pos[0], ball_pos[1])
             closest = restart_team.get_closest_to(ball_pos, exclude_gk=True)
             if closest:
                 self._give_ball(closest, restart_team)

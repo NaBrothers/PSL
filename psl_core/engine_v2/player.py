@@ -6,21 +6,22 @@ NO hard rules -- all behavior emerges from reward/score comparisons.
 On-ball candidates:
     carry_to(pos) -- score = position_value(target) * path_feasibility
     pass_to(tm)   -- score = pass_success_rate * position_value(tm.pos)
+    pass_to_space -- score = PV(future_pos) * arrival_prob * pass_accuracy
     shoot         -- score = on_target_prob * (1-save_estimate) * goal_reward
     clear         -- score = danger_reduction (high when pressured in own half)
 
 Off-ball attacking:
-    move_to(X) -- score = position_value(X) * reachability * receive_probability
+    move_to(X) -- score = position_value(X) * reachability * pass_feasibility * space_creation
     stay        -- score = position_value(current_pos)
 
 Off-ball defending:
     approach       -- safe, moderate score
     tackle         -- score = success_rate * ball_value - (1-success_rate) * stun_penalty
     block_lane     -- score = lane_threat_value
-    mark_runner    -- score = attacker_threat
+    mark_runner    -- score = attacker_threat (zone-based)
     hold_position  -- score = 0.35 (baseline safe choice)
 
-IQ effect: temperature = (100 - IQ) / 100, selection via softmax.
+IQ effect: noise applied to all scores + temperature-based softmax selection.
 """
 
 from __future__ import annotations
@@ -144,6 +145,18 @@ class Player:
         )
 
     # =========================================================================
+    # IQ Noise
+    # =========================================================================
+
+    def _apply_iq_noise(self, score: float, config: "EngineConfig") -> float:
+        """Apply IQ-based noise to a score value.
+
+        Lower IQ = more noise = worse decisions.
+        """
+        noise_scale = (100 - max(1, min(99, self.iq_value))) / 100.0 * config.iq_noise_scale
+        return score * (1.0 + random.gauss(0, noise_scale))
+
+    # =========================================================================
     # Movement
     # =========================================================================
 
@@ -212,7 +225,7 @@ class Player:
     ) -> Tuple[str, dict]:
         """Choose on-ball action via score comparison. Returns (action_type, details).
 
-        action_type is one of: "carry", "pass", "shoot", "clear"
+        action_type is one of: "carry", "pass", "pass_to_space", "shoot", "clear"
         details contains target info needed by the match loop.
         """
         from .position_value import position_value
@@ -257,6 +270,12 @@ class Player:
         )
         candidates.extend(pass_candidates)
 
+        # ------- PASS TO SPACE candidates -------
+        space_pass_candidates = self._score_pass_to_space_options(
+            teammates, opponents, config, pitch, attacking_right, opp_positions, tm_positions
+        )
+        candidates.extend(space_pass_candidates)
+
         # ------- SHOOT candidate -------
         if dist_to_goal <= config.shot_max_distance:
             shoot_score, shoot_details = self._score_shoot(
@@ -289,8 +308,14 @@ class Player:
                 target = pitch.clamp(self.pos[0] - 5.0, self.pos[1])
             return ("carry", {"target": target})
 
+        # Apply IQ noise to all candidate scores
+        noisy_candidates = [
+            (self._apply_iq_noise(score, config), action_type, details)
+            for score, action_type, details in candidates
+        ]
+
         # Selection via softmax with IQ-based temperature
-        chosen = self._softmax_select(candidates, config)
+        chosen = self._softmax_select(noisy_candidates, config)
         return (chosen[1], chosen[2])
 
     def _score_carry_options(
@@ -459,6 +484,148 @@ class Player:
 
         return results
 
+    def _score_pass_to_space_options(
+        self,
+        teammates: List["Player"],
+        opponents: List["Player"],
+        config: "EngineConfig",
+        pitch: "Pitch",
+        attacking_right: bool,
+        opp_positions: List[Tuple[float, float]],
+        tm_positions: List[Tuple[float, float]],
+    ) -> List[Tuple[float, str, dict]]:
+        """Generate pass-to-space candidates.
+
+        For each teammate moving forward, project where they'll be in ~1 tick
+        and score: PV(future_pos) * arrival_prob * pass_accuracy
+        Avoids offside positions by checking against the 2nd-last defender.
+        """
+        from .position_value import position_value, receive_reachability
+
+        results = []
+        forward_dir = 1.0 if attacking_right else -1.0
+
+        # Compute offside line
+        offside_line = self._get_offside_line(opponents, attacking_right, config)
+
+        # Opponent speeds for reachability calculation
+        opp_speeds = [
+            player_speed(o.speed_value, config.player_max_speed, config.player_min_speed)
+            for o in opponents if not o.is_goalkeeper
+        ]
+        opp_pos_no_gk = [(o.pos[0], o.pos[1]) for o in opponents if not o.is_goalkeeper]
+
+        for tm in teammates:
+            if tm.index == self.index or tm.is_goalkeeper:
+                continue
+
+            # Check if teammate is moving forward (target_pos ahead of current pos)
+            dx_movement = tm.target_pos[0] - tm.pos[0]
+            is_moving_forward = (dx_movement * forward_dir) > 1.0
+
+            if not is_moving_forward:
+                continue
+
+            # Project where they'll be in ~0.5 ticks (compromise between current and target)
+            future_pos_x = tm.pos[0] + (tm.target_pos[0] - tm.pos[0]) * 0.5
+            future_pos_y = tm.pos[1] + (tm.target_pos[1] - tm.pos[1]) * 0.5
+            future_pos = pitch.clamp(future_pos_x, future_pos_y)
+
+            # Skip if future position would be offside
+            if self._is_offside_position(future_pos, attacking_right, offside_line, config):
+                continue
+
+            # Position value of future position
+            pv = position_value(
+                future_pos[0], future_pos[1], pitch, attacking_right,
+                opp_pos_no_gk, tm_positions, config
+            )
+
+            # Arrival probability: can teammate reach before defenders?
+            tm_speed = player_speed(tm.speed_value, config.player_max_speed, config.player_min_speed)
+            arrival_prob = receive_reachability(
+                future_pos, tm.pos, tm_speed,
+                opp_pos_no_gk, opp_speeds,
+                self.pos, config.pass_to_space_ball_speed, config
+            )
+
+            # Pass accuracy based on distance and Long_Passing ability
+            d = distance(self.pos, future_pos)
+            if d < 3.0 or d > 55.0:
+                continue
+
+            long_passing = self.abilities.get("Long_Passing", 50) / 100.0
+            pass_acc = max(0.3, min(0.9, 0.5 + 0.4 * long_passing - d / 100.0))
+
+            # Pass feasibility: check lane clarity to future_pos
+            lane_clarity = 1.0
+            dx = future_pos[0] - self.pos[0]
+            dy = future_pos[1] - self.pos[1]
+            pass_len = math.sqrt(dx * dx + dy * dy)
+            if pass_len > 1.0:
+                nx, ny = dx / pass_len, dy / pass_len
+                for opp in opponents:
+                    if opp.is_goalkeeper:
+                        continue
+                    px = opp.pos[0] - self.pos[0]
+                    py = opp.pos[1] - self.pos[1]
+                    proj = px * nx + py * ny
+                    if 2.0 < proj < pass_len - 2.0:
+                        perp = abs(px * ny - py * nx)
+                        if perp < config.interception_reach * 2.0:
+                            lane_clarity *= 0.5
+
+            score = pv * arrival_prob * pass_acc * lane_clarity
+
+            is_long = d > 30.0
+            results.append((score, "pass_to_space", {
+                "target": future_pos,
+                "intended_receiver": tm.index,
+                "success_prob": pass_acc * lane_clarity,
+                "is_long": is_long,
+                "pass_type": "long_pass" if is_long else "short_pass",
+            }))
+
+        return results
+
+    def _get_offside_line(
+        self, opponents: List["Player"], attacking_right: bool, config: "EngineConfig"
+    ) -> float:
+        """Get the offside line (2nd-last defender position).
+
+        For attacking right: offside line = 2nd-highest x among opponent outfield.
+        For attacking left: offside line = 2nd-lowest x among opponent outfield.
+        """
+        if attacking_right:
+            # Opponent defends near x=pitch_length. 2nd-highest x = 2nd-last defender.
+            def_xs = sorted(
+                [p.pos[0] for p in opponents if not p.is_goalkeeper],
+                reverse=True  # descending: highest x first
+            )
+            return def_xs[1] if len(def_xs) >= 2 else def_xs[0] if def_xs else config.pitch_length
+        else:
+            # Opponent defends near x=0. 2nd-lowest x = 2nd-last defender.
+            def_xs = sorted(
+                [p.pos[0] for p in opponents if not p.is_goalkeeper],
+                reverse=False  # ascending: lowest x first
+            )
+            return def_xs[1] if len(def_xs) >= 2 else def_xs[0] if def_xs else 0.0
+
+    def _is_offside_position(
+        self, pos: Tuple[float, float], attacking_right: bool,
+        offside_line: float, config: "EngineConfig"
+    ) -> bool:
+        """Check if a position would be offside (used for pass-to-space filtering)."""
+        if attacking_right:
+            # Must be in opponent half AND ahead of offside line AND ahead of ball
+            if pos[0] <= config.pitch_length / 2.0:
+                return False
+            return pos[0] > offside_line
+        else:
+            if pos[0] >= config.pitch_length / 2.0:
+                return False
+            return pos[0] < offside_line
+
     def _score_shoot(
         self,
         goal_center: Tuple[float, float],
@@ -483,20 +650,24 @@ class Player:
         else:
             ability = finishing
 
-        # Distance factor
+        # Distance factor - gentler decay for medium-range shots
         if dist_to_goal <= config.shot_ideal_distance:
             dist_factor = 1.0
-        else:
+        elif dist_to_goal <= 30.0:
+            # 20-30m: gradual decay
             excess = dist_to_goal - config.shot_ideal_distance
-            dist_factor = math.exp(-excess / 8.0)
+            dist_factor = 1.0 - excess * 0.03  # 0.7 at 30m
+        else:
+            # 30m+: steeper decay
+            dist_factor = 0.7 * math.exp(-(dist_to_goal - 30.0) / 20.0)
 
         # Angle factor
         angle = angle_to_goal(self.pos, goal_center, config.goal_width)
-        angle_factor = min(1.0, angle / 0.3)
+        angle_factor = min(1.0, angle / 0.2)  # easier threshold for angle
 
         # On-target probability
         on_target_prob = config.shot_on_target_base * (0.4 + 0.6 * ability) * dist_factor * angle_factor
-        on_target_prob = max(0.05, min(0.85, on_target_prob))
+        on_target_prob = max(0.18, min(0.85, on_target_prob))
 
 
         # Score = on_target_prob * (1 - save_estimate) * goal_reward
@@ -612,13 +783,13 @@ class Player:
     ) -> Tuple[float, float]:
         """Choose target position for off-ball attacking movement.
 
-        For each of 5 sampled positions:
-            score = position_value(pos) * reachability * receive_chance
+        Samples 6-8 structured candidate positions (3 forward, 2 wide, 1 back, 2 diagonal).
+        Each scored: PV(pos) * reachability * pass_feasibility * space_creation
         Also: "stay" option with score = position_value(current_pos)
 
         Returns the chosen target position.
         """
-        from .position_value import position_value
+        from .position_value import position_value, receive_reachability, space_creation_value
 
         if opponents is None:
             opponents = []
@@ -634,6 +805,16 @@ class Player:
         tm_positions = [(t.pos[0], t.pos[1]) for t in teammates if t.index != self.index]
 
         max_speed = player_speed(self.speed_value, config.player_max_speed, config.player_min_speed)
+        forward_dir = 1.0 if attacking_right else -1.0
+
+        # Compute offside line to avoid running into offside
+        offside_line = self._get_offside_line(opponents, attacking_right, config)
+
+        # Opponent speeds for reachability
+        opp_speeds = [
+            player_speed(o.speed_value, config.player_max_speed, config.player_min_speed)
+            for o in opponents if not o.is_goalkeeper
+        ]
 
         candidates = []  # (score, position)
 
@@ -644,12 +825,46 @@ class Player:
         )
         candidates.append((stay_pv, self.pos))
 
-        # Sample 5 candidate positions
+        # Maximum roam range based on how far from formation
         max_roam = 25.0 if self.is_attacker else 18.0 if self.is_midfielder else 12.0
-        for _ in range(5):
-            cx = self.formation_pos[0] + random.uniform(-max_roam, max_roam)
-            cy = self.formation_pos[1] + random.uniform(-max_roam * 0.6, max_roam * 0.6)
-            pos = pitch.clamp(cx, cy)
+
+        # Generate 8 structured candidate positions
+        # 3 forward positions (different depths)
+        forward_candidates = [
+            (self.formation_pos[0] + forward_dir * random.uniform(8, max_roam),
+             self.formation_pos[1] + random.uniform(-5, 5)),
+            (self.formation_pos[0] + forward_dir * random.uniform(5, 15),
+             self.formation_pos[1] + random.uniform(-8, 8)),
+            (self.formation_pos[0] + forward_dir * random.uniform(12, max_roam),
+             self.formation_pos[1] + random.uniform(-3, 3)),
+        ]
+
+        # 2 wide positions
+        wide_offset = random.uniform(10, 20)
+        wide_candidates = [
+            (self.formation_pos[0] + forward_dir * random.uniform(0, 8),
+             self.formation_pos[1] + wide_offset),
+            (self.formation_pos[0] + forward_dir * random.uniform(0, 8),
+             self.formation_pos[1] - wide_offset),
+        ]
+
+        # 1 back (drop deep)
+        back_candidates = [
+            (self.formation_pos[0] - forward_dir * random.uniform(5, 12),
+             self.formation_pos[1] + random.uniform(-8, 8)),
+        ]
+
+        # 2 diagonal positions
+        diagonal_candidates = [
+            (self.formation_pos[0] + forward_dir * random.uniform(5, 15),
+             self.formation_pos[1] + random.uniform(8, 15)),
+            (self.formation_pos[0] + forward_dir * random.uniform(5, 15),
+             self.formation_pos[1] - random.uniform(8, 15)),
+        ]
+
+        all_raw = forward_candidates + wide_candidates + back_candidates + diagonal_candidates
+        for raw_x, raw_y in all_raw:
+            pos = pitch.clamp(raw_x, raw_y)
 
             # Position value
             pv = position_value(
@@ -657,15 +872,15 @@ class Player:
                 opp_positions, tm_positions, config
             )
 
-            # Reachability: 1.0 if within speed*1 tick, decays for further
-            dist = distance(self.pos, pos)
-            if dist <= max_speed:
-                reachability = 1.0
-            else:
-                reachability = max_speed / max(1.0, dist)
+            # Receive reachability: can I arrive before defenders?
+            reach = receive_reachability(
+                pos, self.pos, max_speed,
+                opp_positions, opp_speeds,
+                ball_pos, config.pass_to_space_ball_speed, config
+            )
 
-            # Receive chance: can I get a pass here? (no opp between me and ball)
-            receive_chance = 1.0
+            # Pass feasibility: can the ball reach me? (no defenders blocking path from ball)
+            pass_feasibility = 1.0
             dx = pos[0] - ball_pos[0]
             dy = pos[1] - ball_pos[1]
             path_len = math.sqrt(dx * dx + dy * dy)
@@ -680,25 +895,39 @@ class Player:
                     if 2.0 < proj < path_len - 2.0:
                         perp = abs(px * ny - py * nx)
                         if perp < 4.0:
-                            receive_chance *= 0.5
+                            pass_feasibility *= 0.5
 
-            # Reduce receive_chance if too far from ball (can't get a pass that far)
+            # Reduce feasibility if too far from ball
             dist_to_ball = distance(pos, ball_pos)
             if dist_to_ball > 25.0:
-                receive_chance *= max(0.1, 1.0 - (dist_to_ball - 25.0) / 35.0)
+                pass_feasibility *= max(0.1, 1.0 - (dist_to_ball - 25.0) / 35.0)
 
-            score = pv * reachability * receive_chance
+            # Space creation bonus
+            space_bonus = space_creation_value(pos, opp_positions, tm_positions, config)
+
+            # Offside penalty: heavily penalize positions that are offside
+            offside_penalty = 1.0
+            if self._is_offside_position(pos, attacking_right, offside_line, config):
+                offside_penalty = 0.05  # almost never go offside intentionally
+
+            score = pv * reach * pass_feasibility * space_bonus * offside_penalty
             candidates.append((score, pos))
 
         if not candidates:
             self.target_pos = self.formation_pos
             return self.target_pos
 
+        # Apply IQ noise to all candidate scores
+        noisy_candidates = [
+            (self._apply_iq_noise(score, config), pos)
+            for score, pos in candidates
+        ]
+
         # IQ-based temperature selection
         temperature = (100 - max(1, min(99, self.iq_value))) / 100.0
         temperature = max(0.05, temperature * 0.5)
 
-        scores = [c[0] for c in candidates]
+        scores = [c[0] for c in noisy_candidates]
         max_score = max(scores)
         if max_score < 0.01:
             self.target_pos = self.formation_pos
@@ -707,15 +936,15 @@ class Player:
         exp_scores = [math.exp((s - max_score) / max(0.01, temperature)) for s in scores]
         total = sum(exp_scores)
         if total < 1e-10:
-            chosen_pos = candidates[0][1]
+            chosen_pos = noisy_candidates[0][1]
         else:
             r = random.random() * total
             cumulative = 0.0
-            chosen_pos = candidates[-1][1]
+            chosen_pos = noisy_candidates[-1][1]
             for i, e in enumerate(exp_scores):
                 cumulative += e
                 if r <= cumulative:
-                    chosen_pos = candidates[i][1]
+                    chosen_pos = noisy_candidates[i][1]
                     break
 
         # Clamp: players don't roam too far from formation
@@ -733,7 +962,7 @@ class Player:
         return self.target_pos
 
     # =========================================================================
-    # Off-Ball Defending Decision: Pure Reward
+    # Off-Ball Defending Decision: Pure Reward (Zone-Based)
     # =========================================================================
 
     def choose_off_ball_defend(
@@ -746,14 +975,12 @@ class Player:
         opponents: Optional[List["Player"]] = None,
         teammates: Optional[List["Player"]] = None,
     ) -> Tuple[str, dict]:
-        """Choose defending action. Returns (action_type, details).
+        """Choose defending action using zone-based marking. Returns (action_type, details).
 
-        Candidates and scores:
-        - approach: 0.3 + 0.3*(1.0 - dist/press_radius)
-        - tackle: success_rate * ball_value - (1-success_rate) * stun_cost
-        - block_lane: threat_of_nearest_attacker_in_zone * 0.5
-        - mark_runner: nearest_attacker_threat * 0.4
-        - hold_position: 0.35 (baseline safe choice)
+        Zone-based: each defender marks attackers within 20m of their formation_pos.
+        - mark_runner: most threatening attacker in MY zone
+        - block_lane: position between ball and attacker I'm marking
+        - If NO attacker in my zone -> hold_position
         """
         if opponents is None:
             opponents = []
@@ -773,25 +1000,28 @@ class Player:
 
         candidates = []  # (score, action_type, details)
 
-        # 1. APPROACH: score = 0.3 + 0.3*(1.0 - dist/press_radius)
+        # Zone radius for marking
+        zone_radius = 20.0
+
+        # Find attackers in MY zone (within zone_radius of my formation_pos)
+        attackers_in_zone = [
+            o for o in opponents
+            if not o.is_goalkeeper and distance(self.formation_pos, o.pos) < zone_radius
+        ]
+
+        # 1. APPROACH: only for designated presser
         if dist_to_ball < config.press_radius * 2:
             proximity = max(0.0, 1.0 - dist_to_ball / config.press_radius)
-            approach_score = 0.3 + 0.4 * proximity  # defenders should actively close down carrier
-            # Predict where carrier will be (lead the press)
+            approach_score = 0.3 + 0.4 * proximity
             if ball_carrier:
-                # Rough prediction: carrier moves forward ~4m per tick
-                import math
-                lead_dist = config.carrier_speed * 0.5  # predict half a tick ahead
-                carrier_dir_x = 1.0 if attacking_right else -1.0  # assume carrier goes forward
+                lead_dist = config.carrier_speed * 0.5
+                carrier_dir_x = 1.0 if attacking_right else -1.0
                 predicted = (ball_pos[0] + carrier_dir_x * lead_dist, ball_pos[1])
                 approach_target = predicted
             else:
                 approach_target = ball_pos
-            # Only designated presser approaches at full score. Others stay back.
-            # Phase 3 slot: tactic_weight["pressing_intensity"] controls how many press
             if getattr(self, '_is_closest_presser', False):
                 candidates.append((approach_score, "approach", {"target": approach_target}))
-            # Non-pressers: don't approach (mark/block/hold are better choices)
 
         # 2. TACKLE: score = success_rate * ball_value - (1-success_rate) * stun_cost
         if ball_carrier and dist_to_ball < config.tackle_range:
@@ -799,35 +1029,46 @@ class Player:
             if tackle_score > 0:
                 candidates.append((tackle_score, "tackle", {"target": ball_carrier.pos}))
 
-        # 3. BLOCK_LANE: score = threat_of_nearest_attacker_in_zone * 0.5
-        lane_score, lane_target = self._score_block_lane(
-            ball_pos, opponents, config, pitch, attacking_right
-        )
-        if lane_score > 0:
-            candidates.append((lane_score, "block_lane", {"target": lane_target}))
+        # 3. MARK_RUNNER (zone-based): most threatening attacker in MY zone
+        if attackers_in_zone:
+            mark_score, mark_target = self._score_mark_runner_zone(
+                ball_pos, attackers_in_zone, config, pitch, attacking_right
+            )
+            if mark_score > 0:
+                candidates.append((mark_score, "mark_runner", {"target": mark_target}))
 
-        # 4. MARK_RUNNER: score = nearest_attacker_threat * 0.4
-        mark_score, mark_target = self._score_mark_runner(
-            ball_pos, opponents, config, pitch, attacking_right
-        )
-        if mark_score > 0:
-            candidates.append((mark_score, "mark_runner", {"target": mark_target}))
+        # 4. BLOCK_LANE (zone-based): between ball and attacker I'm marking
+        if attackers_in_zone:
+            lane_score, lane_target = self._score_block_lane_zone(
+                ball_pos, attackers_in_zone, config, pitch, attacking_right
+            )
+            if lane_score > 0:
+                candidates.append((lane_score, "block_lane", {"target": lane_target}))
 
-        # 5. HOLD_POSITION: only strong when ball is far away
-        if dist_to_ball > 30.0:
-            hold_score = 0.45  # ball far, hold shape
+        # 5. HOLD_POSITION: strong when no attackers in zone or ball is far
+        if not attackers_in_zone:
+            # No attacker in zone -- hold position (don't chase ball)
+            hold_score = 0.55
+        elif dist_to_ball > 30.0:
+            hold_score = 0.45
         elif dist_to_ball > 15.0:
-            hold_score = 0.30  # ball medium, slightly hold
+            hold_score = 0.30
         else:
-            hold_score = 0.15  # ball close, should be engaging!
+            hold_score = 0.15
         candidates.append((hold_score, "hold_position", {"target": self.formation_pos}))
 
         if not candidates:
             self.target_pos = self.formation_pos
             return ("hold_position", {"target": self.formation_pos})
 
+        # Apply IQ noise to all candidate scores
+        noisy_candidates = [
+            (self._apply_iq_noise(score, config), action_type, details)
+            for score, action_type, details in candidates
+        ]
+
         # Softmax select
-        chosen = self._softmax_select(candidates, config)
+        chosen = self._softmax_select(noisy_candidates, config)
         action_type = chosen[1]
         details = chosen[2]
 
@@ -876,6 +1117,91 @@ class Player:
         score = success_rate * ball_value - (1.0 - success_rate) * stun_cost
         return max(0.0, score)
 
+    def _score_mark_runner_zone(
+        self,
+        ball_pos: Tuple[float, float],
+        attackers_in_zone: List["Player"],
+        config: "EngineConfig",
+        pitch: "Pitch",
+        attacking_right: bool,
+    ) -> Tuple[float, Tuple[float, float]]:
+        """Score for marking the most threatening attacker in MY zone.
+
+        Threat = based on proximity to ball and to our goal.
+        """
+        if not attackers_in_zone:
+            return (0.0, self.formation_pos)
+
+        # Pick the most threatening attacker in zone
+        # Threat = proximity to ball * forward position
+        best_threat = 0.0
+        best_target = None
+        for opp in attackers_in_zone:
+            dist_to_ball = distance(opp.pos, ball_pos)
+            ball_proximity = max(0.2, 1.0 - dist_to_ball / 30.0)
+
+            # How advanced is this attacker (toward our goal)
+            if attacking_right:
+                # We're defending left goal (x=0). Attackers at low x are dangerous
+                advance = 1.0 - opp.pos[0] / config.pitch_length
+            else:
+                # We're defending right goal. Attackers at high x are dangerous
+                advance = opp.pos[0] / config.pitch_length
+
+            threat = ball_proximity * 0.6 + advance * 0.4
+            if threat > best_threat:
+                best_threat = threat
+                best_target = opp
+
+        if best_target is None:
+            return (0.0, self.formation_pos)
+
+        # Mark position: slightly goalside of the attacker
+        offset = 1.5
+        if attacking_right:
+            # Defending left goal (x=0), so goalside = lower x
+            mark_x = best_target.pos[0] - offset
+        else:
+            # Defending right goal, goalside = higher x
+            mark_x = best_target.pos[0] + offset
+        mark_target = pitch.clamp(mark_x, best_target.pos[1])
+
+        score = best_threat * 0.6  # marking is important
+        return (score, mark_target)
+
+    def _score_block_lane_zone(
+        self,
+        ball_pos: Tuple[float, float],
+        attackers_in_zone: List["Player"],
+        config: "EngineConfig",
+        pitch: "Pitch",
+        attacking_right: bool,
+    ) -> Tuple[float, Tuple[float, float]]:
+        """Score for blocking a passing lane to the most threatening attacker in zone.
+
+        Position between ball and attacker in my zone.
+        """
+        if not attackers_in_zone:
+            return (0.0, self.formation_pos)
+
+        # Pick the closest attacker in zone to me
+        target_opp = min(attackers_in_zone, key=lambda o: distance(self.pos, o.pos))
+
+        # Position between ball and this opponent
+        mid_x = (ball_pos[0] + target_opp.pos[0]) / 2.0
+        mid_y = (ball_pos[1] + target_opp.pos[1]) / 2.0
+        lane_target = pitch.clamp(mid_x, mid_y)
+
+        # Threat level based on proximity of attacker to ball
+        dist_opp_to_ball = distance(target_opp.pos, ball_pos)
+        if dist_opp_to_ball > 40.0:
+            threat = 0.2
+        else:
+            threat = max(0.2, 1.0 - dist_opp_to_ball / 40.0)
+
+        score = threat * 0.5
+        return (score, lane_target)
+
     def _score_block_lane(
         self,
         ball_pos: Tuple[float, float],
@@ -884,30 +1210,19 @@ class Player:
         pitch: "Pitch",
         attacking_right: bool,
     ) -> Tuple[float, Tuple[float, float]]:
-        """Score for blocking a passing lane.
-
-        score = threat_of_nearest_attacker_in_zone * 0.5
-        """
-        # Find most dangerous attacking opponent in zone
+        """Legacy: Score for blocking a passing lane."""
         dangerous = [o for o in opponents if not o.is_goalkeeper and distance(self.pos, o.pos) < 25.0]
         if not dangerous:
             return (0.0, self.formation_pos)
-
-        # Pick the one nearest to us (in our zone)
         target_opp = min(dangerous, key=lambda o: distance(self.pos, o.pos))
-
-        # Position between ball and this opponent
         mid_x = (ball_pos[0] + target_opp.pos[0]) / 2.0
         mid_y = (ball_pos[1] + target_opp.pos[1]) / 2.0
         lane_target = pitch.clamp(mid_x, mid_y)
-
-        # Threat level based on proximity
         dist_opp_to_ball = distance(target_opp.pos, ball_pos)
         if dist_opp_to_ball > 40.0:
             threat = 0.2
         else:
             threat = max(0.2, 1.0 - dist_opp_to_ball / 40.0)
-
         score = threat * 0.5
         return (score, lane_target)
 
@@ -919,36 +1234,23 @@ class Player:
         pitch: "Pitch",
         attacking_right: bool,
     ) -> Tuple[float, Tuple[float, float]]:
-        """Score for man-marking an attacker.
-
-        score = nearest_attacker_threat * 0.4
-        """
-        # Find nearby threatening attackers
+        """Legacy: Score for man-marking an attacker."""
         nearby_attackers = [
             o for o in opponents
             if not o.is_goalkeeper and distance(self.pos, o.pos) < 25.0
         ]
         if not nearby_attackers:
             return (0.0, self.formation_pos)
-
-        # Pick the closest
         target = min(nearby_attackers, key=lambda o: distance(self.pos, o.pos))
-
-        # Threat based on their proximity to ball and our goal
         dist_to_ball = distance(target.pos, ball_pos)
         threat = max(0.2, 1.0 - dist_to_ball / 30.0)
-
-        # Mark position: slightly goalside
         offset = 1.5
         if attacking_right:
-            # We're attacking right, so defending left - but we need to think about
-            # the opponent's attack direction. If we're defending, opponent attacks our goal.
-            mark_x = target.pos[0] - offset if attacking_right else target.pos[0] + offset
+            mark_x = target.pos[0] - offset
         else:
             mark_x = target.pos[0] + offset
         mark_target = pitch.clamp(mark_x, target.pos[1])
-
-        score = threat * 0.6  # marking is important
+        score = threat * 0.6
         return (score, mark_target)
 
     def _gk_position_adjust(
@@ -1085,10 +1387,10 @@ class Player:
 
         if action_type == "carry":
             return None  # carry is the default (no release)
-        elif action_type == "pass":
+        elif action_type in ("pass", "pass_to_space"):
             at = ActionType.LONG_PASS if details.get("is_long") else ActionType.SHORT_PASS
             return Action(
-                at, details["target"], details.get("target_player_idx", -1),
+                at, details["target"], details.get("target_player_idx", details.get("intended_receiver", -1)),
                 details.get("success_prob", 0.7), details.get("success_prob", 0.7),
             )
         elif action_type == "shoot":
