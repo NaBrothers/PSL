@@ -26,9 +26,7 @@ from .actions import (
     score_long_pass,
     score_shoot,
     score_dribble,
-    score_carry,
     score_cross,
-    select_action_iq_weighted,
     apply_unified_scoring,
 )
 
@@ -252,7 +250,7 @@ class Player:
             if tm.index == self.index:
                 continue
             d = distance(target_pos, tm.pos)
-            if d < 8.0:  # too close to a teammate
+            if d < 4.0:  # too close to a teammate
                 bonus *= 0.5
 
         # 2. Stay within your zone (defenders shouldn't run to forward positions)
@@ -839,10 +837,15 @@ class Player:
         self.target_pos = ball_carrier_pos
 
     # =========================================================================
-    # On-Ball Decision Making (Phase 2)
+    # On-Ball Decision Making: Layered Model
+    # =========================================================================
+    #
+    # Layer 1: Movement (always) - carrier jogs with ball
+    # Layer 2: Release evaluation (conditional) - pass/shoot/cross if good enough
+    # Layer 3: Forced decision (when pressed) - must act NOW
     # =========================================================================
 
-    def generate_actions(
+    def on_ball_tick(
         self,
         teammates: List["Player"],
         opponents: List["Player"],
@@ -850,18 +853,208 @@ class Player:
         pitch: "Pitch",
         attacking_right: bool,
         phase: str = "attacking",
-    ) -> List[Action]:
-        """Generate and score candidate actions for a player on the ball.
+    ) -> Optional[Action]:
+        """Layered on-ball decision each tick.
 
-        Phase 2 additions:
-        - Vision-filtered pass targets
-        - CARRY action (open space)
-        - CROSS action (wide positions)
-        - Unified scoring framework applied to all actions
+        Returns an Action if the player releases the ball (pass/shoot/cross/dribble),
+        or None if the player simply carries the ball forward (default behavior).
+        The carrier always moves with the ball (Layer 1); releasing is conditional.
+        """
+        # Track how long we've been holding the ball (reset externally when holder changes)
+        if not hasattr(self, '_ticks_with_ball'):
+            self._ticks_with_ball = 0
+        self._ticks_with_ball += 1
+
+        # Goalkeeper special: always distribute after 2 ticks
+        if self.is_goalkeeper:
+            if self._ticks_with_ball >= 2:
+                return self._gk_distribute(teammates, config, pitch, attacking_right, phase)
+            return None  # GK holds briefly
+
+        # ---------------------------------------------------------------
+        # Layer 3: Forced decision check (highest priority)
+        # If an opponent is very close and closing, must act immediately
+        # ---------------------------------------------------------------
+        pressers = [
+            o for o in opponents
+            if distance(self.pos, o.pos) < config.forced_decision_radius
+            and not o.is_goalkeeper
+        ]
+        if pressers:
+            forced = self._forced_decision(
+                pressers, teammates, opponents, config, pitch, attacking_right, phase
+            )
+            if forced is not None:
+                return forced
+
+        # ---------------------------------------------------------------
+        # Layer 1: Movement with ball (always happens)
+        # Carrier moves 2-5m in chosen direction each tick
+        # ---------------------------------------------------------------
+        self._compute_carrier_movement(teammates, opponents, config, pitch, attacking_right)
+
+        # ---------------------------------------------------------------
+        # Layer 2: Release evaluation (conditional)
+        # Check if there's a good enough reason to release the ball
+        # ---------------------------------------------------------------
+        release = self._evaluate_release(
+            teammates, opponents, config, pitch, attacking_right, phase
+        )
+        if release is not None:
+            return release
+
+        # No release - carrier just moved with ball (default carry behavior)
+        return None
+
+    def _compute_carrier_movement(
+        self,
+        teammates: List["Player"],
+        opponents: List["Player"],
+        config: "EngineConfig",
+        pitch: "Pitch",
+        attacking_right: bool,
+    ):
+        """Layer 1: Determine carrier movement direction and move with ball.
+
+        Always happens each tick. Evaluates directions based on:
+        - Forward space available
+        - Opponent positions
+        - Sideline proximity
+        - Team positioning needs
+        """
+        # Evaluate movement options: forward, left, right, backward, stay
+        # Base direction is forward (toward opponent goal)
+        forward_dir = 1.0 if attacking_right else -1.0
+
+        # Check forward space
+        forward_blocked = False
+        for opp in opponents:
+            if opp.is_goalkeeper:
+                continue
+            d = distance(self.pos, opp.pos)
+            if d < 4.0:
+                # Is opponent ahead of us?
+                dx = (opp.pos[0] - self.pos[0]) * forward_dir
+                if dx > 0 and dx < 4.0 and abs(opp.pos[1] - self.pos[1]) < 3.0:
+                    forward_blocked = True
+                    break
+
+        # Determine speed: sprint if clear ahead, jog otherwise
+        if forward_blocked:
+            speed = config.carrier_jog_speed * 0.7  # slow down when blocked
+        else:
+            # Sprint if lots of space ahead
+            nearest_opp_ahead = float('inf')
+            for opp in opponents:
+                if opp.is_goalkeeper:
+                    continue
+                dx = (opp.pos[0] - self.pos[0]) * forward_dir
+                if dx > 0:
+                    nearest_opp_ahead = min(nearest_opp_ahead, distance(self.pos, opp.pos))
+            if nearest_opp_ahead > 15.0:
+                speed = config.carrier_sprint_speed
+            else:
+                speed = config.carrier_jog_speed
+
+        # Determine direction
+        move_x = forward_dir * speed
+        move_y = 0.0
+
+        if forward_blocked:
+            # Try to move sideways to escape pressure
+            # Check which side has more space
+            left_space = 0.0
+            right_space = 0.0
+            for opp in opponents:
+                if opp.is_goalkeeper:
+                    continue
+                d = distance(self.pos, opp.pos)
+                if d < 12.0:
+                    if opp.pos[1] < self.pos[1]:
+                        left_space -= 1.0
+                    else:
+                        right_space -= 1.0
+            # Move toward more space (lower penalty = more space)
+            if left_space > right_space:
+                move_y = -speed * 0.6  # move left (lower y)
+            elif right_space > left_space:
+                move_y = speed * 0.6  # move right (higher y)
+            move_x = forward_dir * speed * 0.3  # still drift forward slightly
+
+        # Near sideline? Cut inside
+        if self.pos[1] < 8.0:
+            move_y = max(move_y, speed * 0.4)
+        elif self.pos[1] > pitch.width - 8.0:
+            move_y = min(move_y, -speed * 0.4)
+
+        # Compute new position
+        new_x = self.pos[0] + move_x
+        new_y = self.pos[1] + move_y
+        new_pos = pitch.clamp(new_x, new_y)
+
+        # Track distance
+        moved = distance(self.pos, new_pos)
+        self.distance_covered += moved
+        self.carries_attempted += 1
+        self.carries_completed += 1
+
+        # Update position
+        old_pos = self.pos
+        self.pos = new_pos
+
+        # Update facing direction
+        if moved > 0.1:
+            self.facing_direction = angle_between_points(old_pos, new_pos)
+
+    def _evaluate_release(
+        self,
+        teammates: List["Player"],
+        opponents: List["Player"],
+        config: "EngineConfig",
+        pitch: "Pitch",
+        attacking_right: bool,
+        phase: str = "attacking",
+    ) -> Optional[Action]:
+        """Layer 2: Evaluate whether to release the ball this tick.
+
+        Computes best available pass/shoot/cross scores.
+        Only releases if best option exceeds the release threshold.
+        IQ adjusts threshold: high IQ = better at knowing when to release.
         """
         from .vision import get_visible_targets
 
-        actions: List[Action] = []
+        # Compute release threshold adjusted by IQ
+        # High IQ -> lower threshold -> releases smarter (finds good options earlier)
+        iq_adj = (self.iq_value - 50) * config.iq_threshold_adjustment
+        release_threshold = config.release_threshold_base - iq_adj
+        # tactic_weight slot for Phase 3: release_threshold *= tactic_weight["release_eagerness"]
+        release_threshold = max(0.2, min(0.8, release_threshold))
+
+        # Time-based settling: players who just received the ball are reluctant to
+        # immediately release (settling, observing). Threshold decreases over time.
+        ticks_held = getattr(self, '_ticks_with_ball', 0)
+        if ticks_held <= 1:
+            # Just received: very reluctant to release (only exceptional opportunities)
+            release_threshold *= 1.2
+        elif ticks_held <= 2:
+            # Settling: still somewhat reluctant
+            release_threshold *= 1.1
+        elif ticks_held <= 3:
+            # Observing: slightly elevated threshold
+            release_threshold *= 1.1
+        elif ticks_held > 6:
+            # Held too long: increasingly eager to release
+            release_threshold *= max(0.5, 1.0 - (ticks_held - 6) * 0.1)
+
+        # Progression bonus: if carrier is in attacking third and advancing,
+        # be less eager to release (looking for shot opportunity)
+        if attacking_right:
+            x_progress = self.pos[0] / pitch.length
+        else:
+            x_progress = 1.0 - self.pos[0] / pitch.length
+        if x_progress > 0.65 and ticks_held <= 4:
+            # In attacking third: raise threshold to encourage carrying into box
+            release_threshold *= 1.15
 
         # Determine goal position
         if attacking_right:
@@ -874,101 +1067,59 @@ class Player:
         # Get vision-filtered teammates
         visible_teammates = get_visible_targets(self, teammates, self.pos, config)
 
-        # Short passes to visible nearby teammates
+        best_action: Optional[Action] = None
+        best_score = 0.0
+
+        # Evaluate SHORT PASSES
         for tm in visible_teammates:
             d = distance(self.pos, tm.pos)
             if 3.0 < d < 35.0:
                 action = score_short_pass(self, tm, config, opponents, phase)
-                if action.score > 0.01:
-                    actions.append(action)
+                if action.score > best_score:
+                    best_score = action.score
+                    best_action = action
 
-        # Long passes to visible distant teammates
+        # Evaluate LONG PASSES
         for tm in visible_teammates:
             d = distance(self.pos, tm.pos)
             if 25.0 < d < 70.0:
                 action = score_long_pass(self, tm, config, opponents, phase)
-                if action.score > 0.01:
-                    actions.append(action)
+                if action.score > best_score:
+                    best_score = action.score
+                    best_action = action
 
-        # Shoot if in range
+        # Evaluate SHOOT
         if dist_to_goal <= config.shot_max_distance:
             action = score_shoot(self, goal_center, config, pitch, phase)
-            if action.score > 0.01:
-                actions.append(action)
+            if action.score > best_score:
+                best_score = action.score
+                best_action = action
 
-        # CARRY: open space forward movement
-        if not self.is_goalkeeper:
-            carry_dist = config.carry_min_distance + (
-                config.carry_max_distance - config.carry_min_distance
-            ) * self.speed_value / 100.0
-            if attacking_right:
-                carry_target = pitch.clamp(self.pos[0] + carry_dist, self.pos[1] + random.uniform(-3, 3))
-            else:
-                carry_target = pitch.clamp(self.pos[0] - carry_dist, self.pos[1] + random.uniform(-3, 3))
+        # Evaluate CROSS (from wide positions)
+        if attacking_right:
+            cross_target_x = pitch.length - config.cross_target_box_depth
+        else:
+            cross_target_x = config.cross_target_box_depth
+        cross_target_y = pitch.width / 2.0 + random.uniform(-10.0, 10.0)
+        cross_target = pitch.clamp(cross_target_x, cross_target_y)
+        action = score_cross(self, cross_target, config, opponents, attacking_right, pitch, phase)
+        if action.score > best_score:
+            best_score = action.score
+            best_action = action
 
-            nearby_opps = [o for o in opponents if distance(self.pos, o.pos) < config.carry_defender_check_radius]
-            action = score_carry(self, carry_target, config, nearby_opps, attacking_right, phase)
-            if action.score > 0.01:
-                actions.append(action)
+        # Apply IQ noise to decision (low IQ may miss good options or act on bad ones)
+        noise = (100 - max(1, min(99, self.iq_value))) / 100.0 * config.iq_noise_factor
+        score_with_noise = best_score + random.uniform(-noise * 0.15, noise * 0.1)
 
-        # DRIBBLE: 1v1 take-on when pressed
-        if not self.is_goalkeeper:
-            nearby_opps = [o for o in opponents if distance(self.pos, o.pos) < config.contest_radius * 2.5]
-            if nearby_opps:
-                if attacking_right:
-                    dx = random.uniform(3.0, 5.0)
-                else:
-                    dx = random.uniform(-5.0, -3.0)
-                dribble_target = pitch.clamp(self.pos[0] + dx, self.pos[1] + random.uniform(-2, 2))
-                action = score_dribble(self, dribble_target, config, nearby_opps, phase)
-                if action.score > 0.01:
-                    actions.append(action)
+        # Release only if the best option exceeds threshold
+        if score_with_noise > release_threshold and best_action is not None:
+            return best_action
 
-        # CROSS: from wide positions
-        if not self.is_goalkeeper:
-            # Target the penalty area
-            if attacking_right:
-                cross_target_x = pitch.length - config.cross_target_box_depth
-            else:
-                cross_target_x = config.cross_target_box_depth
-            cross_target_y = pitch.width / 2.0 + random.uniform(-10.0, 10.0)
-            cross_target = pitch.clamp(cross_target_x, cross_target_y)
+        return None
 
-            action = score_cross(self, cross_target, config, opponents, attacking_right, pitch, phase)
-            if action.score > 0.01:
-                actions.append(action)
-
-        # HOLD: default action - player keeps ball, moves with it, observes
-        # Only pass/shoot/dribble when a genuinely good opportunity exists
-        if not self.is_goalkeeper:
-            hold_base = 1.0  # HOLD is the default (high base)
-            # Just received? Even more likely to hold (settling ball)
-            if getattr(self, '_ticks_with_ball', 0) <= 1:
-                hold_base = 1.3
-            # Held for a long time? Start looking to release
-            elif getattr(self, '_ticks_with_ball', 0) > 4:
-                hold_base = 0.7  # can not hold forever, must do something
-            # Under heavy pressure? Need to release faster
-            pressers = sum(1 for o in opponents if distance(self.pos, o.pos) < config.contest_radius * 2.5)
-            if pressers > 0:
-                hold_base *= 0.5  # urgent, need to pass or dribble
-            hold_score = apply_unified_scoring(hold_base, phase, "hold", self.position)
-            if hold_score > 0.01:
-                hold_target = pitch.clamp(self.pos[0], self.pos[1])
-                actions.append(Action(ActionType.HOLD, hold_target, -1, hold_score, 0.99))
-
-        # Goalkeeper special: always prefer distribution
-        if self.is_goalkeeper and not actions:
-            if attacking_right:
-                target = pitch.clamp(pitch.length * 0.6, pitch.width / 2 + random.uniform(-15, 15))
-            else:
-                target = pitch.clamp(pitch.length * 0.4, pitch.width / 2 + random.uniform(-15, 15))
-            actions.append(Action(ActionType.LONG_PASS, target, -1, 0.5, 0.5))
-
-        return actions
-
-    def choose_action(
+    def _forced_decision(
         self,
+        pressers: List["Player"],
         teammates: List["Player"],
         opponents: List["Player"],
         config: "EngineConfig",
@@ -976,18 +1127,116 @@ class Player:
         attacking_right: bool,
         phase: str = "attacking",
     ) -> Optional[Action]:
-        """Choose an action for a player on the ball."""
-        # Track how long we've been holding the ball (reset externally when holder changes)
-        if not hasattr(self, '_ticks_with_ball'):
-            self._ticks_with_ball = 0
-        self._ticks_with_ball += 1
-        actions = self.generate_actions(teammates, opponents, config, pitch, attacking_right, phase)
-        if not actions:
-            # Fallback: just carry forward
-            dx = 5.0 if attacking_right else -5.0
-            return Action(
-                ActionType.CARRY,
-                pitch.clamp(self.pos[0] + dx, self.pos[1]),
-                -1, 0.5, 0.85,
-            )
-        return select_action_iq_weighted(actions, self.iq_value, config)
+        """Layer 3: Forced decision when an opponent is very close.
+
+        Options: quick pass, dribble past, or get tackled (return None to let contest happen).
+        Dribble only if: Dribbling > presser's Tackling by a margin AND no easy pass available.
+        Otherwise: quick pass to nearest safe option.
+        """
+        from .vision import get_visible_targets
+
+        closest_presser = min(pressers, key=lambda o: distance(self.pos, o.pos))
+        closest_dist = distance(self.pos, closest_presser.pos)
+
+        # If presser is not that close yet (between forced_radius and contest_radius),
+        # only force decision if held ball for a bit (gives time to settle)
+        # But if very close (within contest_radius * 2), force immediately
+        if closest_dist > config.contest_radius * 2:
+            if getattr(self, '_ticks_with_ball', 0) < 2:
+                return None
+
+        # Find a quick pass option - use vision-filtered teammates
+        # Under extreme pressure, peripheral awareness kicks in slightly
+        visible_teammates = get_visible_targets(self, teammates, self.pos, config)
+        # If very close pressure AND no visible options, add nearest teammates
+        pass_candidates = visible_teammates
+        if closest_dist < config.contest_radius * 1.5 and len(visible_teammates) < 3:
+            # Panic mode: also consider nearest non-visible teammates
+            all_outfield = [tm for tm in teammates if tm.index != self.index and not tm.is_goalkeeper]
+            all_outfield.sort(key=lambda tm: distance(self.pos, tm.pos))
+            pass_candidates = list(visible_teammates) + all_outfield[:2]
+            # Deduplicate
+            seen_idx = set()
+            unique = []
+            for tm in pass_candidates:
+                if tm.index not in seen_idx:
+                    seen_idx.add(tm.index)
+                    unique.append(tm)
+            pass_candidates = unique
+
+        best_pass: Optional[Action] = None
+        best_pass_score = 0.0
+
+        for tm in pass_candidates:
+            d = distance(self.pos, tm.pos)
+            if 3.0 < d < 35.0:
+                action = score_short_pass(self, tm, config, opponents, phase)
+                if action.score > best_pass_score:
+                    best_pass_score = action.score
+                    best_pass = action
+
+        # Evaluate dribble: only if dribbling significantly > tackling of presser
+        dribbling = self.abilities.get("Dribbling", 50)
+        tackling = closest_presser.abilities.get("Tackling", 50)
+
+        # Dribble only if clearly superior (>10 point gap) AND no decent pass
+        can_dribble = dribbling > tackling + 10
+        dribble_action = None
+
+        if can_dribble and best_pass_score < 0.3:
+            if attacking_right:
+                dx = random.uniform(3.0, 5.0)
+            else:
+                dx = random.uniform(-5.0, -3.0)
+            dribble_target = pitch.clamp(self.pos[0] + dx, self.pos[1] + random.uniform(-2, 2))
+            dribble_action = score_dribble(self, dribble_target, config, pressers, phase)
+
+        # Decision logic:
+        # 1. If good pass available, take it (safest option - STRONGLY preferred)
+        # 2. If no good pass but can dribble, try dribble
+        # 3. If neither, try any pass (even a poor one)
+        # 4. If absolutely nothing, return None (contest will happen)
+        if best_pass is not None and best_pass_score > 0.1:
+            return best_pass
+        elif dribble_action is not None and dribble_action.score > 0.15:
+            return dribble_action
+        elif best_pass is not None:
+            # Desperate pass - better than losing ball
+            return best_pass
+        else:
+            # No option - will likely get tackled (contest in match.py)
+            return None
+
+    def _gk_distribute(
+        self,
+        teammates: List["Player"],
+        config: "EngineConfig",
+        pitch: "Pitch",
+        attacking_right: bool,
+        phase: str = "attacking",
+    ) -> Action:
+        """Goalkeeper distribution after holding ball."""
+        from .vision import get_visible_targets
+
+        visible_teammates = get_visible_targets(self, teammates, self.pos, config)
+
+        # Prefer a short pass to a nearby defender/midfielder
+        best_action = None
+        best_score = 0.0
+        for tm in visible_teammates:
+            d = distance(self.pos, tm.pos)
+            if 5.0 < d < 40.0:
+                action = score_short_pass(self, tm, config, [], phase)
+                if action.score > best_score:
+                    best_score = action.score
+                    best_action = action
+
+        if best_action and best_score > 0.1:
+            return best_action
+
+        # Fallback: long pass forward
+        if attacking_right:
+            target = pitch.clamp(pitch.length * 0.6, pitch.width / 2 + random.uniform(-15, 15))
+        else:
+            target = pitch.clamp(pitch.length * 0.4, pitch.width / 2 + random.uniform(-15, 15))
+        return Action(ActionType.LONG_PASS, target, -1, 0.5, 0.5)

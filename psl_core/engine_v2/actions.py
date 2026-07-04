@@ -5,6 +5,13 @@ All actions use the unified scoring framework:
 
 For Phase 2, tactic_weight and role_modifier default to 1.0.
 The multiplication is present so Phase 3 can fill them.
+
+Layered decision model:
+- CARRY and HOLD are no longer "chosen" as actions; they are the DEFAULT behavior.
+- Each tick, the ball carrier moves with the ball (implicit carry).
+- Only PASS, SHOOT, DRIBBLE, CROSS are actual "release" decisions evaluated by
+  the layered model (_evaluate_release / _forced_decision in player.py).
+- The ActionType enum retains CARRY/HOLD for trace logging and backward compatibility.
 """
 
 from __future__ import annotations
@@ -26,9 +33,9 @@ class ActionType(Enum):
     LONG_PASS = "long_pass"
     SHOOT = "shoot"
     DRIBBLE = "dribble"
-    CARRY = "carry"
+    CARRY = "carry"   # retained for trace logging; no longer a player "decision"
     CROSS = "cross"
-    HOLD = "hold"  # keeper holds / player holds position
+    HOLD = "hold"     # retained for trace logging; no longer a player "decision"
 
 
 class OffBallAttackAction(Enum):
@@ -239,7 +246,7 @@ def score_shoot(
     on_target_prob = config.shot_on_target_base * (0.4 + 0.6 * ability) * dist_factor * angle_factor
     on_target_prob = max(0.05, min(0.90, on_target_prob))
 
-    raw_score = on_target_prob * dist_factor * 3.5  # shots are high-reward
+    raw_score = on_target_prob * dist_factor * 4.5  # shots are high-reward, must exceed release threshold
     score = apply_unified_scoring(raw_score, phase, "shoot", shooter.position)
 
     return Action(ActionType.SHOOT, goal_center, -1, score, on_target_prob)

@@ -275,7 +275,14 @@ class MatchV2:
         self.away.update_phase(away_has_ball, ball_contested, self.config)
 
     def _tick_held(self):
-        """Process a tick where a player holds the ball."""
+        """Process a tick where a player holds the ball.
+
+        Uses the layered decision model:
+        - Layer 1 (movement) always happens inside on_ball_tick
+        - Layer 2 (release) returns an Action if player decides to pass/shoot/cross
+        - Layer 3 (forced) returns an Action if under immediate pressure
+        - If None returned, carrier just moved with ball (no release event)
+        """
         holder_team = self.home if self.ball.holder_team == "home" else self.away
         holder = holder_team.players[self.ball.holder_idx]
         opponents = self.away if self.ball.holder_team == "home" else self.home
@@ -283,8 +290,8 @@ class MatchV2:
         # Get team phase for scoring
         phase = holder_team.phase_name
 
-        # Holder chooses action
-        action = holder.choose_action(
+        # Layered decision: on_ball_tick handles movement + release evaluation
+        action = holder.on_ball_tick(
             holder_team.players,
             opponents.players,
             self.config,
@@ -294,13 +301,19 @@ class MatchV2:
         )
 
         if action is None:
+            # No release - carrier moved with ball (position already updated in on_ball_tick)
+            # Update ball position to follow carrier
+            self.ball.position = holder.pos
+            # Log carry event for trace (only if significant movement)
+            if getattr(holder, '_ticks_with_ball', 0) == 1 or getattr(holder, '_ticks_with_ball', 0) % 3 == 0:
+                self.trace.log_action(
+                    self.tick, holder_team.side, holder.name, "carry",
+                    success=True, pos=holder.pos,
+                )
             return
 
-        # Execute the action
+        # Execute the release action
         self._execute_action(holder, action, holder_team, opponents)
-        # HOLD means "do nothing else this tick"
-        if action.action_type == ActionType.HOLD:
-            return
 
     def _tick_flight(self):
         """Process a tick where the ball is in flight."""
@@ -369,7 +382,7 @@ class MatchV2:
             self._give_ball(best_player, best_team)
 
     def _execute_action(self, holder: Player, action: Action, holder_team: Team, opponents: Team):
-        """Execute a player's chosen action."""
+        """Execute a player's chosen action (release decisions only)."""
         if action.action_type == ActionType.SHORT_PASS:
             self._execute_pass(holder, action, holder_team, opponents, is_long=False)
         elif action.action_type == ActionType.LONG_PASS:
@@ -378,12 +391,14 @@ class MatchV2:
             self._execute_shot(holder, action, holder_team, opponents)
         elif action.action_type == ActionType.DRIBBLE:
             self._execute_dribble(holder, action, holder_team, opponents)
-        elif action.action_type == ActionType.CARRY:
-            self._execute_carry(holder, action, holder_team, opponents)
         elif action.action_type == ActionType.CROSS:
             self._execute_cross(holder, action, holder_team, opponents)
+        elif action.action_type == ActionType.CARRY:
+            # Legacy carry execution (should rarely be triggered now)
+            self._execute_carry(holder, action, holder_team, opponents)
         elif action.action_type == ActionType.HOLD:
-            self._execute_hold(holder, action, holder_team)
+            # Legacy hold (no-op, carrier already moved in on_ball_tick)
+            pass
 
     def _execute_pass(
         self, passer: Player, action: Action, passer_team: Team, opponents: Team, is_long: bool
@@ -894,7 +909,13 @@ class MatchV2:
         self.away.setup_formation(self.pitch, away_formation_data)
 
     def _check_contests(self):
-        """Check if the designated presser triggers a contest."""
+        """Check if the designated presser triggers a contest.
+
+        Only triggers if the presser is close enough AND not on cooldown.
+        Uses a holder-based cooldown so the same carrier can't be contested
+        repeatedly in quick succession (regardless of which opponent contests).
+        Also gives a brief grace period on ball reception (realistic settling time).
+        """
         if self.ball.state != BallState.HELD:
             return
 
@@ -902,12 +923,26 @@ class MatchV2:
         opp_team = self.away if self.ball.holder_team == "home" else self.home
         holder = holder_team.players[self.ball.holder_idx]
 
+        # Reception grace: brief settling time on reception (1 tick = 2 sec)
+        ticks_held = getattr(holder, '_ticks_with_ball', 0)
+        if ticks_held <= 1:
+            return
+
+        # Holder-based cooldown: after a contest, carrier gets time before next one
+        last_holder_contest = getattr(holder, '_last_contested_tick', -99)
+        if self.tick - last_holder_contest < 6:
+            return
+
         # Only the designated presser can trigger a contest
         # And only if they are actively pressing (not just standing nearby)
         for opp in opp_team.players:
             if opp.is_goalkeeper:
                 continue
             if opp.state != PlayerState.PRESSING:
+                continue
+            # Per-presser cooldown as well
+            last_contest_tick = getattr(opp, '_last_contest_tick', -99)
+            if self.tick - last_contest_tick < 5:
                 continue
             d = distance(opp.pos, holder.pos)
             if d < self.config.contest_radius:
@@ -921,6 +956,9 @@ class MatchV2:
         holder.state = PlayerState.CONTEST
         challenger.state = PlayerState.CONTEST
         challenger.tackles_attempted += 1
+        # Record contest tick for cooldowns
+        challenger._last_contest_tick = self.tick
+        holder._last_contested_tick = self.tick
 
         dribbling = holder.abilities.get("Dribbling", 50)
         tackling = challenger.abilities.get("Tackling", 50)
@@ -930,11 +968,20 @@ class MatchV2:
         holder_strength = max(0.15, min(0.85, holder_strength))
 
         if random.random() < holder_strength:
-            # Holder keeps ball
+            # Holder keeps ball - push challenger away slightly
             holder.state = PlayerState.ON_BALL
             challenger.state = PlayerState.OFF_BALL
             holder.dribbles_attempted += 1
             holder.dribbles_completed += 1
+            # Push challenger back a bit so they don't immediately re-contest
+            dx = challenger.pos[0] - holder.pos[0]
+            dy = challenger.pos[1] - holder.pos[1]
+            d = max(0.5, math.sqrt(dx*dx + dy*dy))
+            push_dist = 4.0  # push 4m away
+            challenger.pos = self.pitch.clamp(
+                challenger.pos[0] + dx/d * push_dist,
+                challenger.pos[1] + dy/d * push_dist,
+            )
         else:
             # Challenger wins ball
             challenger.tackles_won += 1

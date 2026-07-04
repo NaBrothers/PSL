@@ -40,9 +40,9 @@ class EngineConfig:
     tackle_base_success: float = 0.45
 
     # Shot parameters
-    shot_on_target_base: float = 0.32
-    gk_save_base: float = 0.78
-    shot_max_distance: float = 28.0  # max effective shooting distance
+    shot_on_target_base: float = 0.40
+    gk_save_base: float = 0.65
+    shot_max_distance: float = 32.0  # max effective shooting distance
     shot_ideal_distance: float = 18.0  # ideal shooting distance
 
     # Pressing
@@ -137,6 +137,22 @@ class EngineConfig:
     # =========================================================================
     contested_race_radius: float = 15.0  # radius within which players race to loose ball
     contested_preposition_factor: float = 0.5  # IQ factor for pre-positioning
+
+    # =========================================================================
+    # Phase 2: Layered on-ball decision model
+    # =========================================================================
+    # Release threshold: how good must an opportunity be to trigger passing
+    release_threshold_base: float = 0.22  # x tactic_weight["release_eagerness"] (Phase 3)
+
+    # Carrier movement speed (meters per tick while carrying the ball)
+    carrier_jog_speed: float = 3.0  # default jogging with ball
+    carrier_sprint_speed: float = 5.0  # when clear space ahead
+
+    # Forced decision distance (opponent approaching)
+    forced_decision_radius: float = 4.5  # must decide when opponent this close and closing
+
+    # IQ effect on release evaluation
+    iq_threshold_adjustment: float = 0.003  # per IQ point, adjusts release threshold
 
     # =========================================================================
     # Phase 2: Tactic weights (all 1.0 for Phase 2, Phase 3 fills)
