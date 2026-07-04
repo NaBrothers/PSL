@@ -69,12 +69,34 @@ def position_value(
     if dist_to_goal < config.shot_max_distance:
         shot_zone_bonus = 1.0 + 0.5 * (1.0 - dist_to_goal / config.shot_max_distance)
 
-    # 5. Central bonus (positions near center width slightly more valuable)
-    y_center_dist = abs(y - pitch.width / 2) / (pitch.width / 2)  # 0=center, 1=sideline
-    central_factor = 1.0 - y_center_dist * 0.15  # slight penalty for extreme flanks
+    # 5. Zone weight: based on angle to goal center (central = high, byline/corner = low)
+    if attacking_right:
+        goal_x = pitch.length
+    else:
+        goal_x = 0.0
+    goal_y = pitch.width / 2.0
+    
+    # Vector from position to goal center
+    dx_to_goal = goal_x - x
+    dy_to_goal = goal_y - y
+    dist_to_goal_center = math.sqrt(dx_to_goal * dx_to_goal + dy_to_goal * dy_to_goal)
+    
+    if dist_to_goal_center > 1.0:
+        # Angle factor: directly facing goal = 1.0, extreme side = low
+        # Use the ratio of x-component to total distance (how direct the path to goal is)
+        directness = abs(dx_to_goal) / dist_to_goal_center  # 1.0 = directly facing, 0 = alongside goal line
+        zone_weight = 0.3 + 0.7 * directness
+    else:
+        zone_weight = 1.0  # very close to goal, always high
+    
+    # Extra penalty for byline area (close to goal line but wide angle)
+    if x_progress > 0.85:  # in final 15% of pitch
+        y_center_dist = abs(y - pitch.width / 2) / (pitch.width / 2)
+        if y_center_dist > 0.5:  # wide area near goal line
+            zone_weight *= 0.4  # byline/corner area — low value
 
     # Combine
-    value = goal_proximity * space_factor * crowding_factor * shot_zone_bonus * central_factor
+    value = goal_proximity * space_factor * crowding_factor * shot_zone_bonus * zone_weight
 
     # Clamp
     return max(0.01, min(1.0, value))

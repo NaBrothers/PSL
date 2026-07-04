@@ -343,8 +343,16 @@ class Player:
                     if 0 < proj < 1.2:
                         perp = abs(opp_dx * dy - opp_dy * dx) / move_len
                         if perp < 4.0:
-                            # Decay based on proximity
-                            feasibility *= max(0.2, perp / 4.0)
+                            # Any defender in path is a major obstacle
+                            proximity_decay = max(0.15, perp / 4.0)
+                            # Attacker Dribbling vs Defender Tackling
+                            def_tackling = opp.abilities.get("Tackling", 50) / 100.0
+                            my_dribbling = self.abilities.get("Dribbling", 50) / 100.0
+                            # Net = how much better I am than the defender
+                            # Even matched = ~0.3 feasibility, much better = ~0.6
+                            skill_ratio = my_dribbling / (my_dribbling + def_tackling + 0.01)
+                            ability_factor = 0.15 + 0.5 * skill_ratio  # range: 0.15-0.65
+                            feasibility *= proximity_decay * ability_factor
 
             # Multiple defenders nearby = much harder to carry
             nearby_defenders = sum(
@@ -761,8 +769,18 @@ class Player:
         # 1. APPROACH: score = 0.3 + 0.3*(1.0 - dist/press_radius)
         if dist_to_ball < config.press_radius * 2:
             proximity = max(0.0, 1.0 - dist_to_ball / config.press_radius)
-            approach_score = 0.15 + 0.25 * proximity  # only very close defender should approach
-            candidates.append((approach_score, "approach", {"target": ball_pos}))
+            approach_score = 0.3 + 0.4 * proximity  # defenders should actively close down carrier
+            # Predict where carrier will be (lead the press)
+            if ball_carrier:
+                # Rough prediction: carrier moves forward ~4m per tick
+                import math
+                lead_dist = config.carrier_speed * 0.5  # predict half a tick ahead
+                carrier_dir_x = 1.0 if attacking_right else -1.0  # assume carrier goes forward
+                predicted = (ball_pos[0] + carrier_dir_x * lead_dist, ball_pos[1])
+                approach_target = predicted
+            else:
+                approach_target = ball_pos
+            candidates.append((approach_score, "approach", {"target": approach_target}))
 
         # 2. TACKLE: score = success_rate * ball_value - (1-success_rate) * stun_cost
         if ball_carrier and dist_to_ball < config.tackle_range:
@@ -784,8 +802,13 @@ class Player:
         if mark_score > 0:
             candidates.append((mark_score, "mark_runner", {"target": mark_target}))
 
-        # 5. HOLD_POSITION: baseline — maintaining shape is important
-        hold_score = 0.38 if self.is_defender else 0.30
+        # 5. HOLD_POSITION: only strong when ball is far away
+        if dist_to_ball > 30.0:
+            hold_score = 0.45  # ball far, hold shape
+        elif dist_to_ball > 15.0:
+            hold_score = 0.30  # ball medium, slightly hold
+        else:
+            hold_score = 0.15  # ball close, should be engaging!
         candidates.append((hold_score, "hold_position", {"target": self.formation_pos}))
 
         if not candidates:
@@ -821,10 +844,10 @@ class Player:
         success_rate = max(0.2, min(0.8, success_rate))
 
         # Ball value: how valuable is winning the ball here
-        ball_value = 0.8
+        ball_value = 3.0
 
         # Stun cost: penalty for being stunned
-        stun_cost = 0.5
+        stun_cost = 0.15
 
         score = success_rate * ball_value - (1.0 - success_rate) * stun_cost
         return max(0.0, score)

@@ -303,6 +303,13 @@ class MatchV2:
         wasted_tackles = []
 
         if holder_action_type == "carry":
+            # Auto-convert: approaching defenders within tackle_range are attempting a tackle
+            for opp in opp_team.players:
+                if defender_actions.get(opp.index) == "approach":
+                    d = distance(opp.pos, holder.pos)
+                    if d < self.config.tackle_range:
+                        defender_actions[opp.index] = "tackle"
+            
             # Duel detection: holder carries + defender tackles within range
             duel_interaction = detect_duel(
                 holder, "carry", opp_team.players, defender_actions, self.config

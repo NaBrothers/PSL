@@ -155,12 +155,13 @@ def resolve_duel(interaction: Interaction, config: "EngineConfig") -> DuelResult
     atk_ability = attacker.abilities.get("Dribbling", 50)
     def_ability = defender.abilities.get("Tackling", 50)
 
-    # Distance factor: closer defender = higher success
-    dist_factor = max(0.5, 1.0 - interaction.distance / config.tackle_range)
+    # Distance factor: gentle decay (close=full strength, at range edge=60%)
+    dist_factor = max(0.6, 1.0 - interaction.distance / (config.tackle_range * 2.5))
 
     # Roll
+    # Equal abilities should be 50/50 - no distance penalty in the roll itself
     atk_roll = atk_ability + random.uniform(-12, 12)
-    def_roll = def_ability * dist_factor + random.uniform(-12, 12)
+    def_roll = def_ability + random.uniform(-12, 12)
 
     diff = def_roll - atk_roll
 

@@ -164,7 +164,7 @@ class EngineConfig:
     # =========================================================================
 
     # Tackle parameters
-    tackle_range: float = 2.0  # meters - defender must be within this to attempt tackle
+    tackle_range: float = 6.0  # meters - defender must be within this to attempt tackle
     tackle_fail_stun_seconds: float = 1.5  # seconds stunned after failed tackle
     tackle_success_bonus: float = 0.0  # no bonus needed, natural from duel
 
