@@ -166,23 +166,23 @@ class Team:
             if self.attacking_right:
                 def_line_x = max(ball_pos[0] - 35.0, 15.0)  # at least 15m from own goal
                 mid_line_x = max(ball_pos[0] - 15.0, 30.0)
-                atk_line_x = min(ball_pos[0] + 10.0, offside_x - 1.0)  # respect offside!
+                atk_line_x = min(ball_pos[0] + 20.0, offside_x - 0.5)  # push up to offside line
             else:
                 def_line_x = min(ball_pos[0] + 35.0, pitch.length - 15.0)
                 mid_line_x = min(ball_pos[0] + 15.0, pitch.length - 30.0)
-                atk_line_x = max(ball_pos[0] - 10.0, offside_x + 1.0)
+                atk_line_x = max(ball_pos[0] - 20.0, offside_x + 0.5)
         else:
             # Defending: compact lines between ball and own goal
             if self.attacking_right:
                 # Our goal at x=0, defend toward x=0
                 def_line_x = max(min(ball_pos[0] - 15.0, 28.0), 12.0)
                 mid_line_x = max(min(ball_pos[0] + 5.0, 48.0), 28.0)
-                atk_line_x = max(min(ball_pos[0] + 20.0, 60.0), 40.0)
+                atk_line_x = max(min(ball_pos[0] + 25.0, 70.0), 45.0)
             else:
                 # Our goal at x=105, defend toward x=105
                 def_line_x = min(max(ball_pos[0] + 15.0, 77.0), 93.0)
                 mid_line_x = min(max(ball_pos[0] - 5.0, 57.0), 77.0)
-                atk_line_x = min(max(ball_pos[0] - 20.0, 45.0), 65.0)
+                atk_line_x = min(max(ball_pos[0] - 25.0, 35.0), 60.0)
 
         # Y-shift: team shifts toward ball side
         center_y = pitch.width / 2.0
