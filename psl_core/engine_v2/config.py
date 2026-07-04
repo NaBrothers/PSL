@@ -42,7 +42,7 @@ class EngineConfig:
     # Shot parameters
     shot_on_target_base: float = 0.40
     gk_save_base: float = 0.65
-    shot_max_distance: float = 32.0  # max effective shooting distance
+    shot_max_distance: float = 28.0  # max effective shooting distance
     shot_ideal_distance: float = 18.0  # ideal shooting distance
 
     # Pressing
@@ -158,6 +158,31 @@ class EngineConfig:
     # Phase 2: Tactic weights (all 1.0 for Phase 2, Phase 3 fills)
     # =========================================================================
     # These are placeholders - Phase 3 will replace with per-tactic values
+
+    # =========================================================================
+    # Reward-driven engine v2 (3-phase tick model)
+    # =========================================================================
+
+    # Tackle parameters
+    tackle_range: float = 2.0  # meters - defender must be within this to attempt tackle
+    tackle_fail_stun_seconds: float = 1.5  # seconds stunned after failed tackle
+    tackle_success_bonus: float = 0.0  # no bonus needed, natural from duel
+
+    # Interception
+    interception_reach: float = 2.5  # meters - perpendicular distance to pass path
+
+    # Unforced errors
+    pass_error_divisor: float = 500.0  # (100-Passing)/divisor = error chance
+    first_touch_error_divisor: float = 400.0  # (100-IQ)/divisor = error chance
+    carry_error_divisor: float = 600.0  # (100-Dribbling)/divisor = error chance
+
+    # Rewards
+    goal_reward_constant: float = 1.5  # multiplier for shoot score to make competitive
+    clear_reward_base: float = 0.3  # base for clearance when not under pressure
+
+    # Carrier movement (reward-driven model)
+    carrier_speed: float = 4.0  # meters per tick when carrying (jog)
+    carrier_sprint_speed_v2: float = 6.0  # meters per tick when clear ahead
 
     def goal_y_min(self) -> float:
         """Y coordinate of near goal post."""
