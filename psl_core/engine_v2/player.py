@@ -354,33 +354,46 @@ class Player:
                 opp_positions, tm_positions, config
             )
 
-            # Path feasibility: 1.0 if no opp within 4m of path, decays with proximity
+            # Path feasibility: can I carry forward before defenders reach me?
+            # Pure physics: my time to reach target vs defender time to intercept my path
             feasibility = 1.0
+            my_speed = max(config.carrier_speed, 0.1)
+            time_i_carry = math.sqrt(dx*dx + dy*dy) / my_speed  # time for me to reach target
+            
             for opp in opponents:
                 if opp.is_goalkeeper:
                     continue
-                # Check if opponent is near the movement path
+                # How long would this defender take to reach my carry path?
+                # Project defender onto my movement direction to find closest intercept point
                 opp_dx = opp.pos[0] - self.pos[0]
                 opp_dy = opp.pos[1] - self.pos[1]
                 move_len = math.sqrt(dx * dx + dy * dy)
-                if move_len > 0.1:
-                    proj = (opp_dx * dx + opp_dy * dy) / (move_len * move_len)
-                    if 0 < proj < 1.2:
-                        perp = abs(opp_dx * dy - opp_dy * dx) / move_len
-                        if perp < 4.0:
-                            # Any defender in path is a major obstacle
-                            proximity_decay = max(0.15, perp / 4.0)
-                            # Attacker Dribbling vs Defender Tackling
-                            def_tackling = opp.abilities.get("Tackling", 50) / 100.0
-                            my_dribbling = self.abilities.get("Dribbling", 50) / 100.0
-                            # Net = how much better I am than the defender
-                            # Even matched = ~0.3 feasibility, much better = ~0.6
-                            skill_ratio = my_dribbling / (my_dribbling + def_tackling + 0.01)
-                            ability_factor = 0.15 + 0.5 * skill_ratio  # range: 0.15-0.65
-                            feasibility *= proximity_decay * ability_factor
-
-            # No additional hard limits — path_feasibility from directional check above
-            # is sufficient. Side defenders and byline handled by position_value naturally.
+                if move_len < 0.1:
+                    continue
+                
+                # Perpendicular distance to my path
+                perp_dist = abs(opp_dx * (dy/move_len) - opp_dy * (dx/move_len))
+                # Forward projection (is defender ahead of me or behind?)
+                proj = (opp_dx * dx + opp_dy * dy) / (move_len * move_len)
+                
+                if proj < -0.5 or proj > 2.0:
+                    continue  # defender is behind me or way ahead — irrelevant
+                
+                # Time for defender to reach my path
+                def_speed = (opp.abilities.get("Speed", 50) / 100.0) * config.player_max_speed
+                time_def_reaches = perp_dist / max(def_speed, 0.1)
+                
+                # If defender can reach my path before I pass that point → obstacle
+                if time_def_reaches < time_i_carry:
+                    # How much of a threat? Depends on timing margin
+                    threat = max(0.0, 1.0 - time_def_reaches / time_i_carry)  # 0=barely makes it, 1=already there
+                    # Skill contest: my dribbling vs their tackling
+                    my_drib = self.abilities.get("Dribbling", 50) / 100.0
+                    def_tack = opp.abilities.get("Tackling", 50) / 100.0
+                    skill_factor = my_drib / (my_drib + def_tack + 0.01)  # 0.5 = equal
+                    # Feasibility reduction: high threat + low skill = big reduction
+                    reduction = threat * (1.0 - skill_factor)  # 0..0.5 for equal players
+                    feasibility *= max(0.2, 1.0 - reduction)
 
             score = pv * feasibility
             results.append((score, "carry", {"target": target}))
