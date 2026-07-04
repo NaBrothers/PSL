@@ -47,9 +47,11 @@ def position_value(
     opp_count = 0
     for ox, oy in opponent_positions:
         d = math.sqrt((x - ox) ** 2 + (y - oy) ** 2)
-        if d < 12.0:
-            opp_count += 1.0 - d / 12.0  # closer opponents count more
-    space_factor = 1.0 / (1.0 + opp_count * 0.8)  # much stronger penalty
+        if d < 15.0:
+            opp_count += (1.0 - d / 15.0) ** 0.7  # smooth decay
+    # Defenders in final third have extra impact (they're organized to deny space)
+    defender_weight = 1.2 if x_progress > 0.7 else 0.8
+    space_factor = 1.0 / (1.0 + opp_count * defender_weight)
 
     # 3. Crowding penalty (too many teammates = redundant)
     tm_count = 0

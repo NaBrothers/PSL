@@ -23,8 +23,8 @@ class EngineConfig:
     frame_interval: int = 2  # record a frame every N ticks
 
     # Player movement
-    player_max_speed: float = 8.0  # meters per tick at Speed=99
-    player_min_speed: float = 4.0  # meters per tick at Speed=1
+    player_max_speed: float = 5.5  # meters per tick at Speed=99
+    player_min_speed: float = 2.5  # meters per tick at Speed=1
     dribble_speed_factor: float = 0.7  # speed multiplier when dribbling
 
     # Ball physics
@@ -42,7 +42,7 @@ class EngineConfig:
     # Shot parameters
     shot_on_target_base: float = 0.40
     gk_save_base: float = 0.80
-    shot_max_distance: float = 25.0  # max effective shooting distance
+    shot_max_distance: float = 50.0  # max effective shooting distance
     shot_ideal_distance: float = 18.0  # ideal shooting distance
 
     # Pressing
@@ -169,7 +169,7 @@ class EngineConfig:
     tackle_success_bonus: float = 0.0  # no bonus needed, natural from duel
 
     # Interception
-    interception_reach: float = 2.5  # meters - perpendicular distance to pass path
+    interception_reach: float = 3.5  # meters - perpendicular distance to pass path
 
     # Unforced errors
     pass_error_divisor: float = 500.0  # (100-Passing)/divisor = error chance
@@ -181,8 +181,8 @@ class EngineConfig:
     clear_reward_base: float = 0.3  # base for clearance when not under pressure
 
     # Carrier movement (reward-driven model)
-    carrier_speed: float = 4.0  # meters per tick when carrying (jog)
-    carrier_sprint_speed_v2: float = 6.0  # meters per tick when clear ahead
+    carrier_speed: float = 3.0  # meters per tick when carrying (jog)
+    carrier_sprint_speed_v2: float = 4.5  # meters per tick when clear ahead
 
     def goal_y_min(self) -> float:
         """Y coordinate of near goal post."""

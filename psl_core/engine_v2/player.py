@@ -488,7 +488,7 @@ class Player:
             dist_factor = 1.0
         else:
             excess = dist_to_goal - config.shot_ideal_distance
-            dist_factor = math.exp(-excess / 20.0)
+            dist_factor = math.exp(-excess / 8.0)
 
         # Angle factor
         angle = angle_to_goal(self.pos, goal_center, config.goal_width)
