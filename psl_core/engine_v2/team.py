@@ -66,6 +66,8 @@ class Team:
             pitch_pos = pitch.formation_to_pitch(coord, self.attacking_right)
             self._formation_coords.append(pitch_pos)
             self.players[i].formation_pos = pitch_pos
+            self.players[i].base_formation_pos = pitch_pos
+            self.players[i].tactical_anchor = pitch_pos
             self.players[i].pos = pitch_pos
             self.players[i].target_pos = pitch_pos
 
@@ -115,11 +117,12 @@ class Team:
         pitch: "Pitch",
         opponent_players: list = None,
     ):
-        """Update each player's soft formation anchor from the current ball context.
+        """Update each player's dynamic tactical anchor from the current ball context.
 
-        The anchor is not a movement clamp. It is the reference point used by
-        position-value scoring, so shape can advance, retreat, and shift toward
-        the strong side without an external rule forcing exact positions.
+        `formation_pos` stays as the static formation slot for the current half.
+        `tactical_anchor` is the soft role reference used by position-value
+        scoring so shape can advance, retreat, and shift with the ball without
+        rewriting the player's real formation identity.
         """
         if not self._formation_coords:
             return
@@ -195,7 +198,7 @@ class Team:
                         progress = max(0.10, min(0.94, progress))
 
             x = progress * length if self.attacking_right else (1.0 - progress) * length
-            player.formation_pos = pitch.clamp(x, y)
+            player.tactical_anchor = pitch.clamp(x, y)
 
     def get_closest_to(
         self,
@@ -233,8 +236,7 @@ class Team:
         opponents: Optional[List[Player]] = None,
     ):
         """Update all off-ball players' targets using Phase 2 intelligent AI."""
-        # Dynamic three-line computation removed; formation_pos is static from setup.
-        # Off-ball positioning is now purely PV-driven.
+        # formation_pos is static; compute_dynamic_positions updates tactical_anchor.
 
         for player in self.players:
             if player.state == PlayerState.ON_BALL:

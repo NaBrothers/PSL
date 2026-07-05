@@ -1204,8 +1204,8 @@ class MatchV2:
                         p.target_pos = ball_pos
                         p.movement_intent = "contest"
                     else:
-                        support_x = p.formation_pos[0] * 0.75 + ball_pos[0] * 0.25
-                        support_y = p.formation_pos[1] * 0.80 + ball_pos[1] * 0.20
+                        support_x = p.tactical_anchor[0] * 0.75 + ball_pos[0] * 0.25
+                        support_y = p.tactical_anchor[1] * 0.80 + ball_pos[1] * 0.20
                         p.target_pos = self.pitch.clamp(support_x, support_y)
                         p.movement_intent = "recover_shape"
 
@@ -1496,7 +1496,7 @@ class MatchV2:
                     x = min(self.pitch.length - 0.5, max(half_x + 1.0, self.pitch.length - compressed_progress * self.pitch.length))
                 p.pos = self.pitch.clamp(x, base[1])
                 p.target_pos = p.pos
-                p.formation_pos = p.pos
+                p.tactical_anchor = p.pos
 
         place_team_in_own_half(team)
         place_team_in_own_half(other_team)

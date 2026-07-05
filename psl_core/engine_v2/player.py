@@ -68,7 +68,9 @@ class Player:
     # State
     state: PlayerState = PlayerState.OFF_BALL
     pos: Tuple[float, float] = (0.0, 0.0)  # current position on pitch
-    formation_pos: Tuple[float, float] = (0.0, 0.0)  # base formation position
+    formation_pos: Tuple[float, float] = (0.0, 0.0)  # static base formation slot
+    base_formation_pos: Tuple[float, float] = (0.0, 0.0)  # immutable half-specific slot
+    tactical_anchor: Tuple[float, float] = (0.0, 0.0)  # dynamic role reference from ball context
     target_pos: Tuple[float, float] = (0.0, 0.0)  # where player is moving to
     movement_intent: str = "support"
     velocity: Tuple[float, float] = (0.0, 0.0)
@@ -1146,10 +1148,11 @@ class Player:
             opponents = []
         if teammates is None:
             teammates = []
+        anchor = self.tactical_anchor
 
         # GK: stay near formation position
         if self.is_goalkeeper:
-            self.set_movement_target(self.formation_pos, "recover_shape")
+            self.set_movement_target(anchor, "recover_shape")
             return self.target_pos
 
         opp_positions = [(o.pos[0], o.pos[1]) for o in opponents if not o.is_goalkeeper]
@@ -1173,7 +1176,7 @@ class Player:
         stay_pv = position_value(
             self.pos[0], self.pos[1], pitch, attacking_right,
             opp_positions, tm_positions, config,
-            runner_formation_pos=self.formation_pos,
+            runner_formation_pos=anchor,
         )
         # Apply offside penalty to stay option (soft, allows offside trap runs)
         if self._is_offside_position(self.pos, attacking_right, offside_line, config):
@@ -1188,9 +1191,9 @@ class Player:
             angle = random.random() * math.tau
             radius = random.random() ** 0.65 * search_radius
             raw_candidates.append((
-                self.formation_pos[0] + math.cos(angle) * radius,
-                self.formation_pos[1] + math.sin(angle) * radius,
-                self.formation_pos,
+                anchor[0] + math.cos(angle) * radius,
+                anchor[1] + math.sin(angle) * radius,
+                anchor,
             ))
 
         # Spatial samples around useful support spaces near the ball carrier.
@@ -1208,8 +1211,8 @@ class Player:
                     support_center[0] + math.cos(angle) * radius,
                     support_center[1] + math.sin(angle) * radius,
                     (
-                        self.formation_pos[0] * 0.55 + support_center[0] * 0.45,
-                        self.formation_pos[1] * 0.65 + support_center[1] * 0.35,
+                        anchor[0] * 0.55 + support_center[0] * 0.45,
+                        anchor[1] * 0.65 + support_center[1] * 0.35,
                     ),
                 ))
 
@@ -1255,7 +1258,7 @@ class Player:
 
             # Space creation bonus
             space_bonus = space_creation_value(pos, opp_positions, tm_positions, config)
-            role_dist = distance(pos, self.formation_pos)
+            role_dist = distance(pos, anchor)
             role_limit = 26.0 if self.is_attacker else 22.0 if self.is_midfielder else 18.0
             role_shape_factor = max(0.005, 1.0 - (role_dist / role_limit) ** 1.55)
 
@@ -1281,7 +1284,7 @@ class Player:
             candidates.append((score, pos))
 
         if not candidates:
-            self.target_pos = self.formation_pos
+            self.target_pos = anchor
             return self.target_pos
 
         # Apply IQ noise to all candidate scores
@@ -1297,7 +1300,7 @@ class Player:
         scores = [c[0] for c in noisy_candidates]
         max_score = max(scores)
         if max_score < 0.01:
-            self.set_movement_target(self.formation_pos, "recover_shape")
+            self.set_movement_target(anchor, "recover_shape")
             return self.target_pos
 
         exp_scores = [math.exp((s - max_score) / max(0.01, temperature)) for s in scores]
@@ -1319,7 +1322,7 @@ class Player:
         move_progress = (chosen_pos[0] - self.pos[0]) * forward_dir
         if move_progress > 4.0:
             intent = "attack_run"
-        elif distance(chosen_pos, self.formation_pos) > 10.0:
+        elif distance(chosen_pos, anchor) > 10.0:
             intent = "support"
         else:
             intent = "recover_shape"
@@ -1345,6 +1348,7 @@ class Player:
             opponents = []
         if teammates is None:
             teammates = []
+        anchor = self.tactical_anchor
 
         # GK: position adjustment
         if self.is_goalkeeper:
@@ -1371,7 +1375,7 @@ class Player:
         )
         local_attackers = [
             o for o in attackers
-            if distance(o.pos, self.formation_pos) < 24.0 or distance(o.pos, self.pos) < 16.0
+            if distance(o.pos, anchor) < 24.0 or distance(o.pos, self.pos) < 16.0
         ]
 
         from .position_value import defensive_position_value
@@ -1379,7 +1383,7 @@ class Player:
         def score_def_pos(pos: Tuple[float, float]) -> float:
             return defensive_position_value(
                 pos, ball_pos, own_goal_x, pitch,
-                attacker_positions, teammate_positions, self.formation_pos,
+                attacker_positions, teammate_positions, anchor,
             )
 
         candidates = []
@@ -1387,10 +1391,10 @@ class Player:
         # Defensive movement is now spatial: sample useful points, then classify
         # the chosen point for compatibility with trace/interactions.
         sampled_points = [
-            self.formation_pos,
+            anchor,
             pitch.clamp(
-                self.formation_pos[0] * 0.85 + ball_pos[0] * 0.15,
-                self.formation_pos[1] * 0.72 + ball_pos[1] * 0.28,
+                anchor[0] * 0.85 + ball_pos[0] * 0.15,
+                anchor[1] * 0.72 + ball_pos[1] * 0.28,
             ),
         ]
 
@@ -1417,8 +1421,8 @@ class Player:
             angle = random.random() * math.tau
             radius = random.random() ** 0.7 * (8.0 + shot_danger * 4.0)
             sampled_points.append(pitch.clamp(
-                self.formation_pos[0] + math.cos(angle) * radius,
-                self.formation_pos[1] + math.sin(angle) * radius,
+                anchor[0] + math.cos(angle) * radius,
+                anchor[1] + math.sin(angle) * radius,
             ))
         if self.last_def_action:
             sampled_points.append(self.last_def_target)
@@ -1446,8 +1450,8 @@ class Player:
             candidates.append((max(0.0, score), "defend_space", {"target": point}))
 
         if not candidates:
-            self.set_movement_target(self.formation_pos, "defend_shape")
-            return ("hold_position", {"target": self.formation_pos})
+            self.set_movement_target(anchor, "defend_shape")
+            return ("hold_position", {"target": anchor})
 
         # Apply IQ noise to all candidate scores
         noisy_candidates = [
@@ -1461,7 +1465,7 @@ class Player:
         details = chosen[2]
 
         # Set target position based on choice
-        raw_target = details.get("target", self.formation_pos)
+        raw_target = details.get("target", anchor)
         # Hard roam clamp removed: role_distance_decay in position_value provides
         # the soft pull toward formation area instead of a hard boundary.
         if self.last_def_action:
@@ -1546,7 +1550,7 @@ class Player:
         Threat = based on proximity to ball and to our goal.
         """
         if not attackers_in_zone:
-            return (0.0, self.formation_pos)
+            return (0.0, self.tactical_anchor)
 
         # Pick the most threatening attacker in zone
         # Threat = proximity to ball * forward position
@@ -1570,7 +1574,7 @@ class Player:
                 best_target = opp
 
         if best_target is None:
-            return (0.0, self.formation_pos)
+            return (0.0, self.tactical_anchor)
 
         # Mark position: slightly goalside of the attacker
         offset = 1.5
@@ -1598,7 +1602,7 @@ class Player:
         Position between ball and attacker in my zone.
         """
         if not attackers_in_zone:
-            return (0.0, self.formation_pos)
+            return (0.0, self.tactical_anchor)
 
         # Pick the closest attacker in zone to me
         target_opp = min(attackers_in_zone, key=lambda o: distance(self.pos, o.pos))
@@ -1629,7 +1633,7 @@ class Player:
         """Legacy: Score for blocking a passing lane."""
         dangerous = [o for o in opponents if not o.is_goalkeeper and distance(self.pos, o.pos) < 25.0]
         if not dangerous:
-            return (0.0, self.formation_pos)
+            return (0.0, self.tactical_anchor)
         target_opp = min(dangerous, key=lambda o: distance(self.pos, o.pos))
         mid_x = (ball_pos[0] + target_opp.pos[0]) / 2.0
         mid_y = (ball_pos[1] + target_opp.pos[1]) / 2.0
@@ -1656,7 +1660,7 @@ class Player:
             if not o.is_goalkeeper and distance(self.pos, o.pos) < 25.0
         ]
         if not nearby_attackers:
-            return (0.0, self.formation_pos)
+            return (0.0, self.tactical_anchor)
         target = min(nearby_attackers, key=lambda o: distance(self.pos, o.pos))
         dist_to_ball = distance(target.pos, ball_pos)
         threat = max(0.2, 1.0 - dist_to_ball / 30.0)
