@@ -1,11 +1,12 @@
-import { useEffect, useMemo, useState } from 'react'
+import { Suspense, lazy, useEffect, useMemo, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { Building2, X } from 'lucide-react'
 import api from '../api/client'
 import InboxBanner from '@/components/InboxBanner'
 import { overallColor } from '@/lib/card-display'
-import ClubTownGame from '@/game/club/ClubTownGame'
 import type { ClubAgent, ClubBuilding } from '@/game/club/types'
+
+const ClubTownGame = lazy(() => import('@/game/club/ClubTownGame'))
 
 interface UserInfo {
   id: number
@@ -25,13 +26,48 @@ interface SquadPreview {
 }
 
 const buildings: ClubBuilding[] = [
-  { id: 'stadium', name: '主球场', level: 4, status: '赛程准备中', production: '主场比赛奖金 +8%', actionLabel: '进入比赛', path: '/match', x: 92, y: 76, width: 318, height: 108, kind: 'stadium' },
-  { id: 'training', name: '训练中心', level: 2, status: '3 名球员训练中', production: '训练点 +120 / 天', actionLabel: '进入训练', path: '/squad', x: 646, y: 70, width: 178, height: 90, kind: 'training' },
-  { id: 'academy', name: '青训营', level: 1, status: '新秀报告待领取', production: '青训卡包进度 +1 / 天', actionLabel: '查看卡包', path: '/lottery', x: 664, y: 454, width: 174, height: 96, kind: 'academy' },
-  { id: 'scout', name: '球探中心', level: 2, status: '球探路线已刷新', production: '球探点 +80 / 天', actionLabel: '查看球探', path: '/search', x: 150, y: 470, width: 156, height: 88, kind: 'scout' },
-  { id: 'commerce', name: '商业中心', level: 3, status: '赞助收益可结算', production: '球币 +2400 / 天', actionLabel: '前往市场', path: '/transfer', x: 650, y: 286, width: 164, height: 86, kind: 'commerce' },
-  { id: 'medical', name: '医疗中心', level: 1, status: '恢复舱空闲', production: '挑战恢复效率 +5%', actionLabel: '每日挑战', path: '/challenge', x: 408, y: 502, width: 148, height: 82, kind: 'medical' },
-  { id: 'clubhouse', name: '俱乐部大厅', level: 3, status: '阵容会议', production: '管理球队和球员卡', actionLabel: '打开背包', path: '/bag', x: 392, y: 284, width: 178, height: 98, kind: 'clubhouse' },
+  {
+    id: 'stadium', name: '主球场', level: 4, status: '赛程准备中', production: '主场比赛奖金 +8%', actionLabel: '进入比赛', path: '/match', kind: 'stadium',
+    plot: { x: 48, y: 30, width: 430, height: 270 },
+    building: { x: 48, y: 30, width: 430, height: 270 },
+    entry: { x: 456, y: 352 },
+  },
+  {
+    id: 'training', name: '训练中心', level: 2, status: '3 名球员训练中', production: '训练点 +120 / 天', actionLabel: '进入训练', path: '/squad', kind: 'training',
+    plot: { x: 920, y: 18, width: 286, height: 174 },
+    building: { x: 1056, y: 86, width: 118, height: 82 },
+    entry: { x: 920, y: 208 },
+  },
+  {
+    id: 'clubhouse', name: '俱乐部大厅', level: 3, status: '阵容会议', production: '管理球队和球员卡', actionLabel: '打开背包', path: '/bag', kind: 'clubhouse',
+    plot: { x: 582, y: 62, width: 216, height: 138 },
+    building: { x: 604, y: 78, width: 172, height: 110 },
+    entry: { x: 690, y: 214 },
+  },
+  {
+    id: 'commerce', name: '商业中心', level: 3, status: '赞助收益可结算', production: '球币 +2400 / 天', actionLabel: '前往市场', path: '/transfer', kind: 'commerce',
+    plot: { x: 964, y: 284, width: 214, height: 124 },
+    building: { x: 998, y: 312, width: 146, height: 88 },
+    entry: { x: 964, y: 424 },
+  },
+  {
+    id: 'academy', name: '青训营', level: 1, status: '新秀报告待领取', production: '青训卡包进度 +1 / 天', actionLabel: '查看卡包', path: '/lottery', kind: 'academy',
+    plot: { x: 888, y: 492, width: 246, height: 126 },
+    building: { x: 906, y: 520, width: 128, height: 84 },
+    entry: { x: 888, y: 476 },
+  },
+  {
+    id: 'scout', name: '球探中心', level: 2, status: '球探路线已刷新', production: '球探点 +80 / 天', actionLabel: '查看球探', path: '/search', kind: 'scout',
+    plot: { x: 96, y: 492, width: 222, height: 122 },
+    building: { x: 142, y: 520, width: 132, height: 82 },
+    entry: { x: 258, y: 482 },
+  },
+  {
+    id: 'medical', name: '医疗中心', level: 1, status: '恢复舱空闲', production: '挑战恢复效率 +5%', actionLabel: '每日挑战', path: '/challenge', kind: 'medical',
+    plot: { x: 530, y: 492, width: 196, height: 104 },
+    building: { x: 568, y: 510, width: 118, height: 78 },
+    entry: { x: 690, y: 474 },
+  },
 ]
 
 export default function HomePage() {
@@ -69,12 +105,14 @@ export default function HomePage() {
 
   return (
     <div className="relative h-full overflow-hidden bg-[#6ebf57]">
-      <ClubTownGame
-        agents={startingAgents}
-        buildings={buildings}
-        onBuildingClick={setSelectedBuildingId}
-        onAgentClick={(cardId) => navigate(`/cards/${cardId}`)}
-      />
+      <Suspense fallback={<div className="h-full w-full bg-[#8ed46a]" />}>
+        <ClubTownGame
+          agents={startingAgents}
+          buildings={buildings}
+          onBuildingClick={setSelectedBuildingId}
+          onAgentClick={(cardId) => navigate(`/cards/${cardId}`)}
+        />
+      </Suspense>
 
       <div className="absolute top-2 left-3 right-3 z-30">
         <InboxBanner />
@@ -92,21 +130,18 @@ export default function HomePage() {
         </div>
       </div>
 
-      <div className="pointer-events-none absolute bottom-3 left-3 right-3 z-20">
-        <div className="grid grid-cols-3 gap-2">
-          <div className="rounded-md border-2 border-slate-900/20 bg-white/78 px-2 py-2 shadow-[3px_3px_0_rgba(15,23,42,0.18)]">
-            <div className="text-[10px] font-bold text-slate-500">前中后</div>
-            <div className="text-xs font-black text-slate-900">{squad?.forward_ability || 0}/{squad?.midfield_ability || 0}/{squad?.guard_ability || 0}</div>
-          </div>
-          <div className="rounded-md border-2 border-slate-900/20 bg-white/78 px-2 py-2 shadow-[3px_3px_0_rgba(15,23,42,0.18)]">
-            <div className="text-[10px] font-bold text-slate-500">首发</div>
-            <div className="text-xs font-black text-slate-900">{startingAgents.length}/11</div>
-          </div>
-          <div className="rounded-md border-2 border-slate-900/20 bg-white/78 px-2 py-2 shadow-[3px_3px_0_rgba(15,23,42,0.18)]">
-            <div className="text-[10px] font-bold text-slate-500">核心球员</div>
-            <div className={`truncate text-xs font-black ${topPlayer ? overallColor(topPlayer.overall, topPlayer.star) : 'text-slate-900'}`}>
-              {topPlayer?.name || '未配置'}
-            </div>
+      <div className="pointer-events-none absolute bottom-3 left-3 z-20">
+        <div className="rounded-full border-2 border-slate-900/20 bg-white/80 px-3 py-2 shadow-[3px_3px_0_rgba(15,23,42,0.16)]">
+          <div className="flex items-center gap-2 text-[10px] font-black text-slate-900">
+            <span>首发 {startingAgents.length}/11</span>
+            <span className="text-slate-400">|</span>
+            <span>{squad?.forward_ability || 0}/{squad?.midfield_ability || 0}/{squad?.guard_ability || 0}</span>
+            {topPlayer && (
+              <>
+                <span className="text-slate-400">|</span>
+                <span className={`max-w-[86px] truncate ${overallColor(topPlayer.overall, topPlayer.star)}`}>{topPlayer.name}</span>
+              </>
+            )}
           </div>
         </div>
       </div>

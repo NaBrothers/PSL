@@ -16,10 +16,9 @@ export interface ClubBuilding {
   production: string
   actionLabel: string
   path: string
-  x: number
-  y: number
-  width: number
-  height: number
+  plot: { x: number; y: number; width: number; height: number }
+  building: { x: number; y: number; width: number; height: number }
+  entry: { x: number; y: number }
   kind: 'stadium' | 'training' | 'academy' | 'scout' | 'commerce' | 'medical' | 'clubhouse'
 }
 

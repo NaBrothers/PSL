@@ -34,9 +34,9 @@ function TabBar() {
   const navigate = useNavigate()
   const location = useLocation()
   const tabs = [
-    { path: '/home', label: '首页', icon: Home },
-    { path: '/squad', label: '球队', icon: Shield },
     { path: '/match', label: '比赛', icon: Swords },
+    { path: '/squad', label: '球队', icon: Shield },
+    { path: '/home', label: '俱乐部', icon: Home },
     { path: '/bag', label: '背包', icon: Backpack },
     { path: '/more', label: '更多', icon: Menu },
   ]
