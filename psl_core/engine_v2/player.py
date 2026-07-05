@@ -319,14 +319,15 @@ class Player:
         config: "EngineConfig",
         pitch: "Pitch",
         attacking_right: bool,
+        tick: int = 0,
+        team_side: str = "",
+        trace=None,
     ) -> Tuple[str, dict]:
         """Choose on-ball action via score comparison. Returns (action_type, details).
 
         action_type is one of: "carry", "pass", "pass_to_space", "shoot", "hold", "clear"
         details contains target info needed by the match loop.
         """
-        from .position_value import position_value
-
         # GK always distributes quickly
         if self.is_goalkeeper:
             return self._gk_choose(teammates, opponents, config, pitch, attacking_right)
@@ -353,7 +354,7 @@ class Player:
         nearby_opps = [o for o in opponents if not o.is_goalkeeper and distance(self.pos, o.pos) < 8.0]
         pressure = len(nearby_opps)
 
-        candidates = []  # List of (score, action_type, details)
+        candidates = []
 
         # ------- CARRY candidates -------
         current_state_value = self._current_state_value(
@@ -364,14 +365,14 @@ class Player:
             config, pitch, attacking_right, opponents, opp_positions, tm_positions,
             teammates, current_state_value
         )
-        candidates.extend(carry_candidates)
+        candidates.extend(self._wrap_candidates(carry_candidates, "carry"))
 
         # ------- PASS candidates (unified pass-to-point model) -------
         pass_candidates = self._score_pass_point_options(
             teammates, opponents, config, pitch, attacking_right,
             opp_positions, tm_positions, current_state_value
         )
-        candidates.extend(pass_candidates)
+        candidates.extend(self._wrap_candidates(pass_candidates, "pass"))
 
         # ------- SHOOT candidate -------
         shoot_score = 0.0
@@ -380,7 +381,7 @@ class Player:
                 goal_center, config, pitch, opponents, dist_to_goal
             )
             if shoot_score > 0:
-                candidates.append((shoot_score, "shoot", shoot_details))
+                candidates.append(self._make_candidate("shoot", shoot_score, shoot_details, "shot"))
 
         # ------- HOLD / OBSERVE candidate -------
         hold_score = self._score_hold(
@@ -388,7 +389,7 @@ class Player:
             pressure, shoot_score, pass_candidates, [],
         )
         if hold_score > 0:
-            candidates.append((hold_score, "hold", {"target": self.pos}))
+            candidates.append(self._make_candidate("hold", hold_score, {"target": self.pos}, "hold"))
 
         # ------- CLEAR candidate -------
         clear_score = self._score_clear(x_progress, pressure, config)
@@ -404,7 +405,7 @@ class Player:
                     self.pos[0] - random.uniform(15, 30),
                     self.pos[1] + random.uniform(-20, 20)
                 )
-            candidates.append((clear_score, "clear", {"target": clear_target}))
+            candidates.append(self._make_candidate("clear", clear_score, {"target": clear_target}, "clear"))
 
         # If no candidates (shouldn't happen), default to carry forward
         if not candidates:
@@ -416,13 +417,84 @@ class Player:
 
         # Apply IQ noise to all candidate scores
         noisy_candidates = [
-            (self._apply_iq_noise(score, config), action_type, details)
-            for score, action_type, details in candidates
+            candidate.with_score(self._apply_iq_noise(candidate.score, config))
+            for candidate in candidates
         ]
 
         # Selection via softmax with IQ-based temperature
         chosen = self._softmax_select(noisy_candidates, config)
-        return (chosen[1], chosen[2])
+        if trace is not None and config.trace.should_trace(tick, self.index, "on_ball"):
+            alternatives = self._decision_alternatives(noisy_candidates, chosen, config)
+            trace.log_decision(
+                tick=tick,
+                team=team_side,
+                player_idx=self.index,
+                player_name=self.name,
+                phase="on_ball",
+                chosen=chosen,
+                alternatives=alternatives,
+            )
+        return (chosen.action_type, chosen.details)
+
+    def _make_candidate(
+        self,
+        action_type: str,
+        score: float,
+        details: dict,
+        source: str,
+        success_prob: float = 1.0,
+        risk_cost: float = 0.0,
+        current_value: float = 0.0,
+        after_value: float = 0.0,
+        components: dict = None,
+    ):
+        from .value_model import ActionCandidate, ValueResult
+
+        target = details.get("target") if details else None
+        value = ValueResult(
+            score=score,
+            success_prob=success_prob,
+            risk_cost=risk_cost,
+            current_value=current_value,
+            after_value=after_value,
+            components=components or {},
+        )
+        return ActionCandidate(
+            phase="on_ball",
+            action_type=action_type,
+            target=target,
+            value=value,
+            details=details,
+            source=source,
+        )
+
+    def _wrap_candidates(self, candidates, source: str):
+        return [
+            self._make_candidate(
+                action_type=action_type,
+                score=score,
+                details=details,
+                source=source,
+                success_prob=details.get("success_prob", 1.0) if details else 1.0,
+                risk_cost=details.get("risk_cost", 0.0) if details else 0.0,
+                current_value=details.get("current_value", 0.0) if details else 0.0,
+                after_value=details.get("after_value", 0.0) if details else 0.0,
+                components=details.get("components", {}) if details else {},
+            )
+            for score, action_type, details in candidates
+        ]
+
+    def _decision_alternatives(self, candidates, chosen, config: "EngineConfig"):
+        detail = config.trace.detail
+        if detail == "chosen":
+            return []
+        ranked = sorted(candidates, key=self._candidate_score, reverse=True)
+        alternatives = [candidate for candidate in ranked if candidate is not chosen]
+        if detail == "top_candidates":
+            return alternatives[:max(0, int(config.trace.top_k))]
+        if detail == "full":
+            return alternatives
+        return []
 
     def _score_carry_options(
         self,
@@ -561,7 +633,27 @@ class Player:
                     score *= 0.65
             if self.possession_ticks > 3 and pv_gain < 0.08:
                 score *= max(0.30, 1.0 - (self.possession_ticks - 3) * 0.12)
-            results.append((score, "carry", {"target": target}))
+            results.append((score, "carry", {
+                "target": target,
+                "success_prob": feasibility,
+                "risk_cost": risk_cost,
+                "current_value": current_state_value,
+                "after_value": after_value,
+                "components": {
+                    "current_value": current_state_value,
+                    "after_value": after_value,
+                    "delta": after_value - current_state_value,
+                    "success_prob": feasibility,
+                    "risk_cost": risk_cost,
+                    "opportunity_cost": 0.0,
+                    "continuity": continuity,
+                    "final_score": score,
+                    "path_feasibility": feasibility,
+                    "pv_gain": pv_gain,
+                    "target_pv": pv,
+                    "current_pv": current_pv,
+                },
+            }))
 
         return results
 
@@ -643,7 +735,7 @@ class Player:
         current_state_value: float,
     ) -> List[Tuple[float, str, dict]]:
         """Generate and score all pass-to-point candidates with one model."""
-        from .value_model import expected_pass_value
+        from .value_model import expected_pass_value_result
 
         results = []
         forward_dir = 1.0 if attacking_right else -1.0
@@ -682,13 +774,17 @@ class Player:
                 base_accuracy = base * (0.35 + 0.65 * passing) * dist_factor
 
                 continuity = 0.075 if distance(target, tm.pos) <= 4.0 else 0.045
-                score, success_prob, lane_risk, consequence = expected_pass_value(
+                value = expected_pass_value_result(
                     self, tm, self.pos, target,
                     teammates, opponents, config, pitch, attacking_right,
                     current_state_value, base_accuracy,
                     receiver_arrival=receiver_arrival,
                     continuity=continuity,
                 )
+                score = value.score
+                success_prob = value.success_prob
+                lane_risk = value.components["lane_risk"]
+                consequence = value.components["turnover_consequence"]
 
                 if score <= 0.001:
                     continue
@@ -700,8 +796,16 @@ class Player:
                     "success_prob": success_prob,
                     "lane_risk": lane_risk,
                     "turnover_consequence": consequence,
+                    "current_value": value.current_value,
+                    "after_value": value.after_value,
+                    "risk_cost": value.risk_cost,
                     "is_long": is_long,
                     "pass_type": pass_type,
+                    "components": {
+                        **value.components,
+                        "distance": d,
+                        "target_kind": "space" if distance(target, tm.pos) > 4.0 else "feet",
+                    },
                 }
                 if action_type == "pass_to_space":
                     details["intended_receiver"] = tm.index
@@ -1084,8 +1188,28 @@ class Player:
 
         return (score, {
             "target": goal_center,
+            "success_prob": on_target_prob,
             "on_target_prob": on_target_prob,
             "xg": xG,
+            "after_value": xG,
+            "components": {
+                "current_value": 0.0,
+                "after_value": xG,
+                "delta": xG,
+                "success_prob": on_target_prob,
+                "risk_cost": 0.0,
+                "opportunity_cost": 0.0,
+                "continuity": 0.0,
+                "final_score": score,
+                "xg": xG,
+                "on_target_prob": on_target_prob,
+                "save_estimate": save_estimate,
+                "distance": dist_to_goal,
+                "angle_factor": angle_factor,
+                "pressure_factor": pressure_factor,
+                "lane_factor": lane_factor,
+                "dist_factor": dist_factor,
+            },
         })
 
     def _score_clear(self, x_progress: float, pressure: int, config: "EngineConfig") -> float:
@@ -1704,7 +1828,7 @@ class Player:
         temperature = (100 - max(1, min(99, self.iq_value))) / 100.0
         temperature = max(0.05, temperature * 0.5)
 
-        scores = [c[0] for c in candidates]
+        scores = [self._candidate_score(c) for c in candidates]
         max_score = max(scores) if scores else 1.0
 
         if max_score < 0.001:
@@ -1723,6 +1847,11 @@ class Player:
                 return candidates[i]
 
         return candidates[-1]
+
+    def _candidate_score(self, candidate) -> float:
+        if hasattr(candidate, "score"):
+            return candidate.score
+        return candidate[0]
 
     # =========================================================================
     # Legacy compatibility methods (delegate to new system)

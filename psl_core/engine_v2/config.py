@@ -5,8 +5,39 @@ from typing import Optional
 
 
 @dataclass
+class TraceConfig:
+    """Decision trace controls for tuning scripts."""
+
+    detail: str = "off"  # off | chosen | top_candidates | full
+    top_k: int = 5
+    include_off_ball: bool = False
+    include_defense: bool = False
+    focus_players: tuple[int, ...] = ()
+    focus_ticks: tuple[tuple[int, int], ...] = ()
+    sample_rate: int = 1
+
+    def should_trace(self, tick: int, player_idx: int, phase: str) -> bool:
+        """Return whether a decision should be recorded."""
+        if self.detail == "off":
+            return False
+        if phase == "off_ball_attack" and not self.include_off_ball:
+            return False
+        if phase == "off_ball_defense" and not self.include_defense:
+            return False
+        if self.focus_players and player_idx not in self.focus_players:
+            return False
+        if self.focus_ticks:
+            if not any(start <= tick <= end for start, end in self.focus_ticks):
+                return False
+        sample_rate = max(1, int(self.sample_rate))
+        return tick % sample_rate == 0
+
+
+@dataclass
 class EngineConfig:
     """All tunable parameters for the match engine."""
+
+    trace: TraceConfig = field(default_factory=TraceConfig)
 
     # Pitch dimensions (meters)
     pitch_length: float = 105.0

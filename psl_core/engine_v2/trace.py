@@ -21,6 +21,7 @@ class MatchTrace:
 
     trace_id: str = field(default_factory=lambda: uuid.uuid4().hex[:12])
     entries: List[TraceEntry] = field(default_factory=list)
+    decisions: List[Dict[str, Any]] = field(default_factory=list)
     enabled: bool = True
 
     def log(self, tick: int, event_type: str, **kwargs):
@@ -37,6 +38,32 @@ class MatchTrace:
         """Log a match event (goal, save, aerial_contest, contested_won, etc.)."""
         self.log(tick, event_type, **kwargs)
 
+    def log_decision(
+        self,
+        tick: int,
+        team: str,
+        player_idx: int,
+        player_name: str,
+        phase: str,
+        chosen,
+        alternatives: List = None,
+    ):
+        """Log a structured decision without mixing it into match events."""
+        if not self.enabled:
+            return
+        self.decisions.append({
+            "tick": tick,
+            "team": team,
+            "player_idx": player_idx,
+            "player": player_name,
+            "phase": phase,
+            "chosen": chosen.to_dict() if hasattr(chosen, "to_dict") else chosen,
+            "alternatives": [
+                item.to_dict() if hasattr(item, "to_dict") else item
+                for item in (alternatives or [])
+            ],
+        })
+
     def to_dict(self) -> Dict:
         """Export trace as dictionary."""
         return {
@@ -50,6 +77,7 @@ class MatchTrace:
                 }
                 for e in self.entries
             ],
+            "decisions": self.decisions,
         }
 
     def summary(self) -> Dict:

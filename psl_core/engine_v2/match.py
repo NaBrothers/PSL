@@ -270,6 +270,9 @@ class MatchV2:
             self.config,
             self.pitch,
             holder_team.attacking_right,
+            tick=self.tick,
+            team_side=holder_team.side,
+            trace=self.trace,
         )
 
         # Off-ball players choose actions

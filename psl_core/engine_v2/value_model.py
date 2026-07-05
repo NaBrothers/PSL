@@ -7,6 +7,7 @@ team's attacking state after accounting for success probability and risk.
 from __future__ import annotations
 
 import math
+from dataclasses import dataclass, field
 from typing import List, Tuple, TYPE_CHECKING
 
 from .physics import distance
@@ -16,6 +17,91 @@ if TYPE_CHECKING:
     from .config import EngineConfig
     from .pitch import Pitch
     from .player import Player
+
+
+def _json_safe(value):
+    if isinstance(value, tuple):
+        return [_json_safe(v) for v in value]
+    if isinstance(value, list):
+        return [_json_safe(v) for v in value]
+    if isinstance(value, dict):
+        return {str(k): _json_safe(v) for k, v in value.items()}
+    return value
+
+
+@dataclass
+class ValueResult:
+    """Stable score breakdown for a decision candidate."""
+
+    score: float
+    success_prob: float = 1.0
+    risk_cost: float = 0.0
+    current_value: float = 0.0
+    after_value: float = 0.0
+    components: dict = field(default_factory=dict)
+
+    def to_dict(self) -> dict:
+        components = dict(self.components)
+        components.setdefault("current_value", self.current_value)
+        components.setdefault("after_value", self.after_value)
+        components.setdefault("delta", self.after_value - self.current_value)
+        components.setdefault("success_prob", self.success_prob)
+        components.setdefault("risk_cost", self.risk_cost)
+        components.setdefault("final_score", self.score)
+        return {
+            "score": self.score,
+            "success_prob": self.success_prob,
+            "risk_cost": self.risk_cost,
+            "current_value": self.current_value,
+            "after_value": self.after_value,
+            "components": _json_safe(components),
+        }
+
+
+@dataclass
+class ActionCandidate:
+    """Traceable action candidate with legacy tuple compatibility."""
+
+    phase: str
+    action_type: str
+    target: Tuple[float, float] | None
+    value: ValueResult
+    details: dict = field(default_factory=dict)
+    source: str = ""
+
+    @property
+    def score(self) -> float:
+        return self.value.score
+
+    def as_tuple(self) -> Tuple[float, str, dict]:
+        return (self.value.score, self.action_type, self.details)
+
+    def with_score(self, score: float) -> "ActionCandidate":
+        return ActionCandidate(
+            phase=self.phase,
+            action_type=self.action_type,
+            target=self.target,
+            value=ValueResult(
+                score=score,
+                success_prob=self.value.success_prob,
+                risk_cost=self.value.risk_cost,
+                current_value=self.value.current_value,
+                after_value=self.value.after_value,
+                components=dict(self.value.components),
+            ),
+            details=self.details,
+            source=self.source,
+        )
+
+    def to_dict(self) -> dict:
+        return {
+            "phase": self.phase,
+            "action_type": self.action_type,
+            "target": _json_safe(self.target),
+            "value": self.value.to_dict(),
+            "details": _json_safe(self.details),
+            "source": self.source,
+        }
 
 
 def goal_center(config: "EngineConfig", attacking_right: bool) -> Tuple[float, float]:
@@ -268,6 +354,37 @@ def expected_pass_value(
 
     Returns (score, success_prob, lane_risk, consequence).
     """
+    result = expected_pass_value_result(
+        passer, receiver, origin, target,
+        teammates, opponents, config, pitch, attacking_right,
+        current_value, base_accuracy,
+        receiver_arrival=receiver_arrival,
+        continuity=continuity,
+    )
+    return (
+        result.score,
+        result.success_prob,
+        result.components["lane_risk"],
+        result.components["turnover_consequence"],
+    )
+
+
+def expected_pass_value_result(
+    passer: "Player",
+    receiver: "Player",
+    origin: Tuple[float, float],
+    target: Tuple[float, float],
+    teammates: List["Player"],
+    opponents: List["Player"],
+    config: "EngineConfig",
+    pitch: "Pitch",
+    attacking_right: bool,
+    current_value: float,
+    base_accuracy: float,
+    receiver_arrival: float = 1.0,
+    continuity: float = 0.03,
+) -> ValueResult:
+    """Unified pass value with trace-ready components."""
     lane_risk = pass_lane_risk(origin, target, opponents, config)
     pressure = receiver_pressure(target, opponents)
     success_prob = base_accuracy * receiver_arrival * (1.0 - lane_risk * 0.92) * (1.0 - pressure * 0.55)
@@ -281,4 +398,25 @@ def expected_pass_value(
     if delta < -0.08:
         continuity *= 0.25
     score = action_delta_score(current_value, after_value, success_prob, risk_cost, continuity)
-    return score, success_prob, lane_risk, consequence
+    return ValueResult(
+        score=score,
+        success_prob=success_prob,
+        risk_cost=risk_cost,
+        current_value=current_value,
+        after_value=after_value,
+        components={
+            "current_value": current_value,
+            "after_value": after_value,
+            "delta": after_value - current_value,
+            "success_prob": success_prob,
+            "risk_cost": risk_cost,
+            "opportunity_cost": 0.0,
+            "continuity": continuity,
+            "final_score": score,
+            "base_accuracy": base_accuracy,
+            "lane_risk": lane_risk,
+            "receiver_pressure": pressure,
+            "turnover_consequence": consequence,
+            "receiver_arrival": receiver_arrival,
+        },
+    )
