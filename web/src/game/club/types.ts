@@ -6,6 +6,7 @@ export interface ClubAgent {
   overall: number
   star: number
   position?: string
+  nameColor: string
 }
 
 export interface ClubBuilding {

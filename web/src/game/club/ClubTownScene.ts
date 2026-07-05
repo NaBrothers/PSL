@@ -449,8 +449,10 @@ export class ClubTownScene extends Phaser.Scene {
     this.add.zone(b.plot.x, b.plot.y, b.plot.width, b.plot.height)
       .setOrigin(0)
       .setInteractive({ useHandCursor: true })
-      .on('pointerup', () => this.dataConfig.onBuildingClick(b.id))
-      .setDepth(b.plot.y + b.plot.height + 8)
+      .on('pointerup', (pointer: Phaser.Input.Pointer) => {
+        if (this.isTap(pointer)) this.dataConfig.onBuildingClick(b.id)
+      })
+      .setDepth(3)
   }
 
   private drawStadiumBuilding(b: ClubBuilding) {
@@ -575,19 +577,54 @@ export class ClubTownScene extends Phaser.Scene {
     const container = this.add.container(start.x, start.y).setDepth(start.y + 20)
     const sprite = this.add.image(0, 0, `agent-${role}-0`).setOrigin(0.5, 1)
     sprite.setScale(1.15)
-    const label = this.add.text(0, -30, this.shortName(agent.name), {
-      fontFamily: 'monospace',
-      fontSize: '11px',
-      color: '#111827',
-      backgroundColor: 'rgba(255,255,255,0.86)',
-      padding: { x: 4, y: 1 },
-    }).setOrigin(0.5, 1)
-    label.setResolution(2)
+    const label = this.createNameplate(this.shortName(agent.name), agent.nameColor)
     container.add([sprite, label])
-    container.setSize(36, 44)
-    container.setInteractive(new Phaser.Geom.Rectangle(-18, -42, 36, 44), Phaser.Geom.Rectangle.Contains)
-    container.on('pointerup', () => this.dataConfig.onAgentClick(agent.cardId))
+    const hitWidth = Math.max(42, label.width + 12)
+    container.setSize(hitWidth, 62)
+    container.setInteractive(new Phaser.Geom.Rectangle(-hitWidth / 2, -58, hitWidth, 64), Phaser.Geom.Rectangle.Contains)
+    container.on('pointerup', (pointer: Phaser.Input.Pointer) => {
+      if (this.isTap(pointer)) this.dataConfig.onAgentClick(agent.cardId)
+    })
     return { container, sprite }
+  }
+
+  private createNameplate(name: string, color: string) {
+    if (color !== 'rainbow') {
+      const label = this.add.text(0, -30, name, {
+        fontFamily: 'monospace',
+        fontSize: '11px',
+        color,
+        stroke: '#0f172a',
+        strokeThickness: 3,
+        padding: { x: 2, y: 1 },
+      }).setOrigin(0.5, 1)
+      label.setResolution(2)
+      return label
+    }
+
+    const colors = ['#ef4444', '#f97316', '#eab308', '#22c55e', '#06b6d4', '#3b82f6', '#a855f7', '#ec4899']
+    const chars = [...name]
+    const charWidth = 7
+    const width = chars.length * charWidth + 8
+    const container = this.add.container(0, -30)
+    chars.forEach((char, index) => {
+      const text = this.add.text(
+        -((chars.length - 1) * charWidth) / 2 + index * charWidth,
+        -7,
+        char,
+        {
+          fontFamily: 'monospace',
+          fontSize: '11px',
+          color: colors[index % colors.length],
+          stroke: '#0f172a',
+          strokeThickness: 3,
+        },
+      ).setOrigin(0.5, 0.5)
+      text.setResolution(2)
+      container.add(text)
+    })
+    container.setSize(width, 18)
+    return container
   }
 
   private animateAgentSprite(sprite: Phaser.GameObjects.Image, role: string, delay: number) {
@@ -818,5 +855,9 @@ export class ClubTownScene extends Phaser.Scene {
     this.input.on('pointerup', () => {
       this.dragStart = undefined
     })
+  }
+
+  private isTap(pointer: Phaser.Input.Pointer) {
+    return Phaser.Math.Distance.Between(pointer.downX, pointer.downY, pointer.x, pointer.y) <= 8
   }
 }

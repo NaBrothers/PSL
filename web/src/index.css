@@ -147,6 +147,12 @@ html, body {
 }
 .animate-fadeIn { animation: fadeIn 0.5s ease-out; }
 
+@keyframes clubLoadBar {
+  0% { transform: translateX(-110%); }
+  100% { transform: translateX(230%); }
+}
+.animate-clubLoadBar { animation: clubLoadBar 1.35s ease-in-out infinite; }
+
 /* Stadium texture background */
 .bg-dark {
   background-color: #070b16;

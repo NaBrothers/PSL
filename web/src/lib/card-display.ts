@@ -35,15 +35,40 @@ function colorValue(overall: number, star: number): number {
   return base + star - 1
 }
 
+export type CardRarityKey = 'rainbow' | 'pink' | 'red' | 'orange' | 'purple' | 'blue' | 'green' | 'white'
+
+export function cardRarityKey(overall: number, star?: number): CardRarityKey {
+  const v = star != null ? colorValue(overall, star) : overall
+  if (v >= 97) return 'rainbow'
+  if (v >= 94) return 'pink'
+  if (v >= 92) return 'red'
+  if (v >= 89) return 'orange'
+  if (v >= 87) return 'purple'
+  if (v >= 84) return 'blue'
+  if (v >= 82) return 'green'
+  return 'white'
+}
+
+export const CARD_RARITY_HEX: Record<CardRarityKey, string> = {
+  rainbow: 'rainbow',
+  pink: '#f472b6',
+  red: '#f87171',
+  orange: '#fb923c',
+  purple: '#c084fc',
+  blue: '#60a5fa',
+  green: '#4ade80',
+  white: '#cbd5e1',
+}
+
 export function overallColor(ov: number, star?: number): string {
-  const v = star != null ? colorValue(ov, star) : ov
-  if (v >= 97) return 'text-transparent bg-clip-text bg-[linear-gradient(90deg,#ef4444,#f97316,#eab308,#22c55e,#06b6d4,#3b82f6,#a855f7,#ec4899)]'
-  if (v >= 94) return 'text-pink-400'
-  if (v >= 92) return 'text-red-400'
-  if (v >= 89) return 'text-orange-400'
-  if (v >= 87) return 'text-purple-400'
-  if (v >= 84) return 'text-blue-400'
-  if (v >= 82) return 'text-green-400'
+  const key = cardRarityKey(ov, star)
+  if (key === 'rainbow') return 'text-transparent bg-clip-text bg-[linear-gradient(90deg,#ef4444,#f97316,#eab308,#22c55e,#06b6d4,#3b82f6,#a855f7,#ec4899)]'
+  if (key === 'pink') return 'text-pink-400'
+  if (key === 'red') return 'text-red-400'
+  if (key === 'orange') return 'text-orange-400'
+  if (key === 'purple') return 'text-purple-400'
+  if (key === 'blue') return 'text-blue-400'
+  if (key === 'green') return 'text-green-400'
   return 'text-slate-300'
 }
 

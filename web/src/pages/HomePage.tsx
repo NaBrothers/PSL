@@ -3,10 +3,47 @@ import { useNavigate } from 'react-router-dom'
 import { Building2, X } from 'lucide-react'
 import api from '../api/client'
 import InboxBanner from '@/components/InboxBanner'
-import { overallColor } from '@/lib/card-display'
+import { CARD_RARITY_HEX, cardRarityKey, overallColor } from '@/lib/card-display'
 import type { ClubAgent, ClubBuilding } from '@/game/club/types'
 
 const ClubTownGame = lazy(() => import('@/game/club/ClubTownGame'))
+
+function cardNameColor(overall: number, star: number): string {
+  return CARD_RARITY_HEX[cardRarityKey(overall, star)]
+}
+
+const loadingLines = [
+  '正在修补草皮',
+  '球员正在起床',
+  '门将正在找手套',
+  '训练标志桶摆放中',
+  '青训教练正在点名',
+  '球探正在翻地图',
+  '售票窗口正在开灯',
+  '医疗室正在补冰袋',
+  '队医正在检查绷带',
+  '草坪管理员正在浇水',
+  '更衣室正在通风',
+  '装备管理员正在擦球鞋',
+  '队长正在整理袖标',
+  '前锋正在热身射门',
+  '中场正在熟悉战术板',
+  '后卫正在练习站位',
+  '门柱正在确认垂直',
+  '替补席正在摆水瓶',
+  '记分牌正在醒来',
+  '广播室正在试麦',
+  '看台旗帜正在展开',
+  '球童正在捡球',
+  '大巴司机正在倒车',
+  '赞助牌正在补光',
+  '青训小将正在排队',
+  '球探报告正在盖章',
+  '训练背心正在分颜色',
+  '战术会议正在开场',
+  '球场入口正在开锁',
+  '俱乐部大厅正在扫地',
+]
 
 interface UserInfo {
   id: number
@@ -70,6 +107,45 @@ const buildings: ClubBuilding[] = [
   },
 ]
 
+function ClubLoadingFallback() {
+  const [lineIndex, setLineIndex] = useState(0)
+
+  useEffect(() => {
+    const timer = window.setInterval(() => {
+      setLineIndex(index => (index + 1) % loadingLines.length)
+    }, 900)
+    return () => window.clearInterval(timer)
+  }, [])
+
+  return (
+    <div className="relative h-full w-full overflow-hidden bg-[#8ed46a]">
+      <div className="absolute inset-0 bg-[linear-gradient(90deg,rgba(255,255,255,0.08)_1px,transparent_1px),linear-gradient(0deg,rgba(255,255,255,0.08)_1px,transparent_1px)] bg-[length:16px_16px]" />
+      <div className="absolute inset-0 bg-[radial-gradient(circle_at_50%_42%,rgba(255,255,255,0.22),transparent_38%)]" />
+      <div className="absolute left-1/2 top-1/2 w-[300px] max-w-[86vw] -translate-x-1/2 -translate-y-1/2 rounded-md border-2 border-slate-900/30 bg-white/88 p-4 shadow-[6px_6px_0_rgba(15,23,42,0.22)]">
+        <div className="mb-3 flex items-center gap-3">
+          <div className="grid h-10 w-10 grid-cols-2 grid-rows-2 overflow-hidden rounded-sm border-2 border-slate-900/20">
+            <span className="bg-[#2f8d3f]" />
+            <span className="bg-[#43aa52]" />
+            <span className="bg-[#43aa52]" />
+            <span className="bg-[#2f8d3f]" />
+          </div>
+          <div>
+            <div className="text-[10px] font-black tracking-wide text-slate-500">俱乐部基地</div>
+            <div className="text-base font-black text-slate-900">俱乐部正在开门</div>
+          </div>
+        </div>
+        <div className="mb-2 h-3 overflow-hidden rounded-sm border border-slate-900/20 bg-slate-200">
+          <div className="h-full w-1/2 animate-clubLoadBar bg-gradient-to-r from-green-500 via-gold to-green-500" />
+        </div>
+        <div className="flex items-center justify-between text-xs">
+          <span className="font-bold text-slate-700">{loadingLines[lineIndex]}...</span>
+          <span className="font-bold text-slate-400">请稍候</span>
+        </div>
+      </div>
+    </div>
+  )
+}
+
 export default function HomePage() {
   const [user, setUser] = useState<UserInfo | null>(null)
   const [squad, setSquad] = useState<SquadPreview | null>(null)
@@ -93,6 +169,7 @@ export default function HomePage() {
         overall: card.overall,
         star: card.star,
         position: card.position,
+        nameColor: cardNameColor(card.overall, card.star),
       }))
   ), [squad])
 
@@ -105,7 +182,7 @@ export default function HomePage() {
 
   return (
     <div className="relative h-full overflow-hidden bg-[#6ebf57]">
-      <Suspense fallback={<div className="h-full w-full bg-[#8ed46a]" />}>
+      <Suspense fallback={<ClubLoadingFallback />}>
         <ClubTownGame
           agents={startingAgents}
           buildings={buildings}

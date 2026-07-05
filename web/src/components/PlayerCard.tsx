@@ -1,4 +1,4 @@
-import { overallColor, STYLE_NAMES } from '@/lib/card-display'
+import { cardRarityKey, overallColor, STYLE_NAMES } from '@/lib/card-display'
 import { abilityColor } from '@/lib/card-display'
 
 interface TopAbility {
@@ -33,23 +33,6 @@ const FRAME_COLORS: Record<string, { border: string; bg: string; glow: string }>
   white: { border: 'border-slate-600/50', bg: 'from-slate-800/40 via-slate-900/60 to-slate-800/40', glow: '' },
 }
 
-const STAR_ABILITY: Record<number, number> = {
-  1: 0, 2: 1, 3: 2, 4: 4, 5: 6, 6: 8, 7: 11, 8: 14, 9: 17, 10: 21,
-}
-
-function getFrameKey(overall: number, star: number): string {
-  const bonus = STAR_ABILITY[star] ?? 0
-  const v = overall - bonus + star - 1
-  if (v >= 97) return 'rainbow'
-  if (v >= 94) return 'pink'
-  if (v >= 92) return 'red'
-  if (v >= 89) return 'orange'
-  if (v >= 87) return 'purple'
-  if (v >= 84) return 'blue'
-  if (v >= 82) return 'green'
-  return 'white'
-}
-
 function StarDisplay({ star }: { star: number }) {
   if (star <= 5) {
     return (
@@ -65,7 +48,7 @@ export default function PlayerCard({
   playerId, name, position, overall, star, style, breach, topAbilities,
   size = 'md', onClick, selected, badge, className = ''
 }: PlayerCardProps) {
-  const frameKey = getFrameKey(overall, star)
+  const frameKey = cardRarityKey(overall, star)
   const frame = FRAME_COLORS[frameKey]
   const avatarUrl = `/game-assets/avatars/${playerId}.png`
 
