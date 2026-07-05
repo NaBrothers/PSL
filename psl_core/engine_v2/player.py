@@ -8,6 +8,7 @@ On-ball candidates:
     pass_to(tm)   -- score = pass_success_rate * position_value(tm.pos)
     pass_to_space -- score = PV(future_pos) * arrival_prob * pass_accuracy
     shoot         -- score = on_target_prob * (1-save_estimate) * goal_reward
+    hold          -- score = observation value while team-mates improve positions
     clear         -- score = danger_reduction (high when pressured in own half)
 
 Off-ball attacking:
@@ -69,12 +70,18 @@ class Player:
     pos: Tuple[float, float] = (0.0, 0.0)  # current position on pitch
     formation_pos: Tuple[float, float] = (0.0, 0.0)  # base formation position
     target_pos: Tuple[float, float] = (0.0, 0.0)  # where player is moving to
+    movement_intent: str = "support"
+    velocity: Tuple[float, float] = (0.0, 0.0)
+    last_def_target: Tuple[float, float] = (0.0, 0.0)
+    last_def_action: str = ""
 
     # Facing direction (degrees, 0=right)
     facing_direction: float = 0.0
 
     # Stun state (after failed tackle)
     stun_ticks_remaining: int = 0
+    hold_ticks: int = 0
+    possession_ticks: int = 0
 
     # Match stats
     goals: int = 0
@@ -100,6 +107,28 @@ class Player:
     crosses_completed: int = 0
     headers_attempted: int = 0
     headers_won: int = 0
+
+    # Advanced stats for frontend
+    xg: float = 0.0
+    key_passes: int = 0
+    progressive_passes: int = 0
+    passes_into_final_third: int = 0
+    passes_into_box: int = 0
+    long_passes: int = 0
+    completed_long_passes: int = 0
+    progressive_carries: int = 0
+    carries_into_final_third: int = 0
+    carries_into_box: int = 0
+    blocks: int = 0
+    pressures: int = 0
+    successful_pressures: int = 0
+    turnovers: int = 0
+    dispossessed: int = 0
+    offsides: int = 0
+    goals_conceded: int = 0
+    psxg_faced: float = 0.0
+    shot_log: List = field(default_factory=list)
+    position_samples: List = field(default_factory=list)
 
     @property
     def position_xy(self) -> Tuple[float, float]:
@@ -161,24 +190,57 @@ class Player:
     # =========================================================================
 
     def get_move_speed(self, config: "EngineConfig") -> float:
-        """Get movement speed based on distance to target (near=walk, far=run)."""
+        """Get adaptive off-ball speed from ability, intent, and urgency."""
         max_speed = player_speed(self.speed_value, config.player_max_speed, config.player_min_speed)
+        dist_to_target = distance(self.pos, self.target_pos)
+        urgency = 1.0 - math.exp(-dist_to_target / 14.0)
+
+        intent_base = {
+            "idle": 0.08,
+            "support": 0.36,
+            "attack_run": 0.56,
+            "recover_shape": 0.42,
+            "defend_shape": 0.30,
+            "press": 0.58,
+            "contest": 0.78,
+            "mark": 0.32,
+            "block_lane": 0.30,
+        }.get(self.movement_intent, 0.36)
 
         if self.state == PlayerState.PRESSING:
-            return max_speed * 0.85
+            intent_base = max(intent_base, 0.58)
 
-        dist_to_target = distance(self.pos, self.target_pos)
+        speed = max_speed * (intent_base + (0.28 * urgency))
+        if dist_to_target < 1.0:
+            speed *= 0.20
+        return max(0.2, min(max_speed * 0.92, speed))
 
-        if dist_to_target < 2.0:
-            return max_speed * 0.05
-        elif dist_to_target < 5.0:
-            return max_speed * 0.2
-        elif dist_to_target < 10.0:
-            return max_speed * 0.35
-        elif dist_to_target < 20.0:
-            return max_speed * 0.55
+    def set_movement_target(self, target: Tuple[float, float], intent: str = None):
+        """Set movement target with inertia so target points form a continuous field."""
+        if intent is not None:
+            self.movement_intent = intent
+
+        if self.target_pos == (0.0, 0.0):
+            self.target_pos = target
+            return
+
+        jump = distance(self.target_pos, target)
+        if jump < 4.0:
+            blend = 0.75
+        elif jump < 14.0:
+            blend = 0.45
         else:
-            return max_speed * 0.7
+            blend = 0.22
+
+        if self.movement_intent in ("press", "contest", "attack_run"):
+            blend = min(0.60, blend + 0.18)
+        elif self.movement_intent in ("defend_shape", "mark", "block_lane"):
+            blend *= 0.85
+
+        self.target_pos = (
+            self.target_pos[0] * (1.0 - blend) + target[0] * blend,
+            self.target_pos[1] * (1.0 - blend) + target[1] * blend,
+        )
 
     def move_tick(self, config: "EngineConfig", pitch: "Pitch"):
         """Move player toward their target position for one tick."""
@@ -187,10 +249,43 @@ class Player:
         if self.state == PlayerState.STUNNED:
             return
 
-        speed = self.get_move_speed(config)
+        desired_speed = self.get_move_speed(config)
         old_pos = self.pos
-        new_pos = move_toward(self.pos, self.target_pos, speed)
+        dx = self.target_pos[0] - self.pos[0]
+        dy = self.target_pos[1] - self.pos[1]
+        dist = math.sqrt(dx * dx + dy * dy)
+        if dist < 0.05:
+            desired_vx, desired_vy = 0.0, 0.0
+        else:
+            desired_vx = dx / dist * desired_speed
+            desired_vy = dy / dist * desired_speed
+
+        # Movement inertia: velocity can only change by limited acceleration.
+        # This prevents instant 180-degree turns when a target point changes.
+        vx, vy = self.velocity
+        accel = player_speed(self.speed_value, config.player_max_speed, config.player_min_speed) * 0.42
+        if self.movement_intent in ("press", "contest", "attack_run"):
+            accel *= 1.18
+        dvx = desired_vx - vx
+        dvy = desired_vy - vy
+        dv_len = math.sqrt(dvx * dvx + dvy * dvy)
+        if dv_len > accel:
+            dvx = dvx / dv_len * accel
+            dvy = dvy / dv_len * accel
+        vx += dvx
+        vy += dvy
+
+        max_speed = player_speed(self.speed_value, config.player_max_speed, config.player_min_speed) * 0.95
+        v_len = math.sqrt(vx * vx + vy * vy)
+        if v_len > max_speed:
+            vx = vx / v_len * max_speed
+            vy = vy / v_len * max_speed
+        self.velocity = (vx, vy)
+
+        new_pos = (self.pos[0] + vx, self.pos[1] + vy)
         new_pos = pitch.clamp(new_pos[0], new_pos[1])
+        if new_pos != (self.pos[0] + vx, self.pos[1] + vy):
+            self.velocity = (0.0, 0.0)
         self.pos = new_pos
 
         self.distance_covered += distance(old_pos, new_pos)
@@ -225,7 +320,7 @@ class Player:
     ) -> Tuple[str, dict]:
         """Choose on-ball action via score comparison. Returns (action_type, details).
 
-        action_type is one of: "carry", "pass", "pass_to_space", "shoot", "clear"
+        action_type is one of: "carry", "pass", "pass_to_space", "shoot", "hold", "clear"
         details contains target info needed by the match loop.
         """
         from .position_value import position_value
@@ -259,30 +354,39 @@ class Player:
         candidates = []  # List of (score, action_type, details)
 
         # ------- CARRY candidates -------
+        current_state_value = self._current_state_value(
+            teammates, opponents, config, pitch, attacking_right
+        )
+
         carry_candidates = self._score_carry_options(
-            config, pitch, attacking_right, opponents, opp_positions, tm_positions
+            config, pitch, attacking_right, opponents, opp_positions, tm_positions,
+            teammates, current_state_value
         )
         candidates.extend(carry_candidates)
 
-        # ------- PASS candidates -------
-        pass_candidates = self._score_pass_options(
-            teammates, config, pitch, attacking_right, opponents, opp_positions, tm_positions
+        # ------- PASS candidates (unified pass-to-point model) -------
+        pass_candidates = self._score_pass_point_options(
+            teammates, opponents, config, pitch, attacking_right,
+            opp_positions, tm_positions, current_state_value
         )
         candidates.extend(pass_candidates)
 
-        # ------- PASS TO SPACE candidates -------
-        space_pass_candidates = self._score_pass_to_space_options(
-            teammates, opponents, config, pitch, attacking_right, opp_positions, tm_positions
-        )
-        candidates.extend(space_pass_candidates)
-
         # ------- SHOOT candidate -------
+        shoot_score = 0.0
         if dist_to_goal <= config.shot_max_distance:
             shoot_score, shoot_details = self._score_shoot(
                 goal_center, config, pitch, opponents, dist_to_goal
             )
             if shoot_score > 0:
                 candidates.append((shoot_score, "shoot", shoot_details))
+
+        # ------- HOLD / OBSERVE candidate -------
+        hold_score = self._score_hold(
+            teammates, opponents, config, pitch, attacking_right,
+            pressure, shoot_score, pass_candidates, [],
+        )
+        if hold_score > 0:
+            candidates.append((hold_score, "hold", {"target": self.pos}))
 
         # ------- CLEAR candidate -------
         clear_score = self._score_clear(x_progress, pressure, config)
@@ -326,6 +430,8 @@ class Player:
         opponents: List["Player"],
         opp_positions: List[Tuple[float, float]],
         tm_positions: List[Tuple[float, float]],
+        teammates: List["Player"],
+        current_state_value: float,
     ) -> List[Tuple[float, str, dict]]:
         """Generate and score carry candidates.
 
@@ -336,17 +442,40 @@ class Player:
 
         results = []
         forward_dir = 1.0 if attacking_right else -1.0
+        current_pv = position_value(
+            self.pos[0], self.pos[1], pitch, attacking_right,
+            opp_positions, tm_positions, config
+        )
 
-        # Generate 3 carry directions: forward, forward-left, forward-right
-        carry_dist = config.carrier_speed  # one tick carry distance
-        directions = [
-            (forward_dir * carry_dist, 0.0),  # straight forward
-            (forward_dir * carry_dist * 0.7, carry_dist * 0.7),  # forward-right
-            (forward_dir * carry_dist * 0.7, -carry_dist * 0.7),  # forward-left
+        # Sample reachable space around the carrier. Direction is not the
+        # action; it is just candidate generation for the value model.
+        base_dist = config.carrier_speed
+        candidate_offsets = [
+            (forward_dir * base_dist, 0.0),
+            (forward_dir * base_dist * 0.75, base_dist * 0.75),
+            (forward_dir * base_dist * 0.75, -base_dist * 0.75),
+            (0.0, base_dist),
+            (0.0, -base_dist),
         ]
 
-        for dx, dy in directions:
+        # Under pressure, add smaller shielding touches into adjacent spaces.
+        nearest_opp = min(
+            [distance(self.pos, o.pos) for o in opponents if not o.is_goalkeeper],
+            default=99.0,
+        )
+        if nearest_opp < 7.0:
+            candidate_offsets.extend([
+                (-forward_dir * base_dist * 0.30, base_dist * 0.45),
+                (-forward_dir * base_dist * 0.30, -base_dist * 0.45),
+            ])
+
+        seen_targets = set()
+        for dx, dy in candidate_offsets:
             target = pitch.clamp(self.pos[0] + dx, self.pos[1] + dy)
+            key = (round(target[0], 1), round(target[1], 1))
+            if key in seen_targets:
+                continue
+            seen_targets.add(key)
 
             # Position value of target
             pv = position_value(
@@ -395,10 +524,204 @@ class Player:
                     reduction = threat * (1.0 - skill_factor)  # 0..0.5 for equal players
                     feasibility *= max(0.2, 1.0 - reduction)
 
-            score = pv * feasibility
+            # Carry should be rewarded for improving the situation, not for
+            # repeatedly re-claiming the absolute value of an already good
+            # shooting position. This prevents one-more-touch loops near goal.
+            pv_gain = pv - current_pv
+            retain_value = current_pv * 0.18
+            from .value_model import state_value, action_delta_score
+            after_value = state_value(
+                target, self, teammates, opponents, config, pitch, attacking_right
+            )
+            risk_cost = (1.0 - feasibility) * 0.10
+            continuity = current_pv * 0.08
+            score = action_delta_score(current_state_value, after_value, feasibility, risk_cost, continuity)
+
+            # Near goal, continuing toward a worse angle/byline should lose
+            # value quickly so shooting or cut-back can win naturally.
+            if attacking_right:
+                goal_x = config.pitch_length
+            else:
+                goal_x = 0.0
+            old_goal_dist = distance(self.pos, (goal_x, config.pitch_width / 2.0))
+            new_goal_dist = distance(target, (goal_x, config.pitch_width / 2.0))
+            old_angle_width = abs(self.pos[1] - config.pitch_width / 2.0)
+            new_angle_width = abs(target[1] - config.pitch_width / 2.0)
+            if old_goal_dist < 22.0:
+                score *= 0.75
+                if new_angle_width > old_angle_width + 0.5:
+                    score *= 0.55
+                if new_goal_dist < 5.0:
+                    score *= 0.25
+                elif new_goal_dist > old_goal_dist + 0.5:
+                    score *= 0.65
+                if pv_gain < 0.04:
+                    score *= 0.65
+            if self.possession_ticks > 3 and pv_gain < 0.08:
+                score *= max(0.30, 1.0 - (self.possession_ticks - 3) * 0.12)
             results.append((score, "carry", {"target": target}))
 
         return results
+
+    def _score_hold(
+        self,
+        teammates: List["Player"],
+        opponents: List["Player"],
+        config: "EngineConfig",
+        pitch: "Pitch",
+        attacking_right: bool,
+        pressure: int,
+        shoot_score: float,
+        pass_candidates: List[Tuple[float, str, dict]],
+        space_pass_candidates: List[Tuple[float, str, dict]],
+    ) -> float:
+        """Score pausing on the ball to scan, settle, and let runs develop."""
+        opp_positions = [(o.pos[0], o.pos[1]) for o in opponents if not o.is_goalkeeper]
+        tm_positions = [(t.pos[0], t.pos[1]) for t in teammates if t.index != self.index]
+        from .position_value import position_value
+
+        current_pv = position_value(
+            self.pos[0], self.pos[1], pitch, attacking_right,
+            opp_positions, tm_positions, config
+        )
+        best_pass = max([c[0] for c in pass_candidates + space_pass_candidates], default=0.0)
+
+        # Team-mates moving into better spaces make waiting valuable.
+        forward_dir = 1.0 if attacking_right else -1.0
+        developing_runs = 0.0
+        for tm in teammates:
+            if tm.index == self.index or tm.is_goalkeeper:
+                continue
+            move_progress = (tm.target_pos[0] - tm.pos[0]) * forward_dir
+            if move_progress > 1.0:
+                developing_runs += min(1.0, move_progress / 8.0)
+        developing_runs = min(2.0, developing_runs)
+
+        iq = self.iq_value / 100.0
+        pressure_factor = 1.0 / (1.0 + pressure * 0.55)
+        nearest_pressure = 0.0
+        for opp in opponents:
+            if opp.is_goalkeeper:
+                continue
+            d = distance(self.pos, opp.pos)
+            if d < 5.0:
+                nearest_pressure = max(nearest_pressure, 1.0 - d / 5.0)
+        pressure_factor *= max(0.18, 1.0 - nearest_pressure * 0.82)
+        poor_options_bonus = max(0.0, 0.18 - best_pass) * 0.9
+        settle_value = 0.055 + current_pv * 0.14 + developing_runs * 0.045 + poor_options_bonus
+
+        if self.is_midfielder:
+            settle_value *= 1.20
+        elif self.is_defender:
+            settle_value *= 1.12
+
+        score = settle_value * (0.65 + 0.45 * iq) * pressure_factor
+
+        # If there is already a good shot, observing should usually lose.
+        if shoot_score > 0.12:
+            score *= 0.45
+
+        # Repeated holding gets less attractive unless pressure is low and options are bad.
+        if self.hold_ticks > 0:
+            score *= max(0.25, 1.0 - self.hold_ticks * 0.30)
+        if self.possession_ticks > 2:
+            score *= max(0.20, 1.0 - (self.possession_ticks - 2) * 0.18)
+
+        return max(0.0, score)
+
+    def _score_pass_point_options(
+        self,
+        teammates: List["Player"],
+        opponents: List["Player"],
+        config: "EngineConfig",
+        pitch: "Pitch",
+        attacking_right: bool,
+        opp_positions: List[Tuple[float, float]],
+        tm_positions: List[Tuple[float, float]],
+        current_state_value: float,
+    ) -> List[Tuple[float, str, dict]]:
+        """Generate and score all pass-to-point candidates with one model."""
+        from .value_model import expected_pass_value
+
+        results = []
+        forward_dir = 1.0 if attacking_right else -1.0
+        offside_line = self._get_offside_line(opponents, attacking_right, config)
+
+        for tm in teammates:
+            if tm.index == self.index or tm.is_goalkeeper:
+                continue
+
+            raw_targets = [(tm.pos, 1.0)]
+
+            # Half-tick predicted position.
+            future_x = tm.pos[0] + (tm.target_pos[0] - tm.pos[0]) * 0.5
+            future_y = tm.pos[1] + (tm.target_pos[1] - tm.pos[1]) * 0.5
+            raw_targets.append((pitch.clamp(future_x, future_y), 0.92))
+
+            # A small leading pass if the team-mate is moving forward.
+            move_progress = (tm.target_pos[0] - tm.pos[0]) * forward_dir
+            if move_progress > 1.0:
+                lead_x = tm.pos[0] + forward_dir * min(12.0, 4.0 + move_progress)
+                lead_y = tm.pos[1] + (tm.target_pos[1] - tm.pos[1]) * 0.35
+                raw_targets.append((pitch.clamp(lead_x, lead_y), 0.82))
+
+            for target, receiver_arrival in raw_targets:
+                d = distance(self.pos, target)
+                if d < 3.0 or d > 55.0:
+                    continue
+
+                if self._is_offside_position(target, attacking_right, offside_line, config):
+                    receiver_arrival *= 0.25
+
+                is_long = d > 30.0
+                passing = self.abilities.get("Long_Passing" if is_long else "Short_Passing", 50) / 100.0
+                base = config.long_pass_base_success if is_long else config.short_pass_base_success
+                dist_factor = max(0.35, 1.0 - max(0.0, d - 10.0) / 65.0)
+                base_accuracy = base * (0.35 + 0.65 * passing) * dist_factor
+
+                continuity = 0.075 if distance(target, tm.pos) <= 4.0 else 0.045
+                score, success_prob, lane_risk, consequence = expected_pass_value(
+                    self, tm, self.pos, target,
+                    teammates, opponents, config, pitch, attacking_right,
+                    current_state_value, base_accuracy,
+                    receiver_arrival=receiver_arrival,
+                    continuity=continuity,
+                )
+
+                if score <= 0.001:
+                    continue
+
+                pass_type = "long_pass" if is_long else "short_pass"
+                action_type = "pass_to_space" if distance(target, tm.pos) > 4.0 else "pass"
+                details = {
+                    "target": target,
+                    "success_prob": success_prob,
+                    "lane_risk": lane_risk,
+                    "turnover_consequence": consequence,
+                    "is_long": is_long,
+                    "pass_type": pass_type,
+                }
+                if action_type == "pass_to_space":
+                    details["intended_receiver"] = tm.index
+                else:
+                    details["target_player_idx"] = tm.index
+
+                results.append((score, action_type, details))
+
+        return results
+
+    def _current_state_value(
+        self,
+        teammates: List["Player"],
+        opponents: List["Player"],
+        config: "EngineConfig",
+        pitch: "Pitch",
+        attacking_right: bool,
+    ) -> float:
+        from .value_model import state_value
+        return state_value(
+            self.pos, self, teammates, opponents, config, pitch, attacking_right
+        )
 
     def _score_pass_options(
         self,
@@ -409,6 +732,7 @@ class Player:
         opponents: List["Player"],
         opp_positions: List[Tuple[float, float]],
         tm_positions: List[Tuple[float, float]],
+        current_state_value: float,
     ) -> List[Tuple[float, str, dict]]:
         """Score pass candidates: pass_success_prob * position_value(target).
 
@@ -419,6 +743,9 @@ class Player:
         results = []
         passing_ability = self.abilities.get("Short_Passing", 50)
         long_passing = self.abilities.get("Long_Passing", 50)
+
+        # Compute offside line for pass evaluation
+        offside_line = self._get_offside_line(opponents, attacking_right, config)
 
         for tm in teammates:
             if tm.index == self.index or tm.is_goalkeeper:
@@ -461,19 +788,43 @@ class Player:
             success_rate = base_success * (0.4 + 0.6 * ability) * dist_factor * lane_clarity
             success_rate = max(0.1, min(0.95, success_rate))
 
-            # Position value of teammate's position
-            pv = position_value(
-                tm.pos[0], tm.pos[1], pitch, attacking_right,
-                opp_positions, tm_positions, config
+            from .value_model import expected_pass_value
+            forward_dir = 1.0 if attacking_right else -1.0
+            pass_progress = (tm.pos[0] - self.pos[0]) * forward_dir
+            continuity = 0.04 if pass_progress >= 0 else 0.015
+            score, success_rate, lane_risk, consequence = expected_pass_value(
+                self, tm, self.pos, tm.pos,
+                teammates, opponents, config, pitch, attacking_right,
+                current_state_value, success_rate, receiver_arrival=1.0,
+                continuity=continuity,
             )
 
-            score = success_rate * pv
+            # Opportunity cost near goal: not a pattern rule, but a stronger
+            # penalty when the pass gives up a high-value shooting state.
+            goal_x = config.pitch_length if attacking_right else 0.0
+            dist_to_goal = distance(self.pos, (goal_x, config.pitch_width / 2.0))
+            if dist_to_goal < 28.0:
+                if pass_progress < -2.0:
+                    score *= 0.22
+                elif pass_progress < 3.0:
+                    score *= 0.42
+                if abs(self.pos[1] - config.pitch_width / 2.0) < 12.0 and tm.shots == 0:
+                    score *= 0.75
+
+            # Offside risk: passing to offside teammate will likely be called back
+            # IQ determines how well passer perceives the offside situation
+            if self._is_offside_position(tm.pos, attacking_right, offside_line, config):
+                iq_factor = self.iq_value / 100.0
+                # IQ 100 -> score * 0.02, IQ 50 -> score * 0.08, IQ 0 -> score * 0.14
+                score *= 0.14 - 0.12 * iq_factor
 
             pass_type = "long_pass" if is_long else "short_pass"
             results.append((score, "pass", {
                 "target": tm.pos,
                 "target_player_idx": tm.index,
                 "success_prob": success_rate,
+                "lane_risk": lane_risk,
+                "turnover_consequence": consequence,
                 "is_long": is_long,
                 "pass_type": pass_type,
             }))
@@ -489,6 +840,7 @@ class Player:
         attacking_right: bool,
         opp_positions: List[Tuple[float, float]],
         tm_positions: List[Tuple[float, float]],
+        current_state_value: float,
     ) -> List[Tuple[float, str, dict]]:
         """Generate pass-to-space candidates.
 
@@ -531,12 +883,6 @@ class Player:
             if self._is_offside_position(future_pos, attacking_right, offside_line, config):
                 continue
 
-            # Position value of future position
-            pv = position_value(
-                future_pos[0], future_pos[1], pitch, attacking_right,
-                opp_pos_no_gk, tm_positions, config
-            )
-
             # Arrival probability: can teammate reach before defenders?
             tm_speed = player_speed(tm.speed_value, config.player_max_speed, config.player_min_speed)
             arrival_prob = receive_reachability(
@@ -571,13 +917,22 @@ class Player:
                         if perp < config.interception_reach * 2.0:
                             lane_clarity *= 0.5
 
-            score = pv * arrival_prob * pass_acc * lane_clarity
+            from .value_model import expected_pass_value
+            score, success_prob, lane_risk, consequence = expected_pass_value(
+                self, tm, self.pos, future_pos,
+                teammates, opponents, config, pitch, attacking_right,
+                current_state_value, pass_acc * lane_clarity,
+                receiver_arrival=arrival_prob,
+                continuity=0.03,
+            )
 
             is_long = d > 30.0
             results.append((score, "pass_to_space", {
                 "target": future_pos,
                 "intended_receiver": tm.index,
-                "success_prob": pass_acc * lane_clarity,
+                "success_prob": success_prob,
+                "lane_risk": lane_risk,
+                "turnover_consequence": consequence,
                 "is_long": is_long,
                 "pass_type": "long_pass" if is_long else "short_pass",
             }))
@@ -646,58 +1001,96 @@ class Player:
         else:
             ability = finishing
 
-        # Distance factor - gentler decay for medium-range shots
+        # Distance factor. Medium/long-range shots can still be chosen, but
+        # their expected-goal value must decay more like real football.
         if dist_to_goal <= config.shot_ideal_distance:
             dist_factor = 1.0
         elif dist_to_goal <= 30.0:
-            # 20-30m: gradual decay
             excess = dist_to_goal - config.shot_ideal_distance
-            dist_factor = 1.0 - excess * 0.03  # 0.7 at 30m
+            dist_factor = 1.0 - excess * 0.055
         else:
-            # 30m+: steeper decay
-            dist_factor = 0.7 * math.exp(-(dist_to_goal - 30.0) / 20.0)
+            dist_factor = 0.45 * math.exp(-(dist_to_goal - 30.0) / 14.0)
 
         # Angle factor
         angle = angle_to_goal(self.pos, goal_center, config.goal_width)
         angle_factor = min(1.0, angle / 0.2)  # easier threshold for angle
 
+        # Defensive pressure: nearby defenders and defenders in the shooting
+        # lane reduce shot quality. This lets good defensive positioning matter
+        # without requiring every defensive action to become a tackle.
+        pressure_factor = 1.0
+        lane_factor = 1.0
+        sx, sy = self.pos
+        gx, gy = goal_center
+        shot_dx = gx - sx
+        shot_dy = gy - sy
+        shot_len = math.sqrt(shot_dx * shot_dx + shot_dy * shot_dy)
+        if shot_len > 1.0:
+            nx, ny = shot_dx / shot_len, shot_dy / shot_len
+            for opp in opponents:
+                if opp.is_goalkeeper:
+                    continue
+                d = distance(self.pos, opp.pos)
+                if d < 8.0:
+                    pressure_factor *= max(0.72, 1.0 - (8.0 - d) * 0.035)
+
+                ox = opp.pos[0] - sx
+                oy = opp.pos[1] - sy
+                proj = ox * nx + oy * ny
+                if 1.0 < proj < shot_len - 1.0:
+                    perp = abs(ox * ny - oy * nx)
+                    if perp < 4.5:
+                        lane_factor *= max(0.65, 1.0 - (4.5 - perp) * 0.05)
+
         # On-target probability
-        on_target_prob = config.shot_on_target_base * (0.4 + 0.6 * ability) * dist_factor * angle_factor
-        on_target_prob = max(0.18, min(0.85, on_target_prob))
+        on_target_prob = (
+            config.shot_on_target_base
+            * (0.4 + 0.6 * ability)
+            * dist_factor
+            * angle_factor
+            * pressure_factor
+            * lane_factor
+        )
+        min_on_target = 0.16 if dist_to_goal < 25.0 else 0.08
+        on_target_prob = max(min_on_target, min(0.78, on_target_prob))
 
 
         # Score = on_target_prob * (1 - save_estimate) * goal_reward
-        # xG-based decision: angle/distance(main) + space + GK(minor)
-        # Block factor: defenders in shot path reduce score
-        block_factor = 1.0
-        # (block detection happens in interaction resolution, here we estimate)
-        
-        # GK factor: small influence (10-15%), player still shoots if angle is good
-        gk_factor = 1.0 - (config.gk_save_base * 0.15)
-        
-        # xG estimate
-        xG = on_target_prob * block_factor * gk_factor
+        # xG-based decision: angle/distance/pressure drive the chance quality;
+        # keeper quality affects final conversion, but not enough to forbid
+        # otherwise good shots.
+        base_save = config.gk_save_base
+        distance_save_relief = min(0.18, max(0.0, (dist_to_goal - 16.0) * 0.006))
+        angle_save_bonus = (1.0 - angle_factor) * 0.12
+        pressure_save_bonus = (1.0 - pressure_factor * lane_factor) * 0.10
+        central_bonus = 0.0
+        if dist_to_goal < 18.0 and abs(self.pos[1] - config.pitch_width / 2.0) < 12.0:
+            central_bonus = 0.12
+
+        save_estimate = max(
+            0.35,
+            min(0.90, base_save + angle_save_bonus + pressure_save_bonus - distance_save_relief - central_bonus),
+        )
+
+        from .value_model import shot_quality_at
+        xG = shot_quality_at(self.pos, self, opponents, config, goal_center[0] > self.pos[0])
         score = xG * config.goal_reward_constant
+        if dist_to_goal < 18.0 and angle_factor > 0.65:
+            score *= 1.70
+        elif dist_to_goal < 25.0 and angle_factor > 0.55:
+            score *= 1.65
 
         return (score, {
             "target": goal_center,
             "on_target_prob": on_target_prob,
+            "xg": xG,
         })
 
     def _score_clear(self, x_progress: float, pressure: int, config: "EngineConfig") -> float:
-        """Score clearance. Only a last resort under extreme pressure in own box."""
-        if x_progress > 0.35:
-            return 0.0  # never clear when not deep in own half
-
-        # Only consider clearing under heavy pressure (3+) in own box
-        if x_progress < 0.15 and pressure >= 3:
-            return 0.5  # extreme danger, clear it
-        
-        # Moderate pressure in own third
-        if pressure >= 2:
-            return 0.2  # might clear, but pass is usually better
-        
-        return 0.0  # no pressure = no reason to clear
+        """Score clearance from danger and pressure as an opportunity tradeoff."""
+        danger = max(0.0, 1.0 - x_progress / 0.45)
+        pressure_factor = 1.0 - math.exp(-pressure / 2.0)
+        return max(0.0, danger * pressure_factor * config.clear_reward_base)
 
     def _gk_choose(
         self,
@@ -707,61 +1100,23 @@ class Player:
         pitch: "Pitch",
         attacking_right: bool,
     ) -> Tuple[str, dict]:
-        """Goalkeeper distribution choice - always passes out quickly."""
-        from .position_value import position_value
+        """Goalkeeper distribution uses the same pass-to-point model."""
+        current_state_value = self._current_state_value(
+            teammates, opponents, config, pitch, attacking_right
+        )
+        candidates = self._score_pass_point_options(
+            teammates, opponents, config, pitch, attacking_right,
+            [(o.pos[0], o.pos[1]) for o in opponents if not o.is_goalkeeper],
+            [(t.pos[0], t.pos[1]) for t in teammates if t.index != self.index],
+            current_state_value,
+        )
+        if candidates:
+            chosen = self._softmax_select(candidates, config)
+            return (chosen[1], chosen[2])
 
-        opp_positions = [(o.pos[0], o.pos[1]) for o in opponents if not o.is_goalkeeper]
-        tm_positions = [(t.pos[0], t.pos[1]) for t in teammates if t.index != self.index]
-
-        # Find best pass target among teammates
-        best_score = 0.0
-        best_target = None
-        best_idx = -1
-
-        passing_ability = self.abilities.get("Short_Passing", 50) / 100.0
-
-        for tm in teammates:
-            if tm.is_goalkeeper:
-                continue
-            d = distance(self.pos, tm.pos)
-            if d < 5.0 or d > 50.0:
-                continue
-
-            pv = position_value(
-                tm.pos[0], tm.pos[1], pitch, attacking_right,
-                opp_positions, tm_positions, config
-            )
-            success_rate = 0.85 * (0.5 + 0.5 * passing_ability)
-            score = success_rate * pv
-
-            if score > best_score:
-                best_score = score
-                best_target = tm.pos
-                best_idx = tm.index
-
-        if best_target:
-            d = distance(self.pos, best_target)
-            is_long = d > 30.0
-            return ("pass", {
-                "target": best_target,
-                "target_player_idx": best_idx,
-                "success_prob": 0.85,
-                "is_long": is_long,
-                "pass_type": "long_pass" if is_long else "short_pass",
-            })
-
-        # Fallback: long pass forward
-        if attacking_right:
-            target = pitch.clamp(config.pitch_length * 0.6, config.pitch_width / 2 + random.uniform(-15, 15))
-        else:
-            target = pitch.clamp(config.pitch_length * 0.4, config.pitch_width / 2 + random.uniform(-15, 15))
-        return ("pass", {
-            "target": target,
-            "target_player_idx": -1,
-            "success_prob": 0.6,
-            "is_long": True,
-            "pass_type": "long_pass",
-        })
+        forward_x = config.pitch_length * (0.55 if attacking_right else 0.45)
+        target = pitch.clamp(forward_x, config.pitch_width / 2 + random.uniform(-12, 12))
+        return ("pass", {"target": target, "target_player_idx": -1, "success_prob": 0.45, "is_long": True, "pass_type": "long_pass"})
 
     # =========================================================================
     # Off-Ball Attacking Decision: Pure Reward
@@ -794,7 +1149,7 @@ class Player:
 
         # GK: stay near formation position
         if self.is_goalkeeper:
-            self.target_pos = self.formation_pos
+            self.set_movement_target(self.formation_pos, "recover_shape")
             return self.target_pos
 
         opp_positions = [(o.pos[0], o.pos[1]) for o in opponents if not o.is_goalkeeper]
@@ -820,55 +1175,52 @@ class Player:
             opp_positions, tm_positions, config,
             runner_formation_pos=self.formation_pos,
         )
+        # Apply offside penalty to stay option (soft, allows offside trap runs)
+        if self._is_offside_position(self.pos, attacking_right, offside_line, config):
+            stay_pv *= 0.15
         candidates.append((stay_pv, self.pos))
 
-        # Generate 8 structured candidate positions. Role_distance_decay in
-        # position_value provides soft pull; candidate generation range is role-aware
-        # to sample realistic positions (attackers push further, defenders stay compact).
-        fwd_range = 25.0 if self.is_attacker else 18.0 if self.is_midfielder else 12.0
+        search_radius = 24.0 if self.is_attacker else 18.0 if self.is_midfielder else 14.0
+        raw_candidates = []
 
-        # 3 forward positions (different depths)
-        forward_candidates = [
-            (self.formation_pos[0] + forward_dir * random.uniform(8, fwd_range),
-             self.formation_pos[1] + random.uniform(-5, 5)),
-            (self.formation_pos[0] + forward_dir * random.uniform(5, min(15, fwd_range)),
-             self.formation_pos[1] + random.uniform(-8, 8)),
-            (self.formation_pos[0] + forward_dir * random.uniform(10, fwd_range),
-             self.formation_pos[1] + random.uniform(-3, 3)),
-        ]
+        # Spatial samples around the dynamic role anchor.
+        for _ in range(8):
+            angle = random.random() * math.tau
+            radius = random.random() ** 0.65 * search_radius
+            raw_candidates.append((
+                self.formation_pos[0] + math.cos(angle) * radius,
+                self.formation_pos[1] + math.sin(angle) * radius,
+                self.formation_pos,
+            ))
 
-        # 2 wide positions
-        wide_offset = random.uniform(10, 20)
-        wide_candidates = [
-            (self.formation_pos[0] + forward_dir * random.uniform(0, 8),
-             self.formation_pos[1] + wide_offset),
-            (self.formation_pos[0] + forward_dir * random.uniform(0, 8),
-             self.formation_pos[1] - wide_offset),
-        ]
+        # Spatial samples around useful support spaces near the ball carrier.
+        if ball_carrier is not None:
+            if self.is_midfielder:
+                support_center = (ball_pos[0] - forward_dir * 10.0, ball_pos[1])
+            elif self.is_defender:
+                support_center = (ball_pos[0] - forward_dir * 24.0, ball_pos[1])
+            else:
+                support_center = (ball_pos[0] + forward_dir * 7.0, ball_pos[1])
+            for _ in range(5):
+                angle = random.random() * math.tau
+                radius = random.random() ** 0.7 * 16.0
+                raw_candidates.append((
+                    support_center[0] + math.cos(angle) * radius,
+                    support_center[1] + math.sin(angle) * radius,
+                    (
+                        self.formation_pos[0] * 0.55 + support_center[0] * 0.45,
+                        self.formation_pos[1] * 0.65 + support_center[1] * 0.35,
+                    ),
+                ))
 
-        # 1 back (drop deep)
-        back_candidates = [
-            (self.formation_pos[0] - forward_dir * random.uniform(5, 12),
-             self.formation_pos[1] + random.uniform(-8, 8)),
-        ]
-
-        # 2 diagonal positions
-        diagonal_candidates = [
-            (self.formation_pos[0] + forward_dir * random.uniform(5, 15),
-             self.formation_pos[1] + random.uniform(8, 15)),
-            (self.formation_pos[0] + forward_dir * random.uniform(5, 15),
-             self.formation_pos[1] - random.uniform(8, 15)),
-        ]
-
-        all_raw = forward_candidates + wide_candidates + back_candidates + diagonal_candidates
-        for raw_x, raw_y in all_raw:
+        for raw_x, raw_y, anchor_pos in raw_candidates:
             pos = pitch.clamp(raw_x, raw_y)
 
             # Position value (with role_distance_decay applied via runner_formation_pos)
             pv = position_value(
                 pos[0], pos[1], pitch, attacking_right,
                 opp_positions, tm_positions, config,
-                runner_formation_pos=self.formation_pos,
+                runner_formation_pos=anchor_pos,
             )
 
             # Receive reachability: can I arrive before defenders?
@@ -903,13 +1255,29 @@ class Player:
 
             # Space creation bonus
             space_bonus = space_creation_value(pos, opp_positions, tm_positions, config)
+            role_dist = distance(pos, self.formation_pos)
+            role_limit = 26.0 if self.is_attacker else 22.0 if self.is_midfielder else 18.0
+            role_shape_factor = max(0.005, 1.0 - (role_dist / role_limit) ** 1.55)
 
-            # Offside penalty: heavily penalize positions that are offside
+            lane_factor = 1.0
+            if self.position in ("LW", "LM", "LB", "LWB") and pos[1] > config.pitch_width * 0.58:
+                lane_factor = 0.005
+            elif self.position in ("RW", "RM", "RB", "RWB") and pos[1] < config.pitch_width * 0.42:
+                lane_factor = 0.005
+
+            # Offside penalty: soft penalty (allows deliberate offside trap runs)
             offside_penalty = 1.0
             if self._is_offside_position(pos, attacking_right, offside_line, config):
-                offside_penalty = 0.05  # almost never go offside intentionally
+                offside_penalty = 0.08
+            else:
+                # Softly discourage living right on the line; good timed runs
+                # can still happen, but the default support shape stays onside.
+                if attacking_right and pos[0] > offside_line - 3.0:
+                    offside_penalty *= 0.45
+                elif (not attacking_right) and pos[0] < offside_line + 3.0:
+                    offside_penalty *= 0.45
 
-            score = pv * reach * pass_feasibility * space_bonus * offside_penalty
+            score = pv * reach * pass_feasibility * space_bonus * offside_penalty * role_shape_factor * lane_factor
             candidates.append((score, pos))
 
         if not candidates:
@@ -929,7 +1297,7 @@ class Player:
         scores = [c[0] for c in noisy_candidates]
         max_score = max(scores)
         if max_score < 0.01:
-            self.target_pos = self.formation_pos
+            self.set_movement_target(self.formation_pos, "recover_shape")
             return self.target_pos
 
         exp_scores = [math.exp((s - max_score) / max(0.01, temperature)) for s in scores]
@@ -948,7 +1316,14 @@ class Player:
 
         # Hard roam clamp removed: role_distance_decay in position_value provides
         # the soft pull toward formation area instead of a hard boundary.
-        self.target_pos = chosen_pos
+        move_progress = (chosen_pos[0] - self.pos[0]) * forward_dir
+        if move_progress > 4.0:
+            intent = "attack_run"
+        elif distance(chosen_pos, self.formation_pos) > 10.0:
+            intent = "support"
+        else:
+            intent = "recover_shape"
+        self.set_movement_target(chosen_pos, intent)
         return self.target_pos
 
     # =========================================================================
@@ -965,13 +1340,7 @@ class Player:
         opponents: Optional[List["Player"]] = None,
         teammates: Optional[List["Player"]] = None,
     ) -> Tuple[str, dict]:
-        """Choose defending action using zone-based marking. Returns (action_type, details).
-
-        Zone-based: each defender marks attackers within 20m of their formation_pos.
-        - mark_runner: most threatening attacker in MY zone
-        - block_lane: position between ball and attacker I'm marking
-        - If NO attacker in my zone -> hold_position
-        """
+        """Choose defending action from defensive space-value candidates."""
         if opponents is None:
             opponents = []
         if teammates is None:
@@ -987,94 +1356,97 @@ class Player:
             return ("hold_position", {"target": self.pos})
 
         dist_to_ball = distance(self.pos, ball_pos)
-
-        candidates = []  # (score, action_type, details)
-
-        # Zone radius for marking
-        zone_radius = 20.0
-
-        # Find attackers in MY zone (within zone_radius of my formation_pos)
-        attackers_in_zone = [
-            o for o in opponents
-            if not o.is_goalkeeper and distance(self.formation_pos, o.pos) < zone_radius
+        own_goal_x = 0.0 if attacking_right else config.pitch_length
+        own_goal = (own_goal_x, config.pitch_width / 2.0)
+        ball_goal_dist = distance(ball_pos, own_goal)
+        central_threat = 1.0 - min(1.0, abs(ball_pos[1] - config.pitch_width / 2.0) / (config.pitch_width / 2.0))
+        shot_danger = max(0.0, 1.0 - ball_goal_dist / 32.0) * (0.55 + 0.45 * central_threat)
+        attackers = [o for o in opponents if not o.is_goalkeeper]
+        teammates_no_gk = [t for t in teammates if t.index != self.index and not t.is_goalkeeper]
+        attacker_positions = [(o.pos[0], o.pos[1]) for o in attackers]
+        teammate_positions = [(t.pos[0], t.pos[1]) for t in teammates_no_gk]
+        defenders_closer_to_ball = sum(
+            1 for t in teammates_no_gk
+            if distance(t.pos, ball_pos) < dist_to_ball - 1.0
+        )
+        local_attackers = [
+            o for o in attackers
+            if distance(o.pos, self.formation_pos) < 24.0 or distance(o.pos, self.pos) < 16.0
         ]
 
-        # 1. APPROACH: score includes responsibility cost (replaces presser designation)
-        if dist_to_ball < config.press_radius * 2:
-            proximity = max(0.0, 1.0 - dist_to_ball / config.press_radius)
-            # Responsibility cost: if there are attackers in my zone, I should mark
-            # them instead of chasing ball. Only unoccupied defenders approach.
-            nearby_attackers_in_zone = sum(
-                1 for opp in opponents
-                if distance(opp.pos, self.formation_pos) < 20.0 and not opp.is_goalkeeper
+        from .position_value import defensive_position_value
+
+        def score_def_pos(pos: Tuple[float, float]) -> float:
+            return defensive_position_value(
+                pos, ball_pos, own_goal_x, pitch,
+                attacker_positions, teammate_positions, self.formation_pos,
             )
-            responsibility_cost = min(0.7, nearby_attackers_in_zone * 0.35)
-            approach_score = (0.3 + 0.4 * proximity) * (1.0 - responsibility_cost)
-            if ball_carrier:
-                lead_dist = config.carrier_speed * 0.5
-                carrier_dir_x = 1.0 if attacking_right else -1.0
-                predicted = (ball_pos[0] + carrier_dir_x * lead_dist, ball_pos[1])
-                approach_target = predicted
-            else:
-                approach_target = ball_pos
-            candidates.append((approach_score, "approach", {"target": approach_target}))
 
-        # 2. TACKLE: score = success_rate * ball_value - (1-success_rate) * stun_cost
-        if ball_carrier and dist_to_ball < config.tackle_range:
-            tackle_score = self._score_tackle(ball_carrier, dist_to_ball, config)
-            if tackle_score > 0:
-                candidates.append((tackle_score, "tackle", {"target": ball_carrier.pos}))
+        candidates = []
 
-        # 3. MARK_RUNNER (zone-based): most threatening attacker in MY zone
-        if attackers_in_zone:
-            mark_score, mark_target = self._score_mark_runner_zone(
-                ball_pos, attackers_in_zone, config, pitch, attacking_right
+        # Defensive movement is now spatial: sample useful points, then classify
+        # the chosen point for compatibility with trace/interactions.
+        sampled_points = [
+            self.formation_pos,
+            pitch.clamp(
+                self.formation_pos[0] * 0.85 + ball_pos[0] * 0.15,
+                self.formation_pos[1] * 0.72 + ball_pos[1] * 0.28,
+            ),
+        ]
+
+        if local_attackers:
+            _, mark_target = self._score_mark_runner_zone(
+                ball_pos, local_attackers, config, pitch, attacking_right
             )
-            if mark_score > 0:
-                candidates.append((mark_score, "mark_runner", {"target": mark_target}))
-
-        # 4. BLOCK_LANE (zone-based): between ball and attacker I'm marking
-        if attackers_in_zone:
-            lane_score, lane_target = self._score_block_lane_zone(
-                ball_pos, attackers_in_zone, config, pitch, attacking_right
+            _, lane_target = self._score_block_lane_zone(
+                ball_pos, local_attackers, config, pitch, attacking_right
             )
-            if lane_score > 0:
-                candidates.append((lane_score, "block_lane", {"target": lane_target}))
+            sampled_points.extend([mark_target, lane_target])
 
-        # 5. HOLD_POSITION: use protection_value to find optimal defensive position
-        # between ball and own goal (replaces the three-line retreat system)
-        from .position_value import protection_value
-        if attacking_right:
-            own_goal_x = 0.0
-        else:
-            own_goal_x = config.pitch_length
+        if ball_carrier:
+            lead = config.carrier_speed * 0.45
+            carrier_dir_x = 1.0 if attacking_right else -1.0
+            sampled_points.append(pitch.clamp(ball_pos[0] + carrier_dir_x * lead, ball_pos[1]))
+            # Containment ring around the carrier, biased goal-side.
+            goal_side = -1.0 if attacking_right else 1.0
+            for oy in (-3.0, 0.0, 3.0):
+                sampled_points.append(pitch.clamp(ball_pos[0] + goal_side * 2.2, ball_pos[1] + oy))
 
-        # Compute a protective hold target: shift formation_pos toward a position
-        # between ball and own goal based on protection_value
-        # Ideal: ~40% of the way from ball toward own goal, on the y-line of formation
-        ball_to_goal_x = own_goal_x - ball_pos[0]
-        if abs(ball_to_goal_x) > 1.0:
-            # Position at roughly 30-50% between ball and goal, biased by formation y
-            protect_x = ball_pos[0] + ball_to_goal_x * 0.35
-            # Blend formation y with ball y (shift slightly toward ball side)
-            protect_y = self.formation_pos[1] * 0.7 + ball_pos[1] * 0.3
-            hold_target = pitch.clamp(protect_x, protect_y)
-        else:
-            hold_target = self.formation_pos
+        # Local spatial samples around dynamic responsibility area.
+        for _ in range(3):
+            angle = random.random() * math.tau
+            radius = random.random() ** 0.7 * (8.0 + shot_danger * 4.0)
+            sampled_points.append(pitch.clamp(
+                self.formation_pos[0] + math.cos(angle) * radius,
+                self.formation_pos[1] + math.sin(angle) * radius,
+            ))
+        if self.last_def_action:
+            sampled_points.append(self.last_def_target)
 
-        # Score is higher when no attackers threaten my zone
-        if not attackers_in_zone:
-            hold_score = 0.55
-        elif dist_to_ball > 30.0:
-            hold_score = 0.45
-        elif dist_to_ball > 15.0:
-            hold_score = 0.30
-        else:
-            hold_score = 0.15
-        candidates.append((hold_score, "hold_position", {"target": hold_target}))
+        seen = set()
+        for point in sampled_points:
+            key = (round(point[0], 1), round(point[1], 1))
+            if key in seen:
+                continue
+            seen.add(key)
+
+            base_score = score_def_pos(point)
+            dist_point_ball = distance(point, ball_pos)
+            press_value = max(0.0, 1.0 - dist_point_ball / max(config.press_radius, 0.1))
+            cover_cost = min(0.75, defenders_closer_to_ball * 0.16 + len(local_attackers) * 0.08)
+            score = base_score * (1.0 + press_value * (0.25 + shot_danger * 0.75)) * (1.0 - cover_cost * 0.45)
+
+            if ball_carrier and distance(point, ball_carrier.pos) < config.tackle_range:
+                score *= 1.0 + shot_danger * 0.55
+            if self.last_def_action:
+                stability_dist = distance(point, self.last_def_target)
+                stability = max(0.0, 1.0 - stability_dist / 24.0)
+                score *= 1.0 + stability * 0.90
+
+            candidates.append((max(0.0, score), "defend_space", {"target": point}))
 
         if not candidates:
-            self.target_pos = self.formation_pos
+            self.set_movement_target(self.formation_pos, "defend_shape")
             return ("hold_position", {"target": self.formation_pos})
 
         # Apply IQ noise to all candidate scores
@@ -1092,13 +1464,49 @@ class Player:
         raw_target = details.get("target", self.formation_pos)
         # Hard roam clamp removed: role_distance_decay in position_value provides
         # the soft pull toward formation area instead of a hard boundary.
-        self.target_pos = raw_target
+        if self.last_def_action:
+            smoothed_target = (
+                self.last_def_target[0] * 0.75 + raw_target[0] * 0.25,
+                self.last_def_target[1] * 0.75 + raw_target[1] * 0.25,
+            )
+        else:
+            smoothed_target = raw_target
 
-        # If approaching, set pressing state
+        # Classify chosen defensive point for compatibility.
+        if (
+            ball_carrier
+            and dist_to_ball < config.tackle_range * (0.55 + shot_danger * 0.15)
+            and distance(raw_target, ball_carrier.pos) < config.tackle_range * (0.75 + shot_danger * 0.15)
+        ):
+            action_type = "tackle"
+        elif ball_carrier and distance(raw_target, ball_carrier.pos) < config.press_radius:
+            action_type = "approach"
+        elif local_attackers and any(distance(raw_target, o.pos) < 5.0 for o in local_attackers):
+            action_type = "mark_runner"
+        elif local_attackers:
+            action_type = "block_lane"
+        else:
+            action_type = "hold_position"
+
         if action_type == "approach":
             self.state = PlayerState.PRESSING
+            intent = "press"
+        elif action_type == "tackle":
+            intent = "press"
+        elif action_type == "mark_runner":
+            intent = "mark"
+        elif action_type == "block_lane":
+            intent = "block_lane"
+        elif self.state == PlayerState.PRESSING:
+            self.state = PlayerState.OFF_BALL
+            intent = "defend_shape"
+        else:
+            intent = "defend_shape"
 
-        return (action_type, details)
+        self.set_movement_target(smoothed_target, intent)
+        self.last_def_target = self.target_pos
+        self.last_def_action = action_type
+        return (action_type, {"target": self.target_pos})
 
     def _score_tackle(self, ball_carrier: "Player", dist_to_ball: float, config: "EngineConfig") -> float:
         """Score for attempting a tackle.
@@ -1109,16 +1517,18 @@ class Player:
         tackling = self.abilities.get("Tackling", 50)
         dribbling = ball_carrier.abilities.get("Dribbling", 50)
 
-        # Success rate based on Tackling vs Dribbling and distance
-        dist_factor = max(0.5, 1.0 - dist_to_ball / config.tackle_range)
+        # Success rate based on Tackling vs Dribbling and distance.
+        # Real tackling requires tight distance; at the edge, pressure is more
+        # rational than committing a foot in.
+        dist_factor = max(0.0, 1.0 - dist_to_ball / max(config.tackle_range * 0.9, 0.1))
         success_rate = (tackling / (tackling + dribbling + 1.0)) * dist_factor
-        success_rate = max(0.2, min(0.8, success_rate))
+        success_rate = max(0.0, min(0.75, success_rate))
 
         # Ball value: how valuable is winning the ball here
-        ball_value = 3.0
+        ball_value = 1.8
 
         # Stun cost: penalty for being stunned
-        stun_cost = 0.15
+        stun_cost = 0.35
 
         score = success_rate * ball_value - (1.0 - success_rate) * stun_cost
         return max(0.0, score)

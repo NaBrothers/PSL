@@ -115,18 +115,87 @@ class Team:
         pitch: "Pitch",
         opponent_players: list = None,
     ):
-        """Set formation_pos to the static initial position from formation coordinates.
+        """Update each player's soft formation anchor from the current ball context.
 
-        The dynamic three-line computation has been removed. Formation positioning
-        is now purely driven by position_value scoring (role_distance_decay provides
-        the soft pull toward base formation area). This method retains the signature
-        for backward compatibility but only ensures formation_pos is set from the
-        static base coordinates established in __init__/setup_formation.
+        The anchor is not a movement clamp. It is the reference point used by
+        position-value scoring, so shape can advance, retreat, and shift toward
+        the strong side without an external rule forcing exact positions.
         """
-        # formation_pos is already set from setup_formation / __init__.
-        # This method is now a no-op; the static base position is the anchor
-        # and all dynamic positioning emerges from PV-driven off-ball decisions.
-        pass
+        if not self._formation_coords:
+            return
+
+        length = pitch.length
+        width = pitch.width
+        ball_progress = ball_pos[0] / length if self.attacking_right else (length - ball_pos[0]) / length
+        ball_progress = max(0.0, min(1.0, ball_progress))
+        side_shift = (ball_pos[1] - width / 2.0)
+
+        is_defending = self.phase in (TeamPhase.DEFENDING, TeamPhase.TRANSITION_DEF, TeamPhase.CONTESTING)
+        is_transition_def = self.phase == TeamPhase.TRANSITION_DEF
+        offside_line = None
+        if opponent_players:
+            def_xs = sorted([p.pos[0] for p in opponent_players if not p.is_goalkeeper], reverse=self.attacking_right)
+            if len(def_xs) >= 2:
+                offside_line = def_xs[1]
+            elif def_xs:
+                offside_line = def_xs[0]
+
+        for i, player in enumerate(self.players):
+            base = self._formation_coords[i]
+            base_progress = base[0] / length if self.attacking_right else (length - base[0]) / length
+            base_width_offset = base[1] - width / 2.0
+
+            if is_defending:
+                # Keep line identity from the base shape, but let the whole block
+                # breathe with the ball. Transition defense is allowed to stay a
+                # little higher before settling into the block.
+                block_center = 0.18 + 0.50 * ball_progress
+                if is_transition_def:
+                    block_center += 0.06
+                line_offset = (base_progress - 0.50) * 0.72
+                progress = max(0.05, min(0.92, block_center + line_offset))
+                y = width / 2.0 + base_width_offset * 0.92 + side_shift * 0.14
+            else:
+                # In possession, the team can expand and move up with the ball,
+                # but the original line order remains a soft reference.
+                if player.is_goalkeeper:
+                    # Keeper behaves as a soft sweeper outlet: he follows the
+                    # block a little, but remains clearly behind the defensive
+                    # line as a passing option.
+                    progress = min(0.18, max(0.02, base_progress + ball_progress * 0.10))
+                    y = width / 2.0 + side_shift * 0.05
+                else:
+                    # Preserve line identity first. The ball nudges each line
+                    # forward differently: forwards threaten the last line,
+                    # midfielders connect, defenders support behind midfield.
+                    if player.is_attacker:
+                        push = max(0.0, ball_progress - base_progress) * 0.34
+                        progress = base_progress + push + 0.04
+                    elif player.is_midfielder:
+                        push = max(0.0, ball_progress - base_progress + 0.05) * 0.30
+                        progress = base_progress + push + 0.03
+                    else:
+                        push = max(0.0, ball_progress - base_progress + 0.10) * 0.22
+                        progress = base_progress + push + 0.02
+                        # Back line can support high attacks, but should remain
+                        # a covering line rather than joining the forwards.
+                        progress = min(progress, 0.58 + ball_progress * 0.10)
+
+                    progress = max(0.08, min(0.94, progress))
+                    y = width / 2.0 + base_width_offset * 1.05 + side_shift * 0.18
+
+                # Soft offside-line awareness for attacking anchors. Forwards
+                # can still threaten the line, but their default support point
+                # should not live several meters beyond it.
+                if offside_line is not None and not player.is_goalkeeper:
+                    line_progress = offside_line / length if self.attacking_right else (length - offside_line) / length
+                    buffer = 0.03 if player.is_attacker else 0.06
+                    if progress > line_progress - buffer:
+                        progress = progress * 0.25 + (line_progress - buffer) * 0.75
+                        progress = max(0.10, min(0.94, progress))
+
+            x = progress * length if self.attacking_right else (1.0 - progress) * length
+            player.formation_pos = pitch.clamp(x, y)
 
     def get_closest_to(
         self,
@@ -230,10 +299,10 @@ class Team:
             "passes": sum(p.passes_attempted for p in self.players),
             "passes_completed": sum(p.passes_completed for p in self.players),
             "pass_success_rate": 0.0,
-            "tackles": sum(p.tackles_attempted for p in self.players),
+            "tackles": sum(p.tackles_won for p in self.players),
             "tackles_won": sum(p.tackles_won for p in self.players),
             "interceptions": sum(p.interceptions for p in self.players),
-            "dribbles": sum(p.dribbles_attempted for p in self.players),
+            "dribbles": sum(p.dribbles_completed for p in self.players),
             "dribbles_completed": sum(p.dribbles_completed for p in self.players),
             "saves": sum(p.saves for p in self.players),
             "goals": sum(p.goals for p in self.players),
@@ -253,31 +322,59 @@ class Team:
         return stats
 
     def get_player_stats(self) -> List[Dict]:
-        """Get per-player statistics."""
+        """Get per-player statistics (full detail for frontend)."""
         result = []
         for p in self.players:
+            passes_total = p.passes_attempted
+            pass_rate = round(p.passes_completed / passes_total * 100, 1) if passes_total > 0 else 0
             result.append({
                 "name": p.name,
+                "colored_name": p.name,
                 "position": p.position,
                 "goals": p.goals,
                 "assists": p.assists,
                 "shots": p.shots,
                 "shots_on_target": p.shots_on_target,
-                "passes_attempted": p.passes_attempted,
-                "passes_completed": p.passes_completed,
+                "xg": round(p.xg, 2),
+                "npxg": round(p.xg, 2),
+                "post_shot_xg": round(p.xg * 0.8, 2),
+                "big_chances": sum(1 for s in p.shot_log if s.get("xg", 0) > 0.3),
+                "big_chances_missed": sum(1 for s in p.shot_log if s.get("xg", 0) > 0.3 and s.get("outcome") != "goal"),
+                "passes": passes_total,
+                "completed_passes": p.passes_completed,
+                "key_passes": p.key_passes,
+                "xa": round(p.key_passes * 0.12, 2),
+                "progressive_passes": p.progressive_passes,
+                "passes_into_final_third": p.passes_into_final_third,
+                "passes_into_box": p.passes_into_box,
+                "long_passes": p.long_passes,
+                "completed_long_passes": p.completed_long_passes,
+                "crosses": p.crosses_attempted,
+                "successful_crosses": p.crosses_completed,
+                "carries": p.carries_attempted,
+                "progressive_carries": p.progressive_carries,
+                "carries_into_final_third": p.carries_into_final_third,
+                "carries_into_box": p.carries_into_box,
+                "take_ons": p.dribbles_attempted,
+                "successful_take_ons": p.dribbles_completed,
                 "tackles_attempted": p.tackles_attempted,
                 "tackles_won": p.tackles_won,
-                "dribbles_attempted": p.dribbles_attempted,
-                "dribbles_completed": p.dribbles_completed,
                 "interceptions": p.interceptions,
+                "blocks": p.blocks,
+                "clearances": p.clearances,
+                "pressures": p.pressures,
+                "successful_pressures": p.successful_pressures,
+                "turnovers": p.turnovers,
+                "dispossessed": p.dispossessed,
+                "offsides": p.offsides,
                 "saves": p.saves,
+                "goals_conceded": p.goals_conceded,
+                "psxg_faced": round(p.psxg_faced, 2),
+                "goals_prevented": round(p.psxg_faced - p.goals_conceded, 2) if p.is_goalkeeper else 0.0,
+                "rating": 0.0,
+                "shot_log": p.shot_log,
+                "pass_network": {},
+                "position_samples": p.position_samples,
                 "distance_covered": round(p.distance_covered, 1),
-                # Phase 2
-                "carries_attempted": p.carries_attempted,
-                "carries_completed": p.carries_completed,
-                "crosses_attempted": p.crosses_attempted,
-                "crosses_completed": p.crosses_completed,
-                "headers_attempted": p.headers_attempted,
-                "headers_won": p.headers_won,
             })
         return result

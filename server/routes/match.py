@@ -95,7 +95,10 @@ def create_match(req: MatchRequest, user=Depends(get_current_user)):
     try:
         if req.mode == "quick":
             result = svc.run_quick_match(user["qq"], away_qq)
-            return result.__dict__
+            data = result.__dict__
+            data["goals"] = [g.__dict__ if hasattr(g, '__dict__') else g for g in (data.get("goals") or [])]
+            data["events"] = [e.__dict__ if hasattr(e, '__dict__') else e for e in (data.get("events") or [])]
+            return data
         elif req.mode == "ten":
             result = svc.run_ten_matches(user["qq"], away_qq)
             return result.__dict__
@@ -104,7 +107,10 @@ def create_match(req: MatchRequest, user=Depends(get_current_user)):
             return result.__dict__
         elif req.mode == "watch":
             result = svc.run_quick_match(user["qq"], away_qq)
-            return result.__dict__
+            data = result.__dict__
+            data["goals"] = [g.__dict__ if hasattr(g, '__dict__') else g for g in (data.get("goals") or [])]
+            data["events"] = [e.__dict__ if hasattr(e, '__dict__') else e for e in (data.get("events") or [])]
+            return data
         else:
             raise HTTPException(status_code=400, detail=f"Invalid mode: {req.mode}")
     except UserNotFound as e:

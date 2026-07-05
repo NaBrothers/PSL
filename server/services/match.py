@@ -209,8 +209,8 @@ class MatchService:
         ]
 
         # Build stats in the same format as existing code
-        home_stats = self._v2_stats_to_dict(result.home_stats)
-        away_stats = self._v2_stats_to_dict(result.away_stats)
+        home_stats = self._v2_stats_to_dict(result.home_stats, result.home_player_stats)
+        away_stats = self._v2_stats_to_dict(result.away_stats, result.away_player_stats)
 
         # Build ratings in the format expected by frontend
         home_ratings_list = [{"name": r.get("name", ""), "position": r.get("position", ""), "rating": r.get("rating", 6.0)} for r in result.home_ratings]
@@ -240,36 +240,57 @@ class MatchService:
             away_player_stats=result.away_player_stats,
         )
 
-    def _v2_stats_to_dict(self, stats: dict) -> dict:
-        """Convert engine v2 stats dict to the standard serialized format."""
+    def _v2_stats_to_dict(self, stats: dict, player_stats: list = None) -> dict:
+        """Convert engine v2 stats dict to the standard serialized format.
+        
+        Aggregates advanced stats from player_stats if provided.
+        """
         passes = stats.get("passes", 0)
         passes_completed = stats.get("passes_completed", 0)
+
+        # Aggregate advanced stats from individual player data
+        ps_list = player_stats or []
+        total_xg = sum(p.get("xg", 0) for p in ps_list)
+        total_progressive_passes = sum(p.get("progressive_passes", 0) for p in ps_list)
+        total_key_passes = sum(p.get("key_passes", 0) for p in ps_list)
+        total_carries = sum(p.get("carries", 0) for p in ps_list)
+        total_progressive_carries = sum(p.get("progressive_carries", 0) for p in ps_list)
+        total_crosses = stats.get("crosses_completed", 0) + stats.get("crosses", sum(p.get("crosses", 0) for p in ps_list))
+        total_blocks = sum(p.get("blocks", 0) for p in ps_list)
+        total_turnovers = sum(p.get("turnovers", 0) for p in ps_list)
+        total_pressures = sum(p.get("pressures", 0) for p in ps_list)
+        total_offsides = sum(p.get("offsides", 0) for p in ps_list)
+        total_big_chances = sum(p.get("big_chances", 0) for p in ps_list)
+        total_passes_into_box = sum(p.get("passes_into_box", 0) for p in ps_list)
+        total_carries_into_box = sum(p.get("carries_into_box", 0) for p in ps_list)
+        total_passes_final_third = sum(p.get("passes_into_final_third", 0) for p in ps_list)
+
         return {
             "possession": stats.get("possession", 50.0),
             "shots": stats.get("shots", 0),
             "shots_on_target": stats.get("shots_on_target", 0),
-            "shots_in_box": 0,
+            "shots_in_box": total_carries_into_box,
             "passes": passes,
             "pass_success_rate": round(passes_completed / max(passes, 1) * 100, 1),
-            "final_third_entries": 0,
-            "box_entries": 0,
-            "progressive_passes": 0,
-            "crosses": 0,
+            "final_third_entries": total_passes_final_third,
+            "box_entries": total_carries_into_box + total_passes_into_box,
+            "progressive_passes": total_progressive_passes,
+            "crosses": total_crosses,
             "corners": 0,
             "dribbles": stats.get("dribbles", 0),
-            "carries": 0,
+            "carries": total_carries,
             "tackles": stats.get("tackles", 0),
-            "pressures": 0,
+            "pressures": total_pressures,
             "interceptions": stats.get("interceptions", 0),
-            "blocks": 0,
-            "turnovers": 0,
+            "blocks": total_blocks,
+            "turnovers": total_turnovers,
             "saves": stats.get("saves", 0),
-            "xg": 0,
-            "post_shot_xg": 0,
-            "key_passes": 0,
-            "box_touches": 0,
-            "big_chances": 0,
-            "offsides": 0,
+            "xg": round(total_xg, 2),
+            "post_shot_xg": round(total_xg * 0.8, 2),
+            "key_passes": total_key_passes,
+            "box_touches": total_carries_into_box + total_passes_into_box,
+            "big_chances": total_big_chances,
+            "offsides": total_offsides,
         }
 
     def run_quick_match(self, home_qq: int, away_qq: int) -> MatchResultData:

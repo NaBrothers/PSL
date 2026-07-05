@@ -48,8 +48,11 @@ def position_value(
     # 2. Space (fewer opponents nearby = better)
     opp_count = 0
     for ox, oy in opponent_positions:
-        d = math.sqrt((x - ox) ** 2 + (y - oy) ** 2)
-        if d < 15.0:
+        dx = x - ox
+        dy = y - oy
+        d2 = dx * dx + dy * dy
+        if d2 < 225.0:
+            d = math.sqrt(d2)
             opp_count += (1.0 - d / 15.0) ** 0.7  # smooth decay
     # Defenders in final third have extra impact (they're organized to deny space)
     defender_weight = 1.2 if x_progress > 0.7 else 0.8
@@ -58,8 +61,9 @@ def position_value(
     # 3. Crowding penalty (too many teammates = redundant)
     tm_count = 0
     for tx, ty in teammate_positions:
-        d = math.sqrt((x - tx) ** 2 + (y - ty) ** 2)
-        if d < 8.0:
+        dx = x - tx
+        dy = y - ty
+        if dx * dx + dy * dy < 64.0:
             tm_count += 1
     crowding_factor = 1.0 / (1.0 + tm_count * 0.25)
 
@@ -128,22 +132,25 @@ def receive_reachability(
 
     Returns a value in [0, 1]: higher = runner arrives first with good margin.
     """
+    tx, ty = target_pos
     # Time for runner to reach target
-    dist_runner = math.sqrt(
-        (runner_pos[0] - target_pos[0]) ** 2 + (runner_pos[1] - target_pos[1]) ** 2
-    )
+    dx = runner_pos[0] - tx
+    dy = runner_pos[1] - ty
+    dist_runner = math.sqrt(dx * dx + dy * dy)
     time_runner = dist_runner / max(runner_speed, 0.1)
 
     # Time for ball to reach target
-    dist_ball = math.sqrt(
-        (ball_pos[0] - target_pos[0]) ** 2 + (ball_pos[1] - target_pos[1]) ** 2
-    )
+    dx = ball_pos[0] - tx
+    dy = ball_pos[1] - ty
+    dist_ball = math.sqrt(dx * dx + dy * dy)
     time_ball = dist_ball / max(ball_speed, 0.1)
 
     # Find fastest defender to same point (exclude goalkeepers via caller filtering)
     time_def = float("inf")
     for i, (ox, oy) in enumerate(opponent_positions):
-        d = math.sqrt((ox - target_pos[0]) ** 2 + (oy - target_pos[1]) ** 2)
+        dx = ox - tx
+        dy = oy - ty
+        d = math.sqrt(dx * dx + dy * dy)
         opp_spd = opponent_speeds[i] if i < len(opponent_speeds) else 4.0
         t = d / max(opp_spd, 0.1)
         if t < time_def:
@@ -232,3 +239,65 @@ def protection_value(
 
     # Best around 0.3-0.6 (between ball and goal but not too close to either)
     return 0.4 + 0.6 * (1.0 - abs(coverage - 0.4) * 2.0)
+
+
+def defensive_position_value(
+    pos: Tuple[float, float],
+    ball_pos: Tuple[float, float],
+    own_goal_x: float,
+    pitch: "Pitch",
+    attackers: List[Tuple[float, float]],
+    teammates: List[Tuple[float, float]],
+    formation_pos: Tuple[float, float],
+) -> float:
+    """Evaluate a defensive position without forcing one global shape.
+
+    High value means the position protects goal access, keeps a useful shape,
+    covers attackers in the player's area, and avoids redundant crowding.
+    """
+    px, py = pos
+    value = protection_value(pos, ball_pos, own_goal_x, pitch)
+
+    # Soft pull to the player's dynamic line/slot.
+    form_dist = math.sqrt((px - formation_pos[0]) ** 2 + (py - formation_pos[1]) ** 2)
+    shape_factor = max(0.25, 1.0 - form_dist / 28.0)
+    value *= 0.55 + 0.45 * shape_factor
+
+    # Reward being close enough to the most relevant attacker in this zone, but
+    # avoid following him all the way into a team-mate's lane.
+    if attackers:
+        nearest_att = min(attackers, key=lambda a: math.sqrt((px - a[0]) ** 2 + (py - a[1]) ** 2))
+        att_dist = math.sqrt((px - nearest_att[0]) ** 2 + (py - nearest_att[1]) ** 2)
+        mark_factor = max(0.35, 1.0 - abs(att_dist - 4.0) / 18.0)
+        value *= 0.70 + 0.30 * mark_factor
+
+        # Lane denial: being near the segment from ball to attacker is useful.
+        bx, by = ball_pos
+        ax, ay = nearest_att
+        dx = ax - bx
+        dy = ay - by
+        seg_len = math.sqrt(dx * dx + dy * dy)
+        if seg_len > 1.0:
+            nx, ny = dx / seg_len, dy / seg_len
+            relx, rely = px - bx, py - by
+            proj = relx * nx + rely * ny
+            if 1.0 < proj < seg_len - 1.0:
+                perp = abs(relx * ny - rely * nx)
+                lane_factor = max(0.0, 1.0 - perp / 10.0)
+                value *= 1.0 + 0.25 * lane_factor
+
+    # Redundant crowding by defenders is bad. This is the main anti-swarm term.
+    crowd = 0.0
+    for tx, ty in teammates:
+        d = math.sqrt((px - tx) ** 2 + (py - ty) ** 2)
+        if d < 12.0:
+            crowd += (1.0 - d / 12.0)
+    value *= 1.0 / (1.0 + crowd * 0.75)
+
+    # Extreme ball chasing is only good for the nearest players; otherwise the
+    # value should come from protecting lanes and shape.
+    ball_dist = math.sqrt((px - ball_pos[0]) ** 2 + (py - ball_pos[1]) ** 2)
+    if ball_dist < 6.0:
+        value *= 0.80
+
+    return max(0.01, min(1.2, value))

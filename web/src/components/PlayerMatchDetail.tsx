@@ -60,11 +60,18 @@ interface Props {
 
 const FIELD_W = 300
 const FIELD_H = 420
-const PITCH_W = 68
-const PITCH_H = 105
+const PITCH_LENGTH = 105
+const PITCH_WIDTH = 68
 
-function pitchToCanvas(x: number, y: number): [number, number] {
-  return [(x / PITCH_W) * FIELD_W, (y / PITCH_H) * FIELD_H]
+function normalizeShotPoint(x: number, y: number, targetX?: number): [number, number] {
+  const attackLeft = targetX != null ? targetX <= PITCH_LENGTH / 2 : x <= PITCH_LENGTH / 2
+  return attackLeft ? [x, y] : [PITCH_LENGTH - x, y]
+}
+
+function shotToHalfPitchCanvas(x: number, y: number, targetX?: number): [number, number] {
+  const [nx, ny] = normalizeShotPoint(x, y, targetX)
+  const distanceToGoal = nx
+  return [(ny / PITCH_WIDTH) * FIELD_W, (distanceToGoal / (PITCH_LENGTH / 2)) * (FIELD_H / 2)]
 }
 
 function StatRow({ label, value, highlight }: { label: string; value: string | number; highlight?: boolean }) {
@@ -98,19 +105,20 @@ function ShotMap({ shots }: { shots: PlayerStat['shot_log'] }) {
         {/* Goal */}
         <rect x={FIELD_W / 2 - 30} y="0" width="60" height="4" fill="#fff" opacity="0.3" />
         {/* Penalty box */}
-        <rect x={FIELD_W / 2 - 72} y="0" width="144" height={(16.5 / PITCH_H) * FIELD_H} fill="none" stroke="#fff" strokeOpacity="0.2" />
+        <rect x={FIELD_W / 2 - (40.3 / PITCH_WIDTH) * FIELD_W / 2} y="0" width={(40.3 / PITCH_WIDTH) * FIELD_W} height={(16.5 / (PITCH_LENGTH / 2)) * (FIELD_H / 2)} fill="none" stroke="#fff" strokeOpacity="0.2" />
         {/* 6-yard box */}
-        <rect x={FIELD_W / 2 - 36} y="0" width="72" height={(5.5 / PITCH_H) * FIELD_H} fill="none" stroke="#fff" strokeOpacity="0.15" />
+        <rect x={FIELD_W / 2 - (18.3 / PITCH_WIDTH) * FIELD_W / 2} y="0" width={(18.3 / PITCH_WIDTH) * FIELD_W} height={(5.5 / (PITCH_LENGTH / 2)) * (FIELD_H / 2)} fill="none" stroke="#fff" strokeOpacity="0.15" />
         {/* Penalty spot */}
-        <circle cx={FIELD_W / 2} cy={(12 / PITCH_H) * FIELD_H} r="2" fill="#fff" opacity="0.3" />
+        <circle cx={FIELD_W / 2} cy={(12 / (PITCH_LENGTH / 2)) * (FIELD_H / 2)} r="2" fill="#fff" opacity="0.3" />
         {/* Shot arrows + dots */}
         {shots.map((s, i) => {
-          const [cx, cy] = pitchToCanvas(s.x, s.y)
-          const targetX = s.target_x != null ? (s.target_x / PITCH_W) * FIELD_W : FIELD_W / 2
-          const targetY = 2
-          const color = s.outcome === 'goal' ? '#4ade80' : s.outcome === 'save' ? '#facc15' : '#ef4444'
+          const [cx, cy] = shotToHalfPitchCanvas(s.x, s.y, s.target_x)
+          const [, targetYRaw] = normalizeShotPoint(s.target_x ?? 0, s.target_y ?? (PITCH_WIDTH / 2), s.target_x)
+          const targetX = (targetYRaw / PITCH_WIDTH) * FIELD_W
+          const targetY = s.target_x != null ? 2 : 2
+          const color = s.outcome === 'goal' ? '#4ade80' : s.outcome === 'saved' ? '#facc15' : '#ef4444'
           const isGoal = s.outcome === 'goal'
-          const markerId = s.outcome === 'goal' ? 'arrow-goal' : s.outcome === 'save' ? 'arrow-save' : 'arrow-miss'
+          const markerId = s.outcome === 'goal' ? 'arrow-goal' : s.outcome === 'saved' ? 'arrow-save' : 'arrow-miss'
           const size = Math.max(4, Math.min(12, s.xg * 40))
           return (
             <g key={i}>
@@ -131,7 +139,13 @@ function ShotMap({ shots }: { shots: PlayerStat['shot_log'] }) {
   )
 }
 
-function Heatmap({ samples }: { samples: [number, number][] }) {
+function normalizeHeatPoint(x: number, y: number, teamSide: 'home' | 'away', sampleIndex: number, totalSamples: number): [number, number] {
+  const firstHalf = sampleIndex < totalSamples / 2
+  const attackingRight = teamSide === 'home' ? firstHalf : !firstHalf
+  return attackingRight ? [PITCH_LENGTH - x, y] : [x, y]
+}
+
+function Heatmap({ samples, teamSide }: { samples: [number, number][], teamSide: 'home' | 'away' }) {
   if (samples.length === 0) return <p className="text-slate-500 text-xs text-center py-4">无活动数据</p>
 
   const GRID_X = 8
@@ -140,9 +154,11 @@ function Heatmap({ samples }: { samples: [number, number][] }) {
   const cellH = FIELD_H / GRID_Y
   const grid: number[][] = Array.from({ length: GRID_Y }, () => Array(GRID_X).fill(0))
 
-  for (const [x, y] of samples) {
-    const gx = Math.min(GRID_X - 1, Math.max(0, Math.floor((x / PITCH_W) * GRID_X)))
-    const gy = Math.min(GRID_Y - 1, Math.max(0, Math.floor((y / PITCH_H) * GRID_Y)))
+  for (let i = 0; i < samples.length; i++) {
+    const [x, y] = samples[i]
+    const [nx, ny] = normalizeHeatPoint(x, y, teamSide, i, samples.length)
+    const gx = Math.min(GRID_X - 1, Math.max(0, Math.floor((ny / PITCH_WIDTH) * GRID_X)))
+    const gy = Math.min(GRID_Y - 1, Math.max(0, Math.floor((nx / PITCH_LENGTH) * GRID_Y)))
     grid[gy][gx]++
   }
 
@@ -157,9 +173,9 @@ function Heatmap({ samples }: { samples: [number, number][] }) {
         {/* Center circle */}
         <circle cx={FIELD_W / 2} cy={FIELD_H / 2} r="30" fill="none" stroke="#fff" strokeOpacity="0.15" />
         {/* Top penalty box (attacking end) */}
-        <rect x={FIELD_W / 2 - 72} y="0" width="144" height={(16.5 / PITCH_H) * FIELD_H} fill="none" stroke="#fff" strokeOpacity="0.2" />
+        <rect x={FIELD_W / 2 - (40.3 / PITCH_WIDTH) * FIELD_W / 2} y="0" width={(40.3 / PITCH_WIDTH) * FIELD_W} height={(16.5 / PITCH_LENGTH) * FIELD_H} fill="none" stroke="#fff" strokeOpacity="0.2" />
         {/* Bottom penalty box (defending end) */}
-        <rect x={FIELD_W / 2 - 72} y={FIELD_H - (16.5 / PITCH_H) * FIELD_H} width="144" height={(16.5 / PITCH_H) * FIELD_H} fill="none" stroke="#fff" strokeOpacity="0.2" />
+        <rect x={FIELD_W / 2 - (40.3 / PITCH_WIDTH) * FIELD_W / 2} y={FIELD_H - (16.5 / PITCH_LENGTH) * FIELD_H} width={(40.3 / PITCH_WIDTH) * FIELD_W} height={(16.5 / PITCH_LENGTH) * FIELD_H} fill="none" stroke="#fff" strokeOpacity="0.2" />
         {/* Heat cells */}
         {grid.map((row, gy) =>
           row.map((val, gx) => {
@@ -183,8 +199,43 @@ function Heatmap({ samples }: { samples: [number, number][] }) {
   )
 }
 
-export default function PlayerMatchDetail({ player, teamPlayers: _teamPlayers, teamSide: _teamSide }: Props) {
+export default function PlayerMatchDetail({ player: rawPlayer, teamPlayers: _teamPlayers, teamSide }: Props) {
   const [tab, setTab] = useState('stats')
+
+  // Provide defaults for all numeric fields to prevent crashes
+  const player: PlayerStat = {
+    ...rawPlayer,
+    xg: rawPlayer.xg ?? 0,
+    npxg: rawPlayer.npxg ?? 0,
+    post_shot_xg: rawPlayer.post_shot_xg ?? 0,
+    xa: rawPlayer.xa ?? 0,
+    big_chances: rawPlayer.big_chances ?? 0,
+    big_chances_missed: rawPlayer.big_chances_missed ?? 0,
+    key_passes: rawPlayer.key_passes ?? 0,
+    progressive_passes: rawPlayer.progressive_passes ?? 0,
+    passes_into_final_third: rawPlayer.passes_into_final_third ?? 0,
+    passes_into_box: rawPlayer.passes_into_box ?? 0,
+    long_passes: rawPlayer.long_passes ?? 0,
+    completed_long_passes: rawPlayer.completed_long_passes ?? 0,
+    carries: rawPlayer.carries ?? 0,
+    progressive_carries: rawPlayer.progressive_carries ?? 0,
+    carries_into_final_third: rawPlayer.carries_into_final_third ?? 0,
+    carries_into_box: rawPlayer.carries_into_box ?? 0,
+    blocks: rawPlayer.blocks ?? 0,
+    clearances: rawPlayer.clearances ?? 0,
+    pressures: rawPlayer.pressures ?? 0,
+    successful_pressures: rawPlayer.successful_pressures ?? 0,
+    turnovers: rawPlayer.turnovers ?? 0,
+    dispossessed: rawPlayer.dispossessed ?? 0,
+    offsides: rawPlayer.offsides ?? 0,
+    goals_conceded: rawPlayer.goals_conceded ?? 0,
+    psxg_faced: rawPlayer.psxg_faced ?? 0,
+    goals_prevented: rawPlayer.goals_prevented ?? 0,
+    shot_log: rawPlayer.shot_log ?? [],
+    position_samples: rawPlayer.position_samples ?? [],
+    pass_network: rawPlayer.pass_network ?? {},
+  }
+
   const passRate = player.passes > 0 ? Math.round((player.completed_passes / player.passes) * 100) : 0
   const isGK = player.position === 'GK'
 
@@ -294,7 +345,7 @@ export default function PlayerMatchDetail({ player, teamPlayers: _teamPlayers, t
         </TabsContent>
 
         <TabsContent value="heatmap" className="mt-2">
-          <Heatmap samples={player.position_samples} />
+          <Heatmap samples={player.position_samples} teamSide={teamSide} />
           <p className="text-center text-[10px] text-slate-500 mt-2">基于 {player.position_samples.length} 次位置采样</p>
         </TabsContent>
       </Tabs>

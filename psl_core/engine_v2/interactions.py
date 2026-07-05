@@ -51,22 +51,27 @@ def detect_duel(
     defenders: List["Player"],
     defender_actions: dict,
     config: "EngineConfig",
+    defender_new_positions: dict = None,
 ) -> Optional[Interaction]:
     """Detect if a 1v1 duel should occur this tick.
 
-    A duel happens when:
-    - Holder is carrying/dribbling (not passing/shooting)
-    - A defender chose "tackle" action AND is within tackle range
+    A duel happens when the carrier's path enters a defender's control area.
+    Explicit tackle intent expands that control area, but is not required.
     """
     if holder_action_type not in ("carry", "dribble"):
         return None
 
+    if defender_new_positions is None:
+        defender_new_positions = {}
+
     for defender in defenders:
         action = defender_actions.get(defender.index)
-        if action != "tackle":
-            continue
-        d = math.sqrt((holder.pos[0] - defender.pos[0]) ** 2 + (holder.pos[1] - defender.pos[1]) ** 2)
-        if d < config.tackle_range:
+        d_now = math.sqrt((holder.pos[0] - defender.pos[0]) ** 2 + (holder.pos[1] - defender.pos[1]) ** 2)
+        new_pos = defender_new_positions.get(defender.index, defender.pos)
+        d_next = math.sqrt((holder.pos[0] - new_pos[0]) ** 2 + (holder.pos[1] - new_pos[1]) ** 2)
+        control_range = config.tackle_range * (1.0 if action == "tackle" else 0.06)
+        d = min(d_now, d_next)
+        if d < control_range:
             return Interaction(
                 interaction_type=InteractionType.DUEL,
                 attacker=holder,

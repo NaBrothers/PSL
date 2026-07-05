@@ -95,6 +95,7 @@ class MatchV2:
         self.away_score = 0
         self.last_passer_idx = -1
         self.last_passer_team = ""
+        self._offside_flagged: set = set()  # player indices flagged offside at pass time
 
         # Stats & trace
         self.match_stats = MatchStats()
@@ -203,6 +204,13 @@ class MatchV2:
             if (t - start_tick) % self.config.frame_interval == 0:
                 self._record_frame()
 
+            # Position sampling every 10 ticks for heatmap
+            if t % 10 == 0:
+                for p in self.home.players:
+                    p.position_samples.append((round(p.pos[0], 1), round(p.pos[1], 1)))
+                for p in self.away.players:
+                    p.position_samples.append((round(p.pos[0], 1), round(p.pos[1], 1)))
+
     def _tick(self):
         """Execute one simulation tick using the 3-phase model.
 
@@ -230,6 +238,17 @@ class MatchV2:
         if self.ball.state != BallState.HELD:
             return
 
+        self.home.update_phase(
+            has_possession=self.ball.holder_team == "home",
+            ball_contested=False,
+            config=self.config,
+        )
+        self.away.update_phase(
+            has_possession=self.ball.holder_team == "away",
+            ball_contested=False,
+            config=self.config,
+        )
+
         # Tick stun timers
         for p in self.home.players + self.away.players:
             if p.state == PlayerState.STUNNED:
@@ -238,6 +257,7 @@ class MatchV2:
         holder_team = self.home if self.ball.holder_team == "home" else self.away
         opp_team = self.away if self.ball.holder_team == "home" else self.home
         holder = holder_team.players[self.ball.holder_idx]
+        holder.possession_ticks += 1
 
         # =====================================================================
         # PHASE 1: All players choose actions simultaneously
@@ -306,16 +326,10 @@ class MatchV2:
         wasted_tackles = []
 
         if holder_action_type == "carry":
-            # Auto-convert: approaching defenders within tackle_range are attempting a tackle
-            for opp in opp_team.players:
-                if defender_actions.get(opp.index) == "approach":
-                    d = distance(opp.pos, holder.pos)
-                    if d < self.config.tackle_range:
-                        defender_actions[opp.index] = "tackle"
-            
             # Duel detection: holder carries + defender tackles within range
             duel_interaction = detect_duel(
-                holder, "carry", opp_team.players, defender_actions, self.config
+                holder, "carry", opp_team.players, defender_actions, self.config,
+                defender_new_positions,
             )
             # Check for wasted tackles (defender tackles but no conflict)
             if duel_interaction is None:
@@ -370,6 +384,8 @@ class MatchV2:
             )
         elif holder_action_type == "shoot":
             self._execute_shoot_phase3(holder, holder_details, holder_team, opp_team)
+        elif holder_action_type == "hold":
+            self._execute_hold_phase3(holder, holder_team)
         elif holder_action_type == "clear":
             self._execute_clear_phase3(holder, holder_details, holder_team, opp_team)
 
@@ -409,6 +425,8 @@ class MatchV2:
         elif result.outcome == DuelOutcome.DEFENDER_WINS:
             # Clean tackle - defender wins ball
             defender.tackles_won += 1
+            holder.dispossessed += 1
+            holder.turnovers += 1
             holder.state = PlayerState.OFF_BALL
             self._give_ball(defender, opp_team)
             self.trace.log_event(
@@ -437,10 +455,13 @@ class MatchV2:
         Then check for unforced carry error.
         """
         holder.carries_attempted += 1
+        holder.hold_ticks = 0
         target = details.get("target", holder.pos)
 
-        # Move toward target at carrier speed
-        carry_speed = self.config.carrier_speed
+        # Move toward target at adaptive carry speed.
+        carry_speed, carry_difficulty = self._compute_carry_speed(
+            holder, target, holder_team
+        )
         old_pos = holder.pos
         new_pos = move_toward(holder.pos, target, carry_speed)
         new_pos = self.pitch.clamp(new_pos[0], new_pos[1])
@@ -448,12 +469,13 @@ class MatchV2:
         holder.distance_covered += distance(old_pos, new_pos)
         self.ball.position = new_pos
 
-        # Unforced carry error: (100-Dribbling)/600
+        # Unforced carry error scales with control ability and carry difficulty.
         dribbling = holder.abilities.get("Dribbling", 50)
-        error_chance = (100 - dribbling) / self.config.carry_error_divisor
+        error_chance = ((100 - dribbling) / self.config.carry_error_divisor) * carry_difficulty
         if random.random() < error_chance:
             # Ball goes loose
             holder.unforced_errors += 1
+            holder.turnovers += 1
             holder.state = PlayerState.OFF_BALL
             loose_pos = self.pitch.clamp(
                 new_pos[0] + random.uniform(-3, 3),
@@ -464,10 +486,54 @@ class MatchV2:
             self.trace.log_event(self.tick, "error", player=holder.name, error_type="carry")
         else:
             holder.carries_completed += 1
+            self._track_carry_stats(holder, old_pos, new_pos, holder_team.attacking_right)
             self.trace.log_action(
                 self.tick, holder_team.side, holder.name, "carry",
-                success=True, pos=new_pos,
+                success=True, pos=new_pos, speed=round(carry_speed, 2),
             )
+
+    def _compute_carry_speed(self, holder: Player, target: tuple, holder_team: Team):
+        """Adaptive ball-carrying speed from ability, path space, and pressure."""
+        opp_team = self.away if holder_team.side == "home" else self.home
+        base_speed = player_speed(
+            holder.speed_value,
+            self.config.player_max_speed,
+            self.config.player_min_speed,
+        )
+        dribbling = holder.abilities.get("Dribbling", 50) / 100.0
+        control_factor = 0.42 + 0.34 * dribbling
+
+        dx = target[0] - holder.pos[0]
+        dy = target[1] - holder.pos[1]
+        path_len = max(0.1, (dx * dx + dy * dy) ** 0.5)
+        nx, ny = dx / path_len, dy / path_len
+
+        path_pressure = 0.0
+        close_pressure = 0.0
+        for opp in opp_team.players:
+            if opp.is_goalkeeper:
+                continue
+            ox = opp.pos[0] - holder.pos[0]
+            oy = opp.pos[1] - holder.pos[1]
+            dist = (ox * ox + oy * oy) ** 0.5
+            if dist < 8.0:
+                close_pressure += 1.0 - dist / 8.0
+
+            proj = ox * nx + oy * ny
+            if -1.0 < proj < path_len + 4.0:
+                perp = abs(ox * ny - oy * nx)
+                if perp < 7.0:
+                    path_pressure += (1.0 - perp / 7.0) * (1.0 - max(0.0, proj) / (path_len + 8.0))
+
+        pressure = min(1.0, path_pressure * 0.45 + close_pressure * 0.35)
+        space_factor = 1.0 - pressure
+        urgency = min(1.0, path_len / 12.0)
+
+        personal_carry_cap = base_speed * (0.58 + 0.24 * dribbling)
+        speed = base_speed * control_factor * (0.70 + 0.45 * space_factor) * (0.75 + 0.25 * urgency)
+        speed = max(1.4, min(personal_carry_cap, speed))
+        difficulty = 1.0 + pressure * 1.4 + max(0.0, speed - self.config.carrier_speed) * 0.18
+        return speed, difficulty
 
     def _execute_pass_phase3(
         self,
@@ -484,21 +550,42 @@ class MatchV2:
         Then check pass accuracy error.
         """
         passer.passes_attempted += 1
-        target = details.get("target", passer.pos)
+        passer.hold_ticks = 0
+        ideal_target = details.get("target", passer.pos)
         is_long = details.get("is_long", False)
 
         # Pass accuracy unforced error: (100-Passing)/500
         passing = passer.abilities.get("Short_Passing", 50)
         if is_long:
             passing = passer.abilities.get("Long_Passing", 50)
+        dist_to_target = distance(passer.pos, ideal_target)
+        pressure = sum(1 for o in opp_team.players if not o.is_goalkeeper and distance(o.pos, passer.pos) < 8.0)
+        lane_risk = details.get("lane_risk", 0.0)
+        ability_factor = max(0.0, min(1.0, passing / 100.0))
+        error_radius = (
+            (1.0 - ability_factor) * (1.2 + dist_to_target / 12.0)
+            + pressure * 0.35
+            + lane_risk * 2.5
+        )
+        if error_radius > 0.05:
+            angle = random.uniform(0, math.tau)
+            mag = random.random() * error_radius
+            target = self.pitch.clamp(
+                ideal_target[0] + math.cos(angle) * mag,
+                ideal_target[1] + math.sin(angle) * mag,
+            )
+        else:
+            target = ideal_target
+
         error_chance = (100 - passing) / self.config.pass_error_divisor
         if random.random() < error_chance:
             # Pass goes astray -- ball contested
             passer.unforced_errors += 1
+            passer.turnovers += 1
             passer.state = PlayerState.OFF_BALL
             stray_pos = self.pitch.clamp(
-                target[0] + random.uniform(-8, 8),
-                target[1] + random.uniform(-8, 8),
+                ideal_target[0] + random.uniform(-8, 8),
+                ideal_target[1] + random.uniform(-8, 8),
             )
             self.ball.set_contested(stray_pos)
             self.match_stats.record_contested()
@@ -547,11 +634,21 @@ class MatchV2:
         passer.state = PlayerState.OFF_BALL
         self.ball.set_flight(flight)
 
+        # Record which attacking players are offside at this moment
+        opp_team = self.away if passer_team.side == "home" else self.home
+        self._offside_flagged = set()
+        for p in passer_team.players:
+            if p.index == passer.index:
+                continue
+            if self._is_offside(p, passer_team, opp_team, pass_origin=passer.pos):
+                self._offside_flagged.add(p.index)
+
         action_name = "pass_to_space" if is_space_pass else ("long_pass" if is_long else "short_pass")
         self.trace.log_action(
             self.tick, passer_team.side, passer.name,
             action_name,
             target=target,
+            ideal_target=ideal_target,
             target_player=details.get("target_player_idx", details.get("intended_receiver", -1)),
         )
 
@@ -564,8 +661,21 @@ class MatchV2:
     ):
         """Execute shot action."""
         shooter.shots += 1
+        shooter.hold_ticks = 0
+
+        # Track key pass for the player who assisted the shot
+        if self.last_passer_team == ("home" if shooter.team_side == "home" else "away"):
+            assisting_team = self.home if self.last_passer_team == "home" else self.away
+            if 0 <= self.last_passer_idx < len(assisting_team.players):
+                if self.last_passer_idx != shooter.index:
+                    assisting_team.players[self.last_passer_idx].key_passes += 1
 
         on_target_prob = details.get("on_target_prob", 0.3)
+        # Estimate xG from shot details
+        shot_xg = details.get("xg", on_target_prob * self.config.goal_reward_constant * 0.5)
+        shot_xg = min(0.95, max(0.01, shot_xg))
+        shooter.xg += shot_xg
+
         on_target = random.random() < on_target_prob
         if on_target:
             shooter.shots_on_target += 1
@@ -623,6 +733,7 @@ class MatchV2:
         """Execute clearance action."""
         clearer.clearances += 1
         clearer.passes_attempted += 1
+        clearer.hold_ticks = 0
         target = details.get("target", clearer.pos)
 
         dist = distance(clearer.pos, target)
@@ -646,6 +757,75 @@ class MatchV2:
         self.trace.log_action(
             self.tick, clearer_team.side, clearer.name, "clear",
             target=target,
+        )
+
+    def _execute_hold_phase3(self, holder: Player, holder_team: Team):
+        """Shield the ball while observing and letting support movement develop."""
+        holder.hold_ticks += 1
+        opp_team = self.away if holder_team.side == "home" else self.home
+
+        pressure_x = 0.0
+        pressure_y = 0.0
+        pressure = 0.0
+        nearest_dist = float("inf")
+        for opp in opp_team.players:
+            if opp.is_goalkeeper:
+                continue
+            dx = holder.pos[0] - opp.pos[0]
+            dy = holder.pos[1] - opp.pos[1]
+            d = max(0.1, (dx * dx + dy * dy) ** 0.5)
+            nearest_dist = min(nearest_dist, d)
+            if d < 8.0:
+                w = 1.0 - d / 8.0
+                pressure += w
+                pressure_x += (dx / d) * w
+                pressure_y += (dy / d) * w
+
+        old_pos = holder.pos
+        if pressure > 0.0:
+            # Small shielding touch away from pressure, with a slight bias away
+            # from own goal so it does not become a full carry action.
+            norm = max(0.1, (pressure_x * pressure_x + pressure_y * pressure_y) ** 0.5)
+            away_x = pressure_x / norm
+            away_y = pressure_y / norm
+            forward_dir = 1.0 if holder_team.attacking_right else -1.0
+            adjust_x = away_x * 0.75 + forward_dir * 0.15
+            adjust_y = away_y * 0.75
+            adjust_norm = max(0.1, (adjust_x * adjust_x + adjust_y * adjust_y) ** 0.5)
+            dribbling = holder.abilities.get("Dribbling", 50) / 100.0
+            max_adjust = 0.45 + 1.15 * dribbling
+            move_dist = min(max_adjust, 0.45 + pressure * 0.55)
+            new_pos = self.pitch.clamp(
+                holder.pos[0] + adjust_x / adjust_norm * move_dist,
+                holder.pos[1] + adjust_y / adjust_norm * move_dist,
+            )
+            holder.pos = new_pos
+            holder.distance_covered += distance(old_pos, new_pos)
+
+        self.ball.position = holder.pos
+
+        # Shielding under heavy pressure can still produce a loose touch.
+        dribbling = holder.abilities.get("Dribbling", 50)
+        error_chance = max(0.0, pressure - 0.6) * (100 - dribbling) / (self.config.carry_error_divisor * 1.8)
+        if random.random() < error_chance:
+            holder.unforced_errors += 1
+            holder.turnovers += 1
+            holder.state = PlayerState.OFF_BALL
+            loose_pos = self.pitch.clamp(
+                holder.pos[0] + random.uniform(-2, 2),
+                holder.pos[1] + random.uniform(-2, 2),
+            )
+            self.ball.set_contested(loose_pos)
+            self.match_stats.record_contested()
+            self.trace.log_event(self.tick, "error", player=holder.name, error_type="shield")
+            return
+
+        self.trace.log_action(
+            self.tick, holder_team.side, holder.name, "hold",
+            hold_ticks=holder.hold_ticks,
+            pos=holder.pos,
+            pressure=round(pressure, 2),
+            nearest_def=round(nearest_dist, 1) if nearest_dist < 999 else None,
         )
 
     # -------------------------------------------------------------------------
@@ -739,20 +919,24 @@ class MatchV2:
                 )
                 return
 
-            # Offside check: was receiver ahead of 2nd-last defender when pass was made?
-            opp_team_for_offside = self.away if passer_team.side == "home" else self.home
-            if self._is_offside(best_receiver, passer_team, opp_team_for_offside):
-                # Offside! Ball goes to opponent (indirect free kick)
+            # Offside check: receiver was flagged offside when pass was made
+            if best_receiver.index in self._offside_flagged:
+                opp_team_for_offside = self.away if passer_team.side == "home" else self.home
+                best_receiver.offsides += 1
                 self.ball.set_dead("offside", opp_team_for_offside.side, restart_ticks=2)
+                self._offside_flagged = set()
                 self.trace.log_event(
                     self.tick, "offside",
                     player=best_receiver.name, team=passer_team.side,
                 )
                 return
+            self._offside_flagged = set()
 
             # Pass completed successfully
             self._give_ball(best_receiver, passer_team)
-            passer_team.players[flight.passer_idx].passes_completed += 1
+            passer = passer_team.players[flight.passer_idx]
+            passer.passes_completed += 1
+            self._track_pass_stats(passer, flight.origin, best_receiver.pos, passer_team.attacking_right)
             self.trace.log_action(
                 self.tick, passer_team.side, best_receiver.name, "receive",
                 success=True,
@@ -768,7 +952,18 @@ class MatchV2:
         defending_team = self.away if flight.passer_team == "home" else self.home
         shooter = shooter_team.players[flight.passer_idx]
 
+        # Determine if shot was from inside the box
+        dist_to_goal = distance(flight.origin, flight.target)
+        in_box = dist_to_goal < 20.0
+
         if not flight.on_target:
+            shooter.shot_log.append({
+                "x": round(flight.origin[0], 1),
+                "y": round(flight.origin[1], 1),
+                "xg": round(shooter.xg - sum(s.get("xg", 0) for s in shooter.shot_log), 2),
+                "in_box": in_box,
+                "outcome": "off_target",
+            })
             self._pending_event_text = f"{shooter.name}'s shot goes wide!"
             self.ball.set_dead("goal_kick", defending_team.side, self.config.goal_kick_restart_ticks)
             self._record_frame()
@@ -780,9 +975,22 @@ class MatchV2:
             gk, flight.target, flight.origin, self.config
         )
 
+        # Track xG for GK
+        last_xg = shooter.xg - sum(s.get("xg", 0) for s in shooter.shot_log)
+        gk.psxg_faced += max(0, last_xg)
+
         if random.random() < save_prob:
             # SAVE!
             gk.saves += 1
+            shooter.shot_log.append({
+                "x": round(flight.origin[0], 1),
+                "y": round(flight.origin[1], 1),
+                "xg": round(last_xg, 2),
+                "in_box": in_box,
+                "outcome": "saved",
+                "target_x": round(flight.target[0], 1),
+                "target_y": round(flight.target[1], 1),
+            })
             self._give_ball(gk, defending_team)
             self._pending_event_text = f"{gk.name} saves {shooter.name}'s shot!"
             self._pending_pause_ms = 1000
@@ -790,6 +998,16 @@ class MatchV2:
             self._record_frame()
         else:
             # GOAL!
+            shooter.shot_log.append({
+                "x": round(flight.origin[0], 1),
+                "y": round(flight.origin[1], 1),
+                "xg": round(last_xg, 2),
+                "in_box": in_box,
+                "outcome": "goal",
+                "target_x": round(flight.target[0], 1),
+                "target_y": round(flight.target[1], 1),
+            })
+            gk.goals_conceded += 1
             self._score_goal(shooter, shooter_team, defending_team)
 
     def _resolve_pass_to_space_arrival(
@@ -851,14 +1069,17 @@ class MatchV2:
                 )
                 return
 
-            # Offside check
-            if self._is_offside(best_tm, passer_team, opp_team):
+            # Offside check: receiver was flagged offside when pass was made
+            if best_tm.index in self._offside_flagged:
+                best_tm.offsides += 1
                 self.ball.set_dead("offside", opp_team.side, restart_ticks=2)
+                self._offside_flagged = set()
                 self.trace.log_event(
                     self.tick, "offside",
                     player=best_tm.name, team=passer_team.side,
                 )
                 return
+            self._offside_flagged = set()
 
             # Successful pass to space
             self._give_ball(best_tm, passer_team)
@@ -931,6 +1152,8 @@ class MatchV2:
         """
         self.ball.tick_contested()
         ball_pos = self.ball.position
+        self.home.update_phase(False, True, self.config)
+        self.away.update_phase(False, True, self.config)
 
         # Find closest player from each team
         best_player = None
@@ -959,13 +1182,34 @@ class MatchV2:
                 player=best_player.name, team=best_team.side,
             )
         else:
-            # Players race toward ball
-            for p in self.home.players + self.away.players:
-                if p.state != PlayerState.STUNNED:
-                    p.target_pos = ball_pos
-            # Move all players toward ball
-            self.home.move_all(self.config, self.pitch)
-            self.away.move_all(self.config, self.pitch)
+            # Nearby players contest the loose ball; the rest protect the second
+            # ball and team shape instead of everyone sprinting into one point.
+            for team, other in ((self.home, self.away), (self.away, self.home)):
+                team.compute_dynamic_positions(
+                    ball_pos, self.config, self.pitch,
+                    opponent_players=other.players,
+                )
+                distances = [
+                    (distance(p.pos, ball_pos), p)
+                    for p in team.players
+                    if not p.is_goalkeeper and p.state != PlayerState.STUNNED
+                ]
+                distances.sort(key=lambda x: x[0])
+                contesters = {p.index for _, p in distances[:2] if _ < self.config.contested_race_radius}
+
+                for p in team.players:
+                    if p.state == PlayerState.STUNNED:
+                        continue
+                    if p.index in contesters:
+                        p.target_pos = ball_pos
+                        p.movement_intent = "contest"
+                    else:
+                        support_x = p.formation_pos[0] * 0.75 + ball_pos[0] * 0.25
+                        support_y = p.formation_pos[1] * 0.80 + ball_pos[1] * 0.20
+                        p.target_pos = self.pitch.clamp(support_x, support_y)
+                        p.movement_intent = "recover_shape"
+
+                team.move_all(self.config, self.pitch)
 
             # If contested too long, award to closest
             if self.ball.contested_ticks > 5 and best_player and best_team:
@@ -1032,56 +1276,91 @@ class MatchV2:
     # Ball possession
     # -------------------------------------------------------------------------
 
-    def _is_offside(self, receiver, attacking_team, defending_team) -> bool:
+    def _track_pass_stats(self, passer, origin, target, attacking_right: bool):
+        """Track progressive pass, passes into box, long pass, key pass stats."""
+        dist = distance(origin, target)
+        forward_dir = 1.0 if attacking_right else -1.0
+        progress = (target[0] - origin[0]) * forward_dir
+
+        # Progressive pass: moves ball >10m toward opponent goal
+        if progress > 10.0:
+            passer.progressive_passes += 1
+
+        # Long pass
+        if dist > 30.0:
+            passer.long_passes += 1
+            passer.completed_long_passes += 1
+
+        # Pass into final third
+        if attacking_right:
+            if target[0] > self.pitch.length * 2 / 3:
+                passer.passes_into_final_third += 1
+            if target[0] > self.pitch.length - 16.5 and abs(target[1] - self.pitch.width / 2) < 20.2:
+                passer.passes_into_box += 1
+        else:
+            if target[0] < self.pitch.length / 3:
+                passer.passes_into_final_third += 1
+            if target[0] < 16.5 and abs(target[1] - self.pitch.width / 2) < 20.2:
+                passer.passes_into_box += 1
+
+    def _track_carry_stats(self, player, old_pos, new_pos, attacking_right: bool):
+        """Track progressive carries, carries into box."""
+        forward_dir = 1.0 if attacking_right else -1.0
+        progress = (new_pos[0] - old_pos[0]) * forward_dir
+
+        if progress > 5.0:
+            player.progressive_carries += 1
+
+        if attacking_right:
+            if new_pos[0] > self.pitch.length * 2 / 3 and old_pos[0] <= self.pitch.length * 2 / 3:
+                player.carries_into_final_third += 1
+            if new_pos[0] > self.pitch.length - 16.5 and abs(new_pos[1] - self.pitch.width / 2) < 20.2:
+                if old_pos[0] <= self.pitch.length - 16.5:
+                    player.carries_into_box += 1
+        else:
+            if new_pos[0] < self.pitch.length / 3 and old_pos[0] >= self.pitch.length / 3:
+                player.carries_into_final_third += 1
+            if new_pos[0] < 16.5 and abs(new_pos[1] - self.pitch.width / 2) < 20.2:
+                if old_pos[0] >= 16.5:
+                    player.carries_into_box += 1
+
+    def _is_offside(self, receiver, attacking_team, defending_team, pass_origin=None) -> bool:
         """Check if receiver is in an offside position.
 
-        Offside = receiver is ahead of 2nd-last defender AND ahead of ball
-        AND in opponent's half.
+        Offside = receiver ahead of 2nd-last defender AND ahead of ball
+        at the moment the pass was played, AND in opponent's half.
+        pass_origin: ball position when the pass was made.
         """
         if receiver.is_goalkeeper:
             return False
 
-        # Determine direction
-        if attacking_team.attacking_right:
-            # Attacking right: offside = receiver.x > 2nd-last defender.x AND receiver.x > ball.x
-            # AND receiver in opponent half (x > 52.5)
-            if receiver.pos[0] <= self.pitch.length / 2:
-                return False  # in own half, can't be offside
+        # Use pass origin for the 'ahead of ball' check, NOT current ball position
+        ball_x = pass_origin[0] if pass_origin else self.ball.position[0]
 
-            # Find 2nd-last defender x (defenders sorted ascending, offside line = 2nd value)
+        if attacking_team.attacking_right:
+            if receiver.pos[0] <= self.pitch.length / 2:
+                return False
+
+            # Defenders protect goal at x=105: last defender = highest x
             def_xs = sorted(
                 [p.pos[0] for p in defending_team.players if not p.is_goalkeeper],
-                reverse=False  # ascending: [smallest_x, ..., largest_x]
+                reverse=True
             )
-            # The last defender is at def_xs[0] (furthest back toward their goal on the left)
-            # Wait - attacking right means opponent goal is at x=105, and defenders protect it
-            # Defenders closer to their goal (x approaching 105) = furthest back
-            # For offside: we need 2nd-last defender from the goal line
-            # Sort defenders descending (furthest from our goal = closest to theirs)
-            def_xs_desc = sorted(
-                [p.pos[0] for p in defending_team.players if not p.is_goalkeeper],
-                reverse=True  # descending: [closest_to_their_goal, ...]
-            )
-            # 2nd-last = index 1 (the one behind the last defender)
-            offside_line = def_xs_desc[1] if len(def_xs_desc) >= 2 else def_xs_desc[0] if def_xs_desc else self.pitch.length
+            offside_line = def_xs[1] if len(def_xs) >= 2 else def_xs[0] if def_xs else self.pitch.length
 
-            # Offside if receiver ahead of both offside line AND ball
-            return receiver.pos[0] > offside_line and receiver.pos[0] > self.ball.position[0]
+            return receiver.pos[0] > offside_line and receiver.pos[0] > ball_x
         else:
-            # Attacking left: offside = receiver.x < 2nd-last defender.x AND receiver.x < ball.x
             if receiver.pos[0] >= self.pitch.length / 2:
                 return False
 
-            # Defenders protecting goal at x=0
-            # Last defender = smallest x (closest to goal at x=0)
-            # 2nd-last = second smallest x
-            def_xs_asc = sorted(
+            # Defenders protect goal at x=0: last defender = lowest x
+            def_xs = sorted(
                 [p.pos[0] for p in defending_team.players if not p.is_goalkeeper],
-                reverse=False  # ascending: [closest_to_goal, ...]
+                reverse=False
             )
-            offside_line = def_xs_asc[1] if len(def_xs_asc) >= 2 else def_xs_asc[0] if def_xs_asc else 0.0
+            offside_line = def_xs[1] if len(def_xs) >= 2 else def_xs[0] if def_xs else 0.0
 
-            return receiver.pos[0] < offside_line and receiver.pos[0] < self.ball.position[0]
+            return receiver.pos[0] < offside_line and receiver.pos[0] < ball_x
 
     def _give_ball(self, player: Player, team: Team):
         """Give the ball to a specific player."""
@@ -1093,7 +1372,13 @@ class MatchV2:
             if self.ball.holder_idx < len(self.away.players):
                 self.away.players[self.ball.holder_idx].state = PlayerState.OFF_BALL
 
+        # If ball changes team, clear offside flags (defender touched ball resets offside)
+        if self.ball.holder_team and self.ball.holder_team != team.side:
+            self._offside_flagged = set()
+
         player.state = PlayerState.ON_BALL
+        player.hold_ticks = 0
+        player.possession_ticks = 0
         self.ball.set_held(player.index, team.side, player.pos)
 
     # -------------------------------------------------------------------------
@@ -1104,6 +1389,20 @@ class MatchV2:
         """Handle ball going out of bounds."""
         passer_team_side = flight.passer_team
         other_team = "away" if passer_team_side == "home" else "home"
+
+        # Log shot that went out of bounds (off-target)
+        if flight.flight_type == FlightType.SHOT:
+            shooter_team = self.home if passer_team_side == "home" else self.away
+            shooter = shooter_team.players[flight.passer_idx]
+            dist_to_goal = distance(flight.origin, flight.target)
+            last_xg = shooter.xg - sum(s.get("xg", 0) for s in shooter.shot_log)
+            shooter.shot_log.append({
+                "x": round(flight.origin[0], 1),
+                "y": round(flight.origin[1], 1),
+                "xg": round(max(0, last_xg), 2),
+                "in_box": dist_to_goal < 20.0,
+                "outcome": "off_target",
+            })
 
         if self.pitch.is_over_goal_line(pos[0]):
             if flight.flight_type == FlightType.SHOT:
@@ -1174,16 +1473,44 @@ class MatchV2:
 
         self.last_passer_idx = -1
         self.last_passer_team = ""
+        self._offside_flagged: set = set()  # player indices flagged offside at pass time
 
     def _kickoff(self, team_side: str):
-        """Set up kickoff for a team."""
+        """Set up kickoff for a team.
+        
+        Keep each team's original shape, compressed into its own half.
+        The kicking team sends one forward to the center spot.
+        """
         self.ball.position = self.pitch.center
         team = self.home if team_side == "home" else self.away
+        other_team = self.away if team_side == "home" else self.home
+        half_x = self.pitch.length / 2.0
 
-        closest = team.get_closest_to(self.pitch.center, exclude_gk=True)
-        if closest:
-            closest.pos = self.pitch.center
-            self._give_ball(closest, team)
+        def place_team_in_own_half(t):
+            for p, base in zip(t.players, t._formation_coords):
+                progress = base[0] / self.pitch.length if t.attacking_right else (self.pitch.length - base[0]) / self.pitch.length
+                compressed_progress = progress * 0.48
+                if t.attacking_right:
+                    x = max(0.5, min(half_x - 1.0, compressed_progress * self.pitch.length))
+                else:
+                    x = min(self.pitch.length - 0.5, max(half_x + 1.0, self.pitch.length - compressed_progress * self.pitch.length))
+                p.pos = self.pitch.clamp(x, base[1])
+                p.target_pos = p.pos
+                p.formation_pos = p.pos
+
+        place_team_in_own_half(team)
+        place_team_in_own_half(other_team)
+
+        # Kicker at center
+        forward_positions = {"ST", "CF", "LW", "RW", "LF", "RF", "LS", "RS"}
+        forward_candidates = [p for p in team.players if p.position in forward_positions]
+        kicker = min(forward_candidates, key=lambda p: distance(p.pos, self.pitch.center), default=None)
+        if kicker is None:
+            kicker = team.get_closest_to(self.pitch.center, exclude_gk=True)
+        if kicker:
+            kicker.pos = self.pitch.center
+            kicker.target_pos = kicker.pos
+            self._give_ball(kicker, team)
         self._pending_cut = True
         self._record_frame()
 
@@ -1237,20 +1564,33 @@ class MatchV2:
 
     def _compile_result(self) -> MatchResult:
         """Compile final match result."""
+        home_ratings = compute_team_ratings(
+            self.home.players, self.home_score, self.away_score
+        )
+        away_ratings = compute_team_ratings(
+            self.away.players, self.away_score, self.home_score
+        )
+
+        # Merge ratings into player stats
+        home_ps = self.home.get_player_stats()
+        away_ps = self.away.get_player_stats()
+        for i, ps in enumerate(home_ps):
+            if i < len(home_ratings):
+                ps["rating"] = home_ratings[i].get("rating", 6.0)
+        for i, ps in enumerate(away_ps):
+            if i < len(away_ratings):
+                ps["rating"] = away_ratings[i].get("rating", 6.0)
+
         return MatchResult(
             home_score=self.home_score,
             away_score=self.away_score,
             goals=self.match_stats.goals,
             home_stats=self.match_stats.get_home_stats(self.home),
             away_stats=self.match_stats.get_away_stats(self.away),
-            home_player_stats=self.home.get_player_stats(),
-            away_player_stats=self.away.get_player_stats(),
-            home_ratings=compute_team_ratings(
-                self.home.players, self.home_score, self.away_score
-            ),
-            away_ratings=compute_team_ratings(
-                self.away.players, self.away_score, self.home_score
-            ),
+            home_player_stats=home_ps,
+            away_player_stats=away_ps,
+            home_ratings=home_ratings,
+            away_ratings=away_ratings,
             replay_url=None,
             trace_id=self.trace.trace_id,
         )
