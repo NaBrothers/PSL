@@ -126,11 +126,13 @@ def global_search(query: str = "", user=Depends(get_current_user)):
     import json as _json
     from psl_core.constants import STARS, GOALKEEPER
     from psl_core.card import get_style_name, compute_overall, compute_abilities
+    from server.services.game_config import GameConfigService
 
     ABILITY_NAMES = {"Heading": "头球", "Finishing": "终结", "Short_Passing": "短传",
         "Dribbling": "盘带", "Tackling": "抢断", "Defence": "防守", "Speed": "速度",
         "Long_Shot": "远射", "Long_Passing": "长传", "IQ": "球商",
         "GK_Saving": "扑救", "GK_Positioning": "站位", "GK_Reaction": "反应"}
+    style_scales = GameConfigService(db).get_style_scales()
 
     results = []
     for r in rows:
@@ -148,6 +150,7 @@ def global_search(query: str = "", user=Depends(get_current_user)):
             acceleration=r[28] or 0, composure=r[29] or 0, gk_handling=r[30] or 0,
             gk_diving=r[31] or 0, gk_positioning=r[32] or 0, gk_reflexes=r[33] or 0,
             reactions=r[34] or 0, ext_abilities=ext,
+            style_scales=style_scales,
         )
         exclude = {"GK_Saving", "GK_Positioning", "GK_Reaction"} if pos not in GOALKEEPER else {"Heading", "Finishing", "Long_Shot", "Tackling"}
         ability_list = [(ABILITY_NAMES.get(k, k), v) for k, v in abilities.items() if k not in exclude]

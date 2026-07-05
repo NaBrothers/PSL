@@ -69,6 +69,10 @@ class BagService:
     def __init__(self, db):
         self.db = db
 
+    def _style_scales(self) -> dict[int, int]:
+        from server.services.game_config import GameConfigService
+        return GameConfigService(self.db).get_style_scales()
+
     def get_bag(self, qq: int, page: int = 1, query: str = "", page_size: int = 20,
                 sort: str = "overall", position: str = "", color: str = "", upgradable: bool = False) -> BagPage:
         rows = self.db.query_all(
@@ -97,6 +101,7 @@ class BagService:
         card_slot_map = {r[0]: r[1] for r in team_slots if r[0] != 0}
 
         cards = []
+        style_scales = self._style_scales()
         for r in rows:
             ov = compute_overall(r[10], r[2])
             pos = (r[9] or "").split(",")[0].strip()
@@ -120,6 +125,7 @@ class BagService:
                 gk_diving=r[32] or 0, gk_positioning=r[33] or 0, gk_reflexes=r[34] or 0,
                 reactions=r[35] or 0, ext_abilities=ext,
                 talents=talents_data, talent_mode='display',
+                style_scales=style_scales,
             )
             # Get top 3 abilities (exclude GK stats for non-GK)
             exclude = {"GK_Saving", "GK_Positioning", "GK_Reaction"} if pos not in GOALKEEPER else {"Heading", "Finishing", "Long_Shot", "Tackling"}
@@ -151,12 +157,13 @@ class BagService:
             if len(group) < 2:
                 continue
             for c in group:
-                # Can breach: same player, different card exists
-                c.can_breach = True
+                available_subs = [
+                    other for other in group
+                    if other.id != c.id and not other.locked and other.status == 0
+                ]
+                c.can_breach = len(available_subs) > 0
                 # Can upgrade: same player + star diff == 1 (or both star 1)
-                for other in group:
-                    if other.id == c.id:
-                        continue
+                for other in available_subs:
                     if (c.star == 1 and other.star == 1) or abs(c.star - other.star) == 1:
                         c.can_upgrade = True
                         break
@@ -237,6 +244,7 @@ class BagService:
             self.db.execute("UPDATE cards SET Talents = ? WHERE ID = ?", (json.dumps(talents_data), card_id))
 
         is_gk = position in _GOALKEEPER
+        style_scales = self._style_scales()
 
         abilities = compute_abilities(
             star=star,
@@ -270,6 +278,7 @@ class BagService:
             ext_abilities=ext,
             talents=talents_data,
             talent_mode="display",
+            style_scales=style_scales,
         )
 
         ABILITY_NAMES = {**ABILITIES, **GK_ABILITIES, "IQ": "球商"}

@@ -15,6 +15,10 @@ class TransferService:
     def __init__(self, db):
         self.db = db
 
+    def _style_scales(self) -> dict[int, int]:
+        from server.services.game_config import GameConfigService
+        return GameConfigService(self.db).get_style_scales()
+
     def _get_fee_percent(self) -> float:
         from server.services.game_config import GameConfigService
         cfg = GameConfigService(self.db)
@@ -107,6 +111,7 @@ class TransferService:
         )
 
         items = []
+        style_scales = self._style_scales()
         for r in rows:
             if player_id and r[3] != player_id:
                 continue
@@ -128,7 +133,7 @@ class TransferService:
                 aggression=r[26] or 0, interceptions=r[27] or 0, sprint_speed=r[28] or 0,
                 acceleration=r[29] or 0, composure=r[30] or 0, gk_handling=r[31] or 0,
                 gk_diving=r[32] or 0, gk_positioning=r[33] or 0, gk_reflexes=r[34] or 0,
-                reactions=r[35] or 0,
+                reactions=r[35] or 0, style_scales=style_scales,
             )
 
             items.append({

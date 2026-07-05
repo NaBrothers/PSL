@@ -40,7 +40,7 @@ class Card:
     self.overall = compute_overall(self.player.Overall, self.star)
     self.price = compute_price(self.player.Overall, self.star, self.breach)
 
-  def _compute(self, talent_mode="display"):
+  def _compute(self, talent_mode="display", style_scales=None):
     return compute_abilities(
         star=self.star,
         style=self.style,
@@ -73,10 +73,11 @@ class Card:
         ext_abilities=self.ext_abilities,
         talents=self.talents_data,
         talent_mode=talent_mode,
+        style_scales=style_scales,
     )
 
-  def get_engine_abilities(self):
-    return self._compute(talent_mode="engine")
+  def get_engine_abilities(self, style_scales=None):
+    return self._compute(talent_mode="engine", style_scales=style_scales)
 
   def ensure_talents(self):
     if self.talents_data is not None:

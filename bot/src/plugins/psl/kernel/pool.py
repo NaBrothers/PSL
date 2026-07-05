@@ -28,6 +28,9 @@ class Pool:
       card = Card.new(player, user)
       return card
 
+    def refresh(self):
+      self.init()
+
 
 def _load_players(position_group=None, min_overall=None):
     cursor = g_database.cursor()
@@ -67,31 +70,31 @@ class ElementaryGoalkeeperPool(Pool):
 
 class IntermediatePool(Pool):
     def init(self):
-        self.pool = _load_players(min_overall=83)
+        self.pool = _load_players(min_overall=getattr(self, "min_overall", 83))
 
 class IntermediateForwardPool(Pool):
     def init(self):
-        self.pool = _load_players(position_group=FORWARD, min_overall=83)
+        self.pool = _load_players(position_group=FORWARD, min_overall=getattr(self, "min_overall", 83))
 
 class IntermediateMidfieldPool(Pool):
     def init(self):
-        self.pool = _load_players(position_group=MIDFIELD, min_overall=83)
+        self.pool = _load_players(position_group=MIDFIELD, min_overall=getattr(self, "min_overall", 83))
 
 class IntermediateGuardPool(Pool):
     def init(self):
-        self.pool = _load_players(position_group=GUARD, min_overall=83)
+        self.pool = _load_players(position_group=GUARD, min_overall=getattr(self, "min_overall", 83))
 
 class IntermediateGoalkeeperPool(Pool):
     def init(self):
-        self.pool = _load_players(position_group=GOALKEEPER, min_overall=83)
+        self.pool = _load_players(position_group=GOALKEEPER, min_overall=getattr(self, "min_overall", 83))
 
 class AdvancedPool(Pool):
     def init(self):
-        self.pool = _load_players(min_overall=86)
+        self.pool = _load_players(min_overall=getattr(self, "min_overall", 86))
 
 class BestPool(Pool):
     def init(self):
-        self.pool = _load_players(min_overall=88)
+        self.pool = _load_players(min_overall=getattr(self, "min_overall", 88))
 
 class NBPool(Pool):
     def init(self):
@@ -202,3 +205,22 @@ g_pool = {
     "visible": False
   },
 }
+
+
+def refresh_configured_pools(thresholds):
+  mapping = {
+    "中级": "intermediate",
+    "中级前锋": "intermediate",
+    "中级中场": "intermediate",
+    "中级后卫": "intermediate",
+    "中级门将": "intermediate",
+    "高级": "advanced",
+    "巅峰": "best",
+  }
+  for key, threshold_key in mapping.items():
+    pool = g_pool[key]["pool"]
+    min_overall = thresholds.get(threshold_key)
+    if min_overall is None or getattr(pool, "min_overall", None) == min_overall:
+      continue
+    pool.min_overall = min_overall
+    pool.refresh()

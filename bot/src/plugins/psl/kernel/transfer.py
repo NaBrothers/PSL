@@ -67,7 +67,7 @@ def _try_match_listing(seller_qq, card_id, price):
     pos_groups = {"FWD": FORWARD, "MID": MIDFIELD, "DEF": GUARD, "GK": GOALKEEPER}
 
     cursor.execute(
-        "SELECT ID, BuyerQQ, PlayerName, MinStar, Position, Style, MaxPrice "
+        "SELECT ID, BuyerQQ, PlayerName, Star, Position, Style, MaxPrice "
         "FROM bid_orders WHERE Status = 0 AND MaxPrice >= ? "
         "ORDER BY MaxPrice DESC, CreatedAt ASC", (price,)
     )
@@ -279,11 +279,12 @@ async def bid_handler(bot: Bot, event: Event):
 
 async def show_bid_list():
     cursor = g_database.cursor()
-    rows = cursor.execute(
-        "SELECT b.ID, b.BuyerQQ, b.PlayerName, b.MinStar, b.Position, b.Style, b.MaxPrice, u.Name "
+    cursor.execute(
+        "SELECT b.ID, b.BuyerQQ, b.PlayerName, b.Star, b.Position, b.Style, b.MaxPrice, u.Name "
         "FROM bid_orders b JOIN users u ON b.BuyerQQ = u.QQ WHERE b.Status = 0 "
         "ORDER BY b.MaxPrice DESC, b.CreatedAt ASC LIMIT 20"
-    ).fetchall()
+    )
+    rows = cursor.fetchall()
     cursor.close()
 
     if not rows:
@@ -321,7 +322,7 @@ async def create_bid(user, player_name, max_price_str):
     now = datetime.now(timezone.utc).isoformat()
     cursor = g_database.cursor()
     cursor.execute(
-        "INSERT INTO bid_orders (BuyerQQ, PlayerName, MinStar, Position, Style, MaxPrice, Status, CreatedAt) "
+        "INSERT INTO bid_orders (BuyerQQ, PlayerName, Star, Position, Style, MaxPrice, Status, CreatedAt) "
         "VALUES (?, ?, 1, NULL, NULL, ?, 0, ?)",
         (user.qq, player_name if player_name != "不限" else None, max_price, now)
     )

@@ -240,3 +240,13 @@ class GameConfigService:
 
     def clear_cache(self):
         self._cache = {}
+
+    def get_style_scales(self) -> dict[int, int]:
+        return {star: int(self.get(f"style.scale.{star}")) for star in range(1, 11)}
+
+    def get_pool_thresholds(self) -> dict[str, int]:
+        return {
+            "intermediate": int(self.get("pool.intermediate.min_overall")),
+            "advanced": int(self.get("pool.advanced.min_overall")),
+            "best": int(self.get("pool.best.min_overall")),
+        }

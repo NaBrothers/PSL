@@ -42,6 +42,7 @@ def compute_abilities(
     ext_abilities: Optional[Dict[str, int]] = None,
     talents: Optional[Dict] = None,
     talent_mode: str = "display",
+    style_scales: Optional[Dict[int, int]] = None,
 ) -> Dict[str, int]:
     base_star_bonus = STARS[star]["ability"]
     is_gk = position in GOALKEEPER
@@ -73,7 +74,7 @@ def compute_abilities(
 
     styles = GK_STYLE.get(style) if position in GOALKEEPER else STYLE.get(style)
     if styles:
-        style_scale = STARS[star]["style_scale"]
+        style_scale = style_scales.get(star, STARS[star]["style_scale"]) if style_scales else STARS[star]["style_scale"]
         for key, bonus in styles.items():
             if key == "name":
                 continue

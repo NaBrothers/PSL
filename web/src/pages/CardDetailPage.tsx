@@ -18,6 +18,8 @@ interface BagCard {
   overall: number
   star: number
   style: string
+  locked?: boolean
+  status?: number
 }
 
 type DialogMode = 'upgrade' | 'breach' | 'sell' | 'recycle' | 'compare-select' | 'compare-view' | 'market' | null
@@ -68,7 +70,13 @@ export default function CardDetailPage() {
   const openUpgrade = () => {
     if (!detail) return
     api.get('/bag', { params: { page: 1, query: detail.name, page_size: 100 } }).then(res => {
-      setSubCards(res.data.cards.filter((c: BagCard) => c.id !== detail.id && c.name === detail.name))
+      setSubCards(res.data.cards.filter((c: BagCard) =>
+        c.id !== detail.id &&
+        c.name === detail.name &&
+        !c.locked &&
+        (c.status ?? 0) === 0 &&
+        ((detail.star === 1 && c.star === 1) || Math.abs(detail.star - c.star) === 1)
+      ))
       setDialogMode('upgrade')
     })
   }
@@ -76,7 +84,12 @@ export default function CardDetailPage() {
   const openBreach = () => {
     if (!detail) return
     api.get('/bag', { params: { page: 1, query: detail.name, page_size: 100 } }).then(res => {
-      setSubCards(res.data.cards.filter((c: BagCard) => c.id !== detail.id && c.name === detail.name))
+      setSubCards(res.data.cards.filter((c: BagCard) =>
+        c.id !== detail.id &&
+        c.name === detail.name &&
+        !c.locked &&
+        (c.status ?? 0) === 0
+      ))
       setDialogMode('breach')
     })
   }

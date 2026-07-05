@@ -2,6 +2,7 @@
 
 import sys
 import os
+import random
 from dataclasses import dataclass
 from typing import List
 
@@ -58,13 +59,26 @@ class LotteryService:
     def __init__(self, db):
         self.db = db
 
+    def _configure_pools(self):
+        from kernel.pool import refresh_configured_pools
+        from server.services.game_config import GameConfigService
+
+        config = GameConfigService(self.db)
+        refresh_configured_pools(config.get_pool_thresholds())
+        return config
+
+    def _choice_card(self, pool, user):
+        if not pool.pool:
+            raise LotteryError("Pool has no available players")
+        return pool.choice(user)
+
     def list_pools(self, qq: int) -> dict:
         from kernel.pool import g_pool
         from model.item import Item
 
         pools = []
-        from server.services.game_config import GameConfigService, POOL_KEY_MAP
-        config = GameConfigService(self.db)
+        from server.services.game_config import POOL_KEY_MAP
+        config = self._configure_pools()
         for key, pool in g_pool.items():
             if not pool.get("visible", False):
                 continue
@@ -88,8 +102,8 @@ class LotteryService:
         from kernel.pool import g_pool
         from model.user import User
         from model.bag import Bag
-        from model.card import Card
 
+        config = self._configure_pools()
         if pool_key not in g_pool or not g_pool[pool_key].get("visible", False):
             raise PoolNotFound(f"Pool '{pool_key}' not found")
 
@@ -98,8 +112,7 @@ class LotteryService:
         if user is None:
             raise LotteryError("User not found")
 
-        from server.services.game_config import GameConfigService, POOL_KEY_MAP
-        config = GameConfigService(self.db)
+        from server.services.game_config import POOL_KEY_MAP
         cfg_base = POOL_KEY_MAP.get(pool_key)
         pool_cost = config.get(f"{cfg_base}.cost") if cfg_base else pool["cost"]
         pool_ten_cost = config.get(f"{cfg_base}.ten_cost") if cfg_base else pool.get("ten_cost")
@@ -115,44 +128,23 @@ class LotteryService:
 
         cards = []
         for _ in range(count):
-            card = pool["pool"].choice(user)
+            card = self._choice_card(pool["pool"], user)
             cards.append(card)
 
         ids = Bag.addToBagMany(user, cards) if count > 1 else [Bag.addToBag(user, cards[0])]
         user.spend(cost)
 
-        from psl_core.card import get_style_name
-        from psl_core.constants import GOALKEEPER
-        ABILITY_NAMES = {"Heading": "头球", "Finishing": "终结", "Short_Passing": "短传",
-            "Dribbling": "盘带", "Tackling": "抢断", "Defence": "防守", "Speed": "速度",
-            "Long_Shot": "远射", "Long_Passing": "长传", "IQ": "球商",
-            "GK_Saving": "扑救", "GK_Positioning": "站位", "GK_Reaction": "反应"}
-        drawn = []
-        for i, card in enumerate(cards):
-            pos = card.player.Position.split(",")[0].strip() if card.player.Position else ""
-            exclude = {"GK_Saving", "GK_Positioning", "GK_Reaction"} if pos not in GOALKEEPER else {"Heading", "Finishing", "Long_Shot", "Tackling"}
-            ability_list = [(ABILITY_NAMES.get(k, k), v) for k, v in card.ability.items() if k not in exclude]
-            ability_list.sort(key=lambda x: -x[1])
-            top3 = [{"name": a[0], "value": a[1]} for a in ability_list[:3]]
-            drawn.append(DrawnCard(
-                id=ids[i], player_id=card.player.ID, name=card.player.Name, position=card.player.Position,
-                overall=card.overall, star=card.star, style=card.style,
-                style_name=get_style_name(card.style, card.player.Position),
-                nationality=card.player.Nationality or "",
-                club=card.player.Club or "",
-                top_abilities=top3,
-            ))
+        drawn = self._format_drawn_cards(cards, ids, config)
 
         return DrawResult(pool_name=pool["name"], cards=drawn, cost=cost, remaining_money=user.money)
 
     def draw_reward(self, qq: int, pool_key: str) -> DrawResult:
         from kernel.pool import g_pool
-        from kernel.lottery import try_newbee
         from model.user import User
         from model.bag import Bag
-        from model.card import Card
         from model.item import Item
 
+        config = self._configure_pools()
         user = User.getUserByQQ(qq)
         if user is None:
             raise LotteryError("User not found")
@@ -170,23 +162,44 @@ class LotteryService:
         pool = g_pool[pool_key]
         cards = []
         if pool_key == "新手":
-            from kernel.pool import ElementaryForwardPool, ElementaryMidfieldPool, ElementaryGuardPool, ElementaryGoalkeeperPool, BestPool
             fw_pool = g_pool["初级前锋"]["pool"]
             mf_pool = g_pool["初级中场"]["pool"]
             gd_pool = g_pool["初级后卫"]["pool"]
             gk_pool = g_pool["初级门将"]["pool"]
             best_pool = g_pool.get("巅峰", {}).get("pool")
+            floored = False
             for _ in range(6):
-                cards.append(fw_pool.choice(user))
+                card = self._choice_card(fw_pool, user)
+                floored = floored or card.player.Overall > 88
+                cards.append(card)
             for _ in range(6):
-                cards.append(mf_pool.choice(user))
+                card = self._choice_card(mf_pool, user)
+                floored = floored or card.player.Overall > 88
+                cards.append(card)
             for _ in range(6):
-                cards.append(gd_pool.choice(user))
+                card = self._choice_card(gd_pool, user)
+                floored = floored or card.player.Overall > 88
+                cards.append(card)
             for _ in range(2):
-                cards.append(gk_pool.choice(user))
+                card = self._choice_card(gk_pool, user)
+                floored = floored or card.player.Overall > 88
+                cards.append(card)
+            if not floored and best_pool is not None:
+                card = self._choice_card(best_pool, user)
+                from psl_core.constants import FORWARD, MIDFIELD, GUARD
+                first_pos = card.player.Position.split(",")[0].strip() if card.player.Position else ""
+                if first_pos in FORWARD:
+                    index = random.randint(0, 5)
+                elif first_pos in MIDFIELD:
+                    index = random.randint(6, 11)
+                elif first_pos in GUARD:
+                    index = random.randint(12, 17)
+                else:
+                    index = random.randint(18, 19)
+                cards[index] = card
         else:
             for _ in range(matching[0].count):
-                card = pool["pool"].choice(user)
+                card = self._choice_card(pool["pool"], user)
                 cards.append(card)
 
         ids = Bag.addToBagMany(user, cards) if len(cards) > 1 else [Bag.addToBag(user, cards[0])]
@@ -194,6 +207,11 @@ class LotteryService:
         for item in matching:
             item.remove()
 
+        drawn = self._format_drawn_cards(cards, ids, config)
+
+        return DrawResult(pool_name=f"(奖励){pool_key}", cards=drawn, cost=0, remaining_money=user.money)
+
+    def _format_drawn_cards(self, cards, ids, config) -> list[DrawnCard]:
         from psl_core.card import get_style_name
         from psl_core.constants import GOALKEEPER
         ABILITY_NAMES = {"Heading": "头球", "Finishing": "终结", "Short_Passing": "短传",
@@ -201,7 +219,9 @@ class LotteryService:
             "Long_Shot": "远射", "Long_Passing": "长传", "IQ": "球商",
             "GK_Saving": "扑救", "GK_Positioning": "站位", "GK_Reaction": "反应"}
         drawn = []
+        style_scales = config.get_style_scales()
         for i, card in enumerate(cards):
+            card.ability = card._compute(talent_mode="display", style_scales=style_scales)
             pos = card.player.Position.split(",")[0].strip() if card.player.Position else ""
             exclude = {"GK_Saving", "GK_Positioning", "GK_Reaction"} if pos not in GOALKEEPER else {"Heading", "Finishing", "Long_Shot", "Tackling"}
             ability_list = [(ABILITY_NAMES.get(k, k), v) for k, v in card.ability.items() if k not in exclude]
@@ -215,5 +235,4 @@ class LotteryService:
                 club=card.player.Club or "",
                 top_abilities=top3,
             ))
-
-        return DrawResult(pool_name=f"(奖励){pool_key}", cards=drawn, cost=0, remaining_money=user.money)
+        return drawn

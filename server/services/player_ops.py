@@ -22,14 +22,28 @@ class PlayerOpsService:
     def __init__(self, db):
         self.db = db
 
+    def _validate_main_card(self, card, qq: int):
+        if card is None or card.user.qq != qq:
+            raise PlayerOpsError("Main card not found or not owned")
+        if card.status not in (0, 2):
+            raise PlayerOpsError("Main card must be in bag or squad")
+
+    def _validate_sub_card(self, card, qq: int):
+        if card is None or card.user.qq != qq:
+            raise PlayerOpsError("Sub card not found or not owned")
+        if card.locked:
+            raise PlayerOpsError("Sub card is locked")
+        if card.status != 0:
+            raise PlayerOpsError("Sub card must be idle in bag")
+
     def upgrade(self, qq: int, main_id: int, sub_id: int) -> dict:
         from model.card import Card
+        if main_id == sub_id:
+            raise PlayerOpsError("Main card and sub card must be different")
         card1 = Card.getCardByID(main_id)
         card2 = Card.getCardByID(sub_id)
-        if card1 is None or card1.user.qq != qq:
-            raise PlayerOpsError("Main card not found or not owned")
-        if card2 is None or card2.user.qq != qq:
-            raise PlayerOpsError("Sub card not found or not owned")
+        self._validate_main_card(card1, qq)
+        self._validate_sub_card(card2, qq)
         if card1.player.ID != card2.player.ID:
             raise PlayerOpsError("Cards must be same player")
         if (card1.star != 1 or card2.star != 1) and abs(card1.star - card2.star) != 1:
@@ -39,8 +53,7 @@ class PlayerOpsService:
 
         target_star = max(card1.star, card2.star) + 1
         from server.services.game_config import GameConfigService
-        import server.database
-        config = GameConfigService(server.database.db)
+        config = GameConfigService(self.db)
         cost_pct = config.get("upgrade.cost_percent") or 0.1
         cost = int(max(card1.price, card2.price) * cost_pct)
 
@@ -90,12 +103,12 @@ class PlayerOpsService:
 
     def breach(self, qq: int, main_id: int, sub_id: int) -> dict:
         from model.card import Card
+        if main_id == sub_id:
+            raise PlayerOpsError("Main card and sub card must be different")
         card1 = Card.getCardByID(main_id)
         card2 = Card.getCardByID(sub_id)
-        if card1 is None or card1.user.qq != qq:
-            raise PlayerOpsError("Main card not found or not owned")
-        if card2 is None or card2.user.qq != qq:
-            raise PlayerOpsError("Sub card not found or not owned")
+        self._validate_main_card(card1, qq)
+        self._validate_sub_card(card2, qq)
         if card1.player.ID != card2.player.ID:
             raise PlayerOpsError("Cards must be same player")
 

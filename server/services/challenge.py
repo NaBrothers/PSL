@@ -66,11 +66,13 @@ class ChallengeService:
         from psl_core.constants import NPC_STYLE, STARS, FORWARD, MIDFIELD, GUARD
         from psl_core.formation import get_formation_positions
         from psl_core.card import compute_abilities, compute_real_overall, compute_overall
+        from server.services.game_config import GameConfigService
 
         if difficulty not in DIFFICULTY:
             raise ChallengeError("Invalid difficulty")
 
         star = DIFFICULTY[difficulty]["star"]
+        style_scales = GameConfigService(self.db).get_style_scales()
 
         npc_idx = time.localtime(time.time()).tm_wday % len(NPC)
         npc = NPC[npc_idx]
@@ -125,6 +127,7 @@ class ChallengeService:
                 gk_positioning=p.GK_Positioning or 0,
                 gk_reflexes=p.GK_Reflexes or 0,
                 reactions=p.Reactions or 0,
+                style_scales=style_scales,
             )
             real_ov = compute_real_overall(abilities, pos)
             base_ov = compute_overall(p.Overall, star)
