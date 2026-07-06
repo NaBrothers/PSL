@@ -8,6 +8,8 @@ interface ReplayFrame {
   half: number
   home: [number, number][]
   away: [number, number][]
+  home_player_goals?: (string | null)[]
+  away_player_goals?: (string | null)[]
   ball_holder: number | null
   ball?: [number, number] | null
   ball_team: string | null
@@ -29,6 +31,7 @@ type ReplayLine = ReplayHeader | ReplayFrame
 
 interface Clip { label: string; startIdx: number; endIdx: number; icon: string; minute: number; playerName: string }
 interface Props { replayUrl: string }
+type SelectedPlayer = { team: 'home' | 'away'; idx: number } | null
 
 const PITCH_W = 68, PITCH_H = 105
 const CANVAS_W = 300, CANVAS_H = Math.round(CANVAS_W * (PITCH_H / PITCH_W))
@@ -38,7 +41,48 @@ const PLAYER_R = 7, BALL_R = 4
 const COLOR_MAP: Record<string, string> = { w:'#b8b8b8', g:'#4caf50', b:'#4fc3f7', p:'#b45cff', o:'#ff9800', r:'#ef5350', f:'#ff69b4', x:'#a52a2a', '$':'#fbbf24' }
 
 function lerp(a: number, b: number, t: number) { return a + (b - a) * t }
+function catmullRom(p0: number, p1: number, p2: number, p3: number, t: number) {
+  const t2 = t * t
+  const t3 = t2 * t
+  return 0.5 * (
+    2 * p1 +
+    (-p0 + p2) * t +
+    (2 * p0 - 5 * p1 + 4 * p2 - p3) * t2 +
+    (-p0 + 3 * p1 - 3 * p2 + p3) * t3
+  )
+}
+function pointDist(a: [number, number], b: [number, number]) {
+  return Math.hypot(a[0] - b[0], a[1] - b[1])
+}
+function smoothPoint(
+  frames: ReplayFrame[],
+  idx: number,
+  side: 'home' | 'away',
+  playerIdx: number,
+  t: number,
+): [number, number] {
+  const frame = frames[idx]
+  const next = frames[idx + 1]
+  const current = side === 'home' ? frame.home[playerIdx] : frame.away[playerIdx]
+  const target = next ? (side === 'home' ? next.home[playerIdx] : next.away[playerIdx]) : current
+  if (!next || frame.cut || next.cut) return current
 
+  const prev = idx > 0 && !frames[idx - 1].cut
+    ? (side === 'home' ? frames[idx - 1].home[playerIdx] : frames[idx - 1].away[playerIdx])
+    : current
+  const after = idx + 2 < frames.length && !frames[idx + 2].cut
+    ? (side === 'home' ? frames[idx + 2].home[playerIdx] : frames[idx + 2].away[playerIdx])
+    : target
+  const segment = pointDist(current, target)
+  const prevSegment = pointDist(prev, current)
+  const nextSegment = pointDist(target, after)
+  const abnormalJump = segment > Math.max(10, prevSegment * 2.6 + 2, nextSegment * 2.6 + 2)
+  if (abnormalJump) return [lerp(current[0], target[0], t), lerp(current[1], target[1], t)]
+  return [
+    catmullRom(prev[0], current[0], target[0], after[0], t),
+    catmullRom(prev[1], current[1], target[1], after[1], t),
+  ]
+}
 function extractHighlights(frames: ReplayFrame[], header: ReplayHeader | null): Clip[] {
   const clips: Clip[] = []
   for (let i = 0; i < frames.length; i++) {
@@ -69,6 +113,19 @@ function resolveReplayFileUrl(url: string): string {
   return url
 }
 
+function goalLabel(goal?: string | null): string {
+  if (!goal) return '无'
+  const labels: Record<string, string> = {
+    hold_for_opportunity: '控球找机会',
+    cut_inside_to_shoot: '内切寻找射门',
+    release_pressure_with_layoff: '受压回做',
+    wide_hold_for_overlap: '等待套边',
+    arc_arrival_for_cutback: '弧顶接应',
+    attack_far_post: '后点包抄',
+  }
+  return labels[goal] || goal
+}
+
 export default function ReplayHighlights({ replayUrl }: Props) {
   const canvasRef = useRef<HTMLCanvasElement>(null)
   const [header, setHeader] = useState<ReplayHeader | null>(null)
@@ -81,6 +138,7 @@ export default function ReplayHighlights({ replayUrl }: Props) {
   const [fullReplay, setFullReplay] = useState(false)
   const [speed, setSpeed] = useState(1)
   const [singleClip, setSingleClip] = useState(false)
+  const [selectedPlayer, setSelectedPlayer] = useState<SelectedPlayer>(null)
 
   const playingRef = useRef(false)
   const frameIdxRef = useRef(0)
@@ -94,6 +152,7 @@ export default function ReplayHighlights({ replayUrl }: Props) {
   const clipsRef = useRef<Clip[]>([])
   const fullReplayRef = useRef(false)
   const singleClipRef = useRef(false)
+  const selectedPlayerRef = useRef<SelectedPlayer>(null)
 
   useEffect(() => { playingRef.current = playing }, [playing])
   useEffect(() => { frameIdxRef.current = frameIdx }, [frameIdx])
@@ -104,6 +163,7 @@ export default function ReplayHighlights({ replayUrl }: Props) {
   useEffect(() => { clipsRef.current = clips }, [clips])
   useEffect(() => { fullReplayRef.current = fullReplay }, [fullReplay])
   useEffect(() => { singleClipRef.current = singleClip }, [singleClip])
+  useEffect(() => { selectedPlayerRef.current = selectedPlayer }, [selectedPlayer])
 
   useEffect(() => {
     fetch(resolveReplayFileUrl(replayUrl)).then(r => r.text()).then(text => {
@@ -140,9 +200,8 @@ export default function ReplayHighlights({ replayUrl }: Props) {
 
     let home = frame.home.map(p => [...p] as [number, number]), away = frame.away.map(p => [...p] as [number, number])
     if (idx < f.length - 1 && interpT > 0 && !frame.cut && !f[idx + 1].cut) {
-      const nxt = f[idx + 1]
-      home = frame.home.map((p, i) => [lerp(p[0], nxt.home[i][0], interpT), lerp(p[1], nxt.home[i][1], interpT)] as [number, number])
-      away = frame.away.map((p, i) => [lerp(p[0], nxt.away[i][0], interpT), lerp(p[1], nxt.away[i][1], interpT)] as [number, number])
+      home = frame.home.map((_, i) => smoothPoint(f, idx, 'home', i, interpT))
+      away = frame.away.map((_, i) => smoothPoint(f, idx, 'away', i, interpT))
     }
 
     // GK lateral dive on SAVE/GOAL (move horizontally to ball intercept point)
@@ -193,12 +252,14 @@ export default function ReplayHighlights({ replayUrl }: Props) {
     ctx.fillRect((CANVAS_W-goalW)/2, 0, goalW, 3); ctx.fillRect((CANVAS_W-goalW)/2, CANVAS_H-3, goalW, 3)
 
     // Players
+    const selected = selectedPlayerRef.current
     for (let i = 0; i < home.length; i++) {
       const sx = home[i][0]*SCALE_X, sy = home[i][1]*SCALE_Y
       const hl = frame.ball_team === 'home' && frame.ball_holder === i
+      const selectedDot = selected?.team === 'home' && selected.idx === i
       ctx.beginPath(); ctx.arc(sx, sy, PLAYER_R, 0, Math.PI*2)
       ctx.fillStyle = hl ? '#fbbf24' : '#4fc3f7'; ctx.fill()
-      ctx.strokeStyle = hl ? '#fff' : 'rgba(255,255,255,0.4)'; ctx.lineWidth = hl ? 2 : 1; ctx.stroke()
+      ctx.strokeStyle = selectedDot ? '#fff' : hl ? '#fff' : 'rgba(255,255,255,0.4)'; ctx.lineWidth = selectedDot ? 3 : hl ? 2 : 1; ctx.stroke()
       ctx.font = '8px sans-serif'; ctx.textAlign = 'center'
       ctx.fillStyle = COLOR_MAP[h.home.players[i]?.color||'b']||'#4fc3f7'
       ctx.fillText(h.home.players[i]?.name.split(' ').pop()||'', sx, sy-PLAYER_R-2)
@@ -206,9 +267,10 @@ export default function ReplayHighlights({ replayUrl }: Props) {
     for (let i = 0; i < away.length; i++) {
       const sx = away[i][0]*SCALE_X, sy = away[i][1]*SCALE_Y
       const hl = frame.ball_team === 'away' && frame.ball_holder === i
+      const selectedDot = selected?.team === 'away' && selected.idx === i
       ctx.beginPath(); ctx.arc(sx, sy, PLAYER_R, 0, Math.PI*2)
       ctx.fillStyle = hl ? '#fbbf24' : '#ef5350'; ctx.fill()
-      ctx.strokeStyle = hl ? '#fff' : 'rgba(255,255,255,0.4)'; ctx.lineWidth = hl ? 2 : 1; ctx.stroke()
+      ctx.strokeStyle = selectedDot ? '#fff' : hl ? '#fff' : 'rgba(255,255,255,0.4)'; ctx.lineWidth = selectedDot ? 3 : hl ? 2 : 1; ctx.stroke()
       ctx.font = '8px sans-serif'; ctx.textAlign = 'center'
       ctx.fillStyle = COLOR_MAP[h.away.players[i]?.color||'r']||'#ef5350'
       ctx.fillText(h.away.players[i]?.name.split(' ').pop()||'', sx, sy-PLAYER_R-2)
@@ -284,6 +346,42 @@ export default function ReplayHighlights({ replayUrl }: Props) {
   useEffect(() => { if (!playing) drawFrame(frameIdx, 0) }, [frameIdx, playing, drawFrame])
 
   const goToClip = (idx: number) => { setPlaying(false); setTimeout(() => { setCurrentClip(idx); setFrameIdx(clips[idx].startIdx); setSingleClip(true); setPlaying(true) }, 0) }
+  const currentFrame = frames[frameIdx]
+  const selectedMeta = selectedPlayer && header
+    ? selectedPlayer.team === 'home'
+      ? header.home.players[selectedPlayer.idx]
+      : header.away.players[selectedPlayer.idx]
+    : null
+  const selectedGoal = selectedPlayer && currentFrame
+    ? selectedPlayer.team === 'home'
+      ? currentFrame.home_player_goals?.[selectedPlayer.idx]
+      : currentFrame.away_player_goals?.[selectedPlayer.idx]
+    : null
+  const handleCanvasClick = (event: React.MouseEvent<HTMLCanvasElement>) => {
+    if (!currentFrame) return
+    const rect = event.currentTarget.getBoundingClientRect()
+    const scaleX = CANVAS_W / rect.width
+    const scaleY = CANVAS_H / rect.height
+    const x = (event.clientX - rect.left) * scaleX
+    const y = (event.clientY - rect.top) * scaleY
+    type HitPlayer = { team: 'home' | 'away'; idx: number; dist: number }
+    const hits: HitPlayer[] = []
+    const scan = (team: 'home' | 'away', points: [number, number][]) => {
+      points.forEach((p, idx) => {
+        const sx = p[0] * SCALE_X
+        const sy = p[1] * SCALE_Y
+        const dist = Math.hypot(x - sx, y - sy)
+        if (dist <= PLAYER_R + 8) hits.push({ team, idx, dist })
+      })
+    }
+    scan('home', currentFrame.home)
+    scan('away', currentFrame.away)
+    const best = hits.sort((a, b) => a.dist - b.dist)[0]
+    if (best) {
+      setSelectedPlayer({ team: best.team, idx: best.idx })
+      setPlaying(false)
+    }
+  }
 
   if (loading) return <div className="text-center text-slate-500 text-sm py-8">加载回放数据...</div>
   if (clips.length === 0 && !fullReplay) return (
@@ -295,7 +393,17 @@ export default function ReplayHighlights({ replayUrl }: Props) {
 
   return (
     <div className="flex flex-col items-center gap-3">
-      <canvas ref={canvasRef} width={CANVAS_W} height={CANVAS_H} className="rounded-lg border border-slate-700 shadow-lg" style={{ width: '100%', maxWidth: 300 }} />
+      <div className="w-full max-w-[300px] rounded-lg border border-slate-700 bg-slate-950/70 px-3 py-2 text-xs text-slate-300">
+        {selectedMeta ? (
+          <div className="flex items-center justify-between gap-2">
+            <span className="font-semibold text-slate-100 truncate">{selectedMeta.pos} {selectedMeta.name}</span>
+            <span className="shrink-0 text-accent">{goalLabel(selectedGoal)}</span>
+          </div>
+        ) : (
+          <div className="text-slate-500">点击球员圆点查看当前 goal</div>
+        )}
+      </div>
+      <canvas ref={canvasRef} width={CANVAS_W} height={CANVAS_H} onClick={handleCanvasClick} className="rounded-lg border border-slate-700 shadow-lg cursor-pointer" style={{ width: '100%', maxWidth: 300 }} />
       <div className="flex items-center gap-2">
         <Button variant="ghost" size="sm" onClick={() => setFrameIdx(Math.max(currentFrames.start, frameIdx-5))}><SkipBack size={14} /></Button>
         <Button variant="outline" size="sm" onClick={() => setPlaying(!playing)}>{playing ? <Pause size={14} /> : <Play size={14} />}</Button>

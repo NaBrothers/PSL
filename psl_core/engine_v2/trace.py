@@ -47,11 +47,13 @@ class MatchTrace:
         phase: str,
         chosen,
         alternatives: List = None,
+        pos=None,
+        goal=None,
     ):
         """Log a structured decision without mixing it into match events."""
         if not self.enabled:
             return
-        self.decisions.append({
+        payload = {
             "tick": tick,
             "team": team,
             "player_idx": player_idx,
@@ -62,7 +64,12 @@ class MatchTrace:
                 item.to_dict() if hasattr(item, "to_dict") else item
                 for item in (alternatives or [])
             ],
-        })
+        }
+        if pos is not None:
+            payload["pos"] = list(pos)
+        if goal is not None:
+            payload["goal"] = goal
+        self.decisions.append(payload)
 
     def to_dict(self) -> Dict:
         """Export trace as dictionary."""

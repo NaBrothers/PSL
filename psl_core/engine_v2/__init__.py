@@ -22,6 +22,7 @@ from .stats import MatchStats
 from .trace import MatchTrace
 from .rating import compute_player_rating, compute_team_ratings
 from .replay_adapter import build_header, build_frame
+from .goal import PlayerGoal, GoalSwitchContext, GoalSelection, goal_switch_cost, select_goal
 
 __all__ = [
     "MatchV2",
@@ -53,4 +54,9 @@ __all__ = [
     "compute_gk_save_probability",
     "should_rush_out",
     "choose_distribution",
+    "PlayerGoal",
+    "GoalSwitchContext",
+    "GoalSelection",
+    "goal_switch_cost",
+    "select_goal",
 ]

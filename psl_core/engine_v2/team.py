@@ -14,6 +14,11 @@ if TYPE_CHECKING:
     from .pitch import Pitch
 
 
+def _smoothstep(edge0: float, edge1: float, value: float) -> float:
+    t = max(0.0, min(1.0, (value - edge0) / max(1e-6, edge1 - edge0)))
+    return t * t * (3.0 - 2.0 * t)
+
+
 class TeamPhase(Enum):
     """Team phase state for tactical decisions."""
     ATTACKING = "attacking"
@@ -171,30 +176,182 @@ class Team:
                     # Preserve line identity first. The ball nudges each line
                     # forward differently: forwards threaten the last line,
                     # midfielders connect, defenders support behind midfield.
-                    if player.is_attacker:
-                        push = max(0.0, ball_progress - base_progress) * 0.34
-                        progress = base_progress + push + 0.04
-                    elif player.is_midfielder:
-                        push = max(0.0, ball_progress - base_progress + 0.05) * 0.30
-                        progress = base_progress + push + 0.03
-                    else:
-                        push = max(0.0, ball_progress - base_progress + 0.10) * 0.22
-                        progress = base_progress + push + 0.02
-                        # Back line can support high attacks, but should remain
-                        # a covering line rather than joining the forwards.
-                        progress = min(progress, 0.58 + ball_progress * 0.10)
+                    advance_pressure = max(0.0, ball_progress - base_progress)
+                    width_ratio = min(1.0, abs(base_width_offset) / (width / 2.0))
+                    role_side = base_width_offset / max(1.0, width / 2.0)
+                    ball_side = side_shift / max(1.0, width / 2.0)
+                    same_side = max(0.0, min(1.0, role_side * ball_side))
+                    weak_side = max(0.0, min(1.0, -role_side * ball_side))
+                    advanced_role = max(0.0, min(1.0, (base_progress - 0.42) / 0.38))
+                    support_role = max(0.0, min(1.0, (base_progress - 0.22) / 0.42))
+                    second_line_role = (
+                        _smoothstep(0.42, 0.54, base_progress)
+                        * (1.0 - _smoothstep(0.62, 0.74, base_progress))
+                    )
+
+                    # Advanced and wide anchors naturally attack more space as
+                    # the ball progresses. This keeps the logic geometric:
+                    # wide forwards overlap because their base width/depth says
+                    # they are wide and advanced, not because of a position name.
+                    final_third_pressure = max(0.0, ball_progress - 0.50)
+                    push = advance_pressure * (0.18 + 0.30 * advanced_role + 0.14 * width_ratio)
+                    box_arrival = final_third_pressure * (0.58 * advanced_role + 0.20 * width_ratio)
+                    wide_midfield_support = (
+                        final_third_pressure
+                        * width_ratio
+                        * (1.0 - advanced_role)
+                        * _smoothstep(0.38, 0.58, base_progress)
+                        * 0.34
+                    )
+                    wide_midfield_outlet = (
+                        _smoothstep(0.56, 0.74, ball_progress)
+                        * width_ratio
+                        * (1.0 - advanced_role)
+                        * _smoothstep(0.38, 0.58, base_progress)
+                        * 0.16
+                    )
+                    second_line_arrival = (
+                        final_third_pressure
+                        * (1.0 - advanced_role)
+                        * _smoothstep(0.38, 0.58, base_progress)
+                        * (0.10 + 0.10 * (1.0 - width_ratio))
+                    )
+                    arc_support_pressure = (
+                        _smoothstep(0.78, 0.90, ball_progress)
+                        * second_line_role
+                        * (1.0 - 0.45 * _smoothstep(0.56, 0.84, width_ratio))
+                    )
+                    arc_support_arrival = arc_support_pressure * (
+                        0.075 + 0.055 * (1.0 - width_ratio) + 0.035 * weak_side
+                    )
+                    weak_side_arrival = (
+                        final_third_pressure
+                        * width_ratio
+                        * weak_side
+                        * _smoothstep(0.38, 0.68, base_progress)
+                        * (0.10 + 0.18 * advanced_role)
+                    )
+                    wide_arrival_depth = (
+                        _smoothstep(0.70, 0.88, ball_progress)
+                        * width_ratio
+                        * _smoothstep(0.44, 0.64, base_progress)
+                        * (0.20 + 0.18 * weak_side + 0.10 * same_side)
+                    )
+                    line_stretch = max(0.0, ball_progress - 0.66) * (0.10 + 0.16 * advanced_role)
+                    progress = (
+                        base_progress
+                        + push
+                        + box_arrival
+                        + wide_midfield_support
+                        + wide_midfield_outlet
+                        + second_line_arrival
+                        + arc_support_arrival
+                        + weak_side_arrival
+                        + wide_arrival_depth
+                        + line_stretch
+                        + 0.015
+                        + 0.045 * advanced_role
+                    )
+
+                    # Cover line: deeper roles support attacks but remain a
+                    # rest-defense layer behind midfield.
+                    cover_cap = 0.54 + ball_progress * (0.08 + 0.08 * support_role)
+                    if advanced_role < 0.35:
+                        wide_support_cap = (
+                            final_third_pressure
+                            * width_ratio
+                            * _smoothstep(0.38, 0.58, base_progress)
+                            * 0.18
+                        )
+                        second_line_cap = (
+                            final_third_pressure
+                            * _smoothstep(0.38, 0.58, base_progress)
+                            * (0.08 + 0.10 * (1.0 - width_ratio) + 0.08 * weak_side)
+                        )
+                        arc_support_cap = arc_support_pressure * (
+                            0.070 + 0.060 * (1.0 - width_ratio) + 0.035 * weak_side
+                        )
+                        wide_arrival_cap = (
+                            _smoothstep(0.70, 0.88, ball_progress)
+                            * width_ratio
+                            * _smoothstep(0.44, 0.64, base_progress)
+                            * (0.10 + 0.12 * weak_side + 0.06 * same_side)
+                        )
+                        progress = min(
+                            progress,
+                            cover_cap
+                            + wide_support_cap
+                            + wide_midfield_outlet
+                            + second_line_cap
+                            + arc_support_cap
+                            + wide_arrival_cap,
+                        )
 
                     progress = max(0.08, min(0.94, progress))
-                    y = width / 2.0 + base_width_offset * 1.05 + side_shift * 0.18
+                    width_expansion = (
+                        1.00
+                        + (0.16 * same_side + 0.05 * (1.0 - same_side - weak_side)) * ball_progress
+                        + (0.14 * same_side + 0.04 * (1.0 - same_side - weak_side)) * advanced_role
+                        - 0.26 * weak_side * _smoothstep(0.62, 0.88, ball_progress)
+                    )
+                    width_expansion = max(0.62, min(1.32, width_expansion))
+                    overlap_width = base_width_offset * width_expansion
+                    half_space_pressure = _smoothstep(0.58, 0.82, ball_progress)
+                    half_space_pull = -base_width_offset * half_space_pressure * (
+                        0.16 + 0.48 * weak_side + 0.08 * (1.0 - same_side)
+                    )
+                    far_post_tuck = -base_width_offset * (
+                        _smoothstep(0.72, 0.88, ball_progress)
+                        * width_ratio
+                        * weak_side
+                        * (0.16 + 0.12 * advanced_role)
+                    )
+                    second_line_tuck = -base_width_offset * (
+                        final_third_pressure
+                        * (1.0 - advanced_role)
+                        * _smoothstep(0.38, 0.58, base_progress)
+                        * (0.16 + 0.22 * weak_side)
+                    )
+                    arc_support_tuck = -base_width_offset * arc_support_pressure * (
+                        0.10 + 0.18 * (1.0 - width_ratio) + 0.08 * weak_side
+                    )
+                    wide_midfield_half_space_tuck = -base_width_offset * (
+                        _smoothstep(0.66, 0.80, ball_progress)
+                        * width_ratio
+                        * (1.0 - advanced_role)
+                        * _smoothstep(0.38, 0.58, base_progress)
+                        * (0.62 + 0.42 * same_side + 0.18 * weak_side)
+                    )
+                    y = (
+                        width / 2.0
+                        + overlap_width
+                        + half_space_pull
+                        + far_post_tuck
+                        + second_line_tuck
+                        + arc_support_tuck
+                        + wide_midfield_half_space_tuck
+                        + side_shift * (0.12 + 0.08 * width_ratio)
+                    )
+                    wide_midfield_half_space = (
+                        _smoothstep(0.66, 0.80, ball_progress)
+                        * width_ratio
+                        * (1.0 - advanced_role)
+                        * _smoothstep(0.38, 0.58, base_progress)
+                    )
+                    if wide_midfield_half_space > 0.0:
+                        target_offset = base_width_offset * 0.42
+                        target_y = width / 2.0 + target_offset
+                        y = y * (1.0 - 0.75 * wide_midfield_half_space) + target_y * (0.75 * wide_midfield_half_space)
 
                 # Soft offside-line awareness for attacking anchors. Forwards
                 # can still threaten the line, but their default support point
                 # should not live several meters beyond it.
                 if offside_line is not None and not player.is_goalkeeper:
                     line_progress = offside_line / length if self.attacking_right else (length - offside_line) / length
-                    buffer = 0.03 if player.is_attacker else 0.06
-                    if progress > line_progress - buffer:
-                        progress = progress * 0.25 + (line_progress - buffer) * 0.75
+                    buffer = 0.060 - 0.020 * max(0.0, min(1.0, (base_progress - 0.42) / 0.38))
+                    onside_progress = line_progress - buffer
+                    if progress > onside_progress:
+                        progress = min(progress * 0.15 + onside_progress * 0.85, onside_progress)
                         progress = max(0.10, min(0.94, progress))
 
             x = progress * length if self.attacking_right else (1.0 - progress) * length

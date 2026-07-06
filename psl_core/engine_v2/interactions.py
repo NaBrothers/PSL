@@ -52,6 +52,7 @@ def detect_duel(
     defender_actions: dict,
     config: "EngineConfig",
     defender_new_positions: dict = None,
+    carry_target: Tuple[float, float] = None,
 ) -> Optional[Interaction]:
     """Detect if a 1v1 duel should occur this tick.
 
@@ -63,14 +64,38 @@ def detect_duel(
 
     if defender_new_positions is None:
         defender_new_positions = {}
+    if carry_target is None:
+        carry_target = holder.pos
+
+    path_dx = carry_target[0] - holder.pos[0]
+    path_dy = carry_target[1] - holder.pos[1]
+    path_len2 = path_dx * path_dx + path_dy * path_dy
 
     for defender in defenders:
         action = defender_actions.get(defender.index)
         d_now = math.sqrt((holder.pos[0] - defender.pos[0]) ** 2 + (holder.pos[1] - defender.pos[1]) ** 2)
         new_pos = defender_new_positions.get(defender.index, defender.pos)
         d_next = math.sqrt((holder.pos[0] - new_pos[0]) ** 2 + (holder.pos[1] - new_pos[1]) ** 2)
-        control_range = config.tackle_range * (1.0 if action == "tackle" else 0.06)
-        d = min(d_now, d_next)
+        d_path = d_next
+        if path_len2 > 0.01:
+            rel_x = new_pos[0] - holder.pos[0]
+            rel_y = new_pos[1] - holder.pos[1]
+            proj = max(0.0, min(1.0, (rel_x * path_dx + rel_y * path_dy) / path_len2))
+            closest_x = holder.pos[0] + path_dx * proj
+            closest_y = holder.pos[1] + path_dy * proj
+            d_path = math.sqrt((new_pos[0] - closest_x) ** 2 + (new_pos[1] - closest_y) ** 2)
+        if action == "tackle":
+            intent_factor = 1.0
+        elif action == "approach":
+            intent_factor = 0.62
+        elif action in ("block_lane", "mark_runner"):
+            intent_factor = 0.36
+        else:
+            intent_factor = 0.16
+        speed_factor = 0.82 + 0.36 * (defender.abilities.get("Speed", 50) / 100.0)
+        defence_factor = 0.82 + 0.30 * (defender.abilities.get("Defence", 50) / 100.0)
+        control_range = config.tackle_range * intent_factor * speed_factor * defence_factor
+        d = min(d_now, d_next, d_path)
         if d < control_range:
             return Interaction(
                 interaction_type=InteractionType.DUEL,

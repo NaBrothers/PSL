@@ -82,6 +82,7 @@ class Ball:
 
     # Contested ball info (Phase 2)
     contested_ticks: int = 0  # how many ticks ball has been contested
+    loose_velocity: Tuple[float, float] = (0.0, 0.0)  # residual roll while loose
 
     def set_held(self, player_idx: int, team: str, position: Tuple[float, float]):
         """Ball is now held by a player."""
@@ -95,6 +96,7 @@ class Ball:
             else BallOwnership.AWAY_POSSESSED
         )
         self.contested_ticks = 0
+        self.loose_velocity = (0.0, 0.0)
 
     def set_flight(self, flight: BallFlight):
         """Ball is now in flight."""
@@ -103,6 +105,7 @@ class Ball:
         self.holder_idx = -1
         self.holder_team = ""
         # Ownership stays with passer's team during flight
+        self.loose_velocity = (0.0, 0.0)
 
     def set_dead(self, reason: str, restart_team: str, restart_ticks: int = 2):
         """Ball is dead (out of play)."""
@@ -114,8 +117,9 @@ class Ball:
         self.holder_idx = -1
         self.holder_team = ""
         self.contested_ticks = 0
+        self.loose_velocity = (0.0, 0.0)
 
-    def set_contested(self, position: Tuple[float, float]):
+    def set_contested(self, position: Tuple[float, float], velocity: Tuple[float, float] = (0.0, 0.0)):
         """Ball is loose / contested."""
         self.state = BallState.CONTESTED
         self.position = position
@@ -124,6 +128,7 @@ class Ball:
         self.flight = None
         self.ownership = BallOwnership.CONTESTED
         self.contested_ticks = 0
+        self.loose_velocity = velocity
 
     def tick_flight(self) -> bool:
         """Advance flight by one tick. Returns True if flight completed."""
@@ -142,4 +147,10 @@ class Ball:
     def tick_contested(self) -> int:
         """Increment contested timer. Returns current contested ticks."""
         self.contested_ticks += 1
+        vx, vy = self.loose_velocity
+        if abs(vx) > 0.01 or abs(vy) > 0.01:
+            self.position = (self.position[0] + vx, self.position[1] + vy)
+            self.loose_velocity = (vx * 0.74, vy * 0.74)
+        else:
+            self.loose_velocity = (0.0, 0.0)
         return self.contested_ticks

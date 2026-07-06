@@ -73,7 +73,7 @@ class EngineConfig:
     # Shot parameters
     shot_on_target_base: float = 0.50
     gk_save_base: float = 0.78
-    shot_max_distance: float = 45.0  # max effective shooting distance
+    shot_max_distance: float = 35.0  # max effective shooting distance
     shot_ideal_distance: float = 20.0  # ideal shooting distance
 
     # Pressing
@@ -83,6 +83,10 @@ class EngineConfig:
     # IQ / decision making
     iq_noise_factor: float = 1.0  # noise = (100 - IQ) / 100 * iq_noise_factor
     decision_temperature: float = 1.0  # softmax temperature base
+
+    # Goal continuity layer (disabled by default while acceptance tests mature)
+    goal_continuity_enabled: bool = True
+    goal_cut_inside_bias: float = 0.035
 
     # Formation positioning
     formation_pull_strength: float = 0.5  # how strongly players return to formation
@@ -95,8 +99,8 @@ class EngineConfig:
     interception_base_chance: float = 0.06  # base interception probability per defender in radius
 
     # Out-of-play
-    goal_kick_restart_ticks: int = 2  # ticks to wait after goal kick
-    throw_in_restart_ticks: int = 1  # ticks to wait after throw-in
+    goal_kick_restart_ticks: int = 8  # ticks to wait after goal kick
+    throw_in_restart_ticks: int = 4  # ticks to wait after throw-in
 
     # Stamina (simplified for Phase 1)
     stamina_enabled: bool = False
@@ -243,6 +247,8 @@ ENGINE_V2_CONFIG_KEYS = {
     "engine_v2.shot_max_distance": 35.0,
     "engine_v2.press_radius": 12.0,
     "engine_v2.contest_radius": 3.0,
+    "engine_v2.goal_continuity_enabled": True,
+    "engine_v2.goal_cut_inside_bias": 0.035,
 }
 
 
@@ -257,7 +263,14 @@ def load_config_from_service(config_service) -> EngineConfig:
         try:
             value = config_service.get(key)
             if value is not None and hasattr(cfg, attr_name):
-                setattr(cfg, attr_name, type(default)(value))
+                if isinstance(default, bool):
+                    if isinstance(value, str):
+                        parsed = value.strip().lower() in ("1", "true", "yes", "on")
+                    else:
+                        parsed = bool(value)
+                    setattr(cfg, attr_name, parsed)
+                else:
+                    setattr(cfg, attr_name, type(default)(value))
         except Exception:
             pass
 

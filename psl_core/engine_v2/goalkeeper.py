@@ -20,6 +20,11 @@ if TYPE_CHECKING:
     from .pitch import Pitch
 
 
+def _smoothstep(edge0: float, edge1: float, value: float) -> float:
+    t = max(0.0, min(1.0, (value - edge0) / max(1e-6, edge1 - edge0)))
+    return t * t * (3.0 - 2.0 * t)
+
+
 def compute_gk_save_probability(
     gk: "Player",
     shot_target: Tuple[float, float],
@@ -39,11 +44,15 @@ def compute_gk_save_probability(
     gk_positioning = gk.abilities.get("GK_Positioning", 50)
     gk_reaction = gk.abilities.get("GK_Reaction", 50)
 
-    # Stage 1: Positioning - position error reduces effective coverage
-    # Lower positioning = more error = lower save chance
+    # Stage 1: Positioning - position error reduces effective coverage.
+    # The keeper does not need to cover the full x distance to the goal line;
+    # shot-stopping reach is mostly lateral, with a smaller depth-position cost.
     position_error = (100 - gk_positioning) * config.gk_position_error_factor
-    # This translates to effective distance increase from ideal position
-    effective_dist = distance(gk.pos, shot_target) + position_error
+    goal_x = config.pitch_length if shot_target[0] >= config.pitch_length / 2.0 else 0.0
+    ideal_depth = goal_x - 4.5 if goal_x > 0 else 4.5
+    lateral_dist = abs(gk.pos[1] - shot_target[1])
+    depth_error = max(0.0, abs(gk.pos[0] - ideal_depth) - 2.0) * 0.35
+    effective_dist = lateral_dist + depth_error + position_error
 
     # Stage 2: Reaction - delay factor reduces save window
     # Higher reaction = smaller delay = better chance
@@ -57,15 +66,25 @@ def compute_gk_save_probability(
     # Base from config, scaled by all three stages
     base = config.gk_save_base
 
-    # Distance penalty: further shots are harder to save (relative to GK position)
-    dist_factor = max(0.2, 1.0 - effective_dist / 12.0)
+    # Target reach: shots near the post are harder, but ordinary central shots
+    # should remain highly saveable.
+    reach_factor = max(0.25, 1.0 - effective_dist / 9.0)
 
-    # Shot distance affects GK: closer shots are harder to save (less reaction time)
+    # Shot distance affects GK: close shots give less reaction time; long shots
+    # are easier to read. This is continuous, not a hard long-shot rule.
     shot_dist = distance(shot_origin, shot_target)
-    shot_speed_factor = max(0.5, min(1.0, shot_dist / 25.0))
+    reaction_window = 0.52 + 0.48 * _smoothstep(9.0, 30.0, shot_dist)
+    long_shot_read = 1.0 + 0.18 * _smoothstep(24.0, 42.0, shot_dist)
 
-    save_prob = base * (0.3 + 0.7 * saving_ability) * dist_factor * reaction_factor * shot_speed_factor
-    return max(0.05, min(0.85, save_prob))
+    save_prob = (
+        0.08
+        + base * 0.25
+        + saving_ability * 0.18
+        + reach_factor * 0.18
+        + reaction_factor * 0.08
+        + reaction_window * 0.10
+    ) * long_shot_read
+    return max(0.10, min(0.90, save_prob))
 
 
 def should_rush_out(

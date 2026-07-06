@@ -58,12 +58,22 @@ def build_frame(
     """Build a single replay frame."""
     t = round(tick * tick_duration, 1)
 
+    def player_goal(player: Player, team_side: str) -> Optional[str]:
+        if ball_team != team_side:
+            return None
+        goal = getattr(player, "current_goal", None)
+        if goal is None:
+            return None
+        return getattr(goal, "goal_type", None)
+
     frame: Dict[str, Any] = {
         "type": "frame",
         "t": t,
         "half": half,
         "home": [[round(p.pos[1], 1), round(p.pos[0], 1)] for p in home_team.players],
         "away": [[round(p.pos[1], 1), round(p.pos[0], 1)] for p in away_team.players],
+        "home_player_goals": [player_goal(p, "home") for p in home_team.players],
+        "away_player_goals": [player_goal(p, "away") for p in away_team.players],
         "ball": [round(ball_pos[1], 1), round(ball_pos[0], 1)] if ball_pos else None,
         "ball_holder": ball_holder_idx if ball_holder_idx >= 0 else None,
         "ball_team": ball_team if ball_team else None,

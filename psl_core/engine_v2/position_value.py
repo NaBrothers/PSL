@@ -14,6 +14,11 @@ if TYPE_CHECKING:
     from .pitch import Pitch
 
 
+def _smoothstep(edge0: float, edge1: float, value: float) -> float:
+    t = max(0.0, min(1.0, (value - edge0) / max(1e-6, edge1 - edge0)))
+    return t * t * (3.0 - 2.0 * t)
+
+
 def position_value(
     x: float,
     y: float,
@@ -73,9 +78,8 @@ def position_value(
     else:
         dist_to_goal = math.sqrt(x ** 2 + (y - pitch.width / 2) ** 2)
 
-    shot_zone_bonus = 1.0
-    if dist_to_goal < config.shot_max_distance:
-        shot_zone_bonus = 1.0 + 0.5 * (1.0 - dist_to_goal / config.shot_max_distance)
+    box_danger = 1.0 - _smoothstep(12.0, 24.0, dist_to_goal)
+    shot_zone_bonus = 0.86 + 0.64 * box_danger
 
     # 5. Zone weight: based on angle to goal center (central = high, byline/corner = low)
     if attacking_right:
@@ -97,11 +101,25 @@ def position_value(
     else:
         zone_weight = 1.0  # very close to goal, always high
 
-    # Extra penalty for byline area (close to goal line but wide angle)
+    # Extra penalty for byline area (close to goal line but wide angle). This
+    # is softened when team-mates occupy central box spaces, because the value
+    # then comes from cut-back/cross creation rather than shooting angle.
     if x_progress > 0.85:  # in final 15% of pitch
         y_center_dist = abs(y - pitch.width / 2) / (pitch.width / 2)
         if y_center_dist > 0.5:  # wide area near goal line
-            zone_weight *= 0.4  # byline/corner area -- low value
+            box_presence = 0.0
+            for tx, ty in teammate_positions:
+                tm_progress = tx / pitch.length if attacking_right else 1.0 - (tx / pitch.length)
+                if tm_progress > 0.78:
+                    centrality = 1.0 - min(1.0, abs(ty - pitch.width / 2) / (pitch.width / 2))
+                    box_presence = max(box_presence, centrality)
+            creation_value = _smoothstep(0.20, 0.75, box_presence)
+            zone_weight *= 0.40 + 0.38 * creation_value
+
+    # Long-range central areas are useful for circulation, but should not look
+    # nearly as valuable as entering the box.
+    if dist_to_goal > 28.0:
+        zone_weight *= 0.72 + 0.28 * (1.0 - _smoothstep(28.0, 52.0, dist_to_goal))
 
     # Combine
     value = goal_proximity * space_factor * crowding_factor * shot_zone_bonus * zone_weight
@@ -257,6 +275,12 @@ def defensive_position_value(
     """
     px, py = pos
     value = protection_value(pos, ball_pos, own_goal_x, pitch)
+    ball_goal_dist = math.sqrt((ball_pos[0] - own_goal_x) ** 2 + (ball_pos[1] - pitch.width / 2.0) ** 2)
+    box_danger = 1.0 - _smoothstep(20.0, 42.0, ball_goal_dist)
+    pos_goal_dist = math.sqrt((px - own_goal_x) ** 2 + (py - pitch.width / 2.0) ** 2)
+    centrality = 1.0 - min(1.0, abs(py - pitch.width / 2.0) / (pitch.width / 2.0))
+    box_cover = (1.0 - _smoothstep(10.0, 28.0, pos_goal_dist)) * (0.45 + 0.55 * centrality)
+    value *= 1.0 + box_danger * box_cover * 0.65
 
     # Soft pull to the player's dynamic line/slot.
     form_dist = math.sqrt((px - formation_pos[0]) ** 2 + (py - formation_pos[1]) ** 2)
@@ -294,10 +318,10 @@ def defensive_position_value(
             crowd += (1.0 - d / 12.0)
     value *= 1.0 / (1.0 + crowd * 0.75)
 
-    # Extreme ball chasing is only good for the nearest players; otherwise the
-    # value should come from protecting lanes and shape.
+    # Extreme ball chasing can still be valuable for the responsible presser;
+    # redundant crowding is already penalized above.
     ball_dist = math.sqrt((px - ball_pos[0]) ** 2 + (py - ball_pos[1]) ** 2)
     if ball_dist < 6.0:
-        value *= 0.80
+        value *= 0.94
 
     return max(0.01, min(1.2, value))
