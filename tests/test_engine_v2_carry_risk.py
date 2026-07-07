@@ -150,7 +150,10 @@ def test_nearby_support_increases_repeated_carry_opportunity_cost():
     holder.state = PlayerState.ON_BALL
     holder.possession_ticks = 7
     holder.consecutive_carries = 4
-    support = next(player for player in match.home.players if player.name == "Vitinha")
+    support = next(
+        player for player in match.home.players
+        if player.index != holder.index and player.is_midfielder
+    )
     for teammate in match.home.players:
         if teammate.index == holder.index or teammate.index == support.index or teammate.is_goalkeeper:
             continue
@@ -193,3 +196,50 @@ def test_nearby_support_increases_repeated_carry_opportunity_cost():
 
     assert with_support_details["components"]["support_nearby"] > no_support_details["components"]["support_nearby"]
     assert with_support_details["components"]["support_release_cost"] > no_support_details["components"]["support_release_cost"]
+
+
+def test_front_line_support_can_still_create_repeated_carry_opportunity_cost():
+    home_formation, home_cards = _db_cards(10001)
+    away_formation, away_cards = _db_cards(10002)
+    match = MatchV2(
+        home_cards,
+        away_cards,
+        home_formation,
+        away_formation,
+        config=EngineConfig(total_ticks=10, half_ticks=5),
+    )
+    holder = next(player for player in match.home.players if player.name == "K. Mbappé")
+    holder.pos = (88.0, 34.0)
+    holder.target_pos = holder.pos
+    holder.state = PlayerState.ON_BALL
+    holder.possession_ticks = 7
+    holder.consecutive_carries = 4
+    support = next(
+        player for player in match.home.players
+        if player.index != holder.index and not player.is_goalkeeper
+    )
+    for teammate in match.home.players:
+        if teammate.index == holder.index or teammate.index == support.index or teammate.is_goalkeeper:
+            continue
+        teammate.pos = (35.0, 8.0 + teammate.index)
+        teammate.target_pos = teammate.pos
+        teammate.tactical_anchor = teammate.pos
+    support.pos = (82.0, 39.0)
+    support.target_pos = support.pos
+    support.tactical_anchor = support.pos
+    support.base_formation_pos = (86.0, 34.0)
+    opp_positions = [opp.pos for opp in match.away.players if not opp.is_goalkeeper]
+    teammate_positions = [tm.pos for tm in match.home.players if tm.index != holder.index]
+    current_value = state_value(holder.pos, holder, match.home.players, match.away.players, match.config, match.pitch, True)
+
+    candidates = [
+        details for _, _, details in holder._score_carry_options(
+            match.config, match.pitch, True, match.away.players,
+            opp_positions, teammate_positions, match.home.players, current_value
+        )
+        if details["target"][0] > 90.0 and abs(details["target"][1] - match.pitch.width / 2.0) < 4.0
+    ]
+    details = max(candidates, key=lambda item: item["components"]["support_nearby"])
+
+    assert details["components"]["support_nearby"] > 0.0
+    assert details["components"]["support_release_cost"] > 1.0

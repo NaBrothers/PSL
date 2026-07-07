@@ -434,6 +434,7 @@ def run(
     trace_detail: str = "",
     trace_top_k: int = 5,
     trace_sample_rate: int = 1,
+    trace_include_defense: bool = False,
     goal_continuity: bool = True,
 ):
     rng = random.Random(seed)
@@ -474,12 +475,14 @@ def run(
             config.trace.detail = trace_detail
             config.trace.top_k = trace_top_k
             config.trace.sample_rate = trace_sample_rate
+            config.trace.include_defense = trace_include_defense
             if goal_continuity:
                 config.trace.include_off_ball = True
         elif goal_continuity:
             config.trace.detail = "chosen"
             config.trace.sample_rate = trace_sample_rate
             config.trace.include_off_ball = True
+            config.trace.include_defense = trace_include_defense
         random.seed(seed + i * 9973)
         match = MatchV2(home_cards, away_cards, home_formation, away_formation, config=config)
         result = match.run()
@@ -588,12 +591,18 @@ def run(
                                 if wide_attack_window:
                                     arc_x = pitch_length * 0.80 if holder_attacking_right else pitch_length * 0.20
                                     arc_pos = (arc_x, pitch_width / 2.0)
+                                    arc_band = (
+                                        arc_pos,
+                                        (arc_x, pitch_width / 2.0 - pitch_width * 0.10),
+                                        (arc_x, pitch_width / 2.0 + pitch_width * 0.10),
+                                    )
                                     attacking_side = ball_team
                                     attacking_meta = home_players if attacking_side == "home" else away_players
                                     attacking_coords = frame.get(attacking_side, [])
                                     attacking_targets = frame.get(f"{attacking_side}_targets", [])
                                     attacking_anchors = frame.get(f"{attacking_side}_anchors", [])
                                     nearest_second_line = None
+                                    nearest_second_line_band = None
                                     nearest_second_line_target = None
                                     nearest_second_line_anchor = None
                                     for idx, coord in enumerate(attacking_coords):
@@ -602,8 +611,11 @@ def run(
                                         support_group = role_group(attacking_meta[idx].get("pos", ""))
                                         if support_group not in ("CM", "WM", "AM"):
                                             continue
-                                        d = _dist(arc_pos, _xy_from_frame_coord(coord))
+                                        support_pos = _xy_from_frame_coord(coord)
+                                        d = _dist(arc_pos, support_pos)
+                                        band_d = min(_dist(point, support_pos) for point in arc_band)
                                         nearest_second_line = d if nearest_second_line is None else min(nearest_second_line, d)
+                                        nearest_second_line_band = band_d if nearest_second_line_band is None else min(nearest_second_line_band, band_d)
                                         if idx < len(attacking_targets):
                                             target_d = _dist(arc_pos, _xy_from_frame_coord(attacking_targets[idx]))
                                             nearest_second_line_target = target_d if nearest_second_line_target is None else min(nearest_second_line_target, target_d)
@@ -613,19 +625,22 @@ def run(
                                     if nearest_second_line is not None:
                                         nearest_second_line_for_arc = nearest_second_line
                                         totals["arc_second_line_dist_sum"] += nearest_second_line
+                                        totals["arc_second_line_band_dist_sum"] += nearest_second_line_band or nearest_second_line
                                         totals["arc_window_samples"] += 1
                                         if nearest_second_line < 10.0:
                                             totals["arc_second_line_close10"] += 1
-                                        if nearest_second_line_target is not None:
-                                            totals["arc_second_line_target_dist_sum"] += nearest_second_line_target
-                                            totals["arc_second_line_target_samples"] += 1
-                                            if nearest_second_line_target < 10.0:
-                                                totals["arc_second_line_target_close10"] += 1
-                                        if nearest_second_line_anchor is not None:
-                                            totals["arc_second_line_anchor_dist_sum"] += nearest_second_line_anchor
-                                            totals["arc_second_line_anchor_samples"] += 1
-                                            if nearest_second_line_anchor < 10.0:
-                                                totals["arc_second_line_anchor_close10"] += 1
+                                        if nearest_second_line_band is not None and nearest_second_line_band < 10.0:
+                                            totals["arc_second_line_band_close10"] += 1
+                                    if nearest_second_line_target is not None:
+                                        totals["arc_second_line_target_dist_sum"] += nearest_second_line_target
+                                        totals["arc_second_line_target_samples"] += 1
+                                        if nearest_second_line_target < 10.0:
+                                            totals["arc_second_line_target_close10"] += 1
+                                    if nearest_second_line_anchor is not None:
+                                        totals["arc_second_line_anchor_dist_sum"] += nearest_second_line_anchor
+                                        totals["arc_second_line_anchor_samples"] += 1
+                                        if nearest_second_line_anchor < 10.0:
+                                            totals["arc_second_line_anchor_close10"] += 1
                                 defending_side = "away" if ball_team == "home" else "home"
                                 defending_meta = away_players if ball_team == "home" else home_players
                                 defending_coords = frame.get(defending_side, [])
@@ -679,6 +694,12 @@ def run(
                                                 and nearest_arc_def > 6.0
                                             ):
                                                 totals["arc_ready_window"] += 1
+                                            if (
+                                                nearest_second_line_band is not None
+                                                and nearest_second_line_band < 10.0
+                                                and nearest_arc_def > 6.0
+                                            ):
+                                                totals["arc_band_ready_window"] += 1
                                             if nearest_second_line_for_arc is not None:
                                                 has_second_line = nearest_second_line_for_arc < 10.0
                                                 has_low_pressure = nearest_arc_def > 6.0
@@ -787,7 +808,14 @@ def run(
         for entry in trace.get("entries", []):
             if entry.get("type") != "action":
                 continue
-            action = entry.get("action")
+            raw_action = entry.get("action")
+            action = raw_action
+            if raw_action == "pass":
+                target_kind = entry.get("target_kind", "")
+                pass_type = entry.get("pass_type", "short_pass")
+                action = "pass_to_space" if target_kind == "space" else pass_type
+            elif raw_action == "receive" and entry.get("receive_kind") == "space":
+                action = "receive_space_pass"
             team_side = entry.get("team")
             player_name = entry.get("player")
             if team_side in ("home", "away") and player_name:
@@ -980,8 +1008,13 @@ def run(
             # Trace actions are logged at a tick within the current match.
             trace_half = 1 if entry.get("tick", 0) < config.half_ticks else 2
             attacking_right = _attacking_right_for_frame(team_side, trace_half)
+            receive_progress = _progress(x, attacking_right, pitch_length)
+            if receive_progress > 0.67:
+                aggregate[group]["final_third_receives"] += 1
+                side_aggregate[f"{team_side}:{group}"]["final_third_receives"] += 1
+                players[f"{player_meta.get('pos', '')}:{player_name}"]["final_third_receives"] += 1
             in_box = (
-                _progress(x, attacking_right, pitch_length) > 1.0 - 16.5 / pitch_length
+                receive_progress > 1.0 - 16.5 / pitch_length
                 and abs(y - pitch_width / 2.0) < 20.2
             )
             if in_box:
@@ -1129,6 +1162,13 @@ def run(
 
             chosen = decision.get("chosen", {}) or {}
             action_type = chosen.get("action_type", "unknown")
+            if action_type == "pass":
+                chosen_details_for_action = chosen.get("details") or {}
+                chosen_components_for_action = (chosen.get("value") or {}).get("components") or {}
+                if chosen_components_for_action.get("target_kind") == "space":
+                    action_type = "pass_to_space"
+                else:
+                    action_type = chosen_details_for_action.get("pass_type", "short_pass")
             chain_key = (team_side, player_name)
             cut_chain = pending_cut_chain.get(chain_key)
             if cut_chain and decision_tick > cut_chain["tick"]:
@@ -1159,6 +1199,30 @@ def run(
                     cut_chain["shot"] = True
                     finalize_cut_chain(chain_key, "shot")
                 elif action_type in PASS_ACTIONS or action_type == "clear":
+                    if action_type in PASS_ACTIONS:
+                        chosen_details = chosen.get("details") or {}
+                        chosen_components = (chosen.get("value") or {}).get("components") or {}
+                        chosen_target = chosen.get("target") or chosen_details.get("target")
+                        receiver_idx = chosen_details.get("target_player_idx")
+                        if receiver_idx is None:
+                            receiver_idx = chosen_details.get("intended_receiver")
+                        receiver_group = "UNKNOWN"
+                        if isinstance(receiver_idx, int) and 0 <= receiver_idx < len(players_meta):
+                            receiver_group = role_group(players_meta[receiver_idx].get("pos", ""))
+                        if isinstance(chosen_target, (list, tuple)) and len(chosen_target) >= 2:
+                            release_progress = _progress(float(chosen_target[0]), attacking_right, pitch_length)
+                            release_width = abs(float(chosen_target[1]) - pitch_width / 2.0) / max(1.0, pitch_width / 2.0)
+                            release_zone = target_zone(release_progress, release_width)
+                            aggregate[cut_chain["group"]][f"goal_cut_release_zone_{release_zone}"] += 1
+                            totals[f"goal_cut_release_zone_{release_zone}"] += 1
+                            aggregate[cut_chain["group"]]["goal_cut_release_target_progress_sum"] += release_progress
+                            aggregate[cut_chain["group"]]["goal_cut_release_target_width_sum"] += release_width
+                            totals["goal_cut_release_target_progress_sum"] += release_progress
+                            totals["goal_cut_release_target_width_sum"] += release_width
+                        aggregate[cut_chain["group"]][f"goal_cut_release_to_{receiver_group}"] += 1
+                        totals[f"goal_cut_release_to_{receiver_group}"] += 1
+                        aggregate[cut_chain["group"]][f"goal_cut_release_kind_{chosen_components.get('target_kind', action_type)}"] += 1
+                        totals[f"goal_cut_release_kind_{chosen_components.get('target_kind', action_type)}"] += 1
                     finalize_cut_chain(chain_key, "release")
                 elif cut_chain.get("steps", 0) >= 4:
                     finalize_cut_chain(chain_key, "horizon")
@@ -1286,6 +1350,11 @@ def run(
                     converted_action = "other"
                 totals[f"goal_action_{goal_type_for_action}_{converted_action}"] += 1
                 aggregate[group][f"goal_action_{goal_type_for_action}_{converted_action}"] += 1
+                goal_context_for_action = goal_info_for_action.get("context", {}) if isinstance(goal_info_for_action, dict) else {}
+                goal_phase_for_action = goal_context_for_action.get("phase", "") if isinstance(goal_context_for_action, dict) else ""
+                if goal_phase_for_action:
+                    totals[f"goal_action_{goal_type_for_action}_{goal_phase_for_action}_{converted_action}"] += 1
+                    aggregate[group][f"goal_action_{goal_type_for_action}_{goal_phase_for_action}_{converted_action}"] += 1
                 if goal_type_for_action == "cut_inside_to_shoot" and action_type == "carry":
                     chosen_components = (chosen.get("value") or {}).get("components") or {}
                     if isinstance(chosen_target, (list, tuple)) and len(chosen_target) >= 2:
@@ -1389,9 +1458,76 @@ def run(
             candidate_scores = defaultdict(float)
             candidate_counts = Counter()
             best_by_action = {}
+            through_candidate_seen = False
+            byline_candidate_seen = False
+            best_through_score = 0.0
+            best_byline_score = 0.0
+            chosen_through_candidate = False
+            chosen_byline_candidate = False
             for item in [chosen] + list(decision.get("alternatives", []) or []):
                 item_action = item.get("action_type", "unknown")
+                item_components = (item.get("value") or {}).get("components") or {}
+                item_target = item.get("target") or (item.get("details") or {}).get("target")
+                item_target_progress = None
+                item_target_width = None
+                if isinstance(item_target, (list, tuple)) and len(item_target) >= 2:
+                    item_target_progress = _progress(float(item_target[0]), attacking_right, pitch_length)
+                    item_target_width = abs(float(item_target[1]) - pitch_width / 2.0) / max(1.0, pitch_width / 2.0)
+                if item_action == "pass":
+                    item_details = item.get("details") or {}
+                    if item_components.get("target_kind") == "space":
+                        item_action = "pass_to_space"
+                    else:
+                        item_action = item_details.get("pass_type", "short_pass")
                 score = (item.get("value") or {}).get("score")
+                if item_action in PASS_ACTIONS and isinstance(score, (int, float)):
+                    high_threat = float(item_components.get("high_threat_space", 0.0) or 0.0)
+                    final_comb = float(item_components.get("final_third_combination", 0.0) or 0.0)
+                    success_prob = float(item_components.get("success_prob", 0.0) or 0.0)
+                    receiver_pressure = float(item_components.get("receiver_pressure", 0.0) or 0.0)
+                    lane_risk = float(item_components.get("lane_risk", 0.0) or 0.0)
+                    progress_gain = float(item_components.get("progress_gain", 0.0) or 0.0)
+                    target_kind = str(item_components.get("target_kind", ""))
+                    is_through_shape = (
+                        target_kind == "space"
+                        and item_target_progress is not None
+                        and item_target_width is not None
+                        and item_target_progress >= 0.70
+                        and item_target_width <= 0.54
+                        and progress_gain >= 0.045
+                        and high_threat > 0.0
+                    )
+                    is_byline_shape = (
+                        decision_progress >= 0.82
+                        and decision_width >= 0.48
+                        and item_target_progress is not None
+                        and item_target_width is not None
+                        and item_target_progress >= 0.82
+                        and item_target_width <= 0.62
+                        and max(high_threat, final_comb) > 0.0
+                    )
+                    if is_through_shape:
+                        through_candidate_seen = True
+                        best_through_score = max(best_through_score, float(score))
+                        aggregate[group]["through_candidate_samples"] += 1
+                        aggregate[group]["through_candidate_score_sum"] += float(score)
+                        aggregate[group]["through_candidate_success_sum"] += success_prob
+                        aggregate[group]["through_candidate_pressure_sum"] += receiver_pressure
+                        aggregate[group]["through_candidate_lane_sum"] += lane_risk
+                        aggregate[group]["through_candidate_high_sum"] += high_threat
+                        if item is chosen:
+                            chosen_through_candidate = True
+                    if is_byline_shape:
+                        byline_candidate_seen = True
+                        best_byline_score = max(best_byline_score, float(score))
+                        aggregate[group]["byline_candidate_samples"] += 1
+                        aggregate[group]["byline_candidate_score_sum"] += float(score)
+                        aggregate[group]["byline_candidate_success_sum"] += success_prob
+                        aggregate[group]["byline_candidate_pressure_sum"] += receiver_pressure
+                        aggregate[group]["byline_candidate_lane_sum"] += lane_risk
+                        aggregate[group]["byline_candidate_high_sum"] += max(high_threat, final_comb)
+                        if item is chosen:
+                            chosen_byline_candidate = True
                 if isinstance(score, (int, float)):
                     candidate_scores[item_action] += score
                     candidate_counts[item_action] += 1
@@ -1400,6 +1536,40 @@ def run(
             for item_action, score_sum in candidate_scores.items():
                 aggregate[group][f"ft_candidate_{item_action}_score_sum"] += score_sum
                 aggregate[group][f"ft_candidate_{item_action}_samples"] += candidate_counts[item_action]
+            if through_candidate_seen:
+                aggregate[group]["through_decision_samples"] += 1
+                aggregate[group]["through_best_score_sum"] += best_through_score
+                aggregate[group][f"through_decision_chosen_{action_type}"] += 1
+                if chosen_through_candidate:
+                    aggregate[group]["through_candidate_chosen"] += 1
+            if byline_candidate_seen:
+                aggregate[group]["byline_decision_samples"] += 1
+                aggregate[group]["byline_best_score_sum"] += best_byline_score
+                aggregate[group][f"byline_decision_chosen_{action_type}"] += 1
+                if chosen_byline_candidate:
+                    aggregate[group]["byline_candidate_chosen"] += 1
+
+            if goal_type_for_action == "hold_for_opportunity":
+                goal_context = goal_info.get("context", {}) if isinstance(goal_info, dict) else {}
+                goal_age = float(goal_context.get("goal_age_ticks", 0.0) or 0.0)
+                aggregate[group]["hold_goal_decision_samples"] += 1
+                aggregate[group]["hold_goal_age_sum"] += goal_age
+                aggregate[group][f"hold_goal_chosen_{action_type}"] += 1
+                for family, action_names in (
+                    ("pass", ("pass", "short_pass", "long_pass", "pass_to_space")),
+                    ("carry", ("carry",)),
+                    ("shoot", ("shoot",)),
+                    ("hold", ("hold",)),
+                ):
+                    best_score = 0.0
+                    for action_name in action_names:
+                        if action_name in best_by_action:
+                            best_score = max(best_score, float(best_by_action[action_name][0] or 0.0))
+                    aggregate[group][f"hold_goal_best_{family}_score_sum"] += best_score
+                if goal_age >= 2.0:
+                    aggregate[group]["hold_goal_mature_samples"] += 1
+                    aggregate[group][f"hold_goal_mature_chosen_{action_type}"] += 1
+
             for item_action, (score, item) in best_by_action.items():
                 aggregate[group][f"ft_best_{item_action}_score_sum"] += score
                 aggregate[group][f"ft_best_{item_action}_samples"] += 1
@@ -1438,6 +1608,48 @@ def run(
                             aggregate[group][f"ft_best_carry_{key}_sum"] += value
                     aggregate[group]["ft_best_carry_window_component_samples"] += 1
 
+            best_second_pass = None
+            for item in [chosen] + list(decision.get("alternatives", []) or []):
+                item_action = item.get("action_type", "unknown")
+                if item_action not in PASS_ACTIONS:
+                    continue
+                score = (item.get("value") or {}).get("score")
+                if not isinstance(score, (int, float)):
+                    continue
+                components = (item.get("value") or {}).get("components") or {}
+                receiver_goal_fit = float(components.get("receiver_goal_fit", 0.0) or 0.0)
+                second_value = (
+                    float(components.get("second_line_arrival_value", 0.0) or 0.0)
+                    + float(components.get("second_line_cutback_value", 0.0) or 0.0)
+                )
+                if receiver_goal_fit < 0.35 and second_value < 0.010:
+                    continue
+                candidate_weight = score + receiver_goal_fit * 0.020 + second_value
+                if best_second_pass is None or candidate_weight > best_second_pass[0]:
+                    best_second_pass = (candidate_weight, score, receiver_goal_fit, second_value, item_action)
+            if best_second_pass is not None and isinstance(chosen_score, (int, float)):
+                _, second_score, receiver_goal_fit, second_value, second_action = best_second_pass
+                gap = chosen_score - second_score
+                aggregate[group]["ft_second_pass_candidate_samples"] += 1
+                aggregate[group]["ft_second_pass_candidate_score_sum"] += second_score
+                aggregate[group]["ft_second_pass_candidate_fit_sum"] += receiver_goal_fit
+                aggregate[group]["ft_second_pass_candidate_value_sum"] += second_value
+                aggregate[group]["ft_second_pass_gap_sum"] += gap
+                aggregate[group][f"ft_second_pass_chosen_{action_type}"] += 1
+                if action_type in PASS_ACTIONS:
+                    chosen_components = (chosen.get("value") or {}).get("components") or {}
+                    chosen_fit = float(chosen_components.get("receiver_goal_fit", 0.0) or 0.0)
+                    chosen_second = (
+                        float(chosen_components.get("second_line_arrival_value", 0.0) or 0.0)
+                        + float(chosen_components.get("second_line_cutback_value", 0.0) or 0.0)
+                    )
+                    if chosen_fit >= 0.35 or chosen_second >= 0.010:
+                        aggregate[group]["ft_second_pass_chosen_second_pass"] += 1
+                    else:
+                        aggregate[group]["ft_second_pass_chosen_other_pass"] += 1
+                if gap <= 0.0:
+                    aggregate[group]["ft_second_pass_wins_value"] += 1
+
         for key in list(pending_cut_chain.keys()):
             finalize_cut_chain(key, "open")
 
@@ -1448,6 +1660,7 @@ def structure_scorecard(totals: Counter, aggregate) -> dict:
     matches = max(1, totals["matches"])
     total_shots = max(1, sum(row["shots"] for row in aggregate.values()))
     ft_touches = max(1, sum(row["final_third_touch_frames"] for row in aggregate.values()))
+    ft_receives = max(1, sum(row["final_third_receives"] for row in aggregate.values()))
     chain3_events = sum(
         row["chain3_next_carry"]
         + row["chain3_next_pass"]
@@ -1478,7 +1691,8 @@ def structure_scorecard(totals: Counter, aggregate) -> dict:
     arc_main_role = max(arc_roles, key=arc_roles.get) if any(arc_roles.values()) else "NA"
     cut_support_samples = sum(row(group)["goal_cut_support_samples"] for group in ("W", "WM", "CM", "AM", "FW"))
     cut_support_denom = max(1, cut_support_samples)
-    return {
+    cut_release_total = max(1, totals["goal_cut_chain4_end_release"])
+    card = {
         "matches": totals["matches"],
         "goals": totals["goals"] / matches,
         "shots": totals["shots"] / matches,
@@ -1493,6 +1707,10 @@ def structure_scorecard(totals: Counter, aggregate) -> dict:
         "w_ft_touch_pct": pct(row("W")["final_third_touch_frames"], ft_touches),
         "wm_ft_touch_pct": pct(row("WM")["final_third_touch_frames"], ft_touches),
         "cm_ft_touch_pct": pct(row("CM")["final_third_touch_frames"], ft_touches),
+        "fw_ft_receive_pct": pct(row("FW")["final_third_receives"], ft_receives),
+        "w_ft_receive_pct": pct(row("W")["final_third_receives"], ft_receives),
+        "wm_ft_receive_pct": pct(row("WM")["final_third_receives"], ft_receives),
+        "cm_ft_receive_pct": pct(row("CM")["final_third_receives"], ft_receives),
         "c3p_shots": sum(r["shot_after_carry_3p"] for r in aggregate.values()),
         "chain3_carry": sum(r["chain3_next_carry"] for r in aggregate.values()),
         "chain3_pass": sum(r["chain3_next_pass"] + r["chain3_next_pass_to_space"] for r in aggregate.values()),
@@ -1509,6 +1727,7 @@ def structure_scorecard(totals: Counter, aggregate) -> dict:
         "rest_anchor_max": totals["rest_def_anchor_max_sum"] / rest_samples,
         "rest_opp_front": totals["rest_def_opp_front_sum"] / rest_front_samples,
         "arc_second_line": totals["arc_second_line_dist_sum"] / arc_samples,
+        "arc_second_line_band": totals["arc_second_line_band_dist_sum"] / arc_samples,
         "arc_second_line_target": totals["arc_second_line_target_dist_sum"] / arc_target_samples,
         "arc_second_line_anchor": totals["arc_second_line_anchor_dist_sum"] / arc_anchor_samples,
         "arc_def": totals["arc_def_dist_sum"] / arc_def_samples,
@@ -1517,6 +1736,7 @@ def structure_scorecard(totals: Counter, aggregate) -> dict:
         "arc_second_line_anchor_close_pct": pct(totals["arc_second_line_anchor_close10"], totals["arc_second_line_anchor_samples"]),
         "arc_low_pressure_pct": pct(totals["arc_low_pressure"], totals["arc_window_samples"]),
         "arc_ready_pct": pct(totals["arc_ready_window"], totals["arc_window_samples"]),
+        "arc_band_ready_pct": pct(totals["arc_band_ready_window"], totals["arc_window_samples"]),
         "arc_only_second_line_pct": pct(totals["arc_only_second_line"], totals["arc_window_samples"]),
         "arc_only_low_pressure_pct": pct(totals["arc_only_low_pressure"], totals["arc_window_samples"]),
         "arc_neither_pct": pct(totals["arc_neither_ready_part"], totals["arc_window_samples"]),
@@ -1573,12 +1793,43 @@ def structure_scorecard(totals: Counter, aggregate) -> dict:
         "goal_arc_arrival": totals["goal_arc_arrival_for_cutback"] / matches,
         "goal_wide_hold": totals["goal_wide_hold_for_overlap"] / matches,
         "goal_pressure_layoff": totals["goal_release_pressure_with_layoff"] / matches,
+        "goal_release_support": totals["goal_release_to_arriving_support"] / matches,
         "goal_hold_opportunity": totals["goal_hold_for_opportunity"] / matches,
+        "goal_through_behind": totals["goal_through_ball_behind"] / matches,
+        "goal_drive_byline": totals["goal_phase_wide_byline_attack_drive"] / matches,
+        "goal_byline_delivery": totals["goal_phase_wide_byline_attack_release"] / matches,
         "goal_far_post": totals["goal_attack_far_post"] / matches,
+        "goal_on_ball_generic": (
+            totals["goal_create_shot"]
+            + totals["goal_progress_carry"]
+            + totals["goal_protect_ball"]
+            + totals["goal_recycle"]
+            + totals["goal_switch_play"]
+            + totals["goal_through_ball"]
+            + totals["goal_clear_danger"]
+        ) / matches,
+        "goal_off_ball_generic": (
+            totals["goal_support_second_line"]
+            + totals["goal_drop_between_lines"]
+            + totals["goal_support_carrier"]
+            + totals["goal_hold_width"]
+            + totals["goal_run_behind"]
+            + totals["goal_attack_box"]
+            + totals["goal_recycle_support"]
+        ) / matches,
+        "goal_attack_box": totals["goal_attack_box"] / matches,
+        "goal_defense": (
+            totals["goal_defend_press"]
+            + totals["goal_defend_cover_lane"]
+            + totals["goal_defend_mark_runner"]
+            + totals["goal_defend_protect_box"]
+            + totals["goal_defend_recover_shape"]
+        ) / matches,
         "goal_switch_cut_inside": totals["goal_switch_cut_inside_to_shoot"] / matches,
         "goal_switch_arc_arrival": totals["goal_switch_arc_arrival_for_cutback"] / matches,
         "goal_switch_wide_hold": totals["goal_switch_wide_hold_for_overlap"] / matches,
         "goal_switch_pressure_layoff": totals["goal_switch_release_pressure_with_layoff"] / matches,
+        "goal_switch_release_support": totals["goal_switch_release_to_arriving_support"] / matches,
         "goal_switch_hold_opportunity": totals["goal_switch_hold_for_opportunity"] / matches,
         "goal_switch_far_post": totals["goal_switch_attack_far_post"] / matches,
         "goal_cut_shot": totals["goal_action_cut_inside_to_shoot_shoot"] / matches,
@@ -1587,6 +1838,10 @@ def structure_scorecard(totals: Counter, aggregate) -> dict:
         "goal_hold_hold": totals["goal_action_wide_hold_for_overlap_hold"] / matches,
         "goal_hold_pass": totals["goal_action_wide_hold_for_overlap_pass"] / matches,
         "goal_layoff_pass": totals["goal_action_release_pressure_with_layoff_pass"] / matches,
+        "goal_release_support_pass": totals["goal_action_release_to_arriving_support_pass"] / matches,
+        "goal_through_pass": totals["goal_action_through_ball_behind_pass"] / matches,
+        "goal_drive_byline_carry": totals["goal_action_wide_byline_attack_drive_carry"] / matches,
+        "goal_byline_pass": totals["goal_action_wide_byline_attack_release_pass"] / matches,
         "goal_opportunity_hold": totals["goal_action_hold_for_opportunity_hold"] / matches,
         "goal_opportunity_pass": totals["goal_action_hold_for_opportunity_pass"] / matches,
         "goal_opportunity_carry": totals["goal_action_hold_for_opportunity_carry"] / matches,
@@ -1601,6 +1856,19 @@ def structure_scorecard(totals: Counter, aggregate) -> dict:
         "goal_cut_chain4_window": totals["goal_cut_chain4_window"] / matches,
         "goal_cut_chain4_best_xg": totals["goal_cut_chain4_best_xg_sum"] / max(1, totals["goal_cut_chain4_samples"]),
         "goal_cut_chain4_best_ready": totals["goal_cut_chain4_best_ready_sum"] / max(1, totals["goal_cut_chain4_samples"]),
+        "goal_cut_chain4_end_shot": totals["goal_cut_chain4_end_shot"] / matches,
+        "goal_cut_chain4_end_release": totals["goal_cut_chain4_end_release"] / matches,
+        "goal_cut_chain4_end_horizon": totals["goal_cut_chain4_end_horizon"] / matches,
+        "goal_cut_release_target_progress": totals["goal_cut_release_target_progress_sum"] / cut_release_total,
+        "goal_cut_release_target_width": totals["goal_cut_release_target_width_sum"] / cut_release_total,
+        "goal_cut_release_to_FW": totals["goal_cut_release_to_FW"] / matches,
+        "goal_cut_release_to_WM": totals["goal_cut_release_to_WM"] / matches,
+        "goal_cut_release_to_CM": totals["goal_cut_release_to_CM"] / matches,
+        "goal_cut_release_to_AM": totals["goal_cut_release_to_AM"] / matches,
+        "goal_cut_release_zone_boxC": totals["goal_cut_release_zone_box_center"] / matches,
+        "goal_cut_release_zone_arcC": totals["goal_cut_release_zone_arc_center"] / matches,
+        "goal_cut_release_zone_fWide": totals["goal_cut_release_zone_final_wide"] / matches,
+        "goal_cut_release_zone_recycle": totals["goal_cut_release_zone_recycle"] / matches,
         "goal_cut_drive": totals["goal_phase_cut_inside_to_shoot_drive"] / matches,
         "goal_cut_finish": totals["goal_phase_cut_inside_to_shoot_finish"] / matches,
         "goal_cut_release": totals["goal_phase_cut_inside_to_shoot_release"] / matches,
@@ -1608,6 +1876,13 @@ def structure_scorecard(totals: Counter, aggregate) -> dict:
         "goal_cut_second_support_dist": sum(row(group)["goal_cut_second_line_support_dist_sum"] for group in ("W", "WM", "CM", "AM", "FW")) / cut_support_denom,
         "goal_cut_forward_support_dist": sum(row(group)["goal_cut_forward_support_dist_sum"] for group in ("W", "WM", "CM", "AM", "FW")) / cut_support_denom,
     }
+    for group in ("FW", "W", "WM", "CM", "AM", "FB"):
+        group_row = row(group)
+        card["through_candidate_decisions"] = card.get("through_candidate_decisions", 0.0) + group_row["through_decision_samples"] / matches
+        card["through_candidate_chosen"] = card.get("through_candidate_chosen", 0.0) + group_row["through_candidate_chosen"] / matches
+        card["byline_candidate_decisions"] = card.get("byline_candidate_decisions", 0.0) + group_row["byline_decision_samples"] / matches
+        card["byline_candidate_chosen"] = card.get("byline_candidate_chosen", 0.0) + group_row["byline_candidate_chosen"] / matches
+    return card
 
 
 def average_scorecards(cards: list[dict]) -> dict:
@@ -1643,6 +1918,7 @@ def print_scorecard_line(name: str, card: dict):
         f"g={card['goals']:.2f} sh={card['shots']:.2f} sot={card['sot_pct']:.1f}% pass={card['pass_pct']:.1f}% "
         f"shot% FW/W/WM/CM/DEF={card['fw_shot_pct']:.1f}/{card['w_shot_pct']:.1f}/{card['wm_shot_pct']:.1f}/{card['cm_shot_pct']:.1f}/{card['def_shot_pct']:.1f} "
         f"ft% FW/W/WM/CM={card['fw_ft_touch_pct']:.1f}/{card['w_ft_touch_pct']:.1f}/{card['wm_ft_touch_pct']:.1f}/{card['cm_ft_touch_pct']:.1f} "
+        f"ftRecv% FW/W/WM/CM={card['fw_ft_receive_pct']:.1f}/{card['w_ft_receive_pct']:.1f}/{card['wm_ft_receive_pct']:.1f}/{card['cm_ft_receive_pct']:.1f} "
         f"c3p={card['c3p_shots']:.1f} c3next C/P/S={card['chain3_carry']:.1f}/{card['chain3_pass']:.1f}/{card['chain3_shot']:.1f} "
         f"def near={card['def_nearest']:.2f} c6={card['def_close6']:.2f} c8={card['def_close8']:.2f} "
         f"rest act/tgt/anc/max/front={card['rest_actual']:.2f}/{card['rest_target']:.2f}/{card['rest_anchor']:.2f}/{card['rest_actual_max']:.2f}/{card['rest_opp_front']:.2f} "
@@ -1652,13 +1928,14 @@ def print_scorecard_line(name: str, card: dict):
         f"W={card['w_ft_shot']:.1f}/{card['w_ft_pass']:.1f}/{card['w_ft_carry']:.1f} "
         f"WM={card['wm_ft_shot']:.1f}/{card['wm_ft_pass']:.1f}/{card['wm_ft_carry']:.1f} "
         f"CM={card['cm_ft_shot']:.1f}/{card['cm_ft_pass']:.1f}/{card['cm_ft_carry']:.1f} "
-        f"goals cut/arc/hold/layoff/opp/far={card['goal_cut_inside']:.1f}/{card['goal_arc_arrival']:.1f}/{card['goal_wide_hold']:.1f}/{card['goal_pressure_layoff']:.1f}/{card['goal_hold_opportunity']:.1f}/{card['goal_far_post']:.1f} "
-        f"sw={card['goal_switch_cut_inside']:.1f}/{card['goal_switch_arc_arrival']:.1f}/{card['goal_switch_wide_hold']:.1f}/{card['goal_switch_pressure_layoff']:.1f}/{card['goal_switch_hold_opportunity']:.1f}/{card['goal_switch_far_post']:.1f} "
+        f"goals cut/arc/hold/layoff/relSup/opp/th/byD/byl/far/box={card['goal_cut_inside']:.1f}/{card['goal_arc_arrival']:.1f}/{card['goal_wide_hold']:.1f}/{card['goal_pressure_layoff']:.1f}/{card['goal_release_support']:.1f}/{card['goal_hold_opportunity']:.1f}/{card['goal_through_behind']:.1f}/{card['goal_drive_byline']:.1f}/{card['goal_byline_delivery']:.1f}/{card['goal_far_post']:.1f}/{card['goal_attack_box']:.1f} "
+        f"goalFam O/OFF/D={card['goal_on_ball_generic']:.0f}/{card['goal_off_ball_generic']:.0f}/{card['goal_defense']:.0f} "
+        f"sw={card['goal_switch_cut_inside']:.1f}/{card['goal_switch_arc_arrival']:.1f}/{card['goal_switch_wide_hold']:.1f}/{card['goal_switch_pressure_layoff']:.1f}/{card['goal_switch_release_support']:.1f}/{card['goal_switch_hold_opportunity']:.1f}/{card['goal_switch_far_post']:.1f} "
         f"gAct cut S/C/P={card['goal_cut_shot']:.1f}/{card['goal_cut_carry']:.1f}/{card['goal_cut_pass']:.1f} "
         f"cutNext S/C/P={card['goal_cut_follow_shot']:.1f}/{card['goal_cut_follow_carry']:.1f}/{card['goal_cut_follow_pass']:.1f} "
         f"cut4 S/W/xG/R={card['goal_cut_chain4_shot']:.1f}/{card['goal_cut_chain4_window']:.1f}/{card['goal_cut_chain4_best_xg']:.2f}/{card['goal_cut_chain4_best_ready']:.2f} "
         f"cutPhase D/F/R={card['goal_cut_drive']:.1f}/{card['goal_cut_finish']:.1f}/{card['goal_cut_release']:.1f} "
-        f"hold H/P={card['goal_hold_hold']:.1f}/{card['goal_hold_pass']:.1f} layP={card['goal_layoff_pass']:.1f} "
+        f"hold H/P={card['goal_hold_hold']:.1f}/{card['goal_hold_pass']:.1f} layP={card['goal_layoff_pass']:.1f} relSupP={card['goal_release_support_pass']:.1f} thP={card['goal_through_pass']:.1f} bylP={card['goal_byline_pass']:.1f} "
         f"opp H/P/C={card['goal_opportunity_hold']:.1f}/{card['goal_opportunity_pass']:.1f}/{card['goal_opportunity_carry']:.1f}"
     )
 
@@ -1681,6 +1958,7 @@ def print_health_line(name: str, card: dict):
     non_fw_shot = 100.0 - card["fw_shot_pct"]
     width_touch = card["w_ft_touch_pct"] + card["wm_ft_touch_pct"]
     second_touch = card["wm_ft_touch_pct"] + card["cm_ft_touch_pct"]
+    second_receive = card["wm_ft_receive_pct"] + card["cm_ft_receive_pct"]
     rest_gap = card["rest_actual_max"] - card["rest_opp_front"]
     cut_finish_rate = card["goal_cut_shot"] / max(1.0, card["goal_cut_inside"]) * 100.0
     cut_next_shot_rate = card["goal_cut_follow_shot"] / max(1.0, card["goal_cut_carry"]) * 100.0
@@ -1691,12 +1969,23 @@ def print_health_line(name: str, card: dict):
         f"nonFW%={non_fw_shot:.1f}({_band(non_fw_shot, 12.0, 30.0)}) "
         f"wideFT%={width_touch:.1f}({_band(width_touch, 25.0, 45.0)}) "
         f"2LFT%={second_touch:.1f}({_band(second_touch, 10.0, 25.0)}) "
+        f"2LRecv%={second_receive:.1f}({_band(second_receive, 8.0, 22.0)}) "
         f"restGap={rest_gap:.2f}({_band(rest_gap, 0.18, 0.30, reverse=True)}) "
         f"arcReady={card['arc_ready_pct']:.0f}%({_band(card['arc_ready_pct'], 8.0, 20.0)}) "
+        f"arcBand={card['arc_band_ready_pct']:.0f}%({_band(card['arc_band_ready_pct'], 12.0, 28.0)}) "
+        f"arcParts={card['arc_only_second_line_pct']:.0f}/{card['arc_only_low_pressure_pct']:.0f}/{card['arc_neither_pct']:.0f} "
+        f"goalFam O/OFF/D={card['goal_on_ball_generic']:.0f}/{card['goal_off_ball_generic']:.0f}/{card['goal_defense']:.0f} "
         f"cutS={cut_finish_rate:.0f}%({_band(cut_finish_rate, 8.0, 20.0)}) "
         f"cutNextS={cut_next_shot_rate:.0f}%({_band(cut_next_shot_rate, 5.0, 15.0)}) "
         f"cut4W={cut_chain_window_rate:.0f}%({_band(cut_chain_window_rate, 20.0, 45.0)}) "
-        f"cutSup={card['goal_cut_support_dist']:.1f}/{card['goal_cut_second_support_dist']:.1f}/{card['goal_cut_forward_support_dist']:.1f}"
+        f"cutEnd S/R/H={card['goal_cut_chain4_end_shot']:.1f}/{card['goal_cut_chain4_end_release']:.1f}/{card['goal_cut_chain4_end_horizon']:.1f} "
+        f"cutBest xG/R={card['goal_cut_chain4_best_xg']:.2f}/{card['goal_cut_chain4_best_ready']:.2f} "
+        f"cutRel P/W={card['goal_cut_release_target_progress']:.2f}/{card['goal_cut_release_target_width']:.2f} "
+        f"to F/W/C/A={card['goal_cut_release_to_FW']:.1f}/{card['goal_cut_release_to_WM']:.1f}/{card['goal_cut_release_to_CM']:.1f}/{card['goal_cut_release_to_AM']:.1f} "
+        f"cutSup={card['goal_cut_support_dist']:.1f}/{card['goal_cut_second_support_dist']:.1f}/{card['goal_cut_forward_support_dist']:.1f} "
+        f"th c/ch/g/a={card.get('through_candidate_decisions', 0.0):.1f}/{card.get('through_candidate_chosen', 0.0):.1f}/{card['goal_through_behind']:.1f}/{card['goal_through_pass']:.1f} "
+        f"byD g/a={card['goal_drive_byline']:.1f}/{card['goal_drive_byline_carry']:.1f} "
+        f"byl c/ch/g/a={card.get('byline_candidate_decisions', 0.0):.1f}/{card.get('byline_candidate_chosen', 0.0):.1f}/{card['goal_byline_delivery']:.1f}/{card['goal_byline_pass']:.1f}"
     )
 
 
@@ -1710,7 +1999,7 @@ def _avg_candidate_score(row: Counter, action_type: str) -> float:
 def print_decision_report(aggregate):
     print()
     print("GOAL TRACE SUMMARY")
-    print("role cut arc hold layoff opp far | cut S/C/P next S/C/P phase D/F/R cutCarry tgtP/tgtW good/mid/wide fGain/c2shot/w2L bucket fGain good/mid/wide path good/mid/wide risk perp/threat/ctrl tgt def10/def14/nearD/support hold H/P layP opp H/P/C")
+    print("role cut arc hold layoff opp far box | cut S/C/P next S/C/P phase D/F/R cutCarry tgtP/tgtW good/mid/wide fGain/c2shot/w2L bucket fGain good/mid/wide path good/mid/wide risk perp/threat/ctrl tgt def10/def14/nearD/support hold H/P layP opp H/P/C")
     for group in ("FW", "W", "WM", "CM", "AM", "FB"):
         row = aggregate.get(group)
         if not row:
@@ -1722,6 +2011,7 @@ def print_decision_report(aggregate):
             + row["goal_release_pressure_with_layoff"]
             + row["goal_hold_for_opportunity"]
             + row["goal_attack_far_post"]
+            + row["goal_attack_box"]
         )
         if total_goals <= 0:
             continue
@@ -1732,7 +2022,8 @@ def print_decision_report(aggregate):
             f"{row['goal_wide_hold_for_overlap']:4.0f} "
             f"{row['goal_release_pressure_with_layoff']:6.0f} "
             f"{row['goal_hold_for_opportunity']:3.0f} "
-            f"{row['goal_attack_far_post']:3.0f} | "
+            f"{row['goal_attack_far_post']:3.0f} "
+            f"{row['goal_attack_box']:3.0f} | "
             f"{row['goal_action_cut_inside_to_shoot_shoot']:3.0f} "
             f"{row['goal_action_cut_inside_to_shoot_carry']:3.0f} "
             f"{row['goal_action_cut_inside_to_shoot_pass']:3.0f} "
@@ -1769,6 +2060,45 @@ def print_decision_report(aggregate):
             f"{row['goal_action_hold_for_opportunity_hold']:3.0f}/"
             f"{row['goal_action_hold_for_opportunity_pass']:3.0f}/"
             f"{row['goal_action_hold_for_opportunity_carry']:3.0f}"
+        )
+    print()
+    print("THROUGH/BYLINE CANDIDATES")
+    print("role through decisions/cand/chosen/goal/action best/score/succ/press/lane/high | byline decisions/cand/chosen/goal/action best/score/succ/press/lane/high")
+    for group in ("FW", "W", "WM", "CM", "AM", "FB"):
+        row = aggregate.get(group)
+        if not row:
+            continue
+        through_decisions = row["through_decision_samples"]
+        byline_decisions = row["byline_decision_samples"]
+        if (
+            through_decisions <= 0
+            and byline_decisions <= 0
+            and row["goal_through_ball_behind"] <= 0
+            and row["goal_phase_wide_byline_attack_release"] <= 0
+        ):
+            continue
+        through_cands = max(1, row["through_candidate_samples"])
+        through_dec = max(1, through_decisions)
+        byline_cands = max(1, row["byline_candidate_samples"])
+        byline_dec = max(1, byline_decisions)
+        print(
+            f"{group:5s} "
+            f"{through_decisions:3.0f}/{row['through_candidate_samples']:3.0f}/{row['through_candidate_chosen']:3.0f}/"
+            f"{row['goal_through_ball_behind']:3.0f}/{row['goal_action_through_ball_behind_pass']:3.0f} "
+            f"{row['through_best_score_sum']/through_dec:5.3f}/"
+            f"{row['through_candidate_score_sum']/through_cands:5.3f}/"
+            f"{row['through_candidate_success_sum']/through_cands:4.2f}/"
+            f"{row['through_candidate_pressure_sum']/through_cands:4.2f}/"
+            f"{row['through_candidate_lane_sum']/through_cands:4.2f}/"
+            f"{row['through_candidate_high_sum']/through_cands:4.2f} | "
+            f"{byline_decisions:3.0f}/{row['byline_candidate_samples']:3.0f}/{row['byline_candidate_chosen']:3.0f}/"
+            f"{row['goal_phase_wide_byline_attack_release']:3.0f}/{row['goal_action_wide_byline_attack_release_pass']:3.0f} "
+            f"{row['byline_best_score_sum']/byline_dec:5.3f}/"
+            f"{row['byline_candidate_score_sum']/byline_cands:5.3f}/"
+            f"{row['byline_candidate_success_sum']/byline_cands:4.2f}/"
+            f"{row['byline_candidate_pressure_sum']/byline_cands:4.2f}/"
+            f"{row['byline_candidate_lane_sum']/byline_cands:4.2f}/"
+            f"{row['byline_candidate_high_sum']/byline_cands:4.2f}"
         )
     print()
     print("CUT OFF-BALL SUPPORT SUMMARY")
@@ -2019,6 +2349,56 @@ def print_decision_report(aggregate):
             f"{row['ft_best_shoot_pressure_factor_sum']/shot_samples:4.2f}/"
             f"{row['ft_best_shoot_lane_factor_sum']/shot_samples:4.2f}/"
             f"{row['ft_best_shoot_distance_sum']/shot_samples:4.1f}"
+        )
+    print()
+    print("HOLD FOR OPPORTUNITY DECISIONS")
+    print("role samples age chosen P/C/S/H mature P/C/S/H best P/C/S/H")
+    for group in ("FW", "W", "WM", "CM", "AM", "FB"):
+        row = aggregate.get(group)
+        samples = row["hold_goal_decision_samples"] if row else 0
+        if not row or samples <= 0:
+            continue
+        samples = max(1, samples)
+        mature = max(1, row["hold_goal_mature_samples"])
+        print(
+            f"{group:5s} "
+            f"{samples:7.0f} "
+            f"{row['hold_goal_age_sum']/samples:4.1f} "
+            f"{row['hold_goal_chosen_pass'] + row['hold_goal_chosen_short_pass'] + row['hold_goal_chosen_long_pass'] + row['hold_goal_chosen_pass_to_space']:4.0f}/"
+            f"{row['hold_goal_chosen_carry']:1.0f}/"
+            f"{row['hold_goal_chosen_shoot']:1.0f}/"
+            f"{row['hold_goal_chosen_hold']:1.0f} "
+            f"{row['hold_goal_mature_chosen_pass'] + row['hold_goal_mature_chosen_short_pass'] + row['hold_goal_mature_chosen_long_pass'] + row['hold_goal_mature_chosen_pass_to_space']:4.0f}/"
+            f"{row['hold_goal_mature_chosen_carry']:1.0f}/"
+            f"{row['hold_goal_mature_chosen_shoot']:1.0f}/"
+            f"{row['hold_goal_mature_chosen_hold']:1.0f} "
+            f"{row['hold_goal_best_pass_score_sum']/samples:5.3f}/"
+            f"{row['hold_goal_best_carry_score_sum']/samples:5.3f}/"
+            f"{row['hold_goal_best_shoot_score_sum']/samples:5.3f}/"
+            f"{row['hold_goal_best_hold_score_sum']/samples:5.3f}"
+        )
+    print()
+    print("FINAL THIRD SECOND-LINE PASS PRESSURE")
+    print("role samples wins% chosen 2P/otherP/C/S/H avgScore/fit/2L/gap")
+    for group in ("FW", "W", "WM", "CM", "AM", "FB"):
+        row = aggregate.get(group)
+        samples = row["ft_second_pass_candidate_samples"] if row else 0
+        if not row or samples <= 0:
+            continue
+        samples = max(1, samples)
+        print(
+            f"{group:5s} "
+            f"{samples:7.0f} "
+            f"{row['ft_second_pass_wins_value']/samples*100:5.1f}% "
+            f"{row['ft_second_pass_chosen_second_pass']:4.0f}/"
+            f"{row['ft_second_pass_chosen_other_pass']:6.0f}/"
+            f"{row['ft_second_pass_chosen_carry']:1.0f}/"
+            f"{row['ft_second_pass_chosen_shoot']:1.0f}/"
+            f"{row['ft_second_pass_chosen_hold']:1.0f} "
+            f"{row['ft_second_pass_candidate_score_sum']/samples:6.3f}/"
+            f"{row['ft_second_pass_candidate_fit_sum']/samples:4.2f}/"
+            f"{row['ft_second_pass_candidate_value_sum']/samples:5.3f}/"
+            f"{row['ft_second_pass_gap_sum']/samples:5.3f}"
         )
     print()
     print("FW LAYOFF SECOND-LINE DECISIONS")
@@ -2568,6 +2948,7 @@ def main() -> int:
     parser.add_argument("--trace-detail", choices=["", "chosen", "top_candidates", "full"], default="")
     parser.add_argument("--trace-top-k", type=int, default=5)
     parser.add_argument("--trace-sample-rate", type=int, default=1)
+    parser.add_argument("--trace-include-defense", action="store_true", help="Include off-ball defense decisions in trace output")
     parser.add_argument("--no-goal-continuity", action="store_true", help="Disable Goal continuity layer for A/B baselines")
     args = parser.parse_args()
 
@@ -2602,6 +2983,7 @@ def main() -> int:
                         trace_detail=args.trace_detail,
                         trace_top_k=args.trace_top_k,
                         trace_sample_rate=args.trace_sample_rate,
+                        trace_include_defense=args.trace_include_defense,
                         goal_continuity=not args.no_goal_continuity,
                     )
                     cards.append(structure_scorecard(totals, aggregate))
@@ -2635,6 +3017,7 @@ def main() -> int:
                 trace_detail=args.trace_detail,
                 trace_top_k=args.trace_top_k,
                 trace_sample_rate=args.trace_sample_rate,
+                trace_include_defense=args.trace_include_defense,
                 goal_continuity=not args.no_goal_continuity,
             )
             print_report(totals, aggregate, players, include_players=args.players, side_aggregate=side_aggregate)
@@ -2658,6 +3041,7 @@ def main() -> int:
         trace_detail=args.trace_detail,
         trace_top_k=args.trace_top_k,
         trace_sample_rate=args.trace_sample_rate,
+        trace_include_defense=args.trace_include_defense,
         goal_continuity=not args.no_goal_continuity,
     )
     if args.health:

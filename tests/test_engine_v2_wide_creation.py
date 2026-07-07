@@ -99,7 +99,7 @@ def test_byline_carrier_prefers_box_delivery_over_extra_touch():
     )
 
     assert best_box_pass[0] > best_carry[0] * 0.90
-    assert best_box_pass[1] in ("pass", "pass_to_space")
+    assert best_box_pass[1] == "pass"
     assert target_in_box
     assert best_box_pass[2]["success_prob"] > 0.20
     assert best_box_pass[2]["components"]["final_third_combination"] > 0.7

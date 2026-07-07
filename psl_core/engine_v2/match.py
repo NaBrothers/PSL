@@ -34,6 +34,11 @@ from .rating import compute_team_ratings
 from .replay_adapter import build_header, build_frame, build_ball_flight_data
 
 
+def _smoothstep(edge0: float, edge1: float, value: float) -> float:
+    t = max(0.0, min(1.0, (value - edge0) / max(1e-6, edge1 - edge0)))
+    return t * t * (3.0 - 2.0 * t)
+
+
 @dataclass
 class MatchResult:
     """Result of a completed match."""
@@ -333,6 +338,9 @@ class MatchV2:
                 ball_carrier=holder,
                 opponents=holder_team.players,
                 teammates=opp_team.players,
+                tick=self.tick,
+                team_side=opp_team.side,
+                trace=self.trace,
             )
             defender_actions[opp.index] = action_type
             # Compute the position they would move to
@@ -363,7 +371,7 @@ class MatchV2:
                     holder, "carry", opp_team.players, defender_actions, self.config
                 )
 
-        elif holder_action_type in ("pass", "pass_to_space"):
+        elif holder_action_type == "pass":
             # Pass + defender on path = potential interception
             pass_target = holder_details.get("target", holder.pos)
             interception_interaction = detect_interception(
@@ -412,7 +420,7 @@ class MatchV2:
         elif holder_action_type == "carry":
             # No duel -- execute carry
             self._execute_carry_phase3(holder, holder_details, holder_team)
-        elif holder_action_type in ("pass", "pass_to_space"):
+        elif holder_action_type == "pass":
             # Execute pass (interception checked during flight)
             self._execute_pass_phase3(
                 holder, holder_details, holder_team, opp_team,
@@ -462,7 +470,7 @@ class MatchV2:
         interception_detected: bool,
     ):
         """Track pressure attempts separately from tackles/interceptions."""
-        successful_action = holder_action_type in ("pass", "pass_to_space", "shoot", "clear")
+        successful_action = holder_action_type in ("pass", "shoot", "clear")
         for defender in opp_team.players:
             if defender.is_goalkeeper:
                 continue
@@ -718,8 +726,10 @@ class MatchV2:
         dist = distance(passer.pos, target)
         ticks_needed = max(1, math.ceil(dist / speed))
 
-        # Determine if this is a pass_to_space
-        is_space_pass = "intended_receiver" in details and "target_player_idx" not in details
+        # Internal action and replay event are unified as pass_to_point.
+        # pass_type/target_kind remain diagnostic fields, not action types.
+        components = details.get("components", {}) if details else {}
+        intended_receiver_idx = details.get("intended_receiver", details.get("target_player_idx", -1))
 
         flight = BallFlight(
             origin=passer.pos,
@@ -729,7 +739,8 @@ class MatchV2:
             ticks_total=ticks_needed,
             passer_idx=passer.index,
             passer_team=passer_team.side,
-            is_pass_to_space=is_space_pass,
+            is_pass_to_space=False,
+            intended_receiver_idx=intended_receiver_idx,
         )
 
         self.last_passer_idx = passer.index
@@ -747,13 +758,21 @@ class MatchV2:
             if self._is_offside(p, passer_team, opp_team, pass_origin=passer.pos):
                 self._offside_flagged.add(p.index)
 
-        action_name = "pass_to_space" if is_space_pass else ("long_pass" if is_long else "short_pass")
+        intended_receiver = None
+        if 0 <= intended_receiver_idx < len(passer_team.players):
+            intended_receiver = passer_team.players[intended_receiver_idx]
+        target_kind = "space" if (
+            intended_receiver is not None
+            and distance(target, intended_receiver.pos) > 4.0
+        ) else "feet"
         self.trace.log_action(
             self.tick, passer_team.side, passer.name,
-            action_name,
+            "pass",
             target=target,
             ideal_target=ideal_target,
-            target_player=details.get("target_player_idx", details.get("intended_receiver", -1)),
+            target_player=intended_receiver_idx,
+            pass_type="long_pass" if is_long else "short_pass",
+            target_kind=target_kind,
         )
 
         self._pending_ball_flight = build_ball_flight_data(
@@ -1013,64 +1032,53 @@ class MatchV2:
                     passer_team.players[flight.passer_idx].passes_completed += 1
             return
 
-        # Pass-to-space: first-to-arrive from EITHER team gets the ball
-        if flight.is_pass_to_space:
-            self._resolve_pass_to_space_arrival(flight, target_pos, passer_team, opp_team)
+        self._resolve_pass_arrival(flight, target_pos, passer_team, opp_team)
+        return
+
+    def _resolve_pass_arrival(
+        self, flight: BallFlight, target_pos: Tuple[float, float],
+        passer_team: Team, opp_team: Team
+    ):
+        """Resolve a pass-to-point arrival as teammate/opponent/loose control."""
+        best_receiver, best_receiver_score, _ = self._best_pass_arrival_player(
+            flight,
+            target_pos,
+            passer_team,
+            intended_receiver_idx=flight.intended_receiver_idx,
+            target_occupation_weight=0.18,
+        )
+        best_opp, best_opp_score, _ = self._best_pass_arrival_player(
+            flight,
+            target_pos,
+            opp_team,
+            intended_receiver_idx=-1,
+            target_occupation_weight=0.18,
+        )
+        receiver_control = self._pass_control_strength(best_receiver_score)
+        opponent_control = self._pass_control_strength(best_opp_score)
+        loose_control = self._pass_loose_control_strength(receiver_control, opponent_control)
+        winner = max(
+            (("receiver", receiver_control), ("opponent", opponent_control), ("loose", loose_control)),
+            key=lambda item: item[1],
+        )[0]
+
+        if winner == "opponent" and best_opp:
+            best_opp.interceptions += 1
+            self._give_ball(best_opp, opp_team)
+            self.trace.log_event(
+                self.tick, "interception",
+                player=best_opp.name, team=opp_team.side,
+                context="normal_pass_arrival",
+            )
             return
 
-        # Normal pass: find intended receiver or closest teammate
-        target_player_idx = -1
-        # Find closest teammate to target
-        best_receiver = None
-        best_dist = float("inf")
-        for p in passer_team.players:
-            if p.index == flight.passer_idx:
-                continue
-            d = distance(p.pos, target_pos)
-            if d < best_dist:
-                best_dist = d
-                best_receiver = p
-
-        if best_receiver and best_dist < 8.0:
-            # First touch error: (100-IQ)/400
-            iq = best_receiver.abilities.get("IQ", 50)
-            touch_error_chance = (100 - iq) / self.config.first_touch_error_divisor
-            if random.random() < touch_error_chance:
-                # First touch error - ball goes contested
-                best_receiver.unforced_errors += 1
-                loose_pos = self.pitch.clamp(
-                    target_pos[0] + random.uniform(-4, 4),
-                    target_pos[1] + random.uniform(-4, 4),
-                )
-                self.ball.set_contested(loose_pos)
-                self.match_stats.record_contested()
-                self.trace.log_event(
-                    self.tick, "error",
-                    player=best_receiver.name, error_type="first_touch",
-                )
-                return
-
-            # Offside check: receiver was flagged offside when pass was made
-            if best_receiver.index in self._offside_flagged:
-                opp_team_for_offside = self.away if passer_team.side == "home" else self.home
-                best_receiver.offsides += 1
-                self.ball.set_dead("offside", opp_team_for_offside.side, restart_ticks=2)
-                self._offside_flagged = set()
-                self.trace.log_event(
-                    self.tick, "offside",
-                    player=best_receiver.name, team=passer_team.side,
-                )
-                return
-            self._offside_flagged = set()
-
-            # Pass completed successfully
-            self._give_ball(best_receiver, passer_team, receive_origin=flight.origin)
-            passer = passer_team.players[flight.passer_idx]
-            passer.passes_completed += 1
-            self._track_pass_stats(passer, flight.origin, best_receiver.pos, passer_team.attacking_right)
-            self.trace.log_action(
-                self.tick, passer_team.side, best_receiver.name, "receive",
-                success=True, pos=best_receiver.pos,
+        if winner == "receiver" and best_receiver:
+            self._complete_pass_receive(
+                flight,
+                target_pos,
+                best_receiver,
+                passer_team,
+                opp_team,
             )
         else:
             # No one close enough -- ball goes contested
@@ -1139,95 +1147,126 @@ class MatchV2:
             gk.goals_conceded += 1
             self._score_goal(shooter, shooter_team, defending_team)
 
-    def _resolve_pass_to_space_arrival(
-        self, flight: BallFlight, target_pos: Tuple[float, float],
-        passer_team: Team, opp_team: Team
+    def _pass_control_strength(self, score: float) -> float:
+        """Continuous control strength from pass-arrival score."""
+        if score == float("inf"):
+            return 0.0
+        scale = max(0.1, self.config.contest_radius * 1.55)
+        return 1.0 / (1.0 + (max(0.0, score) / scale) ** 2)
+
+    def _pass_loose_control_strength(self, teammate_control: float, opponent_control: float) -> float:
+        """Continuous loose-ball control when neither side owns the target."""
+        strongest = max(0.0, min(1.0, teammate_control), min(1.0, opponent_control))
+        balance = 1.0 - abs(max(0.0, teammate_control) - max(0.0, opponent_control))
+        return max(0.0, 1.0 - strongest) * (0.25 + 0.20 * max(0.0, min(1.0, balance)))
+
+    def _pass_arrival_score(
+        self,
+        flight: BallFlight,
+        player: Player,
+        team: Team,
+        target: Tuple[float, float],
+        intended: bool = False,
+        target_occupation_weight: float = 0.0,
+    ) -> float:
+        speed = player_speed(player.speed_value, self.config.player_max_speed, self.config.player_min_speed)
+        target_bias = 0.0
+        if intended:
+            target_bias += 0.75
+        if player.target_pos:
+            target_bias += max(0.0, 1.0 - distance(player.target_pos, target) / 16.0) * 0.55
+        if player.current_goal is not None:
+            target_bias += max(0.0, 1.0 - distance(player.current_goal.target_pos, target) / 16.0) * 0.65
+        committed_run = _smoothstep(0.12, 0.82, target_bias)
+        movement_share = 0.24 + 0.52 * committed_run
+        flight_ticks = max(1, getattr(flight, "ticks_total", 1))
+        raw_dist = distance(player.pos, target)
+        effective_dist = max(0.0, raw_dist - speed * flight_ticks * movement_share)
+        occupation_weight = max(0.0, target_occupation_weight) * (1.0 - 0.55 * committed_run)
+        effective_dist += raw_dist * occupation_weight
+        if team.side != flight.passer_team:
+            effective_dist += max(0.0, target_bias) * 0.18
+        return effective_dist
+
+    def _best_pass_arrival_player(
+        self,
+        flight: BallFlight,
+        target_pos: Tuple[float, float],
+        team: Team,
+        intended_receiver_idx: int = -1,
+        target_occupation_weight: float = 0.0,
     ):
-        """Resolve a pass-to-space arrival.
-
-        First-to-arrive from EITHER team gets the ball.
-        If defender closer -> interception.
-        If attacker closer -> successful pass completion.
-        """
-        # Find closest player from passer's team (excluding passer)
-        best_tm = None
-        best_tm_dist = float("inf")
-        for p in passer_team.players:
-            if p.index == flight.passer_idx:
+        best_player = None
+        best_score = float("inf")
+        best_dist = float("inf")
+        for player in team.players:
+            if team.side == flight.passer_team and player.index == flight.passer_idx:
                 continue
-            d = distance(p.pos, target_pos)
-            if d < best_tm_dist:
-                best_tm_dist = d
-                best_tm = p
-
-        # Find closest player from defending team
-        best_opp = None
-        best_opp_dist = float("inf")
-        for p in opp_team.players:
-            d = distance(p.pos, target_pos)
-            if d < best_opp_dist:
-                best_opp_dist = d
-                best_opp = p
-
-        # Determine who arrives first
-        if best_opp and best_opp_dist < best_tm_dist:
-            # Defender arrives first -> interception
-            best_opp.interceptions += 1
-            self._give_ball(best_opp, opp_team)
-            self.trace.log_event(
-                self.tick, "interception",
-                player=best_opp.name, team=opp_team.side,
-                context="pass_to_space",
+            dist = distance(player.pos, target_pos)
+            score = self._pass_arrival_score(
+                flight,
+                player,
+                team,
+                target_pos,
+                intended=player.index == intended_receiver_idx,
+                target_occupation_weight=target_occupation_weight,
             )
-        elif best_tm and best_tm_dist < 10.0:
-            # Teammate arrives first and is close enough to receive
-            # First touch error check
-            iq = best_tm.abilities.get("IQ", 50)
-            touch_error_chance = (100 - iq) / self.config.first_touch_error_divisor
-            if random.random() < touch_error_chance:
-                best_tm.unforced_errors += 1
-                loose_pos = self.pitch.clamp(
-                    target_pos[0] + random.uniform(-4, 4),
-                    target_pos[1] + random.uniform(-4, 4),
-                )
-                self.ball.set_contested(loose_pos)
-                self.match_stats.record_contested()
-                self.trace.log_event(
-                    self.tick, "error",
-                    player=best_tm.name, error_type="first_touch",
-                )
-                return
+            if score < best_score:
+                best_score = score
+                best_dist = dist
+                best_player = player
+        return best_player, best_score, best_dist
 
-            # Offside check: receiver was flagged offside when pass was made
-            if best_tm.index in self._offside_flagged:
-                best_tm.offsides += 1
-                self.ball.set_dead("offside", opp_team.side, restart_ticks=2)
-                self._offside_flagged = set()
-                self.trace.log_event(
-                    self.tick, "offside",
-                    player=best_tm.name, team=passer_team.side,
-                )
-                return
-            self._offside_flagged = set()
-
-            # Successful pass to space
-            old_pos = best_tm.pos
-            receive_pos = self.pitch.clamp(target_pos[0], target_pos[1])
-            best_tm.pos = receive_pos
-            best_tm.target_pos = receive_pos
-            best_tm.distance_covered += distance(old_pos, receive_pos)
-            self._give_ball(best_tm, passer_team, receive_origin=flight.origin)
-            passer = passer_team.players[flight.passer_idx]
-            passer.passes_completed += 1
-            self._track_pass_stats(passer, flight.origin, receive_pos, passer_team.attacking_right)
-            self.trace.log_action(
-                self.tick, passer_team.side, best_tm.name, "receive_space_pass",
-                success=True, pos=receive_pos,
+    def _complete_pass_receive(
+        self,
+        flight: BallFlight,
+        target_pos: Tuple[float, float],
+        receiver: Player,
+        passer_team: Team,
+        opp_team: Team,
+    ) -> None:
+        iq = receiver.abilities.get("IQ", 50)
+        touch_error_chance = (100 - iq) / self.config.first_touch_error_divisor
+        if random.random() < touch_error_chance:
+            receiver.unforced_errors += 1
+            loose_pos = self.pitch.clamp(
+                target_pos[0] + random.uniform(-4, 4),
+                target_pos[1] + random.uniform(-4, 4),
             )
-        else:
-            # No one close enough -- ball goes contested
-            self.ball.set_contested(target_pos, self._residual_ball_velocity(flight, 0.30))
+            self.ball.set_contested(loose_pos)
             self.match_stats.record_contested()
+            self.trace.log_event(
+                self.tick, "error",
+                player=receiver.name, error_type="first_touch",
+            )
+            return
+
+        if receiver.index in self._offside_flagged:
+            receiver.offsides += 1
+            self.ball.set_dead("offside", opp_team.side, restart_ticks=2)
+            self._offside_flagged = set()
+            self.trace.log_event(
+                self.tick, "offside",
+                player=receiver.name, team=passer_team.side,
+            )
+            return
+        self._offside_flagged = set()
+
+        old_pos = receiver.pos
+        receive_kind = "space" if distance(old_pos, target_pos) > 4.0 else "feet"
+        receive_pos = self.pitch.clamp(target_pos[0], target_pos[1])
+        receiver.pos = receive_pos
+        receiver.target_pos = receive_pos
+        receiver.distance_covered += distance(old_pos, receive_pos)
+
+        self._give_ball(receiver, passer_team, receive_origin=flight.origin)
+        passer = passer_team.players[flight.passer_idx]
+        passer.passes_completed += 1
+        self._track_pass_stats(passer, flight.origin, receive_pos, passer_team.attacking_right)
+        self.trace.log_action(
+            self.tick, passer_team.side, receiver.name, "receive",
+            success=True, pos=receive_pos, receive_kind=receive_kind,
+        )
 
     def _score_goal(self, scorer: Player, scoring_team: Team, conceding_team: Team):
         """Record a goal."""
@@ -1657,6 +1696,7 @@ class MatchV2:
 
     def _give_ball(self, player: Player, team: Team, receive_origin: Tuple[float, float] = None):
         """Give the ball to a specific player."""
+        previous_team = self.ball.holder_team
         # Clear previous holder state
         if self.ball.holder_team == "home" and self.ball.holder_idx >= 0:
             if self.ball.holder_idx < len(self.home.players):
@@ -1670,6 +1710,9 @@ class MatchV2:
         # If ball changes team, clear offside flags (defender touched ball resets offside)
         if self.ball.holder_team and self.ball.holder_team != team.side:
             self._offside_flagged = set()
+        if previous_team != team.side:
+            self._clear_team_goals(self.home)
+            self._clear_team_goals(self.away)
 
         player.state = PlayerState.ON_BALL
         player.hold_ticks = 0

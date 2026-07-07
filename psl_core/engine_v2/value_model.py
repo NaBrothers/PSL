@@ -132,6 +132,44 @@ def _is_outside_penalty_area(
     )
 
 
+def _receiver_goal_arrival_space(
+    receiver_goal,
+    target: Tuple[float, float],
+    *,
+    target_progress: float,
+    centrality: float,
+    pressure: float,
+) -> float:
+    if receiver_goal is None:
+        return 0.0
+
+    goal_type = getattr(receiver_goal, "goal_type", "")
+    goal_target = getattr(receiver_goal, "target_pos", target)
+    goal_fit = max(0.0, 1.0 - distance(target, goal_target) / 15.0)
+    goal_value = max(0.0, min(1.0, float(getattr(receiver_goal, "value", 0.0) or 0.0) * 4.0))
+    low_pressure = 1.0 - _smoothstep(0.35, 0.82, pressure)
+
+    if goal_type == "arc_arrival_for_cutback":
+        return (
+            goal_fit
+            * goal_value
+            * _smoothstep(0.62, 0.84, target_progress)
+            * _smoothstep(0.46, 0.88, centrality)
+            * low_pressure
+        )
+
+    if goal_type == "attack_far_post":
+        return (
+            goal_fit
+            * goal_value
+            * _smoothstep(0.78, 0.94, target_progress)
+            * _smoothstep(0.28, 0.76, centrality)
+            * low_pressure
+        )
+
+    return 0.0
+
+
 def shot_quality_at(
     pos: Tuple[float, float],
     player: "Player",
@@ -279,6 +317,14 @@ def pass_receive_value(
         * _smoothstep(0.04, 0.24, max(0.0, progress - base_progress))
         * (1.0 - _smoothstep(0.35, 0.82, pressure))
     )
+    receiver_goal = getattr(receiver, "current_goal", None)
+    receiver_goal_arrival = _receiver_goal_arrival_space(
+        receiver_goal,
+        pos,
+        target_progress=progress,
+        centrality=centrality,
+        pressure=pressure,
+    )
     wide_creation = (
         _smoothstep(0.56, 0.78, progress)
         * _smoothstep(0.38, 0.72, width_value)
@@ -312,6 +358,7 @@ def pass_receive_value(
         + wide_creation * 0.095
         + inside_arrival * 0.045
         + second_line_arrival * 0.040
+        + receiver_goal_arrival * 0.075
         - pressure * 0.16,
     ))
 
@@ -574,6 +621,14 @@ def expected_pass_value_result(
         * _smoothstep(0.04, 0.24, max(0.0, target_progress - receiver_base_progress))
         * (1.0 - _smoothstep(0.35, 0.82, pressure))
     )
+    receiver_goal = getattr(receiver, "current_goal", None)
+    receiver_goal_arrival_space = _receiver_goal_arrival_space(
+        receiver_goal,
+        target,
+        target_progress=target_progress,
+        centrality=centrality,
+        pressure=pressure,
+    )
     origin_width = abs(origin[1] - pitch.width / 2.0) / (pitch.width / 2.0)
     second_line_cutback_space = (
         _smoothstep(0.62, 0.82, origin_progress)
@@ -627,6 +682,11 @@ def expected_pass_value_result(
         + 0.034 * success_prob
         + 0.018 * _smoothstep(0.02, 0.12, max(0.0, delta))
     )
+    receiver_goal_arrival_value = receiver_goal_arrival_space * (
+        0.030
+        + 0.060 * success_prob
+        + 0.030 * _smoothstep(0.0, 0.12, max(0.0, delta))
+    )
     second_line_cutback_value = second_line_cutback_space * (
         0.034
         + 0.050 * success_prob
@@ -650,7 +710,7 @@ def expected_pass_value_result(
         0.045
         + 0.16 * max(0.0, delta)
         + 0.08 * max(0.0, progress_gain)
-    ) + cutback_value + wide_creation_value + inside_arrival_value + second_line_arrival_value + second_line_cutback_value + layoff_support_value + short_combination_value + layoff_retention_value + pressure_release_value + stale_release_value
+    ) + cutback_value + wide_creation_value + inside_arrival_value + second_line_arrival_value + receiver_goal_arrival_value + second_line_cutback_value + layoff_support_value + short_combination_value + layoff_retention_value + pressure_release_value + stale_release_value
     success_quality = _smoothstep(0.10, 0.38, success_prob)
     risk_budget = high_threat_space * (
         0.030
@@ -668,6 +728,9 @@ def expected_pass_value_result(
     ) + second_line_arrival_space * (
         0.010
         + 0.020 * success_prob
+    ) + receiver_goal_arrival_space * (
+        0.014
+        + 0.026 * success_prob
     ) + second_line_cutback_space * (
         0.022
         + 0.044 * success_prob
@@ -775,6 +838,8 @@ def expected_pass_value_result(
             "inside_arrival_value": inside_arrival_value,
             "second_line_arrival_space": second_line_arrival_space,
             "second_line_arrival_value": second_line_arrival_value,
+            "receiver_goal_arrival_space": receiver_goal_arrival_space,
+            "receiver_goal_arrival_value": receiver_goal_arrival_value,
             "second_line_cutback_space": second_line_cutback_space,
             "second_line_cutback_value": second_line_cutback_value,
             "layoff_support_space": layoff_support_space,
@@ -836,7 +901,6 @@ def evaluate_carry_target(
     width_base = max(1.0, config.pitch_width / 2.0)
     lane_gain = max(0.0, old_angle_width - new_angle_width) / width_base
     progress_gain = max(0.0, (target[0] - carrier.pos[0]) * forward_dir) / max(1.0, config.pitch_length)
-
     # One-step lookahead for continuous carries. A cut-in often needs the first
     # touch to enter a better shooting lane and the next touch to create the
     # actual shot; evaluating only the immediate target makes that first touch
@@ -869,6 +933,8 @@ def evaluate_carry_target(
     old_progress = carrier.pos[0] / max(1.0, pitch.length) if attacking_right else (pitch.length - carrier.pos[0]) / max(1.0, pitch.length)
     old_width_ratio = old_angle_width / max(1.0, config.pitch_width / 2.0)
     new_width_ratio = new_angle_width / max(1.0, config.pitch_width / 2.0)
+    target_progress = target[0] / max(1.0, pitch.length) if attacking_right else (pitch.length - target[0]) / max(1.0, pitch.length)
+    target_centrality = 1.0 - min(1.0, abs(target[1] - pitch.width / 2.0) / (pitch.width / 2.0))
     half_space_entry = (
         _smoothstep(0.58, 0.78, old_progress)
         * (1.0 - _smoothstep(0.84, 0.92, old_progress))
@@ -896,6 +962,15 @@ def evaluate_carry_target(
         * _smoothstep(0.04, 0.13, future_shot_gain)
         * (1.0 - _smoothstep(1.0, 3.0, max(0, carrier.consecutive_carries)))
     )
+    byline_carry_window = (
+        _smoothstep(0.58, 0.80, old_progress)
+        * _smoothstep(0.48, 0.86, old_width_ratio)
+        * _smoothstep(0.72, 0.92, target_progress)
+        * _smoothstep(0.50, 0.90, new_width_ratio)
+        * _smoothstep(0.010, 0.085, progress_gain)
+        * _smoothstep(0.42, 0.86, path_feasibility)
+        * (1.0 - _smoothstep(0.88, 0.98, old_progress))
+    )
 
     continuity = current_pv * (0.012 + 0.055 * _smoothstep(0.00, 0.12, pv_gain))
     continuity += shot_quality_gain * (0.55 + 0.70 * _smoothstep(0.02, 0.14, shot_quality_gain))
@@ -903,13 +978,18 @@ def evaluate_carry_target(
         0.95 + 0.60 * _smoothstep(0.03, 0.15, future_shot_gain)
     )
     continuity += wide_second_line_carry_window * (
-        0.024 + 0.34 * future_shot_gain + 0.030 * _smoothstep(0.02, 0.12, lane_gain)
+        0.010 + 0.14 * future_shot_gain + 0.014 * _smoothstep(0.02, 0.12, lane_gain)
     )
     continuity += half_space_entry * (
         0.030
         + 0.095 * _smoothstep(0.025, 0.18, lane_gain)
         + 0.22 * future_shot_gain
         + 0.030 * _smoothstep(0.00, 0.08, progress_gain)
+    )
+    continuity += byline_carry_window * (
+        0.045
+        + 0.090 * _smoothstep(0.02, 0.12, progress_gain)
+        + 0.040 * _smoothstep(0.45, 0.90, old_width_ratio)
     )
     score = action_delta_score(
         current_state_value, after_value, path_feasibility, risk_cost, continuity
@@ -947,16 +1027,20 @@ def evaluate_carry_target(
     low_gain_pressure = 1.0 - _smoothstep(0.03, 0.12, effective_gain)
     possession_multiplier = 1.0 / (1.0 + stale_ticks * 0.20 * low_gain_pressure)
     low_gain_multiplier = 0.65 + 0.35 * _smoothstep(0.0, 0.06, effective_gain)
-    target_progress = target[0] / max(1.0, pitch.length) if attacking_right else (pitch.length - target[0]) / max(1.0, pitch.length)
-    target_centrality = 1.0 - min(1.0, abs(target[1] - pitch.width / 2.0) / (pitch.width / 2.0))
     final_third_carry = _smoothstep(0.72, 0.88, target_progress) * _smoothstep(0.35, 0.75, target_centrality)
     support_nearby = 0.0
     for tm in teammates:
-        if tm.index == carrier.index or tm.is_goalkeeper or tm.position in ("ST", "CF", "LS", "RS"):
+        if tm.index == carrier.index or tm.is_goalkeeper:
             continue
         d = distance(tm.pos, carrier.pos)
         if 6.0 < d < 26.0:
-            support_nearby = max(support_nearby, 1.0 - abs(d - 18.0) / 12.0)
+            base = getattr(tm, "base_formation_pos", getattr(tm, "tactical_anchor", tm.pos))
+            base_progress = base[0] / max(1.0, pitch.length) if attacking_right else (pitch.length - base[0]) / max(1.0, pitch.length)
+            carrier_support_depth = 1.0 - _smoothstep(0.86, 0.98, base_progress)
+            support_nearby = max(
+                support_nearby,
+                (1.0 - abs(d - 18.0) / 12.0) * (0.42 + 0.58 * carrier_support_depth),
+            )
     support_release_cost = 1.0 + 0.55 * support_nearby
     repeated_carry_load = _smoothstep(2.0, 5.0, max(0, carrier.consecutive_carries))
     release_pressure = (
@@ -964,6 +1048,20 @@ def evaluate_carry_target(
         * repeated_carry_load
         * support_release_cost
         * (0.62 + 0.38 * (1.0 - _smoothstep(0.12, 0.28, effective_gain)))
+    )
+    origin_width = abs(carrier.pos[1] - pitch.width / 2.0) / (pitch.width / 2.0)
+    lateral_shift = abs(target[1] - carrier.pos[1]) / max(1.0, pitch.width / 2.0)
+    pressure_draw = (
+        _smoothstep(0.54, 0.86, old_progress)
+        * _smoothstep(0.18, 0.72, max(origin_width, old_width_ratio))
+        * _smoothstep(0.04, 0.30, lateral_shift)
+        * (0.45 + 0.55 * _smoothstep(0.02, 0.14, max(lane_gain, future_shot_gain)))
+    )
+    space_manipulation = max(
+        pressure_draw,
+        half_space_entry * 0.85,
+        wide_second_line_carry_window * 0.72,
+        _smoothstep(0.04, 0.18, lane_gain) * _smoothstep(0.58, 0.86, old_progress),
     )
     final_third_stale_multiplier = 1.0 / (
         1.0 + max(0, carrier.consecutive_carries - 1) * 0.56 * release_pressure
@@ -997,6 +1095,7 @@ def evaluate_carry_target(
             "carry_to_shoot_window": carry_to_shoot_window,
             "wide_cut_in_window": wide_cut_in_window,
             "wide_second_line_carry_window": wide_second_line_carry_window,
+            "byline_carry_window": byline_carry_window,
             "half_space_entry": half_space_entry,
             "lane_gain": lane_gain,
             "progress_gain": progress_gain,
@@ -1011,6 +1110,8 @@ def evaluate_carry_target(
             "release_pressure": release_pressure,
             "support_nearby": support_nearby,
             "support_release_cost": support_release_cost,
+            "pressure_draw": pressure_draw,
+            "space_manipulation": space_manipulation,
         },
     )
 

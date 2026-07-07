@@ -60,6 +60,38 @@ def test_outside_box_shot_loses_close_central_bonus():
     assert value.components["outside_box"] is True
 
 
+def test_shot_lane_closure_materially_reduces_xg():
+    config = EngineConfig()
+    abilities = {
+        "Finishing": 90,
+        "Long_Shot": 84,
+        "Short_Passing": 80,
+        "Long_Passing": 80,
+        "Dribbling": 88,
+        "Tackling": 50,
+        "Defence": 50,
+        "Speed": 86,
+        "IQ": 86,
+        "Heading": 80,
+        "GK_Saving": 20,
+        "GK_Positioning": 20,
+        "GK_Reaction": 20,
+    }
+    shooter = Player(9, "Shooter", "ST", "gold", abilities=abilities, overall=90)
+    shooter.pos = (90.0, 34.0)
+    defenders = [
+        Player(2, "CB1", "CB", "gold", abilities={**abilities, "Defence": 90}, overall=90),
+        Player(3, "CB2", "CB", "gold", abilities={**abilities, "Defence": 90}, overall=90),
+    ]
+    defenders[0].pos = (94.0, 31.5)
+    defenders[1].pos = (94.0, 36.5)
+
+    open_xg = shot_quality_at(shooter.pos, shooter, [], config, True)
+    closed_xg = shot_quality_at(shooter.pos, shooter, defenders, config, True)
+
+    assert closed_xg < open_xg * 0.62
+
+
 def test_repeated_carry_under_pressure_adds_shot_opportunity_cost():
     config = EngineConfig()
     abilities = {

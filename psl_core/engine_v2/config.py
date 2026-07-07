@@ -87,6 +87,7 @@ class EngineConfig:
     # Goal continuity layer (disabled by default while acceptance tests mature)
     goal_continuity_enabled: bool = True
     goal_cut_inside_bias: float = 0.035
+    goal_noise_scale: float = 0.008
 
     # Formation positioning
     formation_pull_strength: float = 0.5  # how strongly players return to formation
@@ -249,6 +250,7 @@ ENGINE_V2_CONFIG_KEYS = {
     "engine_v2.contest_radius": 3.0,
     "engine_v2.goal_continuity_enabled": True,
     "engine_v2.goal_cut_inside_bias": 0.035,
+    "engine_v2.goal_noise_scale": 0.008,
 }
 
 

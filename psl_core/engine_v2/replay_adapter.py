@@ -59,8 +59,6 @@ def build_frame(
     t = round(tick * tick_duration, 1)
 
     def player_goal(player: Player, team_side: str) -> Optional[str]:
-        if ball_team != team_side:
-            return None
         goal = getattr(player, "current_goal", None)
         if goal is None:
             return None

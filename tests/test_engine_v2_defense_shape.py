@@ -3,7 +3,9 @@ import random
 from psl_core.engine_v2.config import EngineConfig
 from psl_core.engine_v2.pitch import Pitch
 from psl_core.engine_v2.physics import distance
+from psl_core.engine_v2.trace import MatchTrace
 from psl_core.engine_v2.player import Player
+from psl_core.engine_v2.goal import PlayerGoal
 
 
 ABILITY_KEYS = [
@@ -145,6 +147,75 @@ def test_stale_ball_carrier_keeps_defensive_attention():
     stale = action_counts(8)
 
     assert stale["pressure"] + stale["support"] >= fresh["pressure"] + fresh["support"]
+
+
+def test_defensive_choice_records_goal_trace_state():
+    config, pitch, ball, holder, attackers, defenders = _box_defense_context()
+    config.trace.detail = "full"
+    config.trace.include_defense = True
+    defender = defenders[6]
+    trace = MatchTrace()
+
+    action, details = defender.choose_off_ball_defend(
+        ball,
+        config,
+        pitch,
+        attacking_right=False,
+        ball_carrier=holder,
+        opponents=attackers,
+        teammates=defenders,
+        tick=12,
+        team_side="away",
+        trace=trace,
+    )
+
+    assert action in ("approach", "tackle", "mark_runner", "block_lane", "hold_position")
+    assert defender.current_goal is not None
+    assert defender.current_goal.goal_type.startswith("defend_")
+    assert defender.current_goal.target_pos == details["target"]
+    assert trace.decisions[-1]["goal"]["goal"]["goal_type"].startswith("defend_")
+
+
+def test_defensive_goal_continuity_keeps_close_existing_target():
+    config, pitch, ball, holder, attackers, defenders = _box_defense_context()
+    random.seed(10)
+    config.goal_noise_scale = 0.0
+    config.trace.detail = "full"
+    config.trace.include_defense = True
+    defender = defenders[6]
+    existing_target = (82.0, 33.0)
+    defender.current_goal = PlayerGoal(
+        goal_type="defend_mark_runner",
+        target_pos=existing_target,
+        value=0.625,
+        confidence=0.625,
+        created_tick=8,
+        last_updated_tick=9,
+        context={"action": "mark_runner"},
+    )
+    defender.last_def_action = "mark_runner"
+    defender.last_def_target = existing_target
+    trace = MatchTrace()
+
+    action, details = defender.choose_off_ball_defend(
+        ball,
+        config,
+        pitch,
+        attacking_right=False,
+        ball_carrier=holder,
+        opponents=attackers,
+        teammates=defenders,
+        tick=12,
+        team_side="away",
+        trace=trace,
+    )
+
+    goal_trace = trace.decisions[-1]["goal"]
+    assert goal_trace["switched"]
+    assert goal_trace["reason"] == "current_defensive_goal_updated"
+    assert action in ("approach", "tackle", "mark_runner", "block_lane")
+    assert defender.current_goal is not None
+    assert defender.current_goal.goal_type.startswith("defend_")
 
 
 def test_repeated_final_third_carrier_pulls_nearest_defender_closer():
@@ -329,3 +400,122 @@ def test_arc_protection_keeps_midfield_cover_from_crowding_center_backs():
     assert cb_action in ("approach", "tackle", "mark_runner", "block_lane")
     assert distance(mid_details["target"], cb_details["target"]) > 4.0
 
+
+def _match_cards(formation: str):
+    from psl_core.constants import FORMATION
+
+    cards = []
+    for idx, position in enumerate(FORMATION[formation]["positions"]):
+        abilities = {key: 76 for key in ABILITY_KEYS}
+        abilities.update({"Tackling": 78, "Defence": 78, "Speed": 78, "IQ": 80})
+        if position == "GK":
+            abilities.update({"GK_Saving": 80, "GK_Positioning": 80, "GK_Reaction": 80})
+        cards.append({
+            "name": f"{position}{idx}",
+            "player_id": idx,
+            "position": position,
+            "color": "gold",
+            "overall": 76,
+            "abilities": abilities,
+        })
+    return cards
+
+
+def test_kickoff_defense_creates_more_than_one_front_pressure_angle():
+    from psl_core.engine_v2.match import MatchV2
+
+    config = EngineConfig()
+    match = MatchV2(_match_cards("433"), _match_cards("433"), "433", "433", config=config)
+    match._kickoff("home")
+    holder = match.home.players[match.ball.holder_idx]
+
+    match.home.update_phase(has_possession=True, ball_contested=False, config=config)
+    match.away.update_phase(has_possession=False, ball_contested=False, config=config)
+    match.home.compute_dynamic_positions(match.ball.position, config, match.pitch, opponent_players=match.away.players)
+    match.away.compute_dynamic_positions(match.ball.position, config, match.pitch, opponent_players=match.home.players)
+
+    random.seed(3)
+    front_actions = []
+    for player in match.away.players:
+        if player.position not in ("LW", "ST", "RW"):
+            continue
+        action, _ = player.choose_off_ball_defend(
+            match.ball.position,
+            config,
+            match.pitch,
+            attacking_right=match.away.attacking_right,
+            ball_carrier=holder,
+            opponents=match.home.players,
+            teammates=match.away.players,
+        )
+        front_actions.append(action)
+
+    assert sum(action in ("approach", "tackle") for action in front_actions) >= 2
+
+
+def test_center_backs_close_central_shot_lane_without_needing_a_tackle():
+    config, pitch, ball, holder, attackers, defenders = _box_defense_context()
+    random.seed(5)
+
+    lane_distances = []
+    for defender in (defenders[2], defenders[3]):
+        defender.target_pos = defender.pos
+        defender.last_def_action = ""
+        defender.current_goal = None
+        action, details = defender.choose_off_ball_defend(
+            ball,
+            config,
+            pitch,
+            attacking_right=False,
+            ball_carrier=holder,
+            opponents=attackers,
+            teammates=defenders,
+        )
+        target = details["target"]
+        assert action in ("approach", "tackle", "block_lane", "mark_runner")
+        assert ball[0] <= target[0] <= pitch.length - 0.5
+        lane_distances.append(abs(target[1] - pitch.width / 2.0))
+
+    assert min(lane_distances) < 4.5
+
+
+def test_dangerous_off_ball_runner_gets_goalside_marking_attention():
+    config = EngineConfig()
+    pitch = Pitch(config=config)
+    ball = (88.0, 56.0)
+    holder = _attacker(8, "RW", *ball)
+    striker = _attacker(9, "ST", 93.0, 34.0)
+    cam = _attacker(7, "CAM", 82.0, 34.0)
+    attackers = [holder, striker, cam]
+    defenders = [
+        _defender(0, "GK", 102.0, 34.0),
+        _defender(2, "CB", 96.0, 37.0),
+        _defender(3, "CB", 96.0, 31.0),
+        _defender(5, "CM", 84.0, 34.0),
+        _defender(1, "RB", 92.0, 52.0),
+        _defender(4, "LB", 91.0, 17.0),
+    ]
+
+    for seed in range(6):
+        random.seed(seed)
+        marked_by_center_back = []
+        for defender in defenders:
+            if defender.is_goalkeeper:
+                continue
+            defender.target_pos = defender.pos
+            defender.last_def_action = ""
+            defender.current_goal = None
+            action, details = defender.choose_off_ball_defend(
+                ball,
+                config,
+                pitch,
+                attacking_right=False,
+                ball_carrier=holder,
+                opponents=attackers,
+                teammates=defenders,
+            )
+            if defender.position == "CB" and distance(details["target"], striker.pos) < 5.5:
+                marked_by_center_back.append((action, defender.current_goal.goal_type if defender.current_goal else ""))
+
+        assert marked_by_center_back
+        assert any(goal == "defend_mark_runner" or action == "mark_runner" for action, goal in marked_by_center_back)

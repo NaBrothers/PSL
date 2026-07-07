@@ -197,20 +197,20 @@ def test_hold_goal_requires_safer_release_for_space_pass():
     )
     risky_space = ActionCandidate(
         phase="on_ball",
-        action_type="pass_to_space",
+        action_type="pass",
         target=(90.0, 34.0),
         value=ValueResult(
             score=0.115,
             success_prob=0.36,
-            components={"receiver_pressure": 0.35, "high_threat_space": 0.85},
+            components={"receiver_pressure": 0.35, "high_threat_space": 0.85, "target_kind": "space"},
         ),
-        details={"target": (90.0, 34.0)},
+        details={"target": (90.0, 34.0), "components": {"target_kind": "space"}},
         source="pass",
     )
 
     adjusted = player._apply_release_confidence([hold, risky_space], "hold_for_opportunity")
     adjusted_hold = next(item for item in adjusted if item.action_type == "hold")
-    adjusted_space = next(item for item in adjusted if item.action_type == "pass_to_space")
+    adjusted_space = next(item for item in adjusted if item.action_type == "pass")
 
     assert adjusted_space.score < risky_space.score
     assert adjusted_space.score > adjusted_hold.score

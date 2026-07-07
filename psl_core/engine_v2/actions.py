@@ -21,6 +21,8 @@ from dataclasses import dataclass
 from enum import Enum
 from typing import List, Tuple, TYPE_CHECKING
 
+from .decision import iq_temperature_factor
+
 if TYPE_CHECKING:
     from .player import Player
     from .config import EngineConfig
@@ -402,8 +404,12 @@ def select_action_iq_weighted(
         return valid[0]
 
     # Temperature based on IQ: lower IQ = higher noise
-    noise = (100 - max(1, min(99, iq))) / 100.0 * config.iq_noise_factor
-    temperature = config.decision_temperature * (0.3 + noise * 2.0)
+    temperature = config.decision_temperature * iq_temperature_factor(
+        iq,
+        floor=0.3,
+        low_iq_range=2.0 * config.iq_noise_factor,
+        elite_discount=0.30,
+    )
 
     # Softmax with temperature
     max_score = max(a.score for a in valid)

@@ -43,7 +43,8 @@ class BallFlight:
     passer_team: str = ""  # "home" or "away"
     on_target: bool = False  # for shots: whether aimed at goal
     is_aerial: bool = False  # whether ball is in the air (triggers heading contest)
-    is_pass_to_space: bool = False  # space pass: first-to-arrive gets it
+    is_pass_to_space: bool = False  # legacy replay/debug flag; pass resolution is unified
+    intended_receiver_idx: int = -1  # passer-team player expected to attack the target
 
     @property
     def progress(self) -> float:

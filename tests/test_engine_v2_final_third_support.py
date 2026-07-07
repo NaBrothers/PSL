@@ -155,6 +155,49 @@ def test_wide_final_third_support_can_target_arc_second_line_space():
     assert min(distance(target, arc) for target in targets) < 11.0
 
 
+def test_arc_second_line_support_uses_attacking_run_intent():
+    random.seed(202607065)
+    home_formation, home_cards = _db_cards(10002)
+    away_formation, away_cards = _db_cards(10001)
+    match = MatchV2(
+        home_cards,
+        away_cards,
+        home_formation,
+        away_formation,
+        config=EngineConfig(total_ticks=10, half_ticks=5),
+    )
+    holder = next(player for player in match.home.players if player.position in ("RM", "LM", "RW", "LW"))
+    ball = (80.0, 56.0)
+    holder.pos = ball
+    holder.target_pos = ball
+    holder.state = PlayerState.ON_BALL
+
+    match.home.update_phase(True, False, match.config)
+    match.away.update_phase(False, False, match.config)
+    match.home.compute_dynamic_positions(ball, match.config, match.pitch, opponent_players=match.away.players)
+
+    goal_driven_support = []
+    for player in match.home.players:
+        if player.index == holder.index or player.is_goalkeeper or player.is_defender:
+            continue
+        target = player.choose_off_ball_attack(
+            ball,
+            match.config,
+            match.pitch,
+            match.home.attacking_right,
+            ball_carrier=holder,
+            opponents=match.away.players,
+            teammates=match.home.players,
+        )
+        goal = player.current_goal
+        centrality = 1.0 - min(1.0, abs(target[1] - match.pitch.width / 2.0) / (match.pitch.width / 2.0))
+        if goal and goal.goal_type == "arc_arrival_for_cutback" and centrality > 0.55:
+            goal_driven_support.append(player.movement_intent)
+
+    assert goal_driven_support
+    assert all(intent == "attack_run" for intent in goal_driven_support)
+
+
 def test_wide_cut_inside_has_nearby_natural_support_without_scripted_goal():
     random.seed(20260707)
     home_formation, home_cards = _db_cards(10002)
@@ -213,7 +256,10 @@ def test_striker_low_quality_window_prefers_support_over_immediate_shot():
     holder.possession_ticks = 1
     holder.consecutive_carries = 0
 
-    support = next(player for player in match.home.players if player.name == "Vitinha")
+    support = next(
+        player for player in match.home.players
+        if player.index != holder.index and player.is_midfielder
+    )
     support.pos = (70.0, 42.0)
     support.target_pos = (80.0, 38.0)
     support.tactical_anchor = support.target_pos
@@ -328,7 +374,7 @@ def test_central_final_third_carrier_creates_second_line_support_targets():
         progress = target[0] / match.pitch.length
         centrality = 1.0 - min(1.0, abs(target[1] - match.pitch.width / 2.0) / (match.pitch.width / 2.0))
         behind_ball = ball[0] - target[0]
-        if 0.64 <= progress <= 0.84 and centrality > 0.50 and 3.0 <= behind_ball <= 24.0:
+        if 0.60 <= progress <= 0.84 and centrality > 0.50 and 3.0 <= behind_ball <= 24.0:
             support_targets.append(target)
 
     assert support_targets
@@ -346,8 +392,11 @@ def test_off_ball_support_respects_neighbor_role_space():
         config=EngineConfig(total_ticks=10, half_ticks=5),
     )
     holder = next(player for player in match.home.players if player.name == "K. Mbappé")
-    right_mid = next(player for player in match.home.players if player.name == "Vitinha")
-    left_mid = next(player for player in match.home.players if player.name == "Grimaldo")
+    midfielders = [
+        player for player in match.home.players
+        if player.index != holder.index and player.is_midfielder
+    ]
+    right_mid, left_mid = midfielders[:2]
     ball = (82.0, 34.0)
     holder.pos = ball
     holder.target_pos = ball

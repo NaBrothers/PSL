@@ -282,6 +282,28 @@ def defensive_position_value(
     box_cover = (1.0 - _smoothstep(10.0, 28.0, pos_goal_dist)) * (0.45 + 0.55 * centrality)
     value *= 1.0 + box_danger * box_cover * 0.65
 
+    # Closing the shot lane is a spatial value, not a separate rule. When the
+    # ball is central and close enough to goal, positions on the line from ball
+    # to goal should compete strongly with static shape and marking positions.
+    goal_y = pitch.width / 2.0
+    shot_dx = own_goal_x - ball_pos[0]
+    shot_dy = goal_y - ball_pos[1]
+    shot_len = math.sqrt(shot_dx * shot_dx + shot_dy * shot_dy)
+    if shot_len > 1.0:
+        nx, ny = shot_dx / shot_len, shot_dy / shot_len
+        relx, rely = px - ball_pos[0], py - ball_pos[1]
+        proj = relx * nx + rely * ny
+        if 1.0 < proj < shot_len - 1.0:
+            perp = abs(relx * ny - rely * nx)
+            lane_value = 1.0 - _smoothstep(2.4, 9.0, perp)
+            lane_depth = 1.0 - min(1.0, abs((proj / shot_len) - 0.38) / 0.46)
+            ball_centrality = 1.0 - min(1.0, abs(ball_pos[1] - goal_y) / (pitch.width / 2.0))
+            shot_lane_threat = (
+                (1.0 - _smoothstep(24.0, 54.0, ball_goal_dist))
+                * (0.45 + 0.55 * ball_centrality)
+            )
+            value *= 1.0 + shot_lane_threat * lane_value * (0.42 + 0.58 * lane_depth) * 0.86
+
     # Soft pull to the player's dynamic line/slot.
     form_dist = math.sqrt((px - formation_pos[0]) ** 2 + (py - formation_pos[1]) ** 2)
     shape_factor = max(0.25, 1.0 - form_dist / 28.0)

@@ -1,4 +1,5 @@
 from psl_core.engine_v2.config import EngineConfig
+from psl_core.engine_v2.goal import PlayerGoal
 from psl_core.engine_v2.pitch import Pitch
 from psl_core.engine_v2.player import Player
 from psl_core.engine_v2.value_model import evaluate_pass_target, pass_receive_value, state_value
@@ -110,11 +111,56 @@ def test_wide_carrier_can_choose_positive_safe_outlet_when_box_lane_is_closed():
 
     assert positive_candidates
     best_score, action_type, best_details = max(positive_candidates, key=lambda item: item[0])
-    assert action_type in ("pass", "pass_to_space")
+    assert action_type == "pass"
     assert best_score > 0.02
     assert best_details["components"]["delta"] > 0.0
     assert best_details["success_prob"] < 0.95
 
+
+def test_pass_candidate_penalizes_target_defender_can_reach_first():
+    config, pitch, carrier, striker, teammates, opponents = _wide_delivery_context()
+    carrier.pos = (70.0, 34.0)
+    striker.pos = (84.0, 34.0)
+    striker.target_pos = striker.pos
+    striker.tactical_anchor = striker.pos
+    for idx, opponent in enumerate(opponents):
+        opponent.pos = (94.0 + idx, 8.0 + idx * 10.0)
+
+    def striker_options():
+        current_value = state_value(carrier.pos, carrier, teammates, opponents, config, pitch, True)
+        options = carrier._score_pass_point_options(
+            teammates,
+            opponents,
+            config,
+            pitch,
+            True,
+            [opp.pos for opp in opponents],
+            [tm.pos for tm in teammates if tm.index != carrier.index],
+            current_value,
+        )
+        return [
+            (score, details)
+            for score, _, details in options
+            if details.get("target_player_idx") == striker.index
+            or details.get("intended_receiver") == striker.index
+        ]
+
+    safe_options = striker_options()
+    assert safe_options
+    safe_best = max(score for score, _ in safe_options)
+
+    opponents[1].pos = (82.0, 34.0)
+    risky_options = striker_options()
+    risky_best = max((score for score, _ in risky_options), default=0.0)
+
+    assert risky_best < safe_best * 0.75
+    if risky_options:
+        _, details = min(
+            risky_options,
+            key=lambda item: item[1]["components"].get("arrival_margin", 99.0),
+        )
+        assert details["components"]["arrival_margin"] < safe_options[0][1]["components"]["arrival_margin"]
+        assert details["components"]["target_occupation_risk"] > 0.0
 
 def test_final_third_wide_receiver_has_creation_value():
     config, pitch, carrier, striker, teammates, opponents = _wide_delivery_context()
@@ -232,3 +278,75 @@ def test_front_line_pass_sampler_sees_second_line_arc_space():
         and details["components"].get("centrality", 0.0) > 0.75
         for details in cm_options
     )
+
+
+def test_receiver_arc_goal_increases_second_line_pass_value():
+    config, pitch, carrier, _, teammates, opponents = _wide_delivery_context()
+    midfielder = next(player for player in teammates if player.position == "CM")
+    target = (80.0, 34.0)
+    current_value = state_value(carrier.pos, carrier, teammates, opponents, config, pitch, True)
+    pass_dist = distance(carrier.pos, target)
+    dist_factor = max(0.35, 1.0 - max(0.0, pass_dist - 10.0) / 65.0)
+    base_accuracy = config.short_pass_base_success * (
+        0.35 + 0.65 * carrier.abilities["Short_Passing"] / 100.0
+    ) * dist_factor
+
+    without_goal = evaluate_pass_target(
+        carrier, midfielder, carrier.pos, target,
+        teammates, opponents, config, pitch, True,
+        current_value, base_accuracy,
+        receiver_arrival=0.9,
+        continuity=0.045,
+    )
+    midfielder.current_goal = PlayerGoal(
+        goal_type="arc_arrival_for_cutback",
+        target_pos=target,
+        value=0.26,
+        context={"phase": "arrive"},
+    )
+    with_goal = evaluate_pass_target(
+        carrier, midfielder, carrier.pos, target,
+        teammates, opponents, config, pitch, True,
+        current_value, base_accuracy,
+        receiver_arrival=0.9,
+        continuity=0.045,
+    )
+
+    assert with_goal.components["receiver_goal_arrival_value"] > 0.0
+    assert with_goal.score > without_goal.score
+
+
+def test_far_post_goal_increases_box_delivery_value():
+    config, pitch, carrier, _, teammates, opponents = _wide_delivery_context()
+    weak_side_runner = next(player for player in teammates if player.position == "LW")
+    target = (96.5, 30.8)
+    current_value = state_value(carrier.pos, carrier, teammates, opponents, config, pitch, True)
+    pass_dist = distance(carrier.pos, target)
+    dist_factor = max(0.35, 1.0 - max(0.0, pass_dist - 10.0) / 65.0)
+    base_accuracy = config.long_pass_base_success * (
+        0.35 + 0.65 * carrier.abilities["Long_Passing"] / 100.0
+    ) * dist_factor
+
+    without_goal = evaluate_pass_target(
+        carrier, weak_side_runner, carrier.pos, target,
+        teammates, opponents, config, pitch, True,
+        current_value, base_accuracy,
+        receiver_arrival=0.72,
+        continuity=0.045,
+    )
+    weak_side_runner.current_goal = PlayerGoal(
+        goal_type="attack_far_post",
+        target_pos=target,
+        value=0.30,
+        context={"phase": "arrive"},
+    )
+    with_goal = evaluate_pass_target(
+        carrier, weak_side_runner, carrier.pos, target,
+        teammates, opponents, config, pitch, True,
+        current_value, base_accuracy,
+        receiver_arrival=0.72,
+        continuity=0.045,
+    )
+
+    assert with_goal.components["receiver_goal_arrival_value"] > 0.0
+    assert with_goal.score > without_goal.score
