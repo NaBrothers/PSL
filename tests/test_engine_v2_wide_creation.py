@@ -71,6 +71,7 @@ def _byline_context():
 
 def test_byline_carrier_prefers_box_delivery_over_extra_touch():
     config, pitch, carrier, teammates, opponents = _byline_context()
+    carrier.facing_direction = 90.0
     current_value = state_value(carrier.pos, carrier, teammates, opponents, config, pitch, True)
     opp_positions = [opp.pos for opp in opponents]
     tm_positions = [tm.pos for tm in teammates if tm.index != carrier.index]

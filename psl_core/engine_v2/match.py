@@ -223,6 +223,9 @@ class MatchV2:
         Phase 2: Detect interactions
         Phase 3: Resolve interactions, execute non-conflicting, check errors
         """
+        self.config._runtime_tick_token = self.tick
+        self.config._shot_quality_cache = {}
+
         # Handle dead ball (waiting for restart)
         if self.ball.state == BallState.DEAD:
             self._clear_team_goals(self.home)

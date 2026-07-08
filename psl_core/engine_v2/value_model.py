@@ -178,6 +178,21 @@ def shot_quality_at(
     attacking_right: bool,
 ) -> float:
     """Approximate xG-like shot value from a position."""
+    cache = getattr(config, "_shot_quality_cache", None)
+    cache_key = None
+    if cache is not None:
+        cache_key = (
+            getattr(config, "_runtime_tick_token", None),
+            player.team_side,
+            player.index,
+            round(pos[0], 1),
+            round(pos[1], 1),
+            bool(attacking_right),
+        )
+        cached = cache.get(cache_key)
+        if cached is not None:
+            return cached
+
     gx, gy = goal_center(config, attacking_right)
     dist = distance(pos, (gx, gy))
 
@@ -240,7 +255,10 @@ def shot_quality_at(
     save_estimate = max(0.35, min(0.90, save_estimate))
 
     xg = on_target * (1.0 - save_estimate)
-    return max(0.0, min(0.65, xg))
+    result = max(0.0, min(0.65, xg))
+    if cache is not None and cache_key is not None:
+        cache[cache_key] = result
+    return result
 
 
 def state_value(
@@ -630,6 +648,7 @@ def expected_pass_value_result(
         pressure=pressure,
     )
     origin_width = abs(origin[1] - pitch.width / 2.0) / (pitch.width / 2.0)
+    current_shot = shot_quality_at(origin, passer, opponents, config, attacking_right)
     second_line_cutback_space = (
         _smoothstep(0.62, 0.82, origin_progress)
         * _smoothstep(0.38, 0.74, origin_width)
@@ -644,8 +663,7 @@ def expected_pass_value_result(
         * _smoothstep(0.54, 0.94, centrality)
     )
     layoff_depth = (origin[0] - target[0]) * (1.0 if attacking_right else -1.0)
-    current_shot_for_layoff = shot_quality_at(origin, passer, opponents, config, attacking_right)
-    poor_current_shot = 1.0 - _smoothstep(0.075, 0.145, current_shot_for_layoff)
+    poor_current_shot = 1.0 - _smoothstep(0.075, 0.145, current_shot)
     support_lane_change = _smoothstep(0.05, 0.30, lateral_change)
     layoff_support_space = (
         high_central_holder
@@ -773,7 +791,6 @@ def expected_pass_value_result(
     score = max(0.0, success_prob * (effective_delta + continuity) - risk_cost)
     positive_delta_bonus = 1.0 + 0.45 * _smoothstep(0.04, 0.16, delta)
     score *= positive_delta_bonus
-    current_shot = shot_quality_at(origin, passer, opponents, config, attacking_right)
     current_shot_window = (
         _smoothstep(0.065, 0.155, current_shot)
         * _smoothstep(0.68, 0.88, origin_progress)

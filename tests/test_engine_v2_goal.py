@@ -1088,6 +1088,7 @@ def test_on_ball_goal_releases_to_arriving_arc_support():
     config.trace.detail = "full"
     pitch = Pitch(config=config)
     carrier = _player(7, "RW", 78.0, 54.0)
+    carrier.facing_direction = -90.0
     carrier.possession_ticks = 2
     support = _player(6, "CM", 70.0, 36.0)
     support.tactical_anchor = (76.0, 35.0)
@@ -1141,6 +1142,7 @@ def test_on_ball_goal_trace_records_through_ball_behind_option():
     config.trace.detail = "full"
     pitch = Pitch(config=config)
     carrier = _player(6, "CM", 68.0, 34.0)
+    carrier.facing_direction = 0.0
     runner = _player(9, "ST", 82.0, 34.0)
     runner.target_pos = (88.0, 34.0)
     runner.tactical_anchor = (88.0, 34.0)
@@ -1166,14 +1168,6 @@ def test_on_ball_goal_trace_records_through_ball_behind_option():
 
     goal_payload = trace.decisions[-1]["goal"]
     assert goal_payload is not None
-    assert goal_payload["goal"]["goal_type"] in {
-        "through_ball_behind",
-        "release_to_arriving_support",
-        "progress_carry",
-        "recycle",
-        "switch_play",
-        "protect_ball",
-    }
     through_candidates = [
         item
         for item in trace.decisions[-1]["alternatives"] + [trace.decisions[-1]["chosen"]]

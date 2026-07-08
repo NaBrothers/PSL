@@ -1727,9 +1727,11 @@ class Player:
         """Generate and score all pass-to-point candidates with one model."""
         from .value_model import evaluate_pass_target
         from .position_value import position_value
+        from .vision import build_vision_context
 
         results = []
         forward_dir = 1.0 if attacking_right else -1.0
+        vision = build_vision_context(self, config, attacking_right)
         offside_line = self._get_offside_line(opponents, attacking_right, config)
         front_anchors = []
         for tm in teammates:
@@ -1744,16 +1746,84 @@ class Player:
                 sum(p[0] for p in front_anchors) / len(front_anchors),
                 sum(p[1] for p in front_anchors) / len(front_anchors),
             )
+        generic_space_candidates = []
+        generic_centers = [self.pos]
+        if front_center is not None:
+            generic_centers.append(front_center)
+        if teammates:
+            visible_anchors = [
+                tm.tactical_anchor
+                for tm in teammates
+                if tm.index != self.index
+                and not tm.is_goalkeeper
+                and vision.confidence(self.pos, tm.tactical_anchor) > 0.0
+            ]
+            if visible_anchors:
+                generic_centers.append((
+                    sum(p[0] for p in visible_anchors) / len(visible_anchors),
+                    sum(p[1] for p in visible_anchors) / len(visible_anchors),
+                ))
+        seen_space_points = set()
+        for center in generic_centers:
+            for radius in (8.0, 16.0, 28.0, 40.0):
+                for angle_deg in (-150, -105, -60, -25, 0, 25, 60, 105, 150):
+                    angle = math.radians(angle_deg)
+                    target = pitch.clamp(
+                        center[0] + math.cos(angle) * radius * forward_dir,
+                        center[1] + math.sin(angle) * radius,
+                    )
+                    key = (round(target[0], 1), round(target[1], 1))
+                    if key in seen_space_points:
+                        continue
+                    seen_space_points.add(key)
+                    visibility = vision.confidence(self.pos, target)
+                    if visibility <= 0.0:
+                        continue
+                    if self._is_offside_position(target, attacking_right, offside_line, config, ball_x=self.pos[0]):
+                        continue
+                    pass_distance = distance(self.pos, target)
+                    if pass_distance < 6.0 or pass_distance > 55.0:
+                        continue
+                    pv = position_value(
+                        target[0], target[1], pitch, attacking_right,
+                        opp_positions, tm_positions, config,
+                    )
+                    forward_gain = max(0.0, (target[0] - self.pos[0]) * forward_dir) / max(1.0, config.pitch_length)
+                    distance_fit = 1.0 - max(0.0, pass_distance - 34.0) / 30.0
+                    space_score = pv * (0.45 + 0.55 * visibility) * (0.72 + 0.28 * forward_gain) * max(0.25, distance_fit)
+                    generic_space_candidates.append((space_score, target, visibility, pv))
+        generic_space_candidates.sort(key=lambda item: item[0], reverse=True)
+        generic_space_candidates = generic_space_candidates[:10]
 
         for tm in teammates:
             if tm.index == self.index or tm.is_goalkeeper:
                 continue
+
+            target_metadata = {}
+
+            def add_raw_target(target, arrival: float, metadata: dict = None):
+                raw_targets.append((target, arrival))
+                if not metadata:
+                    return
+                key = (round(target[0], 1), round(target[1], 1))
+                previous = target_metadata.get(key)
+                if previous is None or metadata.get("tactical_space_prior", 0.0) > previous.get("tactical_space_prior", 0.0):
+                    target_metadata[key] = metadata
+
+            receiver_visibility = vision.confidence(self.pos, tm.pos)
+            target_visibility = max(
+                receiver_visibility,
+                vision.confidence(self.pos, tm.target_pos),
+                vision.confidence(self.pos, tm.tactical_anchor),
+            )
+            low_visibility = target_visibility < 0.18
 
             raw_targets = [(tm.pos, 1.0)]
             receiver_goal = tm.current_goal
             receiver_goal_type = receiver_goal.goal_type if receiver_goal is not None else ""
             receiver_goal_fit = 0.0
             if receiver_goal is not None and receiver_goal.goal_type in ("arc_arrival_for_cutback", "attack_far_post"):
+                goal_visibility = vision.confidence(self.pos, receiver_goal.target_pos)
                 goal_dist = distance(tm.pos, receiver_goal.target_pos)
                 target_progress_hint = (
                     receiver_goal.target_pos[0] / config.pitch_length
@@ -1787,6 +1857,9 @@ class Player:
                         * (1.0 - _smoothstep(16.0, 42.0, goal_dist))
                         * _smoothstep(0.005, 0.080, receiver_goal.value)
                     )
+                receiver_goal_fit *= 0.35 + 0.65 * goal_visibility
+                target_visibility = max(target_visibility, goal_visibility)
+                low_visibility = target_visibility < 0.18
                 if receiver_goal_fit > 0.0:
                     raw_targets.append((receiver_goal.target_pos, 0.62 + 0.22 * receiver_goal_fit))
 
@@ -1803,11 +1876,12 @@ class Player:
             raw_targets.append((pitch.clamp(support_x, support_y), 0.88))
 
             switch_y = tm.pos[1] * 0.45 + (config.pitch_width - self.pos[1]) * 0.55
-            raw_targets.append((pitch.clamp(support_x, switch_y), 0.76))
+            if not low_visibility:
+                raw_targets.append((pitch.clamp(support_x, switch_y), 0.76))
 
             tm_width_ratio = min(1.0, abs(tm.tactical_anchor[1] - config.pitch_width / 2.0) / (config.pitch_width / 2.0))
             tm_progress_hint = tm.tactical_anchor[0] / config.pitch_length if attacking_right else (config.pitch_length - tm.tactical_anchor[0]) / config.pitch_length
-            if tm_width_ratio > 0.50 and tm_progress_hint > 0.56:
+            if not low_visibility and tm_width_ratio > 0.50 and tm_progress_hint > 0.56:
                 wide_lane_y = tm.tactical_anchor[1] * 0.72 + tm.pos[1] * 0.28
                 wide_lane_x = max(tm.pos[0], tm.tactical_anchor[0]) if attacking_right else min(tm.pos[0], tm.tactical_anchor[0])
                 raw_targets.append((
@@ -1817,13 +1891,15 @@ class Player:
 
             # A small leading pass if the team-mate is moving forward.
             move_progress = (tm.target_pos[0] - tm.pos[0]) * forward_dir
-            if move_progress > 1.0:
+            if not low_visibility and move_progress > 1.0:
                 lead_x = tm.pos[0] + forward_dir * min(12.0, 4.0 + move_progress)
                 lead_y = tm.pos[1] + (tm.target_pos[1] - tm.pos[1]) * 0.35
                 raw_targets.append((pitch.clamp(lead_x, lead_y), 0.82))
 
             carrier_progress = self.pos[0] / config.pitch_length if attacking_right else (config.pitch_length - self.pos[0]) / config.pitch_length
             if (
+                not low_visibility
+                and
                 self.consecutive_carries >= 3
                 and carrier_progress > 0.62
                 and not tm.is_defender
@@ -1850,7 +1926,7 @@ class Player:
                     if distance((anchor_x, anchor_y), self.pos) < 34.0:
                         raw_targets.append((pitch.clamp(anchor_x, anchor_y), 0.78 * support_weight))
 
-            if carrier_progress > 0.80 and not tm.is_defender:
+            if not low_visibility and carrier_progress > 0.80 and not tm.is_defender:
                 side_sign = 1.0 if tm.tactical_anchor[1] >= config.pitch_width / 2.0 else -1.0
                 layoff_targets = (
                     (self.pos[0] - forward_dir * 5.0, config.pitch_width / 2.0, 0.76),
@@ -1869,7 +1945,7 @@ class Player:
                 and not tm.is_defender
                 and tm_progress_hint > 0.60
             )
-            if carrier_progress > 0.68 and second_line_role:
+            if not low_visibility and carrier_progress > 0.68 and second_line_role:
                 goal_side_x = config.pitch_length if attacking_right else 0.0
                 arc_x = goal_side_x - forward_dir * 24.0
                 support_x = (
@@ -1887,7 +1963,7 @@ class Player:
                     raw_targets.append((support_target, 0.72))
 
             carrier_width = abs(self.pos[1] - config.pitch_width / 2.0) / (config.pitch_width / 2.0)
-            if carrier_progress > 0.68 and carrier_width > 0.34 and not tm.is_defender:
+            if not low_visibility and carrier_progress > 0.68 and carrier_width > 0.34 and not tm.is_defender:
                 target_role_progress = tm.tactical_anchor[0] / config.pitch_length if attacking_right else (config.pitch_length - tm.tactical_anchor[0]) / config.pitch_length
                 if target_role_progress > 0.54:
                     goal_side_x = config.pitch_length if attacking_right else 0.0
@@ -1928,7 +2004,7 @@ class Player:
             target_progress_hint = tm.tactical_anchor[0] / config.pitch_length if attacking_right else (config.pitch_length - tm.tactical_anchor[0]) / config.pitch_length
             delivery_pressure = max(carrier_progress, target_progress_hint)
             central_pull = config.pitch_width / 2.0 - tm.pos[1]
-            if delivery_pressure > 0.70 and (receiver_forward > 0.5 or target_progress_hint > 0.76):
+            if not low_visibility and delivery_pressure > 0.70 and (receiver_forward > 0.5 or target_progress_hint > 0.76):
                 for depth_scale, center_scale, arrival_base in (
                     (0.45, 0.35, 0.74),
                     (0.75, 0.55, 0.66),
@@ -1958,6 +2034,34 @@ class Player:
                             arrival_base,
                         ))
 
+            role_progress = tm.tactical_anchor[0] / config.pitch_length if attacking_right else (config.pitch_length - tm.tactical_anchor[0]) / config.pitch_length
+            role_fit = _smoothstep(0.38, 0.76, role_progress) * (0.55 if tm.is_defender else 1.0)
+            for space_score, target, target_zone_visibility, target_space_value in generic_space_candidates:
+                goal_target = receiver_goal.target_pos if receiver_goal is not None else None
+                arrival_fit = max(
+                    0.0,
+                    1.0 - distance(tm.pos, target) / 28.0,
+                    1.0 - distance(tm.target_pos, target) / 24.0,
+                    1.0 - distance(tm.tactical_anchor, target) / 22.0,
+                    0.0 if goal_target is None else 1.0 - distance(goal_target, target) / 18.0,
+                )
+                expected_arrival = max(0.0, min(1.0, space_score * (0.30 + 0.48 * arrival_fit + 0.22 * role_fit) * 1.35))
+                if expected_arrival < 0.18:
+                    continue
+                add_raw_target(
+                    target,
+                    max(0.42, expected_arrival),
+                    {
+                        "tactical_space": True,
+                        "tactical_space_pattern": "value_field_space",
+                        "tactical_space_prior": space_score,
+                        "tactical_space_value": target_space_value,
+                        "tactical_space_visibility": target_zone_visibility,
+                        "expected_arrival_confidence": expected_arrival,
+                        "expected_arrival_fit": arrival_fit,
+                    },
+                )
+
             # Sample pass targets from the local attacking value field around
             # the receiver instead of hard-coded tactical spots. The fixed
             # offsets are only a generic radial sampler; position_value decides
@@ -1967,32 +2071,36 @@ class Player:
             tm_anchor_progress = max(0.0, min(1.0, tm_anchor_progress))
             tm_width_factor = min(1.0, abs(tm.tactical_anchor[1] - config.pitch_width / 2.0) / (config.pitch_width / 2.0))
             search_radius = 6.0 + 10.0 * tm_anchor_progress + 3.0 * tm_width_factor
-            sample_angles = (-150, -105, -60, -25, 0, 25, 60, 105, 150)
-            sample_radii = (search_radius * 0.55, search_radius)
-            for center in (tm.pos, tm.target_pos, tm.tactical_anchor):
-                for radius in sample_radii:
-                    for angle_deg in sample_angles:
-                        angle = math.radians(angle_deg)
-                        ax = math.cos(angle) * radius * forward_dir
-                        ay = math.sin(angle) * radius
-                        pos = pitch.clamp(center[0] + ax, center[1] + ay)
-                        if self._is_offside_position(pos, attacking_right, offside_line, config, ball_x=self.pos[0]):
-                            continue
-                        d_from_receiver = distance(pos, tm.pos)
-                        if d_from_receiver > search_radius * 1.50:
-                            continue
-                        pv = position_value(
-                            pos[0], pos[1], pitch, attacking_right,
-                            opp_positions, tm_positions, config,
-                            runner_formation_pos=tm.tactical_anchor,
-                        )
-                        receiver_arrival = max(0.25, 1.0 - d_from_receiver / (search_radius * 1.65))
-                        spatial_candidates.append((pv * receiver_arrival, pos, receiver_arrival))
+            if not low_visibility:
+                sample_angles = (-150, -105, -60, -25, 0, 25, 60, 105, 150)
+                sample_radii = (search_radius * 0.55, search_radius)
+                for center in (tm.pos, tm.target_pos, tm.tactical_anchor):
+                    for radius in sample_radii:
+                        for angle_deg in sample_angles:
+                            angle = math.radians(angle_deg)
+                            ax = math.cos(angle) * radius * forward_dir
+                            ay = math.sin(angle) * radius
+                            pos = pitch.clamp(center[0] + ax, center[1] + ay)
+                            point_visibility = vision.confidence(self.pos, pos)
+                            if point_visibility <= 0.0:
+                                continue
+                            if self._is_offside_position(pos, attacking_right, offside_line, config, ball_x=self.pos[0]):
+                                continue
+                            d_from_receiver = distance(pos, tm.pos)
+                            if d_from_receiver > search_radius * 1.50:
+                                continue
+                            pv = position_value(
+                                pos[0], pos[1], pitch, attacking_right,
+                                opp_positions, tm_positions, config,
+                                runner_formation_pos=tm.tactical_anchor,
+                            )
+                            receiver_arrival = max(0.25, 1.0 - d_from_receiver / (search_radius * 1.65))
+                            spatial_candidates.append((pv * receiver_arrival * (0.55 + 0.45 * point_visibility), pos, receiver_arrival))
 
             # Team-front value-field samples: when the dynamic anchors form an
             # advanced line, sample around that line so passes into the box can
             # emerge from team shape rather than fixed tactical coordinates.
-            if front_center is not None and tm_anchor_progress > 0.50:
+            if not low_visibility and front_center is not None and tm_anchor_progress > 0.50:
                 for angle_deg in (-60, -25, 0, 25, 60):
                     angle = math.radians(angle_deg)
                     radius = search_radius * 0.85
@@ -2000,6 +2108,9 @@ class Player:
                         front_center[0] + math.cos(angle) * radius * forward_dir,
                         front_center[1] + math.sin(angle) * radius,
                     )
+                    point_visibility = vision.confidence(self.pos, pos)
+                    if point_visibility <= 0.0:
+                        continue
                     if self._is_offside_position(pos, attacking_right, offside_line, config, ball_x=self.pos[0]):
                         continue
                     d_from_receiver = distance(pos, tm.pos)
@@ -2009,7 +2120,7 @@ class Player:
                         runner_formation_pos=tm.tactical_anchor,
                     )
                     receiver_arrival = max(0.22, 1.0 - d_from_receiver / (search_radius * 1.90))
-                    spatial_candidates.append((pv * receiver_arrival, pos, receiver_arrival))
+                    spatial_candidates.append((pv * receiver_arrival * (0.55 + 0.45 * point_visibility), pos, receiver_arrival))
 
             spatial_candidates.sort(key=lambda item: item[0], reverse=True)
             for _, pos, receiver_arrival in spatial_candidates[:3]:
@@ -2018,6 +2129,10 @@ class Player:
             for target, receiver_arrival in raw_targets:
                 d = distance(self.pos, target)
                 if d < 3.0 or d > 55.0:
+                    continue
+                perception = vision.confidence(self.pos, target)
+                target_kind_hint = "space" if distance(target, tm.pos) > 4.0 else "feet"
+                if perception <= 0.0 and target_kind_hint == "space":
                     continue
 
                 if self._is_offside_position(target, attacking_right, offside_line, config, ball_x=self.pos[0]):
@@ -2093,6 +2208,13 @@ class Player:
                 continuity = 0.075 if distance(target, tm.pos) <= 4.0 else 0.045
                 receiver_goal_value = receiver_goal.value if receiver_goal is not None else 0.0
                 continuity += 0.065 * goal_target_fit * _clamp01(receiver_goal_value * 2.4)
+                perception_floor = 0.35 if target_kind_hint == "feet" else 0.0
+                perception_multiplier = 0.48 + 0.52 * max(
+                    perception,
+                    perception_floor,
+                    receiver_visibility * 0.55,
+                )
+                receiver_arrival *= perception_multiplier
                 value = evaluate_pass_target(
                     self, tm, self.pos, target,
                     teammates, opponents, config, pitch, attacking_right,
@@ -2114,6 +2236,7 @@ class Player:
 
                 pass_type = "long_pass" if is_long else "short_pass"
                 target_kind = "space" if distance(target, tm.pos) > 4.0 else "feet"
+                metadata = target_metadata.get((round(target[0], 1), round(target[1], 1)), {})
                 details = {
                     "target": target,
                     "success_prob": success_prob,
@@ -2130,6 +2253,13 @@ class Player:
                         "target_kind": target_kind,
                         "receiver_goal": receiver_goal_type,
                         "receiver_goal_fit": goal_target_fit,
+                        "vision_facing": vision.facing,
+                        "vision_fov": vision.fov,
+                        "vision_distance": vision.max_distance,
+                        "vision_receiver_confidence": receiver_visibility,
+                        "vision_target_confidence": perception,
+                        "perception_multiplier": perception_multiplier,
+                        **metadata,
                         "arrival_margin": arrival_margin,
                         "receiver_time": receiver_time,
                         "defender_time": defender_time,

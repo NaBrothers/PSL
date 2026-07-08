@@ -146,8 +146,11 @@ class EngineConfig:
     # =========================================================================
     # Phase 2: Vision system
     # =========================================================================
-    vision_base_fov: float = 140.0  # base field of view in degrees
+    vision_base_fov: float = 180.0  # base field of view in degrees
     vision_iq_bonus_factor: float = 0.5  # degrees per IQ point added to FOV
+    vision_base_distance: float = 42.0
+    vision_iq_distance_bonus_factor: float = 0.35
+    vision_max_distance: float = 65.0
 
     # =========================================================================
     # Phase 2: Goalkeeper model

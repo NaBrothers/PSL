@@ -95,6 +95,7 @@ def test_high_threat_box_pass_can_pay_for_risk():
 
 def test_wide_carrier_can_choose_positive_safe_outlet_when_box_lane_is_closed():
     config, pitch, carrier, _, teammates, opponents = _wide_delivery_context()
+    carrier.facing_direction = 90.0
     current_value = state_value(carrier.pos, carrier, teammates, opponents, config, pitch, True)
     candidates = carrier._score_pass_point_options(
         teammates,
@@ -242,6 +243,7 @@ def test_front_line_pass_sampler_sees_second_line_arc_space():
     config = EngineConfig()
     pitch = Pitch(config=config)
     carrier = _player(9, "ST", 80.0, 34.0)
+    carrier.facing_direction = 180.0
     midfielder = _player(6, "CM", 70.0, 34.0)
     midfielder.base_formation_pos = (52.0, 34.0)
     midfielder.tactical_anchor = (80.0, 34.0)
