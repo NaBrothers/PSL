@@ -153,6 +153,8 @@ pub fn state_value(input: &StateValueInput<'_>) -> f64 {
         shot_ideal_distance: input.shot_ideal_distance,
         shot_on_target_base: input.shot_on_target_base,
         gk_save_base: input.gk_save_base,
+        gk_attributes: None,
+        gk_pos: None,
         cache: input.shot_quality_cache,
         cache_key: input.shot_quality_cache.map(|_| {
             shot_quality_cache_key(
@@ -227,6 +229,8 @@ pub fn pass_receive_value_breakdown(
         shot_ideal_distance: input.shot_ideal_distance,
         shot_on_target_base: input.shot_on_target_base,
         gk_save_base: input.gk_save_base,
+        gk_attributes: None,
+        gk_pos: None,
         cache: input.shot_quality_cache,
         cache_key: input.shot_quality_cache.map(|_| {
             shot_quality_cache_key(

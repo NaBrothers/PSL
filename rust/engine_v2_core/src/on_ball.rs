@@ -1,5 +1,7 @@
 use crate::physics::{distance, player_speed, smoothstep};
-use crate::shot_quality::{shot_quality_at, ShotQualityCache, ShotQualityInput};
+use crate::shot_quality::{
+    estimate_shot_outcome, shot_quality_at, ShotQualityCache, ShotQualityInput,
+};
 use crate::state_value::{shot_quality_cache_key, state_value, StateValueInput};
 
 #[derive(Debug, Clone)]
@@ -78,6 +80,8 @@ pub struct ShotInput<'a> {
     pub attacking_right: bool,
     pub shot_on_target_base: f64,
     pub gk_save_base: f64,
+    pub gk_attributes: Option<crate::goalkeeper::GkSaveAttributes>,
+    pub gk_pos: Option<(f64, f64)>,
     pub shot_ideal_distance: f64,
     pub goal_reward_constant: f64,
     pub shot_quality_cache: Option<&'a ShotQualityCache>,
@@ -529,50 +533,7 @@ pub fn evaluate_clear(input: &ClearInput) -> ClearOutput {
 }
 
 pub fn evaluate_shot(input: &ShotInput<'_>) -> ShotOutput {
-    let ability = if input.dist_to_goal > 25.0 {
-        input.long_shot
-    } else if input.dist_to_goal > 18.0 {
-        (input.finishing + input.long_shot) / 2.0
-    } else {
-        input.finishing
-    };
-    let mut on_target_prob = input.shot_on_target_base
-        * (0.4 + 0.6 * ability)
-        * input.dist_factor
-        * input.angle_factor
-        * input.pressure_factor
-        * input.lane_factor;
-    let progress = if input.attacking_right {
-        input.shooter_pos.0 / input.pitch_length.max(1.0)
-    } else {
-        (input.pitch_length - input.shooter_pos.0) / input.pitch_length.max(1.0)
-    };
-    let outside_box = progress <= 1.0 - 16.5 / input.pitch_length.max(1.0)
-        || (input.shooter_pos.1 - input.pitch_width / 2.0).abs() >= 20.2;
-    if outside_box {
-        let outside_penalty = 0.76 + 0.24 * smoothstep(21.0, 32.0, input.dist_to_goal);
-        on_target_prob *= outside_penalty;
-    }
-    let min_on_target = if input.dist_to_goal < 25.0 {
-        0.13
-    } else {
-        0.055
-    };
-    on_target_prob = on_target_prob.clamp(min_on_target, 0.78);
-
-    let mut save_estimate = input.gk_save_base;
-    save_estimate += (1.0 - input.angle_factor) * 0.12;
-    save_estimate += (1.0 - input.pressure_factor * input.lane_factor) * 0.10;
-    save_estimate -= ((input.dist_to_goal - 16.0).max(0.0) * 0.0035).min(0.12);
-    if !outside_box
-        && input.dist_to_goal < 18.0
-        && (input.shooter_pos.1 - input.pitch_width / 2.0).abs() < 12.0
-    {
-        save_estimate -= 0.12;
-    }
-    save_estimate = save_estimate.clamp(0.35, 0.90);
-
-    let xg = shot_quality_at(&ShotQualityInput {
+    let shot_outcome = estimate_shot_outcome(&ShotQualityInput {
         x: input.shooter_pos.0,
         y: input.shooter_pos.1,
         finishing: input.finishing,
@@ -584,6 +545,8 @@ pub fn evaluate_shot(input: &ShotInput<'_>) -> ShotOutput {
         shot_ideal_distance: input.shot_ideal_distance,
         shot_on_target_base: input.shot_on_target_base,
         gk_save_base: input.gk_save_base,
+        gk_attributes: input.gk_attributes,
+        gk_pos: input.gk_pos,
         cache: input.shot_quality_cache,
         cache_key: input.shot_quality_cache.map(|_| {
             shot_quality_cache_key(
@@ -595,6 +558,9 @@ pub fn evaluate_shot(input: &ShotInput<'_>) -> ShotOutput {
             )
         }),
     });
+    let on_target_prob = shot_outcome.on_target_prob;
+    let save_estimate = shot_outcome.save_prob;
+    let xg = shot_outcome.xg;
     let mut score = xg * input.goal_reward_constant;
     let mut low_quality_multiplier = 0.30 + 0.70 * smoothstep(0.035, 0.13, xg);
     let first_time_window = (1.0 - smoothstep(2.0, 5.0, input.possession_ticks.max(0) as f64))
@@ -743,7 +709,8 @@ pub fn evaluate_shot(input: &ShotInput<'_>) -> ShotOutput {
         + stale_shot_pressure * 0.16
         + support_release_window * 0.15;
     let possession_loss_multiplier = (1.0 - opportunity_cost).max(0.35);
-    score *= possession_loss_multiplier;
+    let abandonment_cost = opportunity_cost * (0.012 + 0.050 * (1.0 - shot_readiness));
+    score = score * possession_loss_multiplier - abandonment_cost;
 
     ShotOutput {
         score,
@@ -809,6 +776,8 @@ pub fn evaluate_carry(input: &CarryInput<'_>) -> CarryOutput {
         shot_ideal_distance: input.shot_ideal_distance,
         shot_on_target_base: input.shot_on_target_base,
         gk_save_base: input.gk_save_base,
+        gk_attributes: None,
+        gk_pos: None,
         cache: input.shot_quality_cache,
         cache_key: input.shot_quality_cache.map(|_| {
             shot_quality_cache_key(
@@ -832,6 +801,8 @@ pub fn evaluate_carry(input: &CarryInput<'_>) -> CarryOutput {
         shot_ideal_distance: input.shot_ideal_distance,
         shot_on_target_base: input.shot_on_target_base,
         gk_save_base: input.gk_save_base,
+        gk_attributes: None,
+        gk_pos: None,
         cache: input.shot_quality_cache,
         cache_key: input.shot_quality_cache.map(|_| {
             shot_quality_cache_key(
@@ -898,6 +869,8 @@ pub fn evaluate_carry(input: &CarryInput<'_>) -> CarryOutput {
             shot_ideal_distance: input.shot_ideal_distance,
             shot_on_target_base: input.shot_on_target_base,
             gk_save_base: input.gk_save_base,
+            gk_attributes: None,
+            gk_pos: None,
             cache: input.shot_quality_cache,
             cache_key: input.shot_quality_cache.map(|_| {
                 shot_quality_cache_key(
@@ -1071,6 +1044,7 @@ pub fn evaluate_carry(input: &CarryInput<'_>) -> CarryOutput {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::goalkeeper::GkSaveAttributes;
 
     #[test]
     fn hold_score_decreases_under_pressure() {
@@ -1107,5 +1081,52 @@ mod tests {
             }
         });
         assert!(calm.score > pressed.score);
+    }
+
+    #[test]
+    fn meaningless_extreme_range_shot_has_negative_utility() {
+        let teammates = [];
+        let opponents = [];
+        let shot = evaluate_shot(&ShotInput {
+            tick: 1,
+            shooter_index: 1,
+            shooter_team_home: true,
+            shooter_pos: (12.0, 34.0),
+            finishing: 0.90,
+            long_shot: 0.99,
+            possession_ticks: 4,
+            consecutive_carries: 1,
+            last_receive_origin: (12.0, 34.0),
+            dist_to_goal: 93.0,
+            angle_factor: 1.0,
+            pressure_factor: 1.0,
+            lane_factor: 1.0,
+            dist_factor: 0.01,
+            current_state_value: 0.20,
+            teammates: &teammates,
+            opponents: &opponents,
+            pitch_length: 105.0,
+            pitch_width: 68.0,
+            attacking_right: true,
+            shot_on_target_base: 0.52,
+            gk_save_base: 0.66,
+            gk_attributes: Some(GkSaveAttributes {
+                gk_saving: 84.0,
+                gk_positioning: 82.0,
+                gk_reaction: 86.0,
+                gk_position_error_factor: 0.05,
+                gk_reaction_delay_factor: 0.005,
+                gk_save_base: 0.66,
+            }),
+            gk_pos: Some((100.5, 34.0)),
+            shot_ideal_distance: 20.0,
+            goal_reward_constant: 1.0,
+            shot_quality_cache: None,
+        });
+
+        assert!(
+            shot.score < 0.0,
+            "a near-full-pitch shot should lose to preserving possession without a distance ban"
+        );
     }
 }

@@ -316,6 +316,8 @@ pub fn expected_pass_value(input: &ExpectedPassInput<'_>) -> ExpectedPassOutput 
         shot_ideal_distance: input.shot_ideal_distance,
         shot_on_target_base: input.shot_on_target_base,
         gk_save_base: input.gk_save_base,
+        gk_attributes: None,
+        gk_pos: None,
         cache: input.shot_quality_cache,
         cache_key: input.shot_quality_cache.map(|_| {
             shot_quality_cache_key(

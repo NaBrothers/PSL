@@ -72,9 +72,10 @@ pub use goal::{
     WideHoldOverlapGoalOutput,
 };
 pub use goalkeeper::{
-    choose_distribution, choose_fallback_target, compute_gk_save_probability, should_rush_out,
-    GkDistributionInput, GkDistributionOutput, GkFallbackTargetInput, GkFallbackTargetOutput,
-    GkRushInput, GkSaveInput,
+    choose_distribution, choose_fallback_target, compute_gk_save_probability,
+    compute_gk_save_probability_for_attributes, should_rush_out, GkDistributionInput,
+    GkDistributionOutput, GkFallbackTargetInput, GkFallbackTargetOutput, GkRushInput,
+    GkSaveAttributes, GkSaveInput,
 };
 pub use interactions::{
     detect_duel, detect_interception, detect_wasted_tackle, interception_chance, resolve_duel,
@@ -171,7 +172,10 @@ pub use position_value::{
     defensive_position_value, position_value, protection_value, receive_reachability,
     space_creation_value, DefensivePositionValueInput, PositionValueInput,
 };
-pub use shot_quality::{shot_quality_at, ShotQualityInput};
+pub use shot_quality::{
+    estimate_goalkeeper_save_probability, estimate_shot_outcome,
+    expected_goalkeeper_save_probability, shot_quality_at, ShotOutcomeEstimate, ShotQualityInput,
+};
 pub use state_value::{
     pass_receive_value, pass_receive_value_breakdown, state_value, PassReceiveValueBreakdown,
     PassReceiveValueInput, StateValueInput,

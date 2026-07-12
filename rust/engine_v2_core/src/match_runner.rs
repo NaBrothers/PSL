@@ -21,11 +21,11 @@ use crate::{
     select_best_arriving_support, select_best_byline_carry, select_best_layoff,
     select_best_overlap, select_contested_targets, select_goal_candidate_with_gaussians,
     select_goal_deterministic, select_hold_support, select_on_ball_candidate, shot_arrival_plan,
-    shot_phase_plan, shot_quality_at, softmax_select_index, state_value,
-    team_pass_candidates_batch, team_shape_plan, tick_ball_flight, tick_contested_ball,
-    track_carry_stats, track_defensive_pressures, track_pass_stats, ArcArrivalGoalInput,
-    ArrivalPlayerInput, ArrivingSupportPassInput, ArrivingSupportSelectionInput,
-    AttackFarPostGoalInput, BylineCarryInput, BylineCarrySelectionInput, BylineDeliveryGoalInput,
+    shot_phase_plan, softmax_select_index, state_value, team_pass_candidates_batch,
+    team_shape_plan, tick_ball_flight, tick_contested_ball, track_carry_stats,
+    track_defensive_pressures, track_pass_stats, ArcArrivalGoalInput, ArrivalPlayerInput,
+    ArrivingSupportPassInput, ArrivingSupportSelectionInput, AttackFarPostGoalInput,
+    BylineCarryInput, BylineCarrySelectionInput, BylineDeliveryGoalInput,
     BylineSupportTeammateInput, CarryFinalizeInput, CarryInput, CarryPathInput,
     CarryPathOpponentInput, CarryPhasePlanInput, CarryStatInput, CarrySupportPlayer,
     CarryTargetGenerationInput, ClearInput, ClearPhasePlanInput, ClearanceArrivalPlanInput,
@@ -33,21 +33,21 @@ use crate::{
     CutInsideGoalInput, DefenderActionInput, DefenseChoiceInput, DefenseRandomSample,
     DefenseTeammateInput, DefensiveGoalBuildInput, DefensivePressureInput, DriveBylineGoalInput,
     DuelDetectionInput, DuelPhasePlanInput, ExecutionOpponent, ExpectedPassInput, FlightTickInput,
-    GkPositionAdjustInput, GoalInput, GoalSwitchCostInput, HoldInput, HoldOpportunityGoalInput,
-    HoldPhasePlanInput, HoldSupportCarryInput, HoldSupportHoldInput, HoldSupportPassInput,
-    HoldSupportSelectionInput, InterceptionDetectionInput, KickoffPlayerInput, KickoffShapeInput,
-    LayoffGoalInput, LayoffPassInput, LayoffSelectionInput, OffBallAttackChoiceInput,
-    OffBallAttackGoalBuildInput, OffBallRawGenerationInput, OffBallTeammateInput,
-    OnBallGenericCandidateInput, OnBallGenericGoalInput, OnBallSelectionCandidateInput,
-    OnBallSelectionInput, OnBallSelectionOutput, OnBallSpecializedBiasCandidateInput,
-    OnBallSpecializedBiasInput, OutOfBoundsPlanInput, OverlapPassInput, OverlapSelectionInput,
-    PassArrivalPlanInput, PassPhasePlanInput, PassReceivePlanInput, PassRiskPlayer,
-    PassSpacePlayer, PassStatInput, PassTeamPlayer, PlayerApplyStunInput, PlayerMoveSpeedInput,
-    PlayerMoveTickInput, PlayerSetMovementTargetInput, PlayerTickStunInput, PositionValueInput,
-    RandomPolarSample, ReleaseSupportGoalInput, RestartPlayPlanInput, RestartPlayerInput,
-    RestartShapePlanInput, RestartShapePlayerInput, ScoreGoalPlanInput, ShotArrivalPlanInput,
-    ShotInput, ShotLogEntryOutput, ShotPhasePlanInput, ShotQualityInput, ShotSupportPlayer,
-    StateValueInput, SupportOpportunityCarryInput, SupportOpportunityInput,
+    GkPositionAdjustInput, GkSaveAttributes, GoalInput, GoalSwitchCostInput, HoldInput,
+    HoldOpportunityGoalInput, HoldPhasePlanInput, HoldSupportCarryInput, HoldSupportHoldInput,
+    HoldSupportPassInput, HoldSupportSelectionInput, InterceptionDetectionInput,
+    KickoffPlayerInput, KickoffShapeInput, LayoffGoalInput, LayoffPassInput, LayoffSelectionInput,
+    OffBallAttackChoiceInput, OffBallAttackGoalBuildInput, OffBallRawGenerationInput,
+    OffBallTeammateInput, OnBallGenericCandidateInput, OnBallGenericGoalInput,
+    OnBallSelectionCandidateInput, OnBallSelectionInput, OnBallSelectionOutput,
+    OnBallSpecializedBiasCandidateInput, OnBallSpecializedBiasInput, OutOfBoundsPlanInput,
+    OverlapPassInput, OverlapSelectionInput, PassArrivalPlanInput, PassPhasePlanInput,
+    PassReceivePlanInput, PassRiskPlayer, PassSpacePlayer, PassStatInput, PassTeamPlayer,
+    PlayerApplyStunInput, PlayerMoveSpeedInput, PlayerMoveTickInput, PlayerSetMovementTargetInput,
+    PlayerTickStunInput, PositionValueInput, RandomPolarSample, ReleaseSupportGoalInput,
+    RestartPlayPlanInput, RestartPlayerInput, RestartShapePlanInput, RestartShapePlayerInput,
+    ScoreGoalPlanInput, ShotArrivalPlanInput, ShotInput, ShotLogEntryOutput, ShotPhasePlanInput,
+    ShotSupportPlayer, StateValueInput, SupportOpportunityCarryInput, SupportOpportunityInput,
     SupportOpportunityPassInput, TeamPassBatchInput, TeamPhaseUpdateInput, TeamShapeOpponentInput,
     TeamShapePlanInput, TeamShapePlayerInput, ThroughBallGoalInput, VisionContextInput,
     WideHoldOverlapGoalInput,
@@ -163,7 +163,15 @@ enum RunnerHeldAction {
         target: (f64, f64),
         xg: f64,
         on_target_prob: f64,
+        gk_attributes: GkSaveAttributes,
     },
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum RunnerDuelResult {
+    ContinueCarry,
+    PossessionChanged,
+    BallContested,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -295,6 +303,7 @@ struct RunnerFlight {
     on_target: bool,
     speed: f64,
     xg: f64,
+    gk_attributes: Option<GkSaveAttributes>,
     is_long: bool,
     target_is_space: bool,
     possession_id: i32,
@@ -381,7 +390,6 @@ struct RunnerRuntimeConfig {
     carry_error_divisor: f64,
     tackle_fail_stun_seconds: f64,
     target_occupation_weight: f64,
-    runner_shot_threshold: f64,
     runner_forced_action: Option<String>,
     runner_forced_actions: Vec<String>,
     runner_forced_pass_target: Option<(f64, f64)>,
@@ -702,7 +710,30 @@ fn formation_data(key: &str) -> Formation {
 
 #[cfg(test)]
 mod tests {
-    use super::RunnerRng;
+    use super::*;
+    use serde_json::json;
+
+    fn runner_test_card(name: &str, dribbling: f64, tackling: f64) -> serde_json::Value {
+        json!({
+            "name": name,
+            "player_id": name,
+            "color": "b",
+            "abilities": {
+                "Finishing": 75.0,
+                "Long_Shot": 75.0,
+                "Short_Passing": 75.0,
+                "Long_Passing": 75.0,
+                "Dribbling": dribbling,
+                "Tackling": tackling,
+                "Defence": tackling,
+                "Speed": 80.0,
+                "IQ": 80.0,
+                "GK_Saving": 75.0,
+                "GK_Positioning": 75.0,
+                "GK_Reaction": 75.0
+            }
+        })
+    }
 
     #[test]
     fn runner_rng_matches_python_random_seed_for_known_sequence() {
@@ -736,6 +767,64 @@ mod tests {
         ];
         for expected_value in expected {
             assert!((rng.gauss(0.0, 1.0) - expected_value).abs() < 1e-15);
+        }
+    }
+
+    #[test]
+    fn attacker_winning_runner_duel_still_completes_carry_in_same_tick() {
+        let home_cards = (0..11)
+            .map(|index| runner_test_card(format!("Home {index}").as_str(), 99.0, 1.0))
+            .collect();
+        let away_cards = (0..11)
+            .map(|index| runner_test_card(format!("Away {index}").as_str(), 1.0, 1.0))
+            .collect();
+        let response = run_match_v2(MatchV2RunRequest {
+            home_cards,
+            away_cards,
+            home_formation: "442".to_string(),
+            away_formation: "442".to_string(),
+            config: json!({
+                "total_ticks": 4,
+                "half_ticks": 2,
+                "frame_interval": 1,
+                "runner_forced_actions": ["carry", "carry", "carry", "carry"],
+                "tackle_range": 160.0,
+                "carry_error_divisor": 1_000_000_000.0,
+                "iq_noise_scale": 0.0,
+                "goal_noise_scale": 0.0
+            }),
+            seed: Some(20260713),
+        });
+        let entries = response
+            .trace
+            .get("entries")
+            .and_then(serde_json::Value::as_array)
+            .expect("runner trace entries");
+        let winning_ticks: Vec<i64> = entries
+            .iter()
+            .filter(|entry| {
+                entry.get("event").and_then(serde_json::Value::as_str) == Some("duel")
+                    && entry.get("outcome").and_then(serde_json::Value::as_str)
+                        == Some("attacker_wins")
+            })
+            .filter_map(|entry| entry.get("tick").and_then(serde_json::Value::as_i64))
+            .collect();
+
+        assert!(
+            !winning_ticks.is_empty(),
+            "scenario must exercise an attacker-won carry duel"
+        );
+        for tick in winning_ticks {
+            let carried = entries.iter().any(|entry| {
+                entry.get("tick").and_then(serde_json::Value::as_i64) == Some(tick)
+                    && entry.get("type").and_then(serde_json::Value::as_str) == Some("action")
+                    && entry.get("action").and_then(serde_json::Value::as_str) == Some("carry")
+                    && entry.get("from") != entry.get("pos")
+            });
+            assert!(
+                carried,
+                "attacker-won duel at tick {tick} must continue into a carry displacement"
+            );
         }
     }
 }
@@ -1162,7 +1251,6 @@ fn runtime_config(config: &serde_json::Value) -> RunnerRuntimeConfig {
         carry_error_divisor: config_f64(config, "carry_error_divisor", 900.0),
         tackle_fail_stun_seconds: config_f64(config, "tackle_fail_stun_seconds", 1.5),
         target_occupation_weight: config_f64(config, "target_occupation_weight", 0.18),
-        runner_shot_threshold: config_f64(config, "runner_shot_threshold", 0.18),
         runner_forced_action: config_string(config, "runner_forced_action"),
         runner_forced_actions: config
             .get("runner_forced_actions")
@@ -2161,17 +2249,6 @@ fn carry_target(
     )
 }
 
-fn goal_target(attacking_right: bool, config: &RunnerRuntimeConfig) -> (f64, f64) {
-    (
-        if attacking_right {
-            config.pitch_length
-        } else {
-            0.0
-        },
-        config.pitch_width / 2.0,
-    )
-}
-
 fn clear_target(
     holder: &RunnerPlayer,
     attacking_right: bool,
@@ -3144,6 +3221,17 @@ fn build_shot_candidate(
             is_goalkeeper: player.position == "GK",
         })
         .collect();
+    let goalkeeper = opponents.iter().find(|player| player.position == "GK");
+    let goalkeeper_attributes = GkSaveAttributes {
+        gk_saving: goalkeeper.map(|player| player.gk_saving).unwrap_or(50.0),
+        gk_positioning: goalkeeper
+            .map(|player| player.gk_positioning)
+            .unwrap_or(50.0),
+        gk_reaction: goalkeeper.map(|player| player.gk_reaction).unwrap_or(50.0),
+        gk_position_error_factor: config.gk_position_error_factor,
+        gk_reaction_delay_factor: config.gk_reaction_delay_factor,
+        gk_save_base: config.gk_save_base,
+    };
     let opponent_xy = opponent_positions(opponents);
     let shot = evaluate_shot(&ShotInput {
         tick,
@@ -3174,6 +3262,8 @@ fn build_shot_candidate(
         attacking_right,
         shot_on_target_base: config.shot_on_target_base,
         gk_save_base: config.gk_save_base,
+        gk_attributes: Some(goalkeeper_attributes),
+        gk_pos: goalkeeper.map(|player| player.pos),
         shot_ideal_distance: config.shot_ideal_distance,
         goal_reward_constant: 1.0,
         shot_quality_cache: Some(shot_quality_cache),
@@ -3186,6 +3276,7 @@ fn build_shot_candidate(
             target: goal,
             xg: shot.xg,
             on_target_prob: shot.on_target_prob,
+            gk_attributes: goalkeeper_attributes,
         },
         score: shot.score,
         success_prob: shot.on_target_prob,
@@ -6792,7 +6883,7 @@ fn resolve_runner_duel(
     away: &mut [RunnerPlayer],
     config: &RunnerRuntimeConfig,
     rng: &mut RunnerRng,
-) -> bool {
+) -> RunnerDuelResult {
     push_rng_trace(state, tick, "before_duel_resolve", rng);
     let (holder_name, holder_pos, holder_dribbling) = if holder_home {
         home.get(holder_idx)
@@ -6903,7 +6994,7 @@ fn resolve_runner_duel(
                     score_before: None,
                 },
             );
-            true
+            RunnerDuelResult::ContinueCarry
         }
         1 => {
             let attacker_identity = if holder_home {
@@ -6981,7 +7072,7 @@ fn resolve_runner_duel(
                     score_before: None,
                 },
             );
-            true
+            RunnerDuelResult::PossessionChanged
         }
         _ => {
             let attacker_identity = if holder_home {
@@ -7046,7 +7137,7 @@ fn resolve_runner_duel(
                     score_before: None,
                 },
             );
-            true
+            RunnerDuelResult::BallContested
         }
     }
 }
@@ -7828,21 +7919,6 @@ fn choose_held_action(
     rng: &mut RunnerRng,
 ) -> RunnerHeldAction {
     let attacking_right = attacking_right_for(holder_home, home_attacking_right);
-    let xg = shot_quality_at(&ShotQualityInput {
-        x: holder.pos.0,
-        y: holder.pos.1,
-        finishing: holder.finishing / 100.0,
-        long_shot: holder.long_shot / 100.0,
-        opponents: &[],
-        pitch_length: config.pitch_length,
-        pitch_width: config.pitch_width,
-        attacking_right,
-        shot_ideal_distance: config.shot_ideal_distance,
-        shot_on_target_base: config.shot_on_target_base,
-        gk_save_base: config.gk_save_base,
-        cache: None,
-        cache_key: None,
-    });
     if let Some(action) = forced_action_override.or(config.runner_forced_action.as_deref()) {
         match action {
             "carry" => {
@@ -7877,23 +7953,33 @@ fn choose_held_action(
                 }
             }
             "shot" => {
-                let on_target_prob = (xg * 2.0).clamp(0.05, 0.78);
-                return RunnerHeldAction::Shoot {
-                    target: goal_target(attacking_right, config),
-                    xg,
-                    on_target_prob,
-                };
+                if let Some(shot) = build_shot_candidate(
+                    holder_idx,
+                    holder,
+                    holder_home,
+                    teammates,
+                    opponents,
+                    runner_state_value(
+                        holder_idx,
+                        holder,
+                        holder_home,
+                        teammates,
+                        opponents,
+                        attacking_right,
+                        tick,
+                        &state.shot_quality_cache,
+                        config,
+                    ),
+                    attacking_right,
+                    tick,
+                    &state.shot_quality_cache,
+                    config,
+                ) {
+                    return shot.action;
+                }
             }
             _ => {}
         }
-    }
-    if config.runner_shot_threshold < 0.0 {
-        let on_target_prob = (xg * 2.0).clamp(0.05, 0.78);
-        return RunnerHeldAction::Shoot {
-            target: goal_target(attacking_right, config),
-            xg,
-            on_target_prob,
-        };
     }
     let selected = choose_default_held_action(
         holder_idx,
@@ -8146,7 +8232,7 @@ fn tick_match(
                             }
                             RunnerHeldAction::Carry { target } => 'carry_action: {
                                 if let Some(defender_idx) = duel_defender_idx {
-                                    let consumed = resolve_runner_duel(
+                                    let duel_result = resolve_runner_duel(
                                         state,
                                         tick,
                                         half,
@@ -8158,7 +8244,7 @@ fn tick_match(
                                         config,
                                         rng,
                                     );
-                                    if consumed {
+                                    if duel_result != RunnerDuelResult::ContinueCarry {
                                         break 'carry_action;
                                     }
                                 }
@@ -8510,6 +8596,7 @@ fn tick_match(
                                     on_target: false,
                                     speed: pass.speed,
                                     xg: 0.0,
+                                    gk_attributes: None,
                                     is_long,
                                     target_is_space: pass.target_kind_code == 1,
                                     possession_id: state.possession_id,
@@ -8569,6 +8656,7 @@ fn tick_match(
                                     on_target: false,
                                     speed: clear.speed,
                                     xg: 0.0,
+                                    gk_attributes: None,
                                     is_long: true,
                                     target_is_space: true,
                                     possession_id: state.possession_id,
@@ -8583,7 +8671,10 @@ fn tick_match(
                                 }));
                             }
                             RunnerHeldAction::Shoot {
-                                xg, on_target_prob, ..
+                                xg,
+                                on_target_prob,
+                                gk_attributes,
+                                ..
                             } => {
                                 let shot_last_passer_team_home = state.last_passer_team_home;
                                 let shot_last_passer_idx = state.last_passer_idx;
@@ -8656,6 +8747,7 @@ fn tick_match(
                                     on_target: shot.on_target,
                                     speed: shot.speed,
                                     xg,
+                                    gk_attributes: Some(gk_attributes),
                                     is_long: false,
                                     target_is_space: false,
                                     possession_id: state.possession_id,
@@ -8794,13 +8886,27 @@ fn tick_match(
                             };
                             let keeper_name =
                                 gk.map(|player| player.name.clone()).unwrap_or_default();
-                            let gk_pos = gk
-                                .map(|player| player.pos)
-                                .unwrap_or((0.0, config.pitch_width / 2.0));
-                            let gk_saving = gk.map(|player| player.gk_saving).unwrap_or(50.0);
-                            let gk_positioning =
-                                gk.map(|player| player.gk_positioning).unwrap_or(50.0);
-                            let gk_reaction = gk.map(|player| player.gk_reaction).unwrap_or(50.0);
+                            let gk_attributes =
+                                flight.gk_attributes.unwrap_or_else(|| GkSaveAttributes {
+                                    gk_saving: gk.map(|player| player.gk_saving).unwrap_or(50.0),
+                                    gk_positioning: gk
+                                        .map(|player| player.gk_positioning)
+                                        .unwrap_or(50.0),
+                                    gk_reaction: gk
+                                        .map(|player| player.gk_reaction)
+                                        .unwrap_or(50.0),
+                                    gk_position_error_factor: config.gk_position_error_factor,
+                                    gk_reaction_delay_factor: config.gk_reaction_delay_factor,
+                                    gk_save_base: config.gk_save_base,
+                                });
+                            let gk_pos = gk.map(|player| player.pos).unwrap_or((
+                                if flight.passer_team_home {
+                                    config.pitch_length - 4.5
+                                } else {
+                                    4.5
+                                },
+                                config.pitch_width / 2.0,
+                            ));
                             let save_roll = if flight.on_target { rng.random() } else { 0.0 };
                             let arrival = shot_arrival_plan(&ShotArrivalPlanInput {
                                 shooter_name: shooter_name.as_str(),
@@ -8815,12 +8921,7 @@ fn tick_match(
                                 pitch_length: config.pitch_length,
                                 pitch_width: config.pitch_width,
                                 gk_pos,
-                                gk_saving,
-                                gk_positioning,
-                                gk_reaction,
-                                gk_position_error_factor: config.gk_position_error_factor,
-                                gk_reaction_delay_factor: config.gk_reaction_delay_factor,
-                                gk_save_base: config.gk_save_base,
+                                gk_attributes,
                                 save_roll,
                                 total_xg: shooter_xg,
                                 logged_xg_sum,

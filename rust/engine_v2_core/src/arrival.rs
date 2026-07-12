@@ -1,4 +1,4 @@
-use crate::goalkeeper::{compute_gk_save_probability, GkSaveInput};
+use crate::goalkeeper::{compute_gk_save_probability_for_attributes, GkSaveAttributes};
 use crate::physics::{distance, player_speed, smoothstep};
 
 #[derive(Clone, Copy, Debug)]
@@ -47,12 +47,7 @@ pub struct ShotArrivalInput {
     pub pitch_length: f64,
     pub pitch_width: f64,
     pub gk_pos: (f64, f64),
-    pub gk_saving: f64,
-    pub gk_positioning: f64,
-    pub gk_reaction: f64,
-    pub gk_position_error_factor: f64,
-    pub gk_reaction_delay_factor: f64,
-    pub gk_save_base: f64,
+    pub gk_attributes: GkSaveAttributes,
     pub save_roll: f64,
 }
 
@@ -262,18 +257,13 @@ pub fn resolve_shot_arrival(input: &ShotArrivalInput) -> ShotArrivalOutput {
             outcome_code: 0,
         };
     }
-    let save_prob = compute_gk_save_probability(&GkSaveInput {
-        gk_pos: input.gk_pos,
-        shot_target: input.shot_target,
-        shot_origin: input.shot_origin,
-        gk_saving: input.gk_saving,
-        gk_positioning: input.gk_positioning,
-        gk_reaction: input.gk_reaction,
-        pitch_length: input.pitch_length,
-        gk_position_error_factor: input.gk_position_error_factor,
-        gk_reaction_delay_factor: input.gk_reaction_delay_factor,
-        gk_save_base: input.gk_save_base,
-    });
+    let save_prob = compute_gk_save_probability_for_attributes(
+        input.gk_attributes,
+        input.gk_pos,
+        input.shot_origin,
+        input.shot_target,
+        input.pitch_length,
+    );
     ShotArrivalOutput {
         in_box,
         save_prob,

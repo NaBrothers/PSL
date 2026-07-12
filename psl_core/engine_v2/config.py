@@ -68,7 +68,6 @@ class EngineConfig:
     target_occupation_weight: float = 0.18
 
     # Deterministic scenario controls used by engine tests and tuning agents.
-    runner_shot_threshold: float = 0.18
     runner_forced_action: Optional[str] = None
     runner_forced_actions: Optional[list[str]] = None
     runner_forced_pass_target: Optional[tuple[float, float]] = None
