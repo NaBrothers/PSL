@@ -115,7 +115,7 @@ def run_match(
         raise RustEngineError(
             f"unexpected engine backend: {response.get('engine')!r}"
         )
-    if response.get("contract_version") != 1:
+    if response.get("contract_version") != 2:
         raise RustEngineError(
             f"unsupported Rust engine contract: {response.get('contract_version')!r}"
         )

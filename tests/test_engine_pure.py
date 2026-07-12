@@ -54,10 +54,13 @@ def test_run_simulation_produces_match_result(core_modules, make_user, monkeypat
     assert result.home_stats.progressive_passes >= 0
     assert result.home_stats.shots_in_box + result.home_stats.shots_outside_box == result.home_stats.shoots
 
-    assert len(result.events) == result.home_stats.point + result.away_stats.point
+    goal_events = [event for event in result.events if event.event_type == "goal"]
+    assert len(goal_events) == result.home_stats.point + result.away_stats.point
+    assert result.events
     for ev in result.events:
         assert isinstance(ev, MatchEvent)
-        assert ev.event_type == "goal"
+        assert ev.event_type
+        assert ev.text
         assert ev.seq > 0
 
     total_goals = result.home_stats.point + result.away_stats.point

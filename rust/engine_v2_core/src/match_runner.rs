@@ -102,6 +102,7 @@ struct RunnerPlayer {
     goals: i32,
     assists: i32,
     shots_on_target: i32,
+    post_shot_xg: f64,
     saves: i32,
     goals_conceded: i32,
     psxg_faced: f64,
@@ -293,6 +294,10 @@ struct RunnerFlight {
     last_passer_idx: i32,
     on_target: bool,
     speed: f64,
+    xg: f64,
+    is_long: bool,
+    target_is_space: bool,
+    possession_id: i32,
 }
 
 #[derive(Clone, Debug)]
@@ -301,6 +306,10 @@ struct RunnerMatchState {
     home_score: i32,
     away_score: i32,
     goals: Vec<serde_json::Value>,
+    events: Vec<serde_json::Value>,
+    event_seq: i32,
+    possession_id: i32,
+    possession_team_home: Option<bool>,
     home_possession_ticks: i32,
     away_possession_ticks: i32,
     neutral_ticks: i32,
@@ -400,6 +409,7 @@ pub struct MatchV2RunResponse {
     pub home_score: i32,
     pub away_score: i32,
     pub goals: Vec<serde_json::Value>,
+    pub events: Vec<serde_json::Value>,
     pub home_stats: serde_json::Value,
     pub away_stats: serde_json::Value,
     pub home_player_stats: Vec<serde_json::Value>,
@@ -412,6 +422,133 @@ pub struct MatchV2RunResponse {
     pub trace: serde_json::Value,
     pub engine: String,
     pub contract_version: i32,
+}
+
+struct MatchEventInput<'a> {
+    tick: i32,
+    half: i32,
+    possession_id: i32,
+    event_type: &'a str,
+    team_home: bool,
+    player: serde_json::Value,
+    target_player: serde_json::Value,
+    assist_player: serde_json::Value,
+    outcome: &'a str,
+    xg: f64,
+    origin: Option<(f64, f64)>,
+    target: Option<(f64, f64)>,
+    tags: Vec<&'a str>,
+    score_before: Option<(i32, i32)>,
+}
+
+fn event_player(player: Option<&RunnerPlayer>) -> serde_json::Value {
+    player
+        .map(|player| {
+            json!({
+                "player_id": player.player_id,
+                "name": player.name,
+                "color": player.color,
+                "colored_name": player.colored_name,
+                "position": player.position,
+            })
+        })
+        .unwrap_or(serde_json::Value::Null)
+}
+
+fn event_position(position: Option<(f64, f64)>) -> serde_json::Value {
+    position
+        .map(|position| json!([round_one(position.0), round_one(position.1)]))
+        .unwrap_or(serde_json::Value::Null)
+}
+
+fn record_match_event(
+    state: &mut RunnerMatchState,
+    config: &RunnerRuntimeConfig,
+    input: MatchEventInput<'_>,
+) {
+    state.event_seq += 1;
+    let match_second = (input.tick as f64 * config.tick_duration)
+        .floor()
+        .clamp(0.0, 90.0 * 60.0 - 1.0) as i32;
+    let score_before = input
+        .score_before
+        .unwrap_or((state.home_score, state.away_score));
+    state.events.push(json!({
+        "seq": state.event_seq,
+        "tick": input.tick,
+        "match_second": match_second,
+        "minute": match_second / 60,
+        "second": match_second % 60,
+        "half": input.half,
+        "possession_id": input.possession_id,
+        "event_type": input.event_type,
+        "team_side": if input.team_home { "home" } else { "away" },
+        "player": input.player,
+        "target_player": input.target_player,
+        "assist_player": input.assist_player,
+        "outcome": input.outcome,
+        "xg": round_two(input.xg),
+        "score_before": [score_before.0, score_before.1],
+        "score_after": [state.home_score, state.away_score],
+        "origin": event_position(input.origin),
+        "target": event_position(input.target),
+        "tags": input.tags,
+    }));
+}
+
+fn player_identity(players: &[RunnerPlayer], index: usize) -> serde_json::Value {
+    event_player(players.get(index))
+}
+
+fn pass_event_tags(
+    flight: &RunnerFlight,
+    receive_pos: (f64, f64),
+    config: &RunnerRuntimeConfig,
+    home_attacking_right: bool,
+) -> Vec<&'static str> {
+    let pass_stats = track_pass_stats(&PassStatInput {
+        origin: flight.origin,
+        target: receive_pos,
+        attacking_right: attacking_right_for(flight.passer_team_home, home_attacking_right),
+        pitch_length: config.pitch_length,
+        pitch_width: config.pitch_width,
+    });
+    let mut tags = vec![if flight.is_long { "long" } else { "short" }];
+    tags.push(if flight.target_is_space {
+        "space"
+    } else {
+        "feet"
+    });
+    if pass_stats.progressive_passes > 0 {
+        tags.push("progressive");
+    }
+    if pass_stats.passes_into_final_third > 0 {
+        tags.push("into_final_third");
+    }
+    if pass_stats.passes_into_box > 0 {
+        tags.push("into_box");
+    }
+    if pass_stats.crosses_attempted > 0 {
+        tags.push("cross");
+    }
+    if flight.target_is_space && pass_stats.progressive_passes > 0 {
+        tags.push("through_ball");
+    }
+    tags
+}
+
+fn shot_event_tags(flight: &RunnerFlight, in_box: bool, outcome: &str) -> Vec<&'static str> {
+    let mut tags = vec![if in_box { "in_box" } else { "outside_box" }];
+    if flight.on_target {
+        tags.push("on_target");
+    }
+    if flight.xg >= 0.3 {
+        tags.push("big_chance");
+    }
+    if outcome == "goal" {
+        tags.push("scored");
+    }
+    tags
 }
 
 fn formation_data(key: &str) -> Formation {
@@ -1183,6 +1320,7 @@ fn build_players(
                 goals: 0,
                 assists: 0,
                 shots_on_target: 0,
+                post_shot_xg: 0.0,
                 saves: 0,
                 goals_conceded: 0,
                 psxg_faced: 0.0,
@@ -1477,7 +1615,7 @@ fn player_stat_skeleton(
                 "shots_on_target": player.shots_on_target,
                 "xg": round_two(player.xg),
                 "npxg": round_two(player.xg),
-                "post_shot_xg": round_two(player.xg * 0.8),
+                "post_shot_xg": round_two(player.post_shot_xg),
                 "big_chances": player.shot_log.iter().filter(|shot| shot.get("xg").and_then(|value| value.as_f64()).unwrap_or(0.0) > 0.3).count(),
                 "big_chances_missed": player.shot_log.iter().filter(|shot| {
                     shot.get("xg").and_then(|value| value.as_f64()).unwrap_or(0.0) > 0.3
@@ -1525,7 +1663,12 @@ fn player_stat_skeleton(
         .collect()
 }
 
-fn team_stats(players: &[RunnerPlayer], possession: f64) -> serde_json::Value {
+fn team_stats(
+    players: &[RunnerPlayer],
+    possession: f64,
+    events: &[serde_json::Value],
+    team_home: bool,
+) -> serde_json::Value {
     let passes = players
         .iter()
         .map(|player| player.passes_attempted)
@@ -1534,25 +1677,81 @@ fn team_stats(players: &[RunnerPlayer], possession: f64) -> serde_json::Value {
         .iter()
         .map(|player| player.passes_completed)
         .sum::<i32>();
+    let shots_in_box = players
+        .iter()
+        .flat_map(|player| player.shot_log.iter())
+        .filter(|shot| {
+            shot.get("in_box")
+                .and_then(|value| value.as_bool())
+                .unwrap_or(false)
+        })
+        .count() as i32;
+    let shots = players.iter().map(|player| player.shots).sum::<i32>();
+    let xg = players.iter().map(|player| player.xg).sum::<f64>();
+    let post_shot_xg = players
+        .iter()
+        .map(|player| player.post_shot_xg)
+        .sum::<f64>();
+    let event_side = if team_home { "home" } else { "away" };
+    let event_count = |event_type: &str, outcome: Option<&str>| -> i32 {
+        events
+            .iter()
+            .filter(|event| {
+                event.get("team_side").and_then(|value| value.as_str()) == Some(event_side)
+                    && event.get("event_type").and_then(|value| value.as_str()) == Some(event_type)
+                    && outcome
+                        .map(|expected| {
+                            event.get("outcome").and_then(|value| value.as_str()) == Some(expected)
+                        })
+                        .unwrap_or(true)
+            })
+            .count() as i32
+    };
     json!({
-        "shots": players.iter().map(|player| player.shots).sum::<i32>(),
+        "shots": shots,
         "shots_on_target": players.iter().map(|player| player.shots_on_target).sum::<i32>(),
+        "shots_in_box": shots_in_box,
+        "shots_outside_box": (shots - shots_in_box).max(0),
         "passes": passes,
         "passes_completed": completed,
         "pass_success_rate": if passes > 0 { round_one(completed as f64 / passes as f64 * 100.0) } else { 0.0 },
+        "progressive_passes": players.iter().map(|player| player.progressive_passes).sum::<i32>(),
+        "passes_into_final_third": players.iter().map(|player| player.passes_into_final_third).sum::<i32>(),
+        "passes_into_box": players.iter().map(|player| player.passes_into_box).sum::<i32>(),
+        "long_passes": players.iter().map(|player| player.long_passes).sum::<i32>(),
+        "completed_long_passes": players.iter().map(|player| player.completed_long_passes).sum::<i32>(),
         "tackles": players.iter().map(|player| player.tackles_won).sum::<i32>(),
         "tackles_won": players.iter().map(|player| player.tackles_won).sum::<i32>(),
+        "tackle_attempts": players.iter().map(|player| player.tackles_attempted).sum::<i32>(),
         "interceptions": players.iter().map(|player| player.interceptions).sum::<i32>(),
         "clearances": players.iter().map(|player| player.clearances).sum::<i32>(),
         "dribbles": players.iter().map(|player| player.dribbles_completed).sum::<i32>(),
         "dribbles_completed": players.iter().map(|player| player.dribbles_completed).sum::<i32>(),
+        "take_ons": players.iter().map(|player| player.dribbles_attempted).sum::<i32>(),
+        "successful_take_ons": players.iter().map(|player| player.dribbles_completed).sum::<i32>(),
         "saves": players.iter().map(|player| player.saves).sum::<i32>(),
         "goals": players.iter().map(|player| player.goals).sum::<i32>(),
         "distance_covered": players.iter().map(|player| player.distance_covered).sum::<f64>(),
         "carries": players.iter().map(|player| player.carries_attempted).sum::<i32>(),
         "carries_completed": players.iter().map(|player| player.carries_completed).sum::<i32>(),
+        "progressive_carries": players.iter().map(|player| player.progressive_carries).sum::<i32>(),
+        "carries_into_final_third": players.iter().map(|player| player.carries_into_final_third).sum::<i32>(),
+        "carries_into_box": players.iter().map(|player| player.carries_into_box).sum::<i32>(),
         "crosses": players.iter().map(|player| player.crosses_attempted).sum::<i32>(),
         "crosses_completed": players.iter().map(|player| player.crosses_completed).sum::<i32>(),
+        "key_passes": players.iter().map(|player| player.key_passes).sum::<i32>(),
+        "pressures": players.iter().map(|player| player.pressures).sum::<i32>(),
+        "successful_pressures": players.iter().map(|player| player.successful_pressures).sum::<i32>(),
+        "blocks": players.iter().map(|player| player.blocks).sum::<i32>(),
+        "turnovers": players.iter().map(|player| player.turnovers).sum::<i32>(),
+        "offsides": players.iter().map(|player| player.offsides).sum::<i32>(),
+        "xg": round_two(xg),
+        "post_shot_xg": round_two(post_shot_xg),
+        "big_chances": players.iter().flat_map(|player| player.shot_log.iter()).filter(|shot| shot.get("xg").and_then(|value| value.as_f64()).unwrap_or(0.0) >= 0.3).count(),
+        "corners": event_count("restart", Some("corner")),
+        "goal_kicks": event_count("restart", Some("goal_kick")),
+        "throw_ins": event_count("restart", Some("throw_in")),
+        "free_kicks": event_count("restart", Some("offside")),
         "headers": 0,
         "headers_won": 0,
         "possession": possession
@@ -1785,6 +1984,10 @@ fn give_ball_to_player(
     pos: (f64, f64),
     receive_origin: Option<(f64, f64)>,
 ) {
+    if state.possession_team_home != Some(team_home) {
+        state.possession_id += 1;
+        state.possession_team_home = Some(team_home);
+    }
     if let (Some(prev_idx), Some(prev_home)) = (state.ball.holder_idx, state.ball.holder_team_home)
     {
         if prev_home {
@@ -6581,6 +6784,7 @@ fn track_runner_pressures(
 fn resolve_runner_duel(
     state: &mut RunnerMatchState,
     tick: i32,
+    half: i32,
     holder_idx: usize,
     holder_home: bool,
     defender_idx: usize,
@@ -6637,6 +6841,16 @@ fn resolve_runner_duel(
     });
     match duel.outcome_code {
         0 => {
+            let attacker_identity = if holder_home {
+                player_identity(home, holder_idx)
+            } else {
+                player_identity(away, holder_idx)
+            };
+            let defender_identity = if holder_home {
+                player_identity(away, defender_idx)
+            } else {
+                player_identity(home, defender_idx)
+            };
             if holder_home {
                 if let Some(defender) = away.get_mut(defender_idx) {
                     defender.tackles_attempted += 1;
@@ -6669,9 +6883,40 @@ fn resolve_runner_duel(
                     "defender_uniform": defender_uniform
                 }
             }));
+            record_match_event(
+                state,
+                config,
+                MatchEventInput {
+                    tick,
+                    half,
+                    possession_id: state.possession_id,
+                    event_type: "duel",
+                    team_home: holder_home,
+                    player: attacker_identity,
+                    target_player: defender_identity,
+                    assist_player: serde_json::Value::Null,
+                    outcome: "won",
+                    xg: 0.0,
+                    origin: Some(holder_pos),
+                    target: Some(holder_pos),
+                    tags: vec!["take_on"],
+                    score_before: None,
+                },
+            );
             true
         }
         1 => {
+            let attacker_identity = if holder_home {
+                player_identity(home, holder_idx)
+            } else {
+                player_identity(away, holder_idx)
+            };
+            let defender_identity = if holder_home {
+                player_identity(away, defender_idx)
+            } else {
+                player_identity(home, defender_idx)
+            };
+            let possession_id = state.possession_id;
             if holder_home {
                 if let Some(defender) = away.get_mut(defender_idx) {
                     defender.tackles_attempted += 1;
@@ -6716,9 +6961,39 @@ fn resolve_runner_duel(
                     "defender_uniform": defender_uniform
                 }
             }));
+            record_match_event(
+                state,
+                config,
+                MatchEventInput {
+                    tick,
+                    half,
+                    possession_id,
+                    event_type: "tackle",
+                    team_home: !holder_home,
+                    player: defender_identity,
+                    target_player: attacker_identity,
+                    assist_player: serde_json::Value::Null,
+                    outcome: "won",
+                    xg: 0.0,
+                    origin: Some(holder_pos),
+                    target: Some(holder_pos),
+                    tags: vec!["possession_won"],
+                    score_before: None,
+                },
+            );
             true
         }
         _ => {
+            let attacker_identity = if holder_home {
+                player_identity(home, holder_idx)
+            } else {
+                player_identity(away, holder_idx)
+            };
+            let defender_identity = if holder_home {
+                player_identity(away, defender_idx)
+            } else {
+                player_identity(home, defender_idx)
+            };
             if holder_home {
                 if let Some(defender) = away.get_mut(defender_idx) {
                     defender.tackles_attempted += 1;
@@ -6751,6 +7026,26 @@ fn resolve_runner_duel(
                     "defender_uniform": defender_uniform
                 }
             }));
+            record_match_event(
+                state,
+                config,
+                MatchEventInput {
+                    tick,
+                    half,
+                    possession_id: state.possession_id,
+                    event_type: "duel",
+                    team_home: holder_home,
+                    player: attacker_identity,
+                    target_player: defender_identity,
+                    assist_player: serde_json::Value::Null,
+                    outcome: "loose",
+                    xg: 0.0,
+                    origin: Some(holder_pos),
+                    target: Some(duel.loose_pos),
+                    tags: vec!["second_ball"],
+                    score_before: None,
+                },
+            );
             true
         }
     }
@@ -6864,6 +7159,7 @@ fn apply_restart_shape(
 fn restart_dead_ball(
     state: &mut RunnerMatchState,
     tick: i32,
+    half: i32,
     home: &mut [RunnerPlayer],
     away: &mut [RunnerPlayer],
     config: &RunnerRuntimeConfig,
@@ -6912,6 +7208,11 @@ fn restart_dead_ball(
         players: &restart_inputs,
     });
     if let Some(receiver_idx) = restart.receiver_index {
+        let receiver_identity = if restart_team_home {
+            player_identity(home, receiver_idx)
+        } else {
+            player_identity(away, receiver_idx)
+        };
         let team = if restart_team_home {
             &mut *home
         } else {
@@ -6944,6 +7245,26 @@ fn restart_dead_ball(
                 "team": if restart_team_home { "home" } else { "away" },
                 "receiver_idx": receiver_idx
             }));
+            record_match_event(
+                state,
+                config,
+                MatchEventInput {
+                    tick,
+                    half,
+                    possession_id: state.possession_id,
+                    event_type: "restart",
+                    team_home: restart_team_home,
+                    player: receiver_identity,
+                    target_player: serde_json::Value::Null,
+                    assist_player: serde_json::Value::Null,
+                    outcome: reason.as_str(),
+                    xg: 0.0,
+                    origin: Some(restart.ball_pos),
+                    target: Some(restart.ball_pos),
+                    tags: vec!["set_piece"],
+                    score_before: None,
+                },
+            );
         }
     }
 }
@@ -6963,6 +7284,7 @@ fn flight_type_code(kind: RunnerFlightKind) -> u8 {
 fn handle_out_of_bounds_flight(
     state: &mut RunnerMatchState,
     tick: i32,
+    half: i32,
     flight: RunnerFlight,
     home: &mut [RunnerPlayer],
     away: &mut [RunnerPlayer],
@@ -7002,6 +7324,77 @@ fn handle_out_of_bounds_flight(
         } else if let Some(shooter) = away.get_mut(flight.passer_idx) {
             shooter.shot_log.push(shot_log_json(&plan.shot_log));
         }
+        let shooter_identity = if flight.passer_team_home {
+            player_identity(home, flight.passer_idx)
+        } else {
+            player_identity(away, flight.passer_idx)
+        };
+        let keeper_identity = if flight.passer_team_home {
+            player_identity(away, 0)
+        } else {
+            player_identity(home, 0)
+        };
+        record_match_event(
+            state,
+            config,
+            MatchEventInput {
+                tick,
+                half,
+                possession_id: flight.possession_id,
+                event_type: "shot",
+                team_home: flight.passer_team_home,
+                player: shooter_identity,
+                target_player: keeper_identity,
+                assist_player: serde_json::Value::Null,
+                outcome: "off_target",
+                xg: flight.xg,
+                origin: Some(flight.origin),
+                target: Some(flight.target),
+                tags: shot_event_tags(&flight, plan.shot_log.in_box, "off_target"),
+                score_before: None,
+            },
+        );
+    } else {
+        let passer_identity = if flight.passer_team_home {
+            player_identity(home, flight.passer_idx)
+        } else {
+            player_identity(away, flight.passer_idx)
+        };
+        let event_type = if flight.kind == RunnerFlightKind::Clearance {
+            "clearance"
+        } else {
+            "pass"
+        };
+        let mut tags = if flight.kind == RunnerFlightKind::Pass {
+            pass_event_tags(&flight, flight.target, config, home_attacking_right)
+        } else {
+            vec!["long", "space"]
+        };
+        tags.push(if plan.reason == "goal_kick" {
+            "goal_kick"
+        } else {
+            "throw_in"
+        });
+        record_match_event(
+            state,
+            config,
+            MatchEventInput {
+                tick,
+                half,
+                possession_id: flight.possession_id,
+                event_type,
+                team_home: flight.passer_team_home,
+                player: passer_identity,
+                target_player: serde_json::Value::Null,
+                assist_player: serde_json::Value::Null,
+                outcome: "out_of_play",
+                xg: 0.0,
+                origin: Some(flight.origin),
+                target: Some(flight.target),
+                tags,
+                score_before: None,
+            },
+        );
     }
     set_dead_ball_and_clear_goals(
         state,
@@ -7756,6 +8149,7 @@ fn tick_match(
                                     let consumed = resolve_runner_duel(
                                         state,
                                         tick,
+                                        half,
                                         holder_idx,
                                         holder_home,
                                         defender_idx,
@@ -7774,6 +8168,7 @@ fn tick_match(
                                     away.get_mut(holder_idx)
                                 };
                                 let Some(holder) = holder else { return };
+                                let holder_identity = event_player(Some(holder));
                                 holder.carries_attempted += 1;
                                 holder.hold_ticks = 0;
                                 let old_pos = holder.pos;
@@ -7844,6 +8239,16 @@ fn tick_match(
                                     carry_stats.carries_into_final_third;
                                 holder.carries_into_box += carry_stats.carries_into_box;
                                 state.ball.position = carry.new_pos;
+                                let mut carry_tags = Vec::new();
+                                if carry_stats.progressive_carries > 0 {
+                                    carry_tags.push("progressive");
+                                }
+                                if carry_stats.carries_into_final_third > 0 {
+                                    carry_tags.push("into_final_third");
+                                }
+                                if carry_stats.carries_into_box > 0 {
+                                    carry_tags.push("into_box");
+                                }
                                 state.trace_entries.push(json!({
                                     "tick": tick,
                                     "type": "action",
@@ -7855,6 +8260,26 @@ fn tick_match(
                                     "pos": [round_one(holder.pos.0), round_one(holder.pos.1)],
                                     "distance": round_one(carry.distance_covered)
                                 }));
+                                record_match_event(
+                                    state,
+                                    config,
+                                    MatchEventInput {
+                                        tick,
+                                        half,
+                                        possession_id: state.possession_id,
+                                        event_type: "carry",
+                                        team_home: holder_home,
+                                        player: holder_identity,
+                                        target_player: serde_json::Value::Null,
+                                        assist_player: serde_json::Value::Null,
+                                        outcome: "completed",
+                                        xg: 0.0,
+                                        origin: Some(old_pos),
+                                        target: Some(carry.new_pos),
+                                        tags: carry_tags,
+                                        score_before: None,
+                                    },
+                                );
                             }
                             RunnerHeldAction::Pass {
                                 receiver_idx,
@@ -7865,6 +8290,13 @@ fn tick_match(
                                 let interception_present = interception_defender_idx.is_some();
                                 let passer_name = holder_snapshot.name.clone();
                                 let passer_pos = holder_snapshot.pos;
+                                let passer_identity = event_player(Some(&holder_snapshot));
+                                let receiver_identity = if holder_home {
+                                    player_identity(home, receiver_idx)
+                                } else {
+                                    player_identity(away, receiver_idx)
+                                };
+                                let possession_id = state.possession_id;
                                 let passing = if is_long {
                                     holder_snapshot.long_passing
                                 } else {
@@ -7946,6 +8378,30 @@ fn tick_match(
                                         "error_type": "pass_accuracy",
                                         "player": passer_name
                                     }));
+                                    record_match_event(
+                                        state,
+                                        config,
+                                        MatchEventInput {
+                                            tick,
+                                            half,
+                                            possession_id,
+                                            event_type: "pass",
+                                            team_home: holder_home,
+                                            player: passer_identity,
+                                            target_player: receiver_identity,
+                                            assist_player: serde_json::Value::Null,
+                                            outcome: "misplaced",
+                                            xg: 0.0,
+                                            origin: Some(passer_pos),
+                                            target: Some(pass.stray_pos),
+                                            tags: if is_long {
+                                                vec!["long"]
+                                            } else {
+                                                vec!["short"]
+                                            },
+                                            score_before: None,
+                                        },
+                                    );
                                     break 'held_action_dispatch;
                                 }
                                 if pass.outcome_code == 2 {
@@ -7980,6 +8436,31 @@ fn tick_match(
                                         "team": if holder_home { "away" } else { "home" },
                                         "player": interceptor_name
                                     }));
+                                    let interceptor_identity = if holder_home {
+                                        player_identity(away, interceptor_idx)
+                                    } else {
+                                        player_identity(home, interceptor_idx)
+                                    };
+                                    record_match_event(
+                                        state,
+                                        config,
+                                        MatchEventInput {
+                                            tick,
+                                            half,
+                                            possession_id,
+                                            event_type: "interception",
+                                            team_home: !holder_home,
+                                            player: interceptor_identity,
+                                            target_player: passer_identity,
+                                            assist_player: serde_json::Value::Null,
+                                            outcome: "won",
+                                            xg: 0.0,
+                                            origin: Some(passer_pos),
+                                            target: Some(interceptor_pos),
+                                            tags: vec!["pass_cut_out"],
+                                            score_before: None,
+                                        },
+                                    );
                                     break 'held_action_dispatch;
                                 }
                                 state.ball.state = RunnerBallState::InFlight;
@@ -8028,6 +8509,10 @@ fn tick_match(
                                     last_passer_idx: state.last_passer_idx,
                                     on_target: false,
                                     speed: pass.speed,
+                                    xg: 0.0,
+                                    is_long,
+                                    target_is_space: pass.target_kind_code == 1,
+                                    possession_id: state.possession_id,
                                 });
                                 state.pending_ball_flight =
                                     Some(replay_ball_flight(state.ball.flight.as_ref()));
@@ -8083,6 +8568,10 @@ fn tick_match(
                                     last_passer_idx: state.last_passer_idx,
                                     on_target: false,
                                     speed: clear.speed,
+                                    xg: 0.0,
+                                    is_long: true,
+                                    target_is_space: true,
+                                    possession_id: state.possession_id,
                                 });
                                 state.trace_entries.push(json!({
                                     "tick": tick,
@@ -8166,6 +8655,10 @@ fn tick_match(
                                     last_passer_idx: shot_last_passer_idx,
                                     on_target: shot.on_target,
                                     speed: shot.speed,
+                                    xg,
+                                    is_long: false,
+                                    target_is_space: false,
+                                    possession_id: state.possession_id,
                                 });
                                 state.pending_ball_flight =
                                     Some(replay_ball_flight(state.ball.flight.as_ref()));
@@ -8222,6 +8715,7 @@ fn tick_match(
                         handle_out_of_bounds_flight(
                             state,
                             tick,
+                            half,
                             flight,
                             home,
                             away,
@@ -8264,6 +8758,35 @@ fn tick_match(
                                     })
                                     .unwrap_or_else(|| ("".to_string(), "".to_string(), 0.0, 0.0))
                             };
+                            let shooter_identity = if flight.passer_team_home {
+                                player_identity(home, flight.passer_idx)
+                            } else {
+                                player_identity(away, flight.passer_idx)
+                            };
+                            let keeper_identity = if flight.passer_team_home {
+                                player_identity(away, 0)
+                            } else {
+                                player_identity(home, 0)
+                            };
+                            let assister_idx = if flight.last_passer_team_home
+                                == Some(flight.passer_team_home)
+                                && flight.last_passer_idx >= 0
+                                && flight.last_passer_idx as usize != flight.passer_idx
+                            {
+                                Some(flight.last_passer_idx as usize)
+                            } else {
+                                None
+                            };
+                            let assister_identity = assister_idx
+                                .map(|idx| {
+                                    if flight.passer_team_home {
+                                        player_identity(home, idx)
+                                    } else {
+                                        player_identity(away, idx)
+                                    }
+                                })
+                                .unwrap_or(serde_json::Value::Null);
+                            let score_before = (state.home_score, state.away_score);
                             let gk = if flight.passer_team_home {
                                 away.get(0)
                             } else {
@@ -8302,6 +8825,13 @@ fn tick_match(
                                 total_xg: shooter_xg,
                                 logged_xg_sum,
                             });
+                            if flight.passer_team_home {
+                                if let Some(shooter) = home.get_mut(flight.passer_idx) {
+                                    shooter.post_shot_xg += arrival.psxg_delta;
+                                }
+                            } else if let Some(shooter) = away.get_mut(flight.passer_idx) {
+                                shooter.post_shot_xg += arrival.psxg_delta;
+                            }
                             match arrival.outcome_code {
                                 1 => {
                                     let gk_pos = if flight.passer_team_home {
@@ -8499,6 +9029,34 @@ fn tick_match(
                             } else if let Some(shooter) = away.get_mut(flight.passer_idx) {
                                 shooter.shot_log.push(shot_log_json(&arrival.shot_log));
                             }
+                            record_match_event(
+                                state,
+                                config,
+                                MatchEventInput {
+                                    tick,
+                                    half,
+                                    possession_id: flight.possession_id,
+                                    event_type: "shot",
+                                    team_home: flight.passer_team_home,
+                                    player: shooter_identity,
+                                    target_player: keeper_identity,
+                                    assist_player: if arrival.outcome_code == 2 {
+                                        assister_identity
+                                    } else {
+                                        serde_json::Value::Null
+                                    },
+                                    outcome: arrival.shot_log.outcome.as_str(),
+                                    xg: flight.xg,
+                                    origin: Some(flight.origin),
+                                    target: Some(flight.target),
+                                    tags: shot_event_tags(
+                                        &flight,
+                                        arrival.in_box,
+                                        arrival.shot_log.outcome.as_str(),
+                                    ),
+                                    score_before: Some(score_before),
+                                },
+                            );
                             state.trace_entries.push(json!({
                                 "tick": tick,
                                 "type": "event",
@@ -8543,11 +9101,21 @@ fn tick_match(
                                 receivers: &receivers,
                                 opponents: &opponents,
                             });
+                            let passer_identity = if flight.passer_team_home {
+                                player_identity(home, flight.passer_idx)
+                            } else {
+                                player_identity(away, flight.passer_idx)
+                            };
                             match arrival.outcome_code {
                                 0 => {
                                     let receiver_idx = arrival
                                         .receiver_index
                                         .unwrap_or(flight.intended_receiver_idx.unwrap_or(0));
+                                    let receiver_identity = if flight.passer_team_home {
+                                        player_identity(home, receiver_idx)
+                                    } else {
+                                        player_identity(away, receiver_idx)
+                                    };
                                     let receiver_offside_flagged =
                                         flight.offside_indices.contains(&receiver_idx);
                                     let (receive_pos, loose_pos, receive_ok, receiver_name) = {
@@ -8615,6 +9183,33 @@ fn tick_match(
                                             "player": receiver_name,
                                             "team": if flight.passer_team_home { "home" } else { "away" }
                                         }));
+                                        let mut tags = pass_event_tags(
+                                            &flight,
+                                            receive_pos,
+                                            config,
+                                            home_attacking_right,
+                                        );
+                                        tags.push("offside");
+                                        record_match_event(
+                                            state,
+                                            config,
+                                            MatchEventInput {
+                                                tick,
+                                                half,
+                                                possession_id: flight.possession_id,
+                                                event_type: "pass",
+                                                team_home: flight.passer_team_home,
+                                                player: passer_identity,
+                                                target_player: receiver_identity,
+                                                assist_player: serde_json::Value::Null,
+                                                outcome: "offside",
+                                                xg: 0.0,
+                                                origin: Some(flight.origin),
+                                                target: Some(receive_pos),
+                                                tags,
+                                                score_before: None,
+                                            },
+                                        );
                                     } else if receive_ok {
                                         if flight.passer_team_home {
                                             if let Some(passer) = home.get_mut(flight.passer_idx) {
@@ -8692,6 +9287,31 @@ fn tick_match(
                                             "action": "receive",
                                             "pos": [round_one(receive_pos.0), round_one(receive_pos.1)]
                                         }));
+                                        record_match_event(
+                                            state,
+                                            config,
+                                            MatchEventInput {
+                                                tick,
+                                                half,
+                                                possession_id: flight.possession_id,
+                                                event_type: "pass",
+                                                team_home: flight.passer_team_home,
+                                                player: passer_identity,
+                                                target_player: receiver_identity,
+                                                assist_player: serde_json::Value::Null,
+                                                outcome: "completed",
+                                                xg: 0.0,
+                                                origin: Some(flight.origin),
+                                                target: Some(receive_pos),
+                                                tags: pass_event_tags(
+                                                    &flight,
+                                                    receive_pos,
+                                                    config,
+                                                    home_attacking_right,
+                                                ),
+                                                score_before: None,
+                                            },
+                                        );
                                     } else {
                                         set_contested_and_clear_goals(
                                             state,
@@ -8706,6 +9326,33 @@ fn tick_match(
                                             "event": "first_touch_error",
                                             "player": receiver_name
                                         }));
+                                        let mut tags = pass_event_tags(
+                                            &flight,
+                                            loose_pos,
+                                            config,
+                                            home_attacking_right,
+                                        );
+                                        tags.push("first_touch_error");
+                                        record_match_event(
+                                            state,
+                                            config,
+                                            MatchEventInput {
+                                                tick,
+                                                half,
+                                                possession_id: flight.possession_id,
+                                                event_type: "pass",
+                                                team_home: flight.passer_team_home,
+                                                player: passer_identity,
+                                                target_player: receiver_identity,
+                                                assist_player: serde_json::Value::Null,
+                                                outcome: "first_touch_error",
+                                                xg: 0.0,
+                                                origin: Some(flight.origin),
+                                                target: Some(loose_pos),
+                                                tags,
+                                                score_before: None,
+                                            },
+                                        );
                                     }
                                 }
                                 1 => {
@@ -8723,6 +9370,11 @@ fn tick_match(
                                             (flight.target, String::new())
                                         }
                                     };
+                                    let interceptor_identity = if flight.passer_team_home {
+                                        player_identity(away, opponent_idx)
+                                    } else {
+                                        player_identity(home, opponent_idx)
+                                    };
                                     give_ball_to_player(
                                         state,
                                         home,
@@ -8739,6 +9391,33 @@ fn tick_match(
                                         "team": if flight.passer_team_home { "away" } else { "home" },
                                         "player": winner_name
                                     }));
+                                    let mut tags = pass_event_tags(
+                                        &flight,
+                                        winner_pos,
+                                        config,
+                                        home_attacking_right,
+                                    );
+                                    tags.push("pass_cut_out");
+                                    record_match_event(
+                                        state,
+                                        config,
+                                        MatchEventInput {
+                                            tick,
+                                            half,
+                                            possession_id: flight.possession_id,
+                                            event_type: "interception",
+                                            team_home: !flight.passer_team_home,
+                                            player: interceptor_identity,
+                                            target_player: passer_identity,
+                                            assist_player: serde_json::Value::Null,
+                                            outcome: "won",
+                                            xg: 0.0,
+                                            origin: Some(flight.origin),
+                                            target: Some(winner_pos),
+                                            tags,
+                                            score_before: None,
+                                        },
+                                    );
                                 }
                                 _ => {
                                     set_contested_and_clear_goals(
@@ -8754,10 +9433,42 @@ fn tick_match(
                                         "event": "pass_loose",
                                         "target": [round_one(flight.target.0), round_one(flight.target.1)]
                                     }));
+                                    let mut tags = pass_event_tags(
+                                        &flight,
+                                        flight.target,
+                                        config,
+                                        home_attacking_right,
+                                    );
+                                    tags.push("second_ball");
+                                    record_match_event(
+                                        state,
+                                        config,
+                                        MatchEventInput {
+                                            tick,
+                                            half,
+                                            possession_id: flight.possession_id,
+                                            event_type: "pass",
+                                            team_home: flight.passer_team_home,
+                                            player: passer_identity,
+                                            target_player: serde_json::Value::Null,
+                                            assist_player: serde_json::Value::Null,
+                                            outcome: "loose",
+                                            xg: 0.0,
+                                            origin: Some(flight.origin),
+                                            target: Some(flight.target),
+                                            tags,
+                                            score_before: None,
+                                        },
+                                    );
                                 }
                             }
                         }
                         RunnerFlightKind::Clearance => {
+                            let clearer_identity = if flight.passer_team_home {
+                                player_identity(home, flight.passer_idx)
+                            } else {
+                                player_identity(away, flight.passer_idx)
+                            };
                             let home_arrivals = clearance_players(home);
                             let away_arrivals = clearance_players(away);
                             let arrival = clearance_arrival_plan(&ClearanceArrivalPlanInput {
@@ -8768,6 +9479,11 @@ fn tick_match(
                             });
                             let winner_home = arrival.winner_code == 0;
                             let winner_idx = arrival.player_index.unwrap_or(0);
+                            let winner_identity = if winner_home {
+                                player_identity(home, winner_idx)
+                            } else {
+                                player_identity(away, winner_idx)
+                            };
                             let (winner_pos, winner_name) = {
                                 let team = if winner_home { &mut *home } else { &mut *away };
                                 if let Some(winner) = team.get_mut(winner_idx) {
@@ -8802,6 +9518,30 @@ fn tick_match(
                                 "player": winner_name,
                                 "passer_completed": arrival.passer_completed
                             }));
+                            record_match_event(
+                                state,
+                                config,
+                                MatchEventInput {
+                                    tick,
+                                    half,
+                                    possession_id: flight.possession_id,
+                                    event_type: "clearance",
+                                    team_home: flight.passer_team_home,
+                                    player: clearer_identity,
+                                    target_player: winner_identity,
+                                    assist_player: serde_json::Value::Null,
+                                    outcome: if arrival.passer_completed {
+                                        "retained"
+                                    } else {
+                                        "conceded"
+                                    },
+                                    xg: 0.0,
+                                    origin: Some(flight.origin),
+                                    target: Some(winner_pos),
+                                    tags: vec!["long", "second_ball"],
+                                    score_before: None,
+                                },
+                            );
                         }
                     }
                 }
@@ -8925,7 +9665,16 @@ fn tick_match(
                 state.restart_ticks_remaining -= 1;
             }
             if state.restart_ticks_remaining <= 0 {
-                restart_dead_ball(state, tick, home, away, config, home_attacking_right, rng);
+                restart_dead_ball(
+                    state,
+                    tick,
+                    half,
+                    home,
+                    away,
+                    config,
+                    home_attacking_right,
+                    rng,
+                );
             }
         }
     }
@@ -9031,6 +9780,10 @@ pub fn run_match_v2(request: MatchV2RunRequest) -> MatchV2RunResponse {
         home_score: 0,
         away_score: 0,
         goals: Vec::new(),
+        events: Vec::new(),
+        event_seq: 0,
+        possession_id: 1,
+        possession_team_home: Some(true),
         home_possession_ticks: 0,
         away_possession_ticks: 0,
         neutral_ticks: 0,
@@ -9157,12 +9910,15 @@ pub fn run_match_v2(request: MatchV2RunRequest) -> MatchV2RunResponse {
         state.home_possession_ticks + state.away_possession_ticks + state.neutral_ticks;
     let home_possession = possession_pct(state.home_possession_ticks, possession_total);
     let away_possession = round_one(100.0 - home_possession);
+    let home_stats = team_stats(&home_players, home_possession, &state.events, true);
+    let away_stats = team_stats(&away_players, away_possession, &state.events, false);
     MatchV2RunResponse {
         home_score: state.home_score,
         away_score: state.away_score,
         goals: state.goals,
-        home_stats: team_stats(&home_players, home_possession),
-        away_stats: team_stats(&away_players, away_possession),
+        events: state.events,
+        home_stats,
+        away_stats,
         home_player_stats: player_stat_skeleton(&home_players, true, &state.pass_network),
         away_player_stats: player_stat_skeleton(&away_players, false, &state.pass_network),
         home_ratings: team_ratings(&home_players, state.away_score),
@@ -9181,6 +9937,6 @@ pub fn run_match_v2(request: MatchV2RunRequest) -> MatchV2RunResponse {
             "total_entries": state.home_possession_ticks + state.away_possession_ticks + state.neutral_ticks
         }),
         engine: "rust_match_v2".to_string(),
-        contract_version: 1,
+        contract_version: 2,
     }
 }

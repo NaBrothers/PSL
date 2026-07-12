@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import random
+import hashlib
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional
 
@@ -17,6 +18,7 @@ class MatchResult:
     home_score: int = 0
     away_score: int = 0
     goals: List[Dict] = field(default_factory=list)
+    events: List[Dict] = field(default_factory=list)
     home_stats: Dict = field(default_factory=dict)
     away_stats: Dict = field(default_factory=dict)
     home_player_stats: List[Dict] = field(default_factory=list)
@@ -25,6 +27,7 @@ class MatchResult:
     away_ratings: List[Dict] = field(default_factory=list)
     replay_url: Optional[str] = None
     trace_id: str = ""
+    presentation_seed: int = 0
 
 
 class MatchV2:
@@ -50,6 +53,7 @@ class MatchV2:
         self.away_cards = away_cards
         self.home_formation_key = home_formation
         self.away_formation_key = away_formation
+        self._match_seed: Optional[int] = seed
         self._result: Optional[MatchResult] = None
         self._replay_data: List[Dict] = []
         self._trace_data: Dict = {}
@@ -59,13 +63,22 @@ class MatchV2:
         if self._result is not None:
             return self._result
 
+        if self._match_seed is None:
+            self._match_seed = random.getrandbits(64)
         response = run_match(
             self.home_cards,
             self.away_cards,
             self.home_formation_key,
             self.away_formation_key,
             self.config,
-            seed=self.seed if self.seed is not None else random.getrandbits(64),
+            seed=self._match_seed,
+        )
+        presentation_seed = int.from_bytes(
+            hashlib.blake2b(
+                f"psl-presentation-v1:{self._match_seed}".encode("ascii"),
+                digest_size=8,
+            ).digest(),
+            "big",
         )
         self._replay_data = list(response.get("replay", []))
         self._trace_data = dict(response.get("trace", {}))
@@ -73,6 +86,7 @@ class MatchV2:
             home_score=int(response["home_score"]),
             away_score=int(response["away_score"]),
             goals=list(response.get("goals", [])),
+            events=list(response.get("events", [])),
             home_stats=dict(response.get("home_stats", {})),
             away_stats=dict(response.get("away_stats", {})),
             home_player_stats=list(response.get("home_player_stats", [])),
@@ -81,6 +95,7 @@ class MatchV2:
             away_ratings=list(response.get("away_ratings", [])),
             replay_url=response.get("replay_url"),
             trace_id=str(response.get("trace_id", "")),
+            presentation_seed=presentation_seed,
         )
         return self._result
 

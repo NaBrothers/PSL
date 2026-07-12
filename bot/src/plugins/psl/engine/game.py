@@ -1,10 +1,8 @@
 from engine.team import Team
 from engine.const import Const
-from engine.commentary import CommentaryRenderer, event_player_name, event_target_name
 from engine.types import MatchResult, TeamStats, GoalRecord
 from engine.types import MatchEvent as PureMatchEvent
 from utils.image import toImage
-from presentation.stats import _display_width, _format_stat_line
 from config import PROJECT_DIR
 import json
 import os
@@ -45,7 +43,6 @@ class Game:
         self.mode = Const.MODE_NORMAL
         self.seed = seed
         self.rng = rng or random.Random(seed)
-        self.commentary = CommentaryRenderer(self.rng)
         self.event_seq = 0
 
     def _load_engine_config(self):
@@ -168,48 +165,74 @@ class Game:
             None,
         )
 
-    def _apply_rust_goals(self, goals):
+    def _find_rust_identity(self, team, identity):
+        if not isinstance(identity, dict):
+            return None
+        player_id = identity.get("player_id")
+        if player_id is not None:
+            for player in team.players:
+                card_player_id = getattr(player.card.player, "ID", None)
+                if str(card_player_id) == str(player_id):
+                    return player
+        return self._find_rust_player(team, identity.get("name", ""))
+
+    def _apply_rust_events(self, result, presentation):
         self.timeline = []
         self.match_events = []
         self.event_seq = 0
-        home_score = 0
-        away_score = 0
+        raw_by_seq = {
+            int(event.get("seq", 0)): event
+            for event in result.events
+        }
 
-        for goal in sorted(goals, key=lambda item: int(item.get("minute", 0))):
-            minute = int(goal.get("minute", 0))
-            side = goal.get("team_side", "home")
+        for event in presentation.events:
+            raw = raw_by_seq.get(event.seq, {})
+            side = event.team_side or raw.get("team_side", "home")
             team = self.home if side == "home" else self.away
-            scorer = self._find_rust_player(team, goal.get("scorer", ""))
-            assister = self._find_rust_player(team, goal.get("assister", ""))
-            if scorer is None:
-                continue
-
-            scorer.goals_detailed.append(minute)
-            self.timeline.append((minute, team, scorer, assister))
-            event_home_score = home_score
-            event_away_score = away_score
-            if side == "home":
-                home_score += 1
-            else:
-                away_score += 1
-            self.event_seq += 1
-            text = scorer.getName() + " 破门"
-            if assister is not None:
-                text += "，助攻 " + assister.getName()
+            player = self._find_rust_identity(team, raw.get("player"))
+            opposing_team = self.away if side == "home" else self.home
+            target_identity = raw.get("target_player")
+            target_team = opposing_team if raw.get("event_type") in (
+                "shot",
+                "interception",
+                "tackle",
+            ) else team
+            target = self._find_rust_identity(target_team, target_identity)
+            outcome = raw.get("outcome", "")
+            event_type = raw.get("event_type", event.event_type)
+            if event_type == "shot":
+                if outcome == "goal":
+                    event_type = "goal"
+                    assister = self._find_rust_identity(
+                        team, raw.get("assist_player")
+                    )
+                    if player is not None:
+                        player.goals_detailed.append(event.minute)
+                        self.timeline.append(
+                            (event.minute, team, player, assister)
+                        )
+                    target = assister
+                elif outcome == "saved":
+                    event_type = "save"
             self.match_events.append(MatchEvent(
-                minute=minute,
-                second=0,
-                seq=self.event_seq,
-                event_type="goal",
-                text=text,
-                home_score=event_home_score,
-                away_score=event_away_score,
-                importance=5,
+                minute=event.minute,
+                second=event.second,
+                seq=event.seq,
+                event_type=event_type,
+                text=event.text,
+                home_score=int((raw.get("score_before") or [0, 0])[0]),
+                away_score=int((raw.get("score_before") or [0, 0])[1]),
+                importance=event.importance,
                 team=team,
-                player=scorer,
-                target=assister,
-                result="goal",
+                player=player,
+                xg=float(raw.get("xg", 0) or 0),
+                target=target,
+                result=outcome,
             ))
+        self.event_seq = max(
+            (event.seq for event in self.match_events),
+            default=0,
+        )
 
     def _apply_rust_team_stats(self, team, raw_stats, score):
         team.getStats()
@@ -294,6 +317,7 @@ class Game:
 
     def _run_rust_match(self):
         from psl_core.engine_v2.match import MatchV2
+        from psl_core.presentation import build_match_presentation
 
         config = self._load_engine_config()
         self._rust_match_seed = (
@@ -311,9 +335,15 @@ class Game:
         self.engine_trace_id = result.trace_id
         self.engine_backend = "rust_match_v2"
         self._rust_replay_data = match.get_replay_data()
+        self._rust_result = result
+        self.match_presentation = build_match_presentation(
+            result,
+            self.home.coach.name,
+            self.away.coach.name,
+        )
         self._apply_rust_player_stats(self.home, result.home_player_stats)
         self._apply_rust_player_stats(self.away, result.away_player_stats)
-        self._apply_rust_goals(result.goals)
+        self._apply_rust_events(result, self.match_presentation)
         self._apply_rust_team_stats(self.home, result.home_stats, result.home_score)
         self._apply_rust_team_stats(self.away, result.away_stats, result.away_score)
         self.half = "下半时"
@@ -335,31 +365,7 @@ class Game:
         self._run_rust_match()
 
         if self.mode not in (Const.MODE_QUICK, Const.MODE_SILENCE):
-            first_half = [event for event in self.match_events if event.minute <= 45]
-            second_half = [event for event in self.match_events if event.minute > 45]
-            for events, footer in (
-                (first_half, "上半场结束"),
-                (second_half, "下半场结束"),
-            ):
-                lines = []
-                for event in events:
-                    home_score = event.home_score + (1 if event.team is self.home else 0)
-                    away_score = event.away_score + (1 if event.team is self.away else 0)
-                    score = str(home_score) + ":" + str(away_score)
-                    celebration = self.commentary.render(
-                        "narrative",
-                        "goal_celebration",
-                        scorer=event.player.getName(False),
-                        team=event.team.coach.name,
-                        score=score,
-                    )
-                    lines.append(
-                        "主" + score + "客 "
-                        + ("上半时" if event.minute <= 45 else "下半时")
-                        + str(event.minute) + ":0 " + event.text
-                        + " /~$" + celebration + "/"
-                    )
-                lines.append(footer)
+            for lines in self.match_presentation.broadcasts:
                 await self.send("\n".join(lines))
 
         stats = await self.printStats()
@@ -383,194 +389,13 @@ class Game:
         if self.mode == Const.MODE_SILENCE:
             return
 
-        report = self.build_match_report()
+        report = self.match_presentation.report
         if report:
             await self.matcher.send(toImage("[比赛战报]\n" + report))
 
-        detail_msg = "[终场比分]\n"
-        detail_msg += "主 " + self.home.coach.name + " " + \
-            str(self.home.point) + ":" + str(self.away.point) + \
-            " " + self.away.coach.name + " 客\n\n"
-
-        if self.timeline:
-            detail_msg += "[比赛事件]\n"
-            maxLen = -1
-            for case in self.timeline:
-                if case[1] == self.home:
-                    maxLen = max(maxLen, len(case[2].getName()))
-                    if case[3] != None:
-                        maxLen = max(maxLen, len(case[3].getName()))
-            maxLen = max(maxLen+2, 8)
-            for case in self.timeline:
-                if case[1] == self.home:
-                    detail_msg += case[2].getName().rjust(maxLen) + "   ⚽ "
-                    detail_msg += "  " + str(str(case[0]) + "'").ljust(3)
-                    if case[3] != None:
-                        detail_msg += "\n"
-                        detail_msg += str("(" + case[3].getName() + ")").rjust(maxLen)
-                else:
-                    detail_msg += "".ljust(maxLen+4) + str(case[0]) + "'  "
-                    detail_msg += " ⚽   " + case[2].getName()
-                    if case[3] != None:
-                        detail_msg += "\n"
-                        detail_msg += "".ljust(maxLen+9) + "      (" + case[3].getName() + ")"
-
-                detail_msg += "\n\n"
-        else:
-            maxLen = 8
-
-        if self.home.goals_detailed or self.away.goals_detailed:
-            detail_msg += "[进球统计]\n"
-
-        if self.home.goals_detailed:
-            detail_msg += "主队：\n"
-            for item in self.home.goals_detailed:
-                detail_msg += item[0] + " ("
-                for i in item[1]:
-                    detail_msg += str(i) + "', "
-                detail_msg = detail_msg[:-2]
-                detail_msg += ")\n"
-
-        if self.away.goals_detailed:
-            detail_msg += "客队：\n"
-            for item in self.away.goals_detailed:
-                detail_msg += item[0] + " ("
-                for i in item[1]:
-                    detail_msg += str(i) + "', "
-                detail_msg = detail_msg[:-2]
-                detail_msg += ")\n"
-
-        if self.home.goals_detailed or self.away.goals_detailed:
-            detail_msg += "\n"
-
-        detail_msg += "[数据统计]\n"
-        total_control = self.home.control + self.away.control
-        home_ctrl = str(round(self.home.control*100/total_control, 1)) + "%"
-        away_ctrl = str(round(self.away.control*100/total_control, 1)) + "%"
-        home_pass_rate = "0%" if self.home.passes == 0 else str(round(self.home.successful_passes*100/self.home.passes, 1)) + "%"
-        away_pass_rate = "0%" if self.away.passes == 0 else str(round(self.away.successful_passes*100/self.away.passes, 1)) + "%"
-        stats = [
-            (home_ctrl, "控球率", away_ctrl),
-            (str(self.home.shoots_in_target), "射正", str(self.away.shoots_in_target)),
-            (str(self.home.shoots), "射门", str(self.away.shoots)),
-            (str(self.home.shots_in_box), "禁区射门", str(self.away.shots_in_box)),
-            (str(self.home.passes), "传球", str(self.away.passes)),
-            (home_pass_rate, "传球成功率", away_pass_rate),
-            (str(self.home.final_third_entries), "进攻三区进入", str(self.away.final_third_entries)),
-            (str(self.home.box_entries), "禁区进入", str(self.away.box_entries)),
-            (str(self.home.progressive_passes), "推进传球", str(self.away.progressive_passes)),
-            (str(self.home.crosses), "传中", str(self.away.crosses)),
-            (str(self.home.corners), "角球", str(self.away.corners)),
-            (str(self.home.dribbles), "过人", str(self.away.dribbles)),
-            (str(self.home.carries), "带球推进", str(self.away.carries)),
-            (str(self.home.tackles), "抢断", str(self.away.tackles)),
-            (str(self.home.pressures), "逼抢", str(self.away.pressures)),
-            (str(self.home.interceptions), "拦截", str(self.away.interceptions)),
-            (str(self.home.blocks), "封堵", str(self.away.blocks)),
-            (str(self.home.turnovers), "丢失球权", str(self.away.turnovers)),
-            (str(self.home.saves), "扑救", str(self.away.saves)),
-            (str(round(self.home.xg, 2)), "xG", str(round(self.away.xg, 2))),
-            (str(round(self.home.post_shot_xg, 2)), "PSxG", str(round(self.away.post_shot_xg, 2))),
-            (str(self.home.key_passes), "关键传球", str(self.away.key_passes)),
-            (str(self.home.box_touches), "禁区触球", str(self.away.box_touches)),
-            (str(self.home.big_chances), "绝对机会", str(self.away.big_chances)),
-        ]
-        label_width = max(max(_display_width(s[1]) for s in stats) + 2, 14)
-        for home_val, label, away_val in stats:
-            line = _format_stat_line(home_val, label, away_val, maxLen, label_width)
-            detail_msg += line + "\n"
+        detail_msg = self.match_presentation.stats_text
         await self.matcher.send(toImage(detail_msg))
         return detail_msg
-
-
-    def build_match_report(self):
-        home = self.home
-        away = self.away
-        home_name = home.coach.name
-        away_name = away.coach.name
-        total_control = home.control + away.control
-        home_ctrl = round(home.control * 100 / total_control, 1) if total_control else 50
-        away_ctrl = round(away.control * 100 / total_control, 1) if total_control else 50
-        score = f"{home.point}:{away.point}"
-
-        paragraphs = []
-        paragraphs.append(f"{home_name} 与 {away_name} 战成 {score}。")
-
-        # 比赛结果
-        if home.point == away.point:
-            key = "result_draw_0" if home.point == 0 else "result_draw"
-        elif home.point > away.point:
-            diff = home.point - away.point
-            key = "result_home_big_win" if diff >= 3 else ("result_home_win_2" if diff == 2 else "result_home_win_1")
-        else:
-            diff = away.point - home.point
-            key = "result_away_big_win" if diff >= 3 else ("result_away_win_2" if diff == 2 else "result_away_win_1")
-        paragraphs.append(self.commentary.render("narrative", key, home=home_name, away=away_name, score=score))
-
-        # 控球和场面
-        shots = f"{home.shoots}:{away.shoots}"
-        sot = f"{home.shoots_in_target}:{away.shoots_in_target}"
-        if home_ctrl > 55:
-            paragraphs.append(self.commentary.render("narrative", "control_dominant",
-                dominant=home_name, other=away_name, ctrl=str(home_ctrl), shots=shots, sot=sot))
-        elif away_ctrl > 55:
-            paragraphs.append(self.commentary.render("narrative", "control_dominant",
-                dominant=away_name, other=home_name, ctrl=str(away_ctrl), shots=shots, sot=sot))
-        else:
-            paragraphs.append(self.commentary.render("narrative", "control_balanced",
-                home_ctrl=str(home_ctrl), away_ctrl=str(away_ctrl), shots=shots, sot=sot))
-
-        # 进球叙述
-        goals = [(ev.minute, ev) for ev in self.match_events if ev.event_type == "goal"]
-        if goals:
-            parts = []
-            for minute, ev in goals:
-                scorer = event_player_name(ev)
-                if ev.target:
-                    parts.append(self.commentary.render("narrative", "goal_desc",
-                        minute=str(minute), scorer=scorer, assister=ev.target.getName()))
-                else:
-                    parts.append(self.commentary.render("narrative", "goal_desc_solo",
-                        minute=str(minute), scorer=scorer))
-            paragraphs.append(" ".join(parts))
-        else:
-            shots_total = home.shoots + away.shoots
-            if shots_total > 20:
-                paragraphs.append(self.commentary.render("narrative", "goals_none_many_shots", total_shots=str(shots_total)))
-            else:
-                paragraphs.append(self.commentary.render("narrative", "goals_none_few_shots"))
-
-        # 门将表现
-        saves_events = [ev for ev in self.match_events if ev.event_type == "save"]
-        if saves_events:
-            keeper_saves = {}
-            for ev in saves_events:
-                if ev.target:
-                    name = ev.target.getName()
-                    keeper_saves[name] = keeper_saves.get(name, 0) + 1
-                elif ev.player:
-                    name = ev.player.getName()
-                    keeper_saves[name] = keeper_saves.get(name, 0) + 1
-            if keeper_saves:
-                best_keeper = max(keeper_saves, key=keeper_saves.get)
-                best_saves = keeper_saves[best_keeper]
-                if best_saves >= 3:
-                    paragraphs.append(self.commentary.render("narrative", "keeper_heroic", keeper=best_keeper, saves=str(best_saves)))
-
-        # xG 对比
-        home_xg = round(home.xg, 2)
-        away_xg = round(away.xg, 2)
-        if home_xg + away_xg > 0:
-            if home.point > home_xg + 0.5:
-                paragraphs.append(self.commentary.render("narrative", "xg_overperform_home", home=home_name, away=away_name, home_xg=str(home_xg), away_xg=str(away_xg)))
-            elif away.point > away_xg + 0.5:
-                paragraphs.append(self.commentary.render("narrative", "xg_overperform_away", home=home_name, away=away_name, home_xg=str(home_xg), away_xg=str(away_xg)))
-            elif home_xg > home.point + 0.8:
-                paragraphs.append(self.commentary.render("narrative", "xg_underperform_home", home=home_name, away=away_name, home_xg=str(home_xg), away_xg=str(away_xg)))
-            elif away_xg > away.point + 0.8:
-                paragraphs.append(self.commentary.render("narrative", "xg_underperform_away", home=home_name, away=away_name, home_xg=str(home_xg), away_xg=str(away_xg)))
-
-        return "\n".join(paragraphs)
 
 
     def run_simulation(self):

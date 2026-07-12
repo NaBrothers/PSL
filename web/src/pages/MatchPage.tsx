@@ -53,6 +53,7 @@ interface MatchResult {
   home_stats: Record<string, number>
   away_stats: Record<string, number>
   goals: GoalInfo[]
+  broadcasts?: string[][]
   report: string
   stats_text: string
   replay_url: string | null
@@ -226,6 +227,7 @@ export default function MatchPage() {
         setOddsResult(res.data)
       } else {
         setResult(res.data)
+        setBroadcasts(res.data.broadcasts || [])
       }
       setPhase('result')
     } catch (e: any) {

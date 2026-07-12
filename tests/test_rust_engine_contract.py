@@ -1,9 +1,12 @@
 """Contract and architecture tests for the Rust-only match engine."""
 
+import random
 import sys
 from pathlib import Path
 
 from psl_core.engine_v2 import EngineConfig, MatchV2, TraceConfig
+from psl_core.engine_v2.match import MatchResult
+from psl_core.presentation import build_match_presentation
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -155,3 +158,166 @@ def test_match_result_preserves_goal_assister_identity():
     assert goal["scorer_color"] == "b"
     assert goal["assister"] == "Player 6"
     assert goal["assister_color"] == "b"
+
+    required_fields = {
+        "seq",
+        "tick",
+        "match_second",
+        "minute",
+        "second",
+        "half",
+        "possession_id",
+        "event_type",
+        "team_side",
+        "player",
+        "target_player",
+        "assist_player",
+        "outcome",
+        "xg",
+        "score_before",
+        "score_after",
+        "origin",
+        "target",
+        "tags",
+    }
+    identity_fields = {
+        "player_id",
+        "name",
+        "color",
+        "colored_name",
+        "position",
+    }
+    assert len(result.events) > len(result.goals)
+    assert [event["seq"] for event in result.events] == list(
+        range(1, len(result.events) + 1)
+    )
+
+    score = [0, 0]
+    goal_events = []
+    for event in result.events:
+        assert required_fields <= event.keys()
+        assert event["score_before"] == score
+        assert event["minute"] == event["match_second"] // 60
+        assert event["second"] == event["match_second"] % 60
+        assert event["team_side"] in {"home", "away"}
+        assert identity_fields <= event["player"].keys()
+        assert isinstance(event["tags"], list)
+        assert event["xg"] >= 0
+        for position_key in ("origin", "target"):
+            position = event[position_key]
+            assert position is None or (
+                isinstance(position, list) and len(position) == 2
+            )
+
+        if event["event_type"] == "shot" and event["outcome"] == "goal":
+            goal_events.append(event)
+            scoring_index = 0 if event["team_side"] == "home" else 1
+            expected_score = score.copy()
+            expected_score[scoring_index] += 1
+            assert event["score_after"] == expected_score
+        else:
+            assert event["score_after"] == score
+        score = event["score_after"]
+
+    assert score == [result.home_score, result.away_score]
+    assert len(goal_events) == result.home_score + result.away_score
+
+
+def test_match_presentation_is_deterministic_and_rng_isolated():
+    events = [
+        {
+            "seq": 1,
+            "tick": 90,
+            "match_second": 180,
+            "minute": 3,
+            "second": 0,
+            "half": 1,
+            "possession_id": 4,
+            "event_type": "pass",
+            "team_side": "home",
+            "player": {
+                "player_id": "8",
+                "name": "Playmaker",
+                "color": "b",
+                "colored_name": "/~bPlaymaker/",
+                "position": "CM",
+            },
+            "target_player": {
+                "player_id": "9",
+                "name": "Striker",
+                "color": "r",
+                "colored_name": "/~rStriker/",
+                "position": "ST",
+            },
+            "assist_player": None,
+            "outcome": "completed",
+            "xg": 0.0,
+            "score_before": [0, 0],
+            "score_after": [0, 0],
+            "origin": [52.0, 34.0],
+            "target": [82.0, 34.0],
+            "tags": ["progressive", "through_ball", "space"],
+        },
+        {
+            "seq": 2,
+            "tick": 92,
+            "match_second": 184,
+            "minute": 3,
+            "second": 4,
+            "half": 1,
+            "possession_id": 4,
+            "event_type": "shot",
+            "team_side": "home",
+            "player": {
+                "player_id": "9",
+                "name": "Striker",
+                "color": "r",
+                "colored_name": "/~rStriker/",
+                "position": "ST",
+            },
+            "target_player": {
+                "player_id": "0",
+                "name": "Keeper",
+                "color": "b",
+                "colored_name": "/~bKeeper/",
+                "position": "GK",
+            },
+            "assist_player": {
+                "player_id": "8",
+                "name": "Playmaker",
+                "color": "b",
+                "colored_name": "/~bPlaymaker/",
+                "position": "CM",
+            },
+            "outcome": "goal",
+            "xg": 0.42,
+            "score_before": [0, 0],
+            "score_after": [1, 0],
+            "origin": [92.0, 34.0],
+            "target": [105.0, 34.0],
+            "tags": ["in_box", "big_chance", "scored"],
+        },
+    ]
+    result = MatchResult(
+        home_score=1,
+        away_score=0,
+        events=events,
+        home_stats={"possession": 55, "shots": 1, "shots_on_target": 1, "xg": 0.42},
+        away_stats={"possession": 45},
+        presentation_seed=987654321,
+    )
+
+    random.seed(20260713)
+    rng_state = random.getstate()
+    first = build_match_presentation(result, "Home", "Away")
+    assert random.getstate() == rng_state
+    second = build_match_presentation(result, "Home", "Away")
+
+    assert first == second
+    assert first.events
+    assert first.broadcasts
+    assert "直塞" in "\n".join(
+        line for batch in first.broadcasts for line in batch
+    )
+    assert "Playmaker" in first.report
+    assert "Striker" in first.report

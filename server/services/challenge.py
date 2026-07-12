@@ -4,7 +4,6 @@ import sys
 import os
 import re
 import time
-import random
 
 from psl_core.constants import NPC, DIFFICULTY
 
@@ -172,9 +171,6 @@ class ChallengeService:
         from model.formation import Formation
         from model.challenge_times import ChallengeTimes
         from engine.game import Game
-        from presentation.report import build_report
-        from presentation.stats import format_stats
-        from engine.commentary import CommentaryRenderer
         from engine.rating import compute_match_ratings
 
         if difficulty not in DIFFICULTY:
@@ -224,9 +220,9 @@ class ChallengeService:
                         award_msg += f" + {pack_name}卡包x{amount}"
 
 
-        commentary = CommentaryRenderer(random.Random())
-        report = build_report(result, commentary)
-        stats_text = format_stats(result)
+        presentation = game.match_presentation
+        report = presentation.report
+        stats_text = presentation.stats_text
 
         goals = [
             {
@@ -271,6 +267,8 @@ class ChallengeService:
             "replay_url": replay_url,
             "home_player_stats": result.home_stats.player_stats,
             "away_player_stats": result.away_stats.player_stats,
+            "events": [event.as_dict() for event in presentation.events],
+            "broadcasts": presentation.broadcasts,
             "times_left": challenge_times.times,
         }
 

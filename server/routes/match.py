@@ -27,6 +27,10 @@ class EventSchema(BaseModel):
     text: str
     importance: int
     team_side: str
+    seq: int
+    possession_id: int
+    home_score: int
+    away_score: int
 
 
 class MatchResultSchema(BaseModel):
@@ -41,6 +45,7 @@ class MatchResultSchema(BaseModel):
     report: str
     stats_text: str
     replay_url: Optional[str]
+    broadcasts: Optional[List[List[str]]] = None
 
 
 class TenMatchSchema(BaseModel):

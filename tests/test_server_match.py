@@ -246,8 +246,24 @@ class TestMatchAPI:
         data = resp.json()
         assert "home_score" in data
         assert "away_score" in data
-        assert "report" in data
-        assert len(data["report"]) > 0
+        assert data["report"]
+        assert "[数据统计]" in data["stats_text"]
+        assert data["events"]
+        assert data["broadcasts"]
+        for event in data["events"]:
+            assert {
+                "seq",
+                "possession_id",
+                "home_score",
+                "away_score",
+                "event_type",
+                "text",
+            } <= event.keys()
+        assert any(
+            line.startswith(("主", "上半场结束", "下半场结束"))
+            for batch in data["broadcasts"]
+            for line in batch
+        )
 
     def test_match_invalid_opponent(self):
         resp = self.client.post("/api/matches", json={"opponent_id": 999, "mode": "quick"}, headers=self.headers)

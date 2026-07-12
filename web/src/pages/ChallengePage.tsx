@@ -52,6 +52,7 @@ interface ChallengeResult {
   award: string
   report: string
   stats_text: string
+  broadcasts?: string[][]
   goals: GoalInfo[]
   home_stats: Record<string, number>
   away_stats: Record<string, number>
@@ -217,6 +218,7 @@ export default function ChallengePage() {
             <TabsTrigger value="report" className="flex-1">战报</TabsTrigger>
             <TabsTrigger value="goals" className="flex-1">进球</TabsTrigger>
             <TabsTrigger value="stats" className="flex-1">数据</TabsTrigger>
+            {result.broadcasts && result.broadcasts.length > 0 && <TabsTrigger value="live" className="flex-1">播报</TabsTrigger>}
             {result.ratings && <TabsTrigger value="ratings" className="flex-1">评分</TabsTrigger>}
             {result.replay_url && <TabsTrigger value="highlights" className="flex-1">集锦</TabsTrigger>}
           </TabsList>
@@ -279,6 +281,20 @@ export default function ChallengePage() {
               })}
             </CardContent></Card>
           </TabsContent>
+
+          {result.broadcasts && result.broadcasts.length > 0 && (
+            <TabsContent value="live">
+              <div className="space-y-3">
+                {result.broadcasts.map((group, i) => (
+                  <Card key={i}><CardContent className="p-3 space-y-1">
+                    {group.map((line, j) => (
+                      <div key={j} className="text-sm text-slate-300 leading-relaxed"><ColorText text={line} /></div>
+                    ))}
+                  </CardContent></Card>
+                ))}
+              </div>
+            </TabsContent>
+          )}
 
           {result.ratings && (
             <TabsContent value="ratings">

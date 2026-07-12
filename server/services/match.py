@@ -9,6 +9,7 @@ from typing import List, Optional
 from psl_core.card import get_color_code
 from psl_core.constants import STARS
 from psl_core.engine_v2.match import MatchV2
+from psl_core.presentation import build_match_presentation
 
 
 class MatchError(Exception):
@@ -41,6 +42,10 @@ class MatchEventInfo:
     text: str
     importance: int
     team_side: str
+    seq: int = 0
+    possession_id: int = 0
+    home_score: int = 0
+    away_score: int = 0
 
 
 @dataclass
@@ -59,6 +64,7 @@ class MatchResultData:
     ratings: Optional[dict] = None
     home_player_stats: Optional[list] = None
     away_player_stats: Optional[list] = None
+    broadcasts: Optional[List[List[str]]] = None
 
 
 @dataclass
@@ -133,6 +139,7 @@ class MatchService:
             config_service=config_svc,
         )
         result = match.run()
+        presentation = build_match_presentation(result, home_name, away_name)
         replay_data = match.get_replay_data()
         if replay_data and replay_data[0].get("type") == "header":
             replay_data[0]["home"]["name"] = home_name
@@ -176,6 +183,7 @@ class MatchService:
         # Build stats in the same format as existing code
         home_stats = self._v2_stats_to_dict(result.home_stats, result.home_player_stats)
         away_stats = self._v2_stats_to_dict(result.away_stats, result.away_player_stats)
+        events = [MatchEventInfo(**event.as_dict()) for event in presentation.events]
 
         # Build ratings in the format expected by frontend
         def _rating_payload(raw):
@@ -206,66 +214,54 @@ class MatchService:
             home_stats=home_stats,
             away_stats=away_stats,
             goals=goals,
-            events=[],
-            report=f"{home_name} {result.home_score} - {result.away_score} {away_name}",
-            stats_text="",
+            events=events,
+            report=presentation.report,
+            stats_text=presentation.stats_text,
             replay_url=replay_url,
             ratings=ratings,
             home_player_stats=result.home_player_stats,
             away_player_stats=result.away_player_stats,
+            broadcasts=presentation.broadcasts,
         )
 
     def _v2_stats_to_dict(self, stats: dict, player_stats: list = None) -> dict:
-        """Convert engine v2 stats dict to the standard serialized format.
-        
-        Aggregates advanced stats from player_stats if provided.
-        """
+        """Map authoritative Rust statistics to the Web response contract."""
         passes = stats.get("passes", 0)
         passes_completed = stats.get("passes_completed", 0)
-
-        # Aggregate advanced stats from individual player data
-        ps_list = player_stats or []
-        total_xg = sum(p.get("xg", 0) for p in ps_list)
-        total_progressive_passes = sum(p.get("progressive_passes", 0) for p in ps_list)
-        total_key_passes = sum(p.get("key_passes", 0) for p in ps_list)
-        total_carries = sum(p.get("carries", 0) for p in ps_list)
-        total_progressive_carries = sum(p.get("progressive_carries", 0) for p in ps_list)
-        total_crosses = stats.get("crosses_completed", 0) + stats.get("crosses", sum(p.get("crosses", 0) for p in ps_list))
-        total_blocks = sum(p.get("blocks", 0) for p in ps_list)
-        total_turnovers = sum(p.get("turnovers", 0) for p in ps_list)
-        total_pressures = sum(p.get("pressures", 0) for p in ps_list)
-        total_offsides = sum(p.get("offsides", 0) for p in ps_list)
-        total_big_chances = sum(p.get("big_chances", 0) for p in ps_list)
-        total_passes_into_box = sum(p.get("passes_into_box", 0) for p in ps_list)
-        total_carries_into_box = sum(p.get("carries_into_box", 0) for p in ps_list)
-        total_passes_final_third = sum(p.get("passes_into_final_third", 0) for p in ps_list)
+        passes_final_third = stats.get("passes_into_final_third", 0)
+        carries_final_third = stats.get("carries_into_final_third", 0)
+        passes_into_box = stats.get("passes_into_box", 0)
+        carries_into_box = stats.get("carries_into_box", 0)
 
         return {
             "possession": stats.get("possession", 50.0),
             "shots": stats.get("shots", 0),
             "shots_on_target": stats.get("shots_on_target", 0),
-            "shots_in_box": total_carries_into_box,
+            "shots_in_box": stats.get("shots_in_box", 0),
             "passes": passes,
-            "pass_success_rate": round(passes_completed / max(passes, 1) * 100, 1),
-            "final_third_entries": total_passes_final_third,
-            "box_entries": total_carries_into_box + total_passes_into_box,
-            "progressive_passes": total_progressive_passes,
-            "crosses": total_crosses,
-            "corners": 0,
+            "pass_success_rate": stats.get(
+                "pass_success_rate",
+                round(passes_completed / max(passes, 1) * 100, 1),
+            ),
+            "final_third_entries": passes_final_third + carries_final_third,
+            "box_entries": passes_into_box + carries_into_box,
+            "progressive_passes": stats.get("progressive_passes", 0),
+            "crosses": stats.get("crosses", 0),
+            "corners": stats.get("corners", 0),
             "dribbles": stats.get("dribbles", 0),
-            "carries": total_carries,
+            "carries": stats.get("carries", 0),
             "tackles": stats.get("tackles", 0),
-            "pressures": total_pressures,
+            "pressures": stats.get("pressures", 0),
             "interceptions": stats.get("interceptions", 0),
-            "blocks": total_blocks,
-            "turnovers": total_turnovers,
+            "blocks": stats.get("blocks", 0),
+            "turnovers": stats.get("turnovers", 0),
             "saves": stats.get("saves", 0),
-            "xg": round(total_xg, 2),
-            "post_shot_xg": round(total_xg * 0.8, 2),
-            "key_passes": total_key_passes,
-            "box_touches": total_carries_into_box + total_passes_into_box,
-            "big_chances": total_big_chances,
-            "offsides": total_offsides,
+            "xg": stats.get("xg", 0),
+            "post_shot_xg": stats.get("post_shot_xg", 0),
+            "key_passes": stats.get("key_passes", 0),
+            "box_touches": passes_into_box + carries_into_box,
+            "big_chances": stats.get("big_chances", 0),
+            "offsides": stats.get("offsides", 0),
         }
 
     def run_quick_match(self, home_qq: int, away_qq: int) -> MatchResultData:
@@ -279,8 +275,8 @@ class MatchService:
             "text": f"主 {result_data.home_name} : {result_data.away_name} 客",
             "subtext": "比赛开始",
         }
-        yield {"type": "half", "text": "上半场结束"}
-        yield {"type": "half", "text": "下半场结束"}
+        for lines in result_data.broadcasts or []:
+            yield {"type": "broadcast", "lines": lines}
         yield {"type": "result", "data": result_data}
 
     def run_ten_matches(self, home_qq: int, away_qq: int) -> TenMatchResult:

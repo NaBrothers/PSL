@@ -112,7 +112,12 @@ class TestMatchEngineCore:
 
         asyncio.run(game.start(Const.MODE_SILENCE))
 
-        assert len(game.match_events) == game.home.point + game.away.point
+        goal_events = [
+            event for event in game.match_events
+            if event.event_type == "goal"
+        ]
+        assert len(goal_events) == game.home.point + game.away.point
+        assert game.match_events
         for ev in game.match_events:
             assert ev.minute >= 0
             assert ev.second >= 0
@@ -509,8 +514,13 @@ class TestFullGameSnapshot:
         game.home.getStats()
         game.away.getStats()
 
-        # Rust exposes key match events; goal events must match the score.
-        assert len(game.match_events) == game.home.point + game.away.point
+        # Rust exposes the complete key-event stream; goals still match score.
+        goal_events = [
+            event for event in game.match_events
+            if event.event_type == "goal"
+        ]
+        assert len(goal_events) == game.home.point + game.away.point
+        assert game.match_events
 
         # Score should be deterministic
         total_goals = game.home.point + game.away.point
