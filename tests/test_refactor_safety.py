@@ -496,54 +496,7 @@ class TestCommentarySystem:
 
 
 # ===========================================================================
-# 7. Probability Module
-# ===========================================================================
-
-class TestProbabilityModule:
-    def test_logistic_probability_symmetry(self):
-        from engine.probability import logistic_probability
-
-        assert abs(logistic_probability(80, 80) - 0.5) < 0.01
-        p1 = logistic_probability(90, 80)
-        p2 = logistic_probability(80, 90)
-        assert abs(p1 + p2 - 1.0) < 0.02
-
-    def test_build_shot_context_varies_with_distance(self):
-        from engine.probability import build_shot_context
-
-        close = build_shot_context(8, 40, 85, 1, 0.5)
-        far = build_shot_context(30, 15, 85, 1, 0.5)
-
-        assert close.raw_xg > far.raw_xg
-        assert close.goal_probability > far.goal_probability
-        assert close.on_target_probability > far.on_target_probability
-
-    def test_pass_success_probability_bounded(self):
-        from engine.probability import pass_success_probability
-
-        p = pass_success_probability(90, 10, 0)
-        assert 0.72 <= p <= 0.99
-        p_long = pass_success_probability(90, 40, 2, is_long=True)
-        assert 0.72 <= p_long <= 0.99
-        assert p > p_long
-
-    def test_expected_threat_increases_near_goal(self):
-        from engine.probability import expected_threat
-
-        near = expected_threat(10, 1.0)
-        far = expected_threat(80, 1.0)
-        assert near > far
-
-    def test_shot_on_target_goal_probability_keeper_matters(self):
-        from engine.probability import shot_on_target_goal_probability
-
-        vs_good_keeper = shot_on_target_goal_probability(85, 90, 0.15)
-        vs_bad_keeper = shot_on_target_goal_probability(85, 50, 0.15)
-        assert vs_bad_keeper > vs_good_keeper
-
-
-# ===========================================================================
-# 8. Integration: Full Game Flow Snapshot
+# 7. Integration: Full Game Flow Snapshot
 # ===========================================================================
 
 class TestFullGameSnapshot:

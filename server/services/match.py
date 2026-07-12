@@ -1,42 +1,14 @@
 """Match service - runs matches for web API."""
 
-import sys
 import os
-import re
 import json
 import time as time_mod
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import List, Optional
 
-BOT_SRC = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))), "bot", "src", "plugins", "psl")
-if BOT_SRC not in sys.path:
-    sys.path.insert(0, BOT_SRC)
-
-from psl_core.engine_v2.match import MatchV2, MatchResult as V2MatchResult
-
-
-def _strip_color(text: str) -> str:
-    if not text:
-        return text
-    return re.sub(r'/~[a-z$]([^/]*)/', r'\1', text)
-
-
-def _clean_player_name(text: str) -> str:
-    """Strip color markup and position prefix like 'LM /~pName/' -> 'Name'."""
-    if not text:
-        return text
-    cleaned = _strip_color(text)
-    parts = cleaned.split(' ', 1)
-    if len(parts) == 2 and parts[0].isupper() and len(parts[0]) <= 3:
-        return parts[1]
-    return cleaned
-
-
-def _player_color_from_markup(text: str) -> str:
-    if not text:
-        return "w"
-    match = re.search(r'/~([a-z$])', text)
-    return match.group(1) if match else "w"
+from psl_core.card import get_color_code
+from psl_core.constants import STARS
+from psl_core.engine_v2.match import MatchV2
 
 
 class MatchError(Exception):
@@ -111,22 +83,11 @@ class MatchService:
     def __init__(self, db):
         self.db = db
 
-    def _should_use_v2(self) -> bool:
-        """Check if engine v2 should be used based on config."""
-        from server.services.game_config import GameConfigService
-        try:
-            svc = GameConfigService(self.db)
-            version = svc.get("engine_v2.engine_version")
-            return version == "v2"
-        except Exception:
-            return True
-
-    def _run_v2_match(self, home_qq: int, away_qq: int) -> MatchResultData:
-        """Run a match using engine v2."""
+    def _run_match(self, home_qq: int, away_qq: int) -> MatchResultData:
+        """Run a complete match through the Rust engine."""
         from server.services.squad import SquadService
         from server.services.bag import BagService
         from server.services.game_config import GameConfigService
-        from psl_core.card import compute_abilities
 
         squad_svc = SquadService(self.db)
         bag_svc = BagService(self.db)
@@ -145,11 +106,12 @@ class MatchService:
             for card_info in squad.cards:
                 detail = bag_svc.get_card_detail(card_info.id, qq)
                 abilities = {k: v["value"] for k, v in detail["abilities"].items()}
+                base_overall = card_info.overall - STARS[card_info.star]["ability"]
                 cards.append({
                     "name": card_info.name,
                     "player_id": card_info.player_id,
                     "position": card_info.position,
-                    "color": "gold" if card_info.star >= 7 else "silver" if card_info.star >= 4 else "bronze",
+                    "color": get_color_code(base_overall, card_info.star),
                     "overall": card_info.real_overall,
                     "abilities": abilities,
                 })
@@ -172,6 +134,9 @@ class MatchService:
         )
         result = match.run()
         replay_data = match.get_replay_data()
+        if replay_data and replay_data[0].get("type") == "header":
+            replay_data[0]["home"]["name"] = home_name
+            replay_data[0]["away"]["name"] = away_name
 
         # Save replay
         replay_dir = os.path.join(
@@ -213,14 +178,24 @@ class MatchService:
         away_stats = self._v2_stats_to_dict(result.away_stats, result.away_player_stats)
 
         # Build ratings in the format expected by frontend
-        home_ratings_list = [{"name": r.get("name", ""), "position": r.get("position", ""), "rating": r.get("rating", 6.0)} for r in result.home_ratings]
-        away_ratings_list = [{"name": r.get("name", ""), "position": r.get("position", ""), "rating": r.get("rating", 6.0)} for r in result.away_ratings]
+        def _rating_payload(raw):
+            return {
+                "name": raw.get("name", ""),
+                "player_id": raw.get("player_id"),
+                "position": raw.get("position", ""),
+                "color": raw.get("color", "w"),
+                "colored_name": raw.get("colored_name", raw.get("name", "")),
+                "rating": raw.get("rating", 6.0),
+            }
+
+        home_ratings_list = [_rating_payload(r) for r in result.home_ratings]
+        away_ratings_list = [_rating_payload(r) for r in result.away_ratings]
         all_players = [(r, "home") for r in home_ratings_list] + [(r, "away") for r in away_ratings_list]
         motm_player = max(all_players, key=lambda x: x[0]["rating"]) if all_players else None
         ratings = {
             "home_ratings": home_ratings_list,
             "away_ratings": away_ratings_list,
-            "motm": {"name": motm_player[0]["name"], "team_side": motm_player[1], "rating": motm_player[0]["rating"]} if motm_player else None,
+            "motm": {**motm_player[0], "team_side": motm_player[1]} if motm_player else None,
         }
 
         return MatchResultData(
@@ -294,103 +269,25 @@ class MatchService:
         }
 
     def run_quick_match(self, home_qq: int, away_qq: int) -> MatchResultData:
-        if self._should_use_v2():
-            return self._run_v2_match(home_qq, away_qq)
-        game = self._create_game(home_qq, away_qq)
-        return self._run_and_collect(game)
+        return self._run_match(home_qq, away_qq)
 
     def run_watch_match(self, home_qq: int, away_qq: int):
         """Generator that yields broadcast lines then final result dict."""
-        if self._should_use_v2():
-            result_data = self._run_v2_match(home_qq, away_qq)
-            yield {
-                "type": "start",
-                "text": f"主 {result_data.home_name} : {result_data.away_name} 客",
-                "subtext": "比赛开始",
-            }
-            yield {"type": "half", "text": "上半场结束"}
-            yield {"type": "half", "text": "下半场结束"}
-            yield {"type": "result", "data": result_data}
-            return
-
-        game = self._create_game(home_qq, away_qq)
-        from engine.const import Const
-        game.mode = Const.MODE_NORMAL
-        game.init_replay_recorder()
-        game.resetPosition()
-        if hasattr(game, 'recorder'):
-            game.recorder.record_frame(game)
-
-        yield {"type": "start", "text": f"主 {game.home.coach.name} : {game.away.coach.name} 客", "subtext": "比赛开始"}
-        time_mod.sleep(1)
-
-        game.last_broadcast_time = 0
-        while game.time < 45 * 60:
-            game.play_possession()
-            if game.time > 45 * 60:
-                game.flush_possession_summary()
-            elapsed = game.time - game.last_broadcast_time
-            if game.broadcast_has_goal or elapsed >= game.BROADCAST_INTERVAL:
-                lines = list(game.broadcast_buffer)
-                game.broadcast_buffer = []
-                game.broadcast_has_goal = False
-                game.last_broadcast_time = game.time
-                if lines:
-                    time_mod.sleep(2)
-                    yield {"type": "broadcast", "lines": lines}
-
-        if game.broadcast_buffer:
-            time_mod.sleep(2)
-            yield {"type": "broadcast", "lines": list(game.broadcast_buffer)}
-            game.broadcast_buffer = []
-        time_mod.sleep(1)
+        result_data = self._run_match(home_qq, away_qq)
+        yield {
+            "type": "start",
+            "text": f"主 {result_data.home_name} : {result_data.away_name} 客",
+            "subtext": "比赛开始",
+        }
         yield {"type": "half", "text": "上半场结束"}
-
-        game.half = "下半时"
-        game.time = 0
-        game.last_broadcast_time = 0
-        if game.offence is game.home:
-            game.swap()
-        game.resetPosition()
-        game.changeBallHolderToOpen()
-        if hasattr(game, 'recorder'):
-            game.recorder.record_frame(game)
-
-        time_mod.sleep(2)
-        while game.time < 45 * 60:
-            game.play_possession()
-            if game.time > 45 * 60:
-                game.flush_possession_summary()
-            elapsed = game.time - game.last_broadcast_time
-            if game.broadcast_has_goal or elapsed >= game.BROADCAST_INTERVAL:
-                lines = list(game.broadcast_buffer)
-                game.broadcast_buffer = []
-                game.broadcast_has_goal = False
-                game.last_broadcast_time = game.time
-                if lines:
-                    time_mod.sleep(2)
-                    yield {"type": "broadcast", "lines": lines}
-
-        if game.broadcast_buffer:
-            time_mod.sleep(2)
-            yield {"type": "broadcast", "lines": list(game.broadcast_buffer)}
-            game.broadcast_buffer = []
-        time_mod.sleep(1)
         yield {"type": "half", "text": "下半场结束"}
-
-        time_mod.sleep(2)
-        result_data = self._collect_result(game)
         yield {"type": "result", "data": result_data}
 
     def run_ten_matches(self, home_qq: int, away_qq: int) -> TenMatchResult:
         results = []
         total_h = total_a = wins = draws = losses = 0
         for _ in range(10):
-            if self._should_use_v2():
-                r = self._run_v2_match(home_qq, away_qq)
-            else:
-                game = self._create_game(home_qq, away_qq)
-                r = self._run_and_collect(game)
+            r = self._run_match(home_qq, away_qq)
             results.append({"home_score": r.home_score, "away_score": r.away_score})
             total_h += r.home_score
             total_a += r.away_score
@@ -405,11 +302,7 @@ class MatchService:
     def run_odds(self, home_qq: int, away_qq: int, samples: int = 20) -> OddsResult:
         win = draw = lose = 1
         for _ in range(samples):
-            if self._should_use_v2():
-                r = self._run_v2_match(home_qq, away_qq)
-            else:
-                game = self._create_game(home_qq, away_qq)
-                r = self._run_and_collect(game)
+            r = self._run_match(home_qq, away_qq)
             if r.home_score > r.away_score:
                 win += 1
             elif r.home_score == r.away_score:
@@ -423,146 +316,3 @@ class MatchService:
             away_win_odds=round(total / lose, 2),
             samples=samples,
         )
-
-    def _create_game(self, home_qq: int, away_qq: int):
-        from model.user import User
-        from model.formation import Formation
-
-        user1 = User.getUserByQQ(home_qq)
-        if user1 is None:
-            raise UserNotFound(f"Home user {home_qq} not found")
-        user2 = User.getUserByQQ(away_qq)
-        if user2 is None:
-            raise UserNotFound(f"Away user {away_qq} not found")
-
-        formation1 = Formation.getFormation(user1)
-        if not formation1.isValid():
-            raise FormationIncomplete("Home formation incomplete")
-        formation2 = Formation.getFormation(user2)
-        if not formation2.isValid():
-            raise FormationIncomplete("Away formation incomplete")
-
-        from engine.game import Game
-
-        class NoOpMatcher:
-            async def send(self, *args, **kwargs):
-                pass
-            async def finish(self, *args, **kwargs):
-                pass
-
-        game = Game(NoOpMatcher(), user1, user2)
-        return game
-
-    def _run_and_collect(self, game) -> MatchResultData:
-        game.mode = 1  # quick mode
-        game.init_replay_recorder()
-        game.resetPosition()
-        if hasattr(game, 'recorder'):
-            game.recorder.record_frame(game)
-        while game.time < 45 * 60:
-            game.play_possession()
-        game.half = "下半时"
-        game.time = 0
-        if game.offence is game.home:
-            game.swap()
-        game.resetPosition()
-        game.changeBallHolderToOpen()
-        if hasattr(game, 'recorder'):
-            game.recorder.record_frame(game)
-        while game.time < 45 * 60:
-            game.play_possession()
-        return self._collect_result(game)
-
-    def _collect_result(self, game) -> MatchResultData:
-        result = game.to_result()
-        game.replay_path = game.save_replay() if hasattr(game, 'recorder') else ""
-        result.replay_path = game.replay_path
-
-        from presentation.report import build_report
-        from presentation.stats import format_stats
-        from engine.commentary import CommentaryRenderer
-        import random
-
-        rng = random.Random()
-        commentary = CommentaryRenderer(rng)
-        report = build_report(result, commentary)
-        stats_text = format_stats(result)
-
-        goals = [
-            GoalInfo(
-                minute=g.minute,
-                team_side=g.team_side,
-                scorer=_clean_player_name(g.scorer_name),
-                assister=_clean_player_name(g.assister_name) if g.assister_name else None,
-                scorer_color=_player_color_from_markup(g.scorer_name),
-                assister_color=_player_color_from_markup(g.assister_name) if g.assister_name else None,
-            )
-            for g in result.timeline
-        ]
-
-        events = [
-            MatchEventInfo(
-                minute=ev.minute, second=ev.second, event_type=ev.event_type,
-                text=ev.text, importance=ev.importance, team_side=ev.team_side,
-            )
-            for ev in result.events if ev.importance >= 3
-        ]
-
-        replay_url = None
-        if result.replay_path:
-            from model.globalAttr import Global
-            base_url = Global.get("replay_base_url", "http://122.51.203.110:8888")
-            from utils.replay_server import replay_url as make_url
-            replay_url = make_url(base_url, result.replay_path)
-
-        from engine.rating import compute_match_ratings
-        ratings = compute_match_ratings(
-            result.home_stats.player_stats,
-            result.away_stats.player_stats,
-        )
-
-        return MatchResultData(
-            home_name=result.home_stats.name,
-            away_name=result.away_stats.name,
-            home_score=result.home_stats.point,
-            away_score=result.away_stats.point,
-            home_stats=self._serialize_stats(result.home_stats),
-            away_stats=self._serialize_stats(result.away_stats),
-            goals=goals,
-            events=events,
-            report=report,
-            stats_text=stats_text,
-            replay_url=replay_url,
-            ratings=ratings,
-            home_player_stats=result.home_stats.player_stats,
-            away_player_stats=result.away_stats.player_stats,
-        )
-
-    def _serialize_stats(self, stats) -> dict:
-        return {
-            "possession": stats.control,
-            "shots": stats.shoots,
-            "shots_on_target": stats.shoots_in_target,
-            "shots_in_box": stats.shots_in_box,
-            "passes": stats.passes,
-            "pass_success_rate": round(stats.successful_passes / max(stats.passes, 1) * 100, 1),
-            "final_third_entries": stats.final_third_entries,
-            "box_entries": stats.box_entries,
-            "progressive_passes": stats.progressive_passes,
-            "crosses": stats.crosses,
-            "corners": stats.corners,
-            "dribbles": stats.dribbles,
-            "carries": stats.carries,
-            "tackles": stats.tackles,
-            "pressures": stats.pressures,
-            "interceptions": stats.interceptions,
-            "blocks": stats.blocks,
-            "turnovers": stats.turnovers,
-            "saves": stats.saves,
-            "xg": round(stats.xg, 2),
-            "post_shot_xg": round(stats.post_shot_xg, 2),
-            "key_passes": stats.key_passes,
-            "box_touches": stats.box_touches,
-            "big_chances": stats.big_chances,
-            "offsides": stats.offsides,
-        }

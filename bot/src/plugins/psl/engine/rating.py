@@ -119,17 +119,27 @@ def compute_match_ratings(home_player_stats: list, away_player_stats: list) -> d
             "motm": {"name", "team_side", "rating"},
         }
     """
+    def rating_payload(stats: dict, rating: float) -> dict:
+        return {
+            "name": stats["name"],
+            "player_id": stats.get("player_id"),
+            "color": stats.get("color", "w"),
+            "colored_name": stats.get("colored_name", stats["name"]),
+            "position": stats["position"],
+            "rating": rating,
+        }
+
     home_ratings = []
     for ps in home_player_stats:
         rating = compute_player_rating(ps)
         ps["rating"] = rating
-        home_ratings.append({"name": ps["name"], "colored_name": ps.get("colored_name", ps["name"]), "position": ps["position"], "rating": rating})
+        home_ratings.append(rating_payload(ps, rating))
 
     away_ratings = []
     for ps in away_player_stats:
         rating = compute_player_rating(ps)
         ps["rating"] = rating
-        away_ratings.append({"name": ps["name"], "colored_name": ps.get("colored_name", ps["name"]), "position": ps["position"], "rating": rating})
+        away_ratings.append(rating_payload(ps, rating))
 
     all_rated = [(r, "home") for r in home_ratings] + [(r, "away") for r in away_ratings]
     if not all_rated:
@@ -143,5 +153,5 @@ def compute_match_ratings(home_player_stats: list, away_player_stats: list) -> d
     return {
         "home_ratings": home_ratings,
         "away_ratings": away_ratings,
-        "motm": {"name": best[0]["name"], "colored_name": best[0]["colored_name"], "team_side": best[1], "rating": best[0]["rating"]},
+        "motm": {**best[0], "team_side": best[1]},
     }

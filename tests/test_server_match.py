@@ -1,4 +1,5 @@
 """Tests for match service and routes."""
+import json
 import pytest
 import sqlite3
 import os
@@ -145,14 +146,17 @@ def match_db(tmp_path):
 
 
 class TestMatchService:
-    def test_engine_v2_defaults_to_rust_full_runner(self, match_db):
+    def test_match_engine_config_has_no_backend_switches(self, match_db):
         from psl_core.engine_v2.config import load_config_from_service
         from server.services.game_config import GameConfigService
 
         config_service = GameConfigService(match_db)
-        assert config_service.get("engine_v2.engine_version") == "v2"
-        assert config_service.get("engine_v2.rust_full_match_runner_enabled") is True
-        assert load_config_from_service(config_service).rust_full_match_runner_enabled is True
+        all_config = config_service.get_all()
+        assert "engine_v2.engine_version" not in all_config
+        assert "engine_v2.rust_full_match_runner_enabled" not in all_config
+        config = load_config_from_service(config_service)
+        assert config.tick_duration == 2.0
+        assert not any(name.startswith("rust_") for name in vars(config))
 
     def test_quick_match(self, match_db):
         from server.services.match import MatchService
@@ -164,6 +168,45 @@ class TestMatchService:
         assert result.away_score >= 0
         assert isinstance(result.report, str)
         assert len(result.report) > 0
+
+    def test_quick_match_preserves_web_player_identity_contract(self, match_db):
+        from server.services.match import MatchService
+
+        result = MatchService(match_db).run_quick_match(10001, 10002)
+
+        assert result.home_player_stats
+        assert result.ratings
+        player_stat = result.home_player_stats[0]
+        player_rating = result.ratings["home_ratings"][0]
+        assert player_stat["player_id"] == 1
+        assert player_stat["color"] == "b"
+        assert player_stat["colored_name"] == "/~bPlayer1/"
+        assert player_rating["player_id"] == player_stat["player_id"]
+        assert player_rating["color"] == player_stat["color"]
+        assert player_rating["colored_name"] == player_stat["colored_name"]
+        assert result.ratings["motm"]["colored_name"].startswith("/~")
+
+        assert result.replay_url
+        project_dir = os.environ.get(
+            "PSL_PROJECT_DIR",
+            os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+        )
+        with open(
+            os.path.join(project_dir, "data", "replays", os.path.basename(result.replay_url)),
+            encoding="utf-8",
+        ) as replay_file:
+            replay = [json.loads(line) for line in replay_file]
+        header = replay[0]
+        assert header["home"]["name"] == "Home Team"
+        assert header["away"]["name"] == "Away Team"
+        assert header["home"]["players"][0]["player_id"] == 1
+        assert header["home"]["players"][0]["color"] == "b"
+        assert all(
+            goal is None or isinstance(goal, str)
+            for frame in replay
+            if frame["type"] == "frame"
+            for goal in frame["home_player_goals"] + frame["away_player_goals"]
+        )
 
     def test_ten_matches(self, match_db):
         from server.services.match import MatchService

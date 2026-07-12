@@ -3,6 +3,11 @@
 import json
 from typing import Any, Optional
 
+from psl_core.engine_v2.config import (
+    ENGINE_CONFIG_ADMIN_ITEMS,
+    ENGINE_CONFIG_DEFAULTS,
+)
+
 # Default values for all configurable parameters
 DEFAULTS = {
     # Challenge
@@ -75,17 +80,9 @@ DEFAULTS = {
     "style.scale.9": 19,
     "style.scale.10": 22,
 
-    # Engine V2
-    "engine_v2.engine_version": "v2",
-    "engine_v2.rust_full_match_runner_enabled": True,
-    "engine_v2.tick_duration": 2.0,
-    "engine_v2.shot_on_target_base": 0.52,
-    "engine_v2.gk_save_base": 0.66,
-    "engine_v2.press_radius": 12.0,
-    "engine_v2.shot_max_distance": 35.0,
-    "engine_v2.player_max_speed": 8.0,
-    "engine_v2.iq_noise_factor": 1.0,
+    # Rust match engine settings are merged below from the engine contract.
 }
+DEFAULTS.update(ENGINE_CONFIG_DEFAULTS)
 
 # Map Chinese pool keys to config key prefixes
 POOL_KEY_MAP = {
@@ -171,17 +168,7 @@ CONFIG_GROUPS = {
         {"key": "style.scale.9", "label": "9★特性系数", "type": "int"},
         {"key": "style.scale.10", "label": "10★特性系数", "type": "int"},
     ],
-    "比赛引擎V2": [
-        {"key": "engine_v2.engine_version", "label": "引擎版本(v1/v2)", "type": "str"},
-        {"key": "engine_v2.rust_full_match_runner_enabled", "label": "整场使用Rust引擎", "type": "bool"},
-        {"key": "engine_v2.tick_duration", "label": "Tick时长(秒)", "type": "float"},
-        {"key": "engine_v2.shot_on_target_base", "label": "射正基准概率", "type": "float"},
-        {"key": "engine_v2.gk_save_base", "label": "门将扑救基准", "type": "float"},
-        {"key": "engine_v2.press_radius", "label": "逼抢半径(米)", "type": "float"},
-        {"key": "engine_v2.shot_max_distance", "label": "最大射门距离(米)", "type": "float"},
-        {"key": "engine_v2.player_max_speed", "label": "球员最大速度(米/tick)", "type": "float"},
-        {"key": "engine_v2.iq_noise_factor", "label": "球商噪声系数", "type": "float"},
-    ],
+    "比赛引擎": ENGINE_CONFIG_ADMIN_ITEMS,
 }
 
 

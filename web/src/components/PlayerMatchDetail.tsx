@@ -4,6 +4,8 @@ import { ColorText } from '@/components/ColorText'
 
 interface PlayerStat {
   name: string
+  player_id?: number | string | null
+  color?: string
   colored_name?: string
   position: string
   goals: number

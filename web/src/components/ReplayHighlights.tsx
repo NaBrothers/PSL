@@ -22,9 +22,17 @@ interface ReplayFrame {
 
 interface ReplayHeader {
   type: 'header'
-  home: { name: string; players: { name: string; pos: string; color: string }[] }
-  away: { name: string; players: { name: string; pos: string; color: string }[] }
+  home: { name: string; players: ReplayPlayer[] }
+  away: { name: string; players: ReplayPlayer[] }
   field: { width: number; length: number }
+}
+
+interface ReplayPlayer {
+  name: string
+  player_id?: number | string | null
+  pos: string
+  color: string
+  colored_name?: string
 }
 
 type ReplayLine = ReplayHeader | ReplayFrame

@@ -257,12 +257,10 @@ def test_web_challenge_uses_rust_match_runner(
         observed["replay_path"] = result.replay_path
         return result
 
-    def reject_legacy_loop(*args, **kwargs):
-        raise AssertionError("Web challenge must not call the legacy possession loop")
-
     monkeypatch.setattr(Game, "run_simulation", tracked_run_simulation)
-    monkeypatch.setattr(Game, "play_possession", reject_legacy_loop)
     monkeypatch.setenv("PSL_PROJECT_DIR", str(tmp_path))
+
+    assert not hasattr(Game, "play_possession")
 
     payload = ChallengeService(None).play(user.qq, "简单")
 
@@ -271,6 +269,15 @@ def test_web_challenge_uses_rust_match_runner(
     assert observed["replay_path"]
     assert len(payload["home_player_stats"]) == 11
     assert len(payload["away_player_stats"]) == 11
+    home_player = payload["home_player_stats"][0]
+    home_rating = payload["ratings"]["home_ratings"][0]
+    assert home_player["player_id"] is not None
+    assert home_player["color"] in {"w", "g", "b", "p", "o", "r", "f", "x", "$"}
+    assert home_player["colored_name"].startswith(f"/~{home_player['color']}")
+    assert home_rating["player_id"] == home_player["player_id"]
+    assert home_rating["color"] == home_player["color"]
+    assert home_rating["colored_name"] == home_player["colored_name"]
+    assert payload["ratings"]["motm"]["player_id"] is not None
     assert payload["home_score"] >= 0
     assert payload["away_score"] >= 0
     assert payload["replay_url"]

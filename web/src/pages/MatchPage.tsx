@@ -32,6 +32,8 @@ interface GoalInfo {
 
 interface PlayerRating {
   name: string
+  player_id?: number | string | null
+  color?: string
   colored_name?: string
   position: string
   rating: number
@@ -40,7 +42,7 @@ interface PlayerRating {
 interface MatchRatings {
   home_ratings: PlayerRating[]
   away_ratings: PlayerRating[]
-  motm: { name: string; colored_name?: string; team_side: string; rating: number }
+  motm: PlayerRating & { team_side: string }
 }
 
 interface MatchResult {
@@ -83,6 +85,17 @@ function ratingColor(rating: number): string {
 
 function ratingBg(_rating: number): string {
   return 'bg-slate-800/50 border-slate-700/50 hover:bg-slate-700/50'
+}
+
+function findPlayerStat(players: PlayerStat[] | null, rating: PlayerRating): PlayerStat | undefined {
+  if (!players) return undefined
+  if (rating.player_id != null) {
+    const byId = players.find(player =>
+      player.player_id != null && String(player.player_id) === String(rating.player_id),
+    )
+    if (byId) return byId
+  }
+  return players.find(player => player.name === rating.name)
 }
 
 function GoalName({ goal, align = 'left' }: { goal: GoalInfo; align?: 'left' | 'right' }) {
@@ -470,7 +483,7 @@ export default function MatchPage() {
                   <div className="text-xs text-accent font-medium mb-2 text-center">{result.home_name}</div>
                   <div className="space-y-1.5">
                     {result.ratings.home_ratings.map((p, i) => (
-                      <div key={i} className={`flex items-center justify-between px-2 py-1.5 rounded border cursor-pointer hover:opacity-80 ${ratingBg(p.rating)}`} onClick={() => { const ps = result.home_player_stats?.find(s => s.name === p.name); if (ps) setPlayerDetail({player: ps, side: "home"}) }}>
+                      <div key={i} className={`flex items-center justify-between px-2 py-1.5 rounded border cursor-pointer hover:opacity-80 ${ratingBg(p.rating)}`} onClick={() => { const ps = findPlayerStat(result.home_player_stats, p); if (ps) setPlayerDetail({player: ps, side: "home"}) }}>
                         <div className="min-w-0 flex-1">
                           <span className="text-xs text-slate-500 mr-1">{p.position}</span>
                           <span className="text-xs truncate"><ColorText text={p.colored_name || p.name} /></span>
@@ -485,7 +498,7 @@ export default function MatchPage() {
                   <div className="text-xs text-red-400 font-medium mb-2 text-center">{result.away_name}</div>
                   <div className="space-y-1.5">
                     {result.ratings.away_ratings.map((p, i) => (
-                      <div key={i} className={`flex items-center justify-between px-2 py-1.5 rounded border cursor-pointer hover:opacity-80 ${ratingBg(p.rating)}`} onClick={() => { const ps = result.away_player_stats?.find(s => s.name === p.name); if (ps) setPlayerDetail({player: ps, side: "away"}) }}>
+                      <div key={i} className={`flex items-center justify-between px-2 py-1.5 rounded border cursor-pointer hover:opacity-80 ${ratingBg(p.rating)}`} onClick={() => { const ps = findPlayerStat(result.away_player_stats, p); if (ps) setPlayerDetail({player: ps, side: "away"}) }}>
                         <div className="min-w-0 flex-1">
                           <span className="text-xs text-slate-500 mr-1">{p.position}</span>
                           <span className="text-xs truncate"><ColorText text={p.colored_name || p.name} /></span>

@@ -3,6 +3,18 @@ from model.npc_formation import NpcFormation
 from model.user import User
 from engine.player import Player
 from utils.const import Const
+
+
+def _player_identity(player):
+  colored_name = player.card.getNameWithColor()
+  color = colored_name[2:3] if colored_name.startswith("/~") else "w"
+  return {
+    "player_id": getattr(player.card.player, "ID", None),
+    "color": color,
+    "colored_name": colored_name,
+  }
+
+
 class Team:
   def __init__(self, user, npc=-1, difficulty=0):
     # 教练
@@ -198,7 +210,7 @@ class Team:
   def player_stat_dict(self, player):
     return {
       "name": player.getName(False),
-      "colored_name": player.getName(True),
+      **_player_identity(player),
       "position": player.position,
       "goals": player.goals,
       "assists": player.assists,

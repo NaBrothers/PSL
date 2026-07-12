@@ -62,8 +62,10 @@ struct Formation {
 #[derive(Clone)]
 struct RunnerPlayer {
     name: String,
+    player_id: serde_json::Value,
     position: String,
     color: String,
+    colored_name: String,
     base_pos: (f64, f64),
     tactical_anchor: (f64, f64),
     pos: (f64, f64),
@@ -365,7 +367,6 @@ struct RunnerRuntimeConfig {
     pass_to_space_ball_speed: f64,
     receive_reachability_scale: f64,
     space_creation_radius: f64,
-    find_space_radius: f64,
     pass_error_divisor: f64,
     first_touch_error_divisor: f64,
     carry_error_divisor: f64,
@@ -374,7 +375,6 @@ struct RunnerRuntimeConfig {
     runner_shot_threshold: f64,
     runner_forced_action: Option<String>,
     runner_forced_actions: Vec<String>,
-    runner_force_defender_lane: bool,
     runner_forced_pass_target: Option<(f64, f64)>,
     runner_forced_clear_target: Option<(f64, f64)>,
     runner_force_receiver_offside: bool,
@@ -1020,7 +1020,6 @@ fn runtime_config(config: &serde_json::Value) -> RunnerRuntimeConfig {
         pass_to_space_ball_speed: config_f64(config, "pass_to_space_ball_speed", 18.0),
         receive_reachability_scale: config_f64(config, "receive_reachability_scale", 1.0),
         space_creation_radius: config_f64(config, "space_creation_radius", 10.0),
-        find_space_radius: config_f64(config, "find_space_radius", 15.0),
         pass_error_divisor: config_f64(config, "pass_error_divisor", 800.0),
         first_touch_error_divisor: config_f64(config, "first_touch_error_divisor", 700.0),
         carry_error_divisor: config_f64(config, "carry_error_divisor", 900.0),
@@ -1038,10 +1037,6 @@ fn runtime_config(config: &serde_json::Value) -> RunnerRuntimeConfig {
                     .collect::<Vec<_>>()
             })
             .unwrap_or_default(),
-        runner_force_defender_lane: config
-            .get("runner_force_defender_lane")
-            .and_then(|value| value.as_bool())
-            .unwrap_or(false),
         runner_forced_pass_target: config
             .get("runner_forced_pass_target")
             .and_then(|value| value.as_array())
@@ -1107,6 +1102,19 @@ fn card_string(card: &serde_json::Value, key: &str, default: String) -> String {
         .unwrap_or(default)
 }
 
+fn card_identity(card: &serde_json::Value, key: &str) -> serde_json::Value {
+    card.get(key).cloned().unwrap_or(serde_json::Value::Null)
+}
+
+fn card_color(card: &serde_json::Value) -> String {
+    match card.get("color").and_then(|value| value.as_str()) {
+        Some("w" | "g" | "b" | "p" | "o" | "r" | "f" | "x" | "$") => {
+            card_string(card, "color", "w".to_string())
+        }
+        _ => "w".to_string(),
+    }
+}
+
 fn card_ability(card: &serde_json::Value, key: &str, default: f64) -> f64 {
     card.get(key)
         .and_then(|value| value.as_f64())
@@ -1131,10 +1139,14 @@ fn build_players(
             let card = cards.get(idx).unwrap_or(&empty);
             let pos =
                 formation_to_pitch(formation.coordinates[idx], attacking_right, length, width);
+            let name = card_string(card, "name", format!("Player {}", idx + 1));
+            let color = card_color(card);
             RunnerPlayer {
-                name: card_string(card, "name", format!("Player {}", idx + 1)),
+                player_id: card_identity(card, "player_id"),
+                colored_name: format!("/~{color}{name}/"),
+                name,
                 position: formation.positions[idx].to_string(),
-                color: card_string(card, "color", "gold".to_string()),
+                color,
                 base_pos: pos,
                 tactical_anchor: pos,
                 pos,
@@ -1225,11 +1237,23 @@ fn replay_header(
         "type": "header",
         "home": {
             "name": "Home Team",
-            "players": home.iter().map(|p| json!({"name": p.name, "pos": p.position, "color": p.color})).collect::<Vec<_>>()
+            "players": home.iter().map(|p| json!({
+                "name": p.name,
+                "player_id": p.player_id,
+                "pos": p.position,
+                "color": p.color,
+                "colored_name": p.colored_name
+            })).collect::<Vec<_>>()
         },
         "away": {
             "name": "Away Team",
-            "players": away.iter().map(|p| json!({"name": p.name, "pos": p.position, "color": p.color})).collect::<Vec<_>>()
+            "players": away.iter().map(|p| json!({
+                "name": p.name,
+                "player_id": p.player_id,
+                "pos": p.position,
+                "color": p.color,
+                "colored_name": p.colored_name
+            })).collect::<Vec<_>>()
         },
         "formation_home": home_formation,
         "formation_away": away_formation,
@@ -1253,17 +1277,11 @@ fn frame(
     pause_ms: Option<i32>,
 ) -> serde_json::Value {
     let player_goal_payload = |player: &RunnerPlayer| -> serde_json::Value {
-        player.goal_type.as_ref().map(|goal_type| {
-            json!({
-                "goal_type": goal_type,
-                "target_pos": [round_one(player.goal_target.0), round_one(player.goal_target.1)],
-                "value": round_two(player.goal_value),
-                "context": {
-                    "phase": player.goal_phase.clone().unwrap_or_default(),
-                    "action_code": player.goal_action_code
-                }
-            })
-        }).unwrap_or(serde_json::Value::Null)
+        player
+            .goal_type
+            .as_deref()
+            .map(|goal_type| json!(goal_type))
+            .unwrap_or(serde_json::Value::Null)
     };
     json!({
         "type": "frame",
@@ -1417,6 +1435,9 @@ fn team_ratings(players: &[RunnerPlayer], team_conceded: i32) -> Vec<serde_json:
         .map(|player| {
             json!({
                 "name": player.name,
+                "player_id": player.player_id,
+                "color": player.color,
+                "colored_name": player.colored_name,
                 "position": player.position,
                 "rating": player_rating(player, team_conceded)
             })
@@ -1446,7 +1467,9 @@ fn player_stat_skeleton(
                 + player.holds as f64;
             json!({
                 "name": player.name,
-                "colored_name": player.name,
+                "player_id": player.player_id,
+                "color": player.color,
+                "colored_name": player.colored_name,
                 "position": player.position,
                 "goals": player.goals,
                 "assists": player.assists,
@@ -1566,31 +1589,6 @@ fn shot_log_json(entry: &ShotLogEntryOutput) -> serde_json::Value {
         }
     }
     value
-}
-
-fn reset_positions(
-    players: &mut [RunnerPlayer],
-    formation: Formation,
-    attacking_right: bool,
-    length: f64,
-    width: f64,
-) {
-    for (idx, player) in players.iter_mut().enumerate() {
-        let pos = formation_to_pitch(formation.coordinates[idx], attacking_right, length, width);
-        player.base_pos = pos;
-        player.tactical_anchor = pos;
-        player.pos = pos;
-        player.target_pos = pos;
-        player.velocity = (0.0, 0.0);
-        player.state = "off_ball".to_string();
-        player.movement_intent = "support".to_string();
-        player.goal_type = None;
-        player.goal_phase = None;
-        player.goal_target = pos;
-        player.goal_value = 0.0;
-        player.goal_created_tick = 0;
-        player.goal_action_code = 3;
-    }
 }
 
 fn reset_formation_slots(
@@ -3837,62 +3835,6 @@ fn runner_centrality_y(y: f64, pitch_width: f64) -> f64 {
     1.0 - ((y - pitch_width / 2.0).abs() / (pitch_width / 2.0).max(1.0)).min(1.0)
 }
 
-fn runner_attracted_pressure(holder: &RunnerPlayer, opponents: &[RunnerPlayer]) -> f64 {
-    let mut pressure: f64 = 0.0;
-    for opponent in opponents.iter().filter(|player| player.position != "GK") {
-        let d = distance(holder.pos, opponent.pos);
-        if d < 11.0 {
-            pressure += 1.0 - d / 11.0;
-        }
-    }
-    (pressure * 0.42).min(1.0)
-}
-
-fn byline_delivery_support_for_runner(
-    holder_idx: usize,
-    holder: &RunnerPlayer,
-    teammates: &[RunnerPlayer],
-    attacking_right: bool,
-    config: &RunnerRuntimeConfig,
-) -> f64 {
-    let carrier_progress = runner_progress_x(holder.pos.0, config.pitch_length, attacking_right);
-    let carrier_width =
-        (holder.pos.1 - config.pitch_width / 2.0).abs() / (config.pitch_width / 2.0).max(1.0);
-    if carrier_progress < 0.58 || carrier_width < 0.38 {
-        return 0.0;
-    }
-
-    let mut support: f64 = 0.0;
-    for (idx, teammate) in teammates.iter().enumerate() {
-        if idx == holder_idx || teammate.position == "GK" {
-            continue;
-        }
-        for point in [teammate.pos, teammate.target_pos, teammate.tactical_anchor] {
-            let progress = runner_progress_x(point.0, config.pitch_length, attacking_right);
-            let centrality = runner_centrality_y(point.1, config.pitch_width);
-            let depth_gap = (point.0 - holder.pos.0) * if attacking_right { 1.0 } else { -1.0 };
-            let weak_side = if (point.1 - config.pitch_width / 2.0)
-                * (holder.pos.1 - config.pitch_width / 2.0)
-                < 0.0
-            {
-                1.0
-            } else {
-                0.0
-            };
-            let box_target = crate::physics::smoothstep(0.78, 0.94, progress)
-                * crate::physics::smoothstep(0.45, 0.92, centrality)
-                * (0.60 + 0.25 * weak_side);
-            let cutback_target = crate::physics::smoothstep(0.62, 0.84, progress)
-                * crate::physics::smoothstep(0.52, 0.92, centrality)
-                * crate::physics::smoothstep(-12.0, 6.0, depth_gap)
-                * (1.0 - crate::physics::smoothstep(18.0, 34.0, depth_gap.abs()))
-                * (0.60 + 0.25 * weak_side);
-            support = support.max(box_target).max(cutback_target);
-        }
-    }
-    support.clamp(0.0, 1.0)
-}
-
 fn apply_runner_specialized_selected_goal_bias(
     actions: &mut [RunnerEvaluatedAction],
     holder: &mut RunnerPlayer,
@@ -5084,33 +5026,6 @@ fn apply_player_goal_switch_with_details(
         value_advantage: selection.value_advantage,
         reason: selection.reason,
     }
-}
-
-fn apply_player_goal_switch(
-    player: &mut RunnerPlayer,
-    candidate_type: String,
-    candidate_phase: &'static str,
-    candidate_target: (f64, f64),
-    candidate_value: f64,
-    iq: f64,
-    base: f64,
-    pressure_interrupt: f64,
-    config: &RunnerRuntimeConfig,
-    rng: &mut RunnerRng,
-) -> RunnerGoalSummary {
-    apply_player_goal_switch_with_details(
-        player,
-        candidate_type,
-        candidate_phase,
-        candidate_target,
-        candidate_value,
-        iq,
-        base,
-        pressure_interrupt,
-        config,
-        rng,
-    )
-    .summary
 }
 
 fn apply_arrival_goal_switch_with_details(
@@ -6591,76 +6506,6 @@ fn move_contested_team(
     }
 }
 
-fn defender_actions_for_interaction(
-    holder_pos: (f64, f64),
-    action_target: (f64, f64),
-    holder_action: &str,
-    defenders: &[RunnerPlayer],
-    config: &RunnerRuntimeConfig,
-) -> Vec<DefenderActionInput> {
-    let forced_lane_idx = if config.runner_force_defender_lane && holder_action == "pass" {
-        defenders
-            .iter()
-            .enumerate()
-            .filter(|(_, defender)| defender.position != "GK")
-            .min_by(|(_, a), (_, b)| {
-                distance(a.pos, action_target)
-                    .partial_cmp(&distance(b.pos, action_target))
-                    .unwrap_or(std::cmp::Ordering::Equal)
-            })
-            .map(|(idx, _)| idx)
-    } else {
-        None
-    };
-    defenders
-        .iter()
-        .enumerate()
-        .filter(|(_, defender)| defender.position != "GK")
-        .map(|(idx, defender)| {
-            let d_holder = distance(defender.pos, holder_pos);
-            let d_target = distance(defender.pos, action_target);
-            let action = if d_holder < config.tackle_range * 1.20 {
-                "tackle"
-            } else if holder_action == "pass" && d_target < config.interception_reach * 2.4 {
-                "block_lane"
-            } else if d_target < config.tackle_range * 1.75 || d_holder < 14.0 {
-                "approach"
-            } else {
-                "block_lane"
-            };
-            let speed = player_speed(
-                defender.speed.round() as i32,
-                config.player_max_speed,
-                config.player_min_speed,
-            );
-            let move_target = if holder_action == "pass" && action == "block_lane" {
-                action_target
-            } else {
-                holder_pos
-            };
-            let new_pos = if forced_lane_idx == Some(idx) {
-                (
-                    holder_pos.0 * 0.52 + action_target.0 * 0.48,
-                    holder_pos.1 * 0.52 + action_target.1 * 0.48,
-                )
-            } else if action == "block_lane" && d_target > config.interception_reach * 2.4 {
-                defender.pos
-            } else {
-                crate::physics::move_toward(defender.pos, move_target, speed)
-            };
-            DefenderActionInput {
-                index: idx,
-                pos: defender.pos,
-                new_pos: pitch_clamp(new_pos, config.pitch_length, config.pitch_width),
-                action: action.to_string(),
-                speed: defender.speed,
-                defence: defender.defence,
-                is_goalkeeper: defender.position == "GK",
-            }
-        })
-        .collect()
-}
-
 fn defender_phase1_inputs(
     defenders: &[RunnerPlayer],
     config: &RunnerRuntimeConfig,
@@ -6731,24 +6576,6 @@ fn track_runner_pressures(
             }
         }
     }
-}
-
-fn detect_runner_duel(
-    holder_pos: (f64, f64),
-    carry_target: (f64, f64),
-    defenders: &[RunnerPlayer],
-    config: &RunnerRuntimeConfig,
-) -> Option<usize> {
-    let defender_actions =
-        defender_actions_for_interaction(holder_pos, carry_target, "carry", defenders, config);
-    detect_duel(&DuelDetectionInput {
-        holder_pos,
-        holder_action: "carry",
-        carry_target,
-        defenders: &defender_actions,
-        tackle_range: config.tackle_range,
-    })
-    .defender_index
 }
 
 fn resolve_runner_duel(
@@ -8269,6 +8096,8 @@ fn tick_match(
                             RunnerHeldAction::Shoot {
                                 xg, on_target_prob, ..
                             } => {
+                                let shot_last_passer_team_home = state.last_passer_team_home;
+                                let shot_last_passer_idx = state.last_passer_idx;
                                 if state.last_passer_team_home == Some(holder_home)
                                     && state.last_passer_idx >= 0
                                     && state.last_passer_idx as usize != holder_idx
@@ -8317,8 +8146,6 @@ fn tick_match(
                                 if shot.on_target {
                                     holder.shots_on_target += 1;
                                 }
-                                state.last_passer_team_home = Some(holder_home);
-                                state.last_passer_idx = holder_idx as i32;
                                 state.ball.state = RunnerBallState::InFlight;
                                 state.ball.position = holder.pos;
                                 state.ball.holder_idx = None;
@@ -8335,8 +8162,8 @@ fn tick_match(
                                     passer_team_home: holder_home,
                                     intended_receiver_idx: None,
                                     offside_indices: Vec::new(),
-                                    last_passer_team_home: state.last_passer_team_home,
-                                    last_passer_idx: state.last_passer_idx,
+                                    last_passer_team_home: shot_last_passer_team_home,
+                                    last_passer_idx: shot_last_passer_idx,
                                     on_target: shot.on_target,
                                     speed: shot.speed,
                                 });
@@ -8523,6 +8350,26 @@ fn tick_match(
                                     );
                                 }
                                 2 => {
+                                    let (assister_name, assister_color) = if flight
+                                        .last_passer_team_home
+                                        == Some(flight.passer_team_home)
+                                        && flight.last_passer_idx >= 0
+                                        && flight.last_passer_idx as usize != flight.passer_idx
+                                    {
+                                        let scoring_team = if flight.passer_team_home {
+                                            &*home
+                                        } else {
+                                            &*away
+                                        };
+                                        scoring_team
+                                            .get(flight.last_passer_idx as usize)
+                                            .map(|player| {
+                                                (player.name.clone(), player.color.clone())
+                                            })
+                                            .unwrap_or_default()
+                                    } else {
+                                        (String::new(), String::new())
+                                    };
                                     let goal_plan = score_goal_plan(&ScoreGoalPlanInput {
                                         scorer_name: shooter_name.as_str(),
                                         scoring_team_home: flight.passer_team_home,
@@ -8533,8 +8380,8 @@ fn tick_match(
                                         last_passer_idx: flight.last_passer_idx,
                                         scorer_idx: flight.passer_idx as i32,
                                         scoring_team_size: 11,
-                                        assister_name: "",
-                                        assister_color: "",
+                                        assister_name: assister_name.as_str(),
+                                        assister_color: assister_color.as_str(),
                                         tick,
                                         tick_duration: config.tick_duration,
                                     });

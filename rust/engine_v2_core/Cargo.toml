@@ -9,7 +9,7 @@ path = "src/lib.rs"
 
 [[bin]]
 name = "engine"
-path = "src/bin/engine.rs"
+path = "src/bin/match_engine.rs"
 
 [dependencies]
 serde = { version = "1", features = ["derive"] }
