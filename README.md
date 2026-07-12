@@ -1,7 +1,7 @@
 # QQ群足球小游戏
 
 ## 1. 部署
-运行脚本安装 Python 依赖、初始化 SQLite 数据库并安装 NapCatQQ：
+运行脚本安装 Python/Rust 依赖、构建 release 版比赛引擎、初始化 SQLite 数据库并安装 NapCatQQ：
 ```
 bash ./config.sh
 ```
@@ -83,7 +83,11 @@ python3 -m server
 PSL_DB_PATH=/path/to/psl.db
 PSL_WEB_PORT=8888
 PSL_JWT_SECRET=replace-with-a-long-random-secret
+PSL_RUST_PROFILE=debug
 ```
+
+比赛默认使用 release 版 Rust 引擎。仅本地调试 Rust 代码时需要显式设置
+`PSL_RUST_PROFILE=debug`；`start.sh` 会自动构建并使用 release 版本。
 
 ## 6. 测试
 

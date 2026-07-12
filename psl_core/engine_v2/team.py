@@ -91,6 +91,16 @@ class Team:
         - Stable possession -> ATTACKING
         - Stable no possession -> DEFENDING
         """
+        from .rust_adapter import team_phase_update_rust
+
+        phase_update = team_phase_update_rust(self, has_possession, ball_contested, config)
+        self.phase = TeamPhase(phase_update["phase"])
+        self._ticks_since_possession_change = phase_update["ticks_since_possession_change"]
+        self._had_possession_last_tick = phase_update["had_possession_last_tick"]
+        return
+
+    def _update_phase_legacy(self, has_possession: bool, ball_contested: bool, config: "EngineConfig"):
+        """Legacy Python team phase transition formula."""
         if ball_contested:
             self.phase = TeamPhase.CONTESTING
             return
@@ -129,6 +139,29 @@ class Team:
         scoring so shape can advance, retreat, and shift with the ball without
         rewriting the player's real formation identity.
         """
+        if not self._formation_coords:
+            return
+
+        if getattr(config, "rust_team_shape_plan_adapter_enabled", False):
+            from .rust_adapter import team_shape_plan_rust
+
+            anchors = team_shape_plan_rust(self, ball_pos, config, pitch, opponent_players)
+            for player in self.players:
+                anchor = anchors.get(player.index)
+                if anchor is not None:
+                    player.tactical_anchor = anchor
+            return
+
+        self._compute_dynamic_positions_legacy(ball_pos, config, pitch, opponent_players)
+
+    def _compute_dynamic_positions_legacy(
+        self,
+        ball_pos: Tuple[float, float],
+        config: "EngineConfig",
+        pitch: "Pitch",
+        opponent_players: list = None,
+    ):
+        """Legacy Python tactical-anchor formula kept for parity fallback."""
         if not self._formation_coords:
             return
 

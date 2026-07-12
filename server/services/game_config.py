@@ -76,7 +76,8 @@ DEFAULTS = {
     "style.scale.10": 22,
 
     # Engine V2
-    "engine_v2.engine_version": "v1",
+    "engine_v2.engine_version": "v2",
+    "engine_v2.rust_full_match_runner_enabled": True,
     "engine_v2.tick_duration": 2.0,
     "engine_v2.shot_on_target_base": 0.52,
     "engine_v2.gk_save_base": 0.66,
@@ -172,6 +173,7 @@ CONFIG_GROUPS = {
     ],
     "比赛引擎V2": [
         {"key": "engine_v2.engine_version", "label": "引擎版本(v1/v2)", "type": "str"},
+        {"key": "engine_v2.rust_full_match_runner_enabled", "label": "整场使用Rust引擎", "type": "bool"},
         {"key": "engine_v2.tick_duration", "label": "Tick时长(秒)", "type": "float"},
         {"key": "engine_v2.shot_on_target_base", "label": "射正基准概率", "type": "float"},
         {"key": "engine_v2.gk_save_base", "label": "门将扑救基准", "type": "float"},

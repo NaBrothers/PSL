@@ -208,8 +208,10 @@ class Player:
 
         Lower IQ = more noise = worse decisions.
         """
-        noise_scale = iq_decision_noise(self.iq_value) * config.iq_noise_scale
-        return score * (1.0 + random.gauss(0, noise_scale))
+        from .rust_adapter import apply_iq_noise_score_rust
+
+        gaussian = random.gauss(0.0, 1.0)
+        return apply_iq_noise_score_rust(score, self.iq_value, config, gaussian)["score"]
 
     # =========================================================================
     # Movement
@@ -217,6 +219,15 @@ class Player:
 
     def get_move_speed(self, config: "EngineConfig") -> float:
         """Get adaptive off-ball speed from ability, intent, and urgency."""
+        if getattr(config, "rust_player_move_speed_adapter_enabled", False):
+            from .rust_adapter import player_move_speed_rust
+
+            return player_move_speed_rust(self, config)
+
+        return self._get_move_speed_legacy(config)
+
+    def _get_move_speed_legacy(self, config: "EngineConfig") -> float:
+        """Legacy Python move-speed formula kept for parity fallback."""
         max_speed = player_speed(self.speed_value, config.player_max_speed, config.player_min_speed)
         dist_to_target = distance(self.pos, self.target_pos)
         urgency = 1.0 - math.exp(-dist_to_target / 14.0)
@@ -243,6 +254,14 @@ class Player:
 
     def set_movement_target(self, target: Tuple[float, float], intent: str = None):
         """Set movement target with inertia so target points form a continuous field."""
+        from .rust_adapter import player_set_movement_target_rust
+
+        movement = player_set_movement_target_rust(self, target, intent)
+        self.target_pos = movement["target_pos"]
+        self.movement_intent = movement["movement_intent"]
+
+    def _set_movement_target_legacy(self, target: Tuple[float, float], intent: str = None):
+        """Legacy Python movement-target smoothing formula."""
         if intent is not None:
             self.movement_intent = intent
 
@@ -272,6 +291,24 @@ class Player:
 
     def move_tick(self, config: "EngineConfig", pitch: "Pitch"):
         """Move player toward their target position for one tick."""
+        if getattr(config, "rust_player_move_tick_adapter_enabled", False):
+            from .rust_adapter import player_move_tick_rust
+
+            movement = player_move_tick_rust(self, config, pitch)
+            if not movement["moved"]:
+                return
+            old_pos = self.pos
+            self.velocity = movement["velocity"]
+            self.pos = movement["pos"]
+            self.distance_covered += movement["distance_covered"]
+            if movement["facing_direction"] is not None:
+                self.facing_direction = movement["facing_direction"]
+            return
+
+        self._move_tick_legacy(config, pitch)
+
+    def _move_tick_legacy(self, config: "EngineConfig", pitch: "Pitch"):
+        """Legacy Python movement formula kept for parity fallback."""
         if self.state == PlayerState.ON_BALL:
             return
         if self.state == PlayerState.STUNNED:
@@ -323,16 +360,19 @@ class Player:
 
     def tick_stun(self, config: "EngineConfig"):
         """Tick stun timer. Call every tick for stunned players."""
-        if self.stun_ticks_remaining > 0:
-            self.stun_ticks_remaining -= 1
-            if self.stun_ticks_remaining <= 0:
-                self.state = PlayerState.OFF_BALL
+        from .rust_adapter import player_tick_stun_rust
+
+        stun = player_tick_stun_rust(self)
+        self.stun_ticks_remaining = stun["stun_ticks_remaining"]
+        self.state = PlayerState(stun["state"])
 
     def apply_stun(self, config: "EngineConfig"):
         """Apply stun penalty (after failed tackle)."""
-        self.state = PlayerState.STUNNED
-        stun_ticks = max(1, math.ceil(config.tackle_fail_stun_seconds / config.tick_duration))
-        self.stun_ticks_remaining = stun_ticks
+        from .rust_adapter import player_apply_stun_rust
+
+        stun = player_apply_stun_rust(config)
+        self.state = PlayerState(stun["state"])
+        self.stun_ticks_remaining = stun["stun_ticks_remaining"]
 
     # =========================================================================
     # On-Ball Decision: Pure Reward-Driven
@@ -402,7 +442,7 @@ class Player:
         )
         if pass_candidates:
             carry_candidates = self._apply_support_opportunity_cost(
-                carry_candidates, pass_candidates, pitch, attacking_right
+                carry_candidates, pass_candidates, pitch, attacking_right, config
             )
             candidates = [
                 candidate for candidate in candidates
@@ -430,17 +470,14 @@ class Player:
         release_candidates = carry_candidates + pass_candidates
         if shoot_score > 0:
             release_candidates.append((shoot_score, "shoot", shoot_details))
-        if clear_score := self._score_clear(x_progress, pressure, config):
-            release_candidates.append((clear_score, "clear", {}))
-        hold_score = self._score_hold(
+        clear_value = self._score_clear_value(x_progress, pressure, config)
+        if clear_value.score > 0:
+            release_candidates.append((clear_value.score, "clear", {}))
+        hold_value = self._score_hold_value(
             teammates, opponents, config, pitch, attacking_right,
             pressure, shoot_score, release_candidates, [],
         )
-        if hold_score > 0:
-            hold_value = self._score_hold_value(
-                teammates, opponents, config, pitch, attacking_right,
-                pressure, shoot_score, release_candidates, [],
-            )
+        if hold_value.score > 0:
             candidates.append(self._make_candidate(
                 "hold", hold_value.score,
                 {
@@ -455,20 +492,31 @@ class Player:
             ))
 
         # ------- CLEAR candidate -------
-        clear_score = self._score_clear(x_progress, pressure, config)
-        if clear_score > 0:
-            # Clear target: away from own goal
-            if attacking_right:
-                clear_target = pitch.clamp(
-                    self.pos[0] + random.uniform(15, 30),
-                    self.pos[1] + random.uniform(-20, 20)
+        if clear_value.score > 0:
+            if getattr(config, "rust_clear_target_adapter_enabled", False):
+                from .rust_adapter import generate_clear_target_rust
+
+                depth_roll = random.random()
+                lateral_roll = random.random()
+                clear_target = generate_clear_target_rust(
+                    self,
+                    attacking_right,
+                    config,
+                    depth_roll,
+                    lateral_roll,
                 )
             else:
-                clear_target = pitch.clamp(
-                    self.pos[0] - random.uniform(15, 30),
-                    self.pos[1] + random.uniform(-20, 20)
-                )
-            clear_value = self._score_clear_value(x_progress, pressure, config)
+                # Clear target: away from own goal
+                if attacking_right:
+                    clear_target = pitch.clamp(
+                        self.pos[0] + random.uniform(15, 30),
+                        self.pos[1] + random.uniform(-20, 20)
+                    )
+                else:
+                    clear_target = pitch.clamp(
+                        self.pos[0] - random.uniform(15, 30),
+                        self.pos[1] + random.uniform(-20, 20)
+                    )
             candidates.append(self._make_candidate(
                 "clear", clear_value.score,
                 {
@@ -489,6 +537,20 @@ class Player:
             else:
                 target = pitch.clamp(self.pos[0] - 5.0, self.pos[1])
             return ("carry", {"target": target})
+
+        if getattr(config, "rust_on_ball_full_decision_adapter_enabled", False):
+            rust_result = self._choose_on_ball_full_rust(
+                candidates,
+                teammates,
+                opponents,
+                config,
+                attacking_right,
+                tick,
+                team_side,
+                trace,
+            )
+            if rust_result is not None:
+                return rust_result
 
         goal_trace = None
         if getattr(config, "goal_continuity_enabled", False):
@@ -511,16 +573,57 @@ class Player:
             if self.current_goal is not None
             else ""
         )
-        candidates = self._apply_release_confidence(candidates, current_goal_type)
+        if getattr(config, "rust_on_ball_selection_adapter_enabled", False):
+            from .rust_adapter import select_on_ball_candidate_rust
 
-        # Apply IQ noise to all candidate scores
-        noisy_candidates = [
-            candidate.with_score(self._apply_iq_noise(candidate.score, config))
-            for candidate in candidates
-        ]
+            noise_scale = iq_decision_noise(self.iq_value) * config.iq_noise_scale
+            score_noises = [
+                random.gauss(0.0, noise_scale)
+                for _ in candidates
+            ]
+            rng_after_noise = random.getstate()
+            roll_rng = random.Random()
+            roll_rng.setstate(rng_after_noise)
+            softmax_roll = roll_rng.random()
+            fallback_rng = random.Random()
+            fallback_rng.setstate(rng_after_noise)
+            fallback_index = fallback_rng.randrange(len(candidates)) if candidates else 0
+            selection = select_on_ball_candidate_rust(
+                candidates,
+                current_goal_type,
+                self.iq_value,
+                score_noises,
+                softmax_roll,
+                fallback_index=fallback_index,
+            )
+            if selection is None:
+                candidates = self._apply_release_confidence(candidates, current_goal_type)
+                noisy_candidates = [
+                    candidate.with_score(self._apply_iq_noise(candidate.score, config))
+                    for candidate in candidates
+                ]
+                chosen = self._softmax_select(noisy_candidates, config)
+            else:
+                noisy_candidates = [
+                    candidate.with_score(score)
+                    for candidate, score in zip(candidates, selection["noisy_scores"])
+                ]
+                if selection.get("used_random_choice"):
+                    random.randrange(len(candidates))
+                elif selection.get("used_roll"):
+                    random.random()
+                chosen = noisy_candidates[selection["index"]]
+        else:
+            candidates = self._apply_release_confidence(candidates, current_goal_type)
 
-        # Selection via softmax with IQ-based temperature
-        chosen = self._softmax_select(noisy_candidates, config)
+            # Apply IQ noise to all candidate scores
+            noisy_candidates = [
+                candidate.with_score(self._apply_iq_noise(candidate.score, config))
+                for candidate in candidates
+            ]
+
+            # Selection via softmax with IQ-based temperature
+            chosen = self._softmax_select(noisy_candidates, config)
         if goal_trace is None and getattr(config, "goal_continuity_enabled", False):
             noisy_candidates, goal_trace = self._apply_generic_on_ball_goal_continuity(
                 noisy_candidates,
@@ -528,6 +631,180 @@ class Player:
                 tick,
             )
             chosen = self._softmax_select(noisy_candidates, config)
+        if trace is not None and config.trace.should_trace(tick, self.index, "on_ball"):
+            alternatives = self._decision_alternatives(noisy_candidates, chosen, config)
+            trace.log_decision(
+                tick=tick,
+                team=team_side,
+                player_idx=self.index,
+                player_name=self.name,
+                phase="on_ball",
+                chosen=chosen,
+                alternatives=alternatives,
+                pos=self.pos,
+                goal=goal_trace,
+            )
+        return (chosen.action_type, chosen.details)
+
+    def _choose_on_ball_full_rust(
+        self,
+        candidates,
+        teammates,
+        opponents,
+        config: "EngineConfig",
+        attacking_right: bool,
+        tick: int,
+        team_side: str,
+        trace=None,
+    ):
+        """Delegate the post-candidate on-ball decision pipeline to Rust."""
+        from .goal import PlayerGoal, goal_context
+        from .rust_adapter import choose_on_ball_full_decision_rust
+
+        result = choose_on_ball_full_decision_rust(
+            self,
+            candidates,
+            teammates,
+            opponents,
+            config,
+            attacking_right,
+            tick,
+        )
+        if result is None:
+            return None
+
+        final_scores = result.get("final_scores", [])
+        if len(final_scores) == len(candidates):
+            noisy_candidates = [
+                candidate.with_score(score)
+                for candidate, score in zip(candidates, final_scores)
+            ]
+        else:
+            noisy_candidates = candidates
+
+        goal_trace = None
+        goal_payload = result.get("goal")
+        if goal_payload is not None and getattr(config, "goal_continuity_enabled", False):
+            selected_action_code = int(goal_payload.get("selected_action_code", -1))
+            action_by_code = {
+                0: "carry",
+                1: "pass",
+                2: "shoot",
+                3: "hold",
+                4: "clear",
+            }
+            selected_action = action_by_code.get(selected_action_code, "")
+            phase = goal_payload.get("phase", "")
+            goal_type = goal_payload["goal_type"]
+            context_by_goal = {
+                "cut_inside_to_shoot": {
+                    "completion": "finish_window",
+                    "abort": "stalled_wide_drive",
+                    "handoff": "default_value_model",
+                },
+                "wide_byline_attack": {
+                    "completion": "box_delivery" if phase == "release" else "reach_byline_delivery_zone",
+                    "abort": "delivery_lane_closed_or_better_shot" if phase == "release" else "lane_closed_or_better_release",
+                    "handoff": "default_value_model",
+                },
+                "wide_hold_for_overlap": {
+                    "completion": "overlap_pass_or_space_opens",
+                    "abort": "immediate_action_clears_window",
+                    "handoff": "default_value_model",
+                },
+                "through_ball_behind": {
+                    "completion": "through_ball_pass",
+                    "abort": "lane_closed_or_receiver_offside",
+                    "handoff": "default_value_model",
+                },
+                "release_pressure_with_layoff": {
+                    "completion": "layoff_pass",
+                    "abort": "pressure_released_or_better_action",
+                    "handoff": "default_value_model",
+                },
+                "release_to_arriving_support": {
+                    "completion": "support_pass",
+                    "abort": "support_window_closed_or_shot_opens",
+                    "handoff": "default_value_model",
+                },
+                "hold_for_opportunity": {
+                    "completion": "better_option_opens",
+                    "abort": "opportunity_window_closed_or_shot_opens",
+                    "handoff": "default_value_model",
+                },
+            }
+            lifecycle = context_by_goal.get(
+                goal_type,
+                {
+                    "completion": "action_resolved",
+                    "abort": "possession_or_value_changed",
+                    "handoff": "on_ball_value_model",
+                },
+            )
+            selected_goal = PlayerGoal(
+                goal_type=goal_type,
+                target_pos=goal_payload["target_pos"],
+                value=max(0.0, float(goal_payload["value"])),
+                confidence=max(0.0, min(1.0, float(goal_payload.get("confidence", 0.0)))),
+                created_tick=int(goal_payload.get("created_tick", tick)),
+                last_updated_tick=tick,
+                context=goal_context(
+                    phase=phase,
+                    completion=lifecycle["completion"],
+                    abort=lifecycle["abort"],
+                    handoff=lifecycle["handoff"],
+                    action=selected_action,
+                ),
+            )
+            self.current_goal = selected_goal
+            opportunity_indices = set(result.get("opportunity_target_indices", []))
+            if opportunity_indices:
+                rebuilt = []
+                for idx, candidate in enumerate(noisy_candidates):
+                    if idx not in opportunity_indices:
+                        rebuilt.append(candidate)
+                        continue
+                    details = dict(candidate.details or {})
+                    details["opportunity_target"] = selected_goal.target_pos
+                    details["opportunity_goal"] = selected_goal.to_dict()
+                    rebuilt.append(candidate.__class__(
+                        phase=candidate.phase,
+                        action_type=candidate.action_type,
+                        target=candidate.target,
+                        value=candidate.value,
+                        details=details,
+                        source=candidate.source,
+                    ))
+                noisy_candidates = rebuilt
+            goal_trace = {
+                "goal": selected_goal.to_dict(),
+                "switched": bool(goal_payload.get("switched", False)),
+                "switch_cost": float(goal_payload.get("switch_cost", 0.0)),
+                "value_advantage": float(goal_payload.get("value_advantage", 0.0)),
+                "switch_noise": float(goal_payload.get("switch_noise", 0.0)),
+                "noisy_value_advantage": float(goal_payload.get("noisy_value_advantage", 0.0)),
+                "reason": goal_payload.get("reason", ""),
+            }
+            if goal_payload.get("candidate_noise", 0.0) or goal_payload.get("candidate_noisy_value", 0.0):
+                goal_trace["candidate_choice"] = {
+                    "candidate_noise": float(goal_payload.get("candidate_noise", 0.0)),
+                    "noisy_value": float(goal_payload.get("candidate_noisy_value", 0.0)),
+                }
+        elif getattr(config, "goal_continuity_enabled", False):
+            self.current_goal = None
+
+        chosen_index = int(result["index"])
+        if chosen_index < 0 or chosen_index >= len(noisy_candidates):
+            return None
+        chosen = noisy_candidates[chosen_index]
+        if result.get("used_random_choice"):
+            random.randrange(len(candidates))
+        elif result.get("used_roll"):
+            random.random()
+        if result.get("generic_used_random_choice"):
+            random.randrange(len(candidates))
+        elif result.get("generic_used_roll"):
+            random.random()
         if trace is not None and config.trace.should_trace(tick, self.index, "on_ball"):
             alternatives = self._decision_alternatives(noisy_candidates, chosen, config)
             trace.log_decision(
@@ -584,6 +861,57 @@ class Player:
 
         if not candidates:
             return candidates, None
+
+        if getattr(config, "rust_generic_on_ball_goal_adapter_enabled", False):
+            from .goal import PlayerGoal, goal_context
+            from .rust_adapter import apply_generic_on_ball_goal_rust
+
+            result = apply_generic_on_ball_goal_rust(
+                self,
+                candidates,
+                self.current_goal,
+                config,
+            )
+            if result is not None:
+                action_by_code = {
+                    0: "carry",
+                    1: "pass",
+                    2: "shoot",
+                    3: "hold",
+                    4: "clear",
+                }
+                selected_action = action_by_code.get(result["selected_action_code"], "")
+                selected_goal = PlayerGoal(
+                    goal_type=result["selected_goal_type"],
+                    target_pos=result["selected_target"],
+                    value=max(0.0, result["selected_value"]),
+                    confidence=max(0.0, min(1.0, result["selected_value"])),
+                    created_tick=tick,
+                    last_updated_tick=tick,
+                    context=goal_context(
+                        phase="execute",
+                        completion="action_resolved",
+                        abort="possession_or_value_changed",
+                        handoff="on_ball_value_model",
+                        action=selected_action,
+                    ),
+                )
+                self.current_goal = selected_goal
+                biased = [
+                    candidate.with_score(score)
+                    for candidate, score in zip(candidates, result["biased_scores"])
+                ]
+                value_advantage = result["value_advantage"]
+                goal_trace = {
+                    "goal": selected_goal.to_dict(),
+                    "switched": result["switched"],
+                    "switch_cost": result["switch_cost"],
+                    "value_advantage": value_advantage,
+                    "switch_noise": 0.0,
+                    "noisy_value_advantage": value_advantage,
+                    "reason": result["reason"],
+                }
+                return biased, goal_trace
 
         best_candidate = max(candidates, key=lambda candidate: candidate.score)
         candidate_goal = build_on_ball_action_goal(
@@ -675,19 +1003,68 @@ class Player:
 
         goal_candidates = []
         current_cut_goal = self.current_goal if self.current_goal and self.current_goal.goal_type == "cut_inside_to_shoot" else None
-        cut_inside_goal = evaluate_cut_inside_to_shoot_goal(
-            player_pos=self.pos,
-            attacking_right=attacking_right,
-            pitch_length=pitch.length,
-            pitch_width=pitch.width,
-            best_carry_components=best_carry[1].get("components", {}),
-            best_shot_components=shoot_details.get("components", {}),
-            best_carry_target=best_carry[1].get("target"),
-            consecutive_carries=self.consecutive_carries,
-            goal_age_ticks=max(0, tick - current_cut_goal.created_tick) if current_cut_goal else 0,
-            created_tick=current_cut_goal.created_tick if current_cut_goal else None,
-            tick=tick,
-        )
+        cut_goal_age_ticks = max(0, tick - current_cut_goal.created_tick) if current_cut_goal else 0
+        if getattr(config, "rust_cut_inside_goal_adapter_enabled", False):
+            from .goal import PlayerGoal, goal_context
+            from .rust_adapter import evaluate_cut_inside_goal_rust
+
+            cut_payload = evaluate_cut_inside_goal_rust(
+                self,
+                attacking_right,
+                config,
+                best_carry[1].get("components", {}),
+                shoot_details.get("components", {}),
+                best_carry[1].get("target"),
+                cut_goal_age_ticks,
+            )
+            cut_inside_goal = None
+            if cut_payload is not None:
+                best_carry_components = best_carry[1].get("components", {})
+                best_shot_components = shoot_details.get("components", {})
+                future_shot_gain = float(best_carry_components.get("future_shot_gain", 0.0) or 0.0)
+                carry_to_shoot = float(best_carry_components.get("carry_to_shoot_window", 0.0) or 0.0)
+                wide_second_line = float(best_carry_components.get("wide_second_line_carry_window", 0.0) or 0.0)
+                current_shot = float(best_shot_components.get("xg", 0.0) or 0.0)
+                current_readiness = float(best_shot_components.get("shot_readiness", 0.0) or 0.0)
+                cut_inside_goal = PlayerGoal(
+                    goal_type="cut_inside_to_shoot",
+                    target_pos=cut_payload["target_pos"],
+                    value=cut_payload["value"],
+                    confidence=cut_payload["confidence"],
+                    created_tick=tick if current_cut_goal is None else current_cut_goal.created_tick,
+                    last_updated_tick=tick,
+                    context=goal_context(
+                        phase=cut_payload["phase"],
+                        completion="finish_window",
+                        abort="stalled_wide_drive",
+                        handoff="default_value_model",
+                        progress=cut_payload["progress"],
+                        width=cut_payload["width"],
+                        future_shot_gain=future_shot_gain,
+                        carry_to_shoot_window=carry_to_shoot,
+                        wide_second_line_carry_window=wide_second_line,
+                        current_shot=current_shot,
+                        current_readiness=current_readiness,
+                        finish_window=cut_payload["finish_window"],
+                        consecutive_carries=self.consecutive_carries,
+                        goal_age_ticks=cut_goal_age_ticks,
+                        drive_staleness=cut_payload["drive_staleness"],
+                    ),
+                )
+        else:
+            cut_inside_goal = evaluate_cut_inside_to_shoot_goal(
+                player_pos=self.pos,
+                attacking_right=attacking_right,
+                pitch_length=pitch.length,
+                pitch_width=pitch.width,
+                best_carry_components=best_carry[1].get("components", {}),
+                best_shot_components=shoot_details.get("components", {}),
+                best_carry_target=best_carry[1].get("target"),
+                consecutive_carries=self.consecutive_carries,
+                goal_age_ticks=cut_goal_age_ticks,
+                created_tick=current_cut_goal.created_tick if current_cut_goal else None,
+                tick=tick,
+            )
         current_cut_release = (
             cut_inside_goal is not None
             and current_cut_goal is not None
@@ -732,69 +1109,173 @@ class Player:
                     support = max(support, box_target, cutback_target)
             return max(0.0, min(1.0, support))
 
-        best_byline_carry = None
-        delivery_support = byline_delivery_support()
-        for score, action_type, details in carry_candidates:
-            if action_type != "carry":
-                continue
-            components = details.get("components", {}) if details else {}
-            byline_window = float(components.get("byline_carry_window", 0.0) or 0.0)
-            if byline_window <= 0.025:
-                continue
-            value = score * 0.35 + byline_window * (0.45 + 0.70 * delivery_support)
-            if best_byline_carry is None or value > best_byline_carry[0]:
-                best_byline_carry = (value, score, details)
-        if best_byline_carry is not None and not current_cut_release:
-            byline_carry_goal = evaluate_drive_byline_goal(
-                player_pos=self.pos,
-                carry_target=best_byline_carry[2].get("target", self.pos),
-                attacking_right=attacking_right,
-                pitch_length=pitch.length,
-                pitch_width=pitch.width,
-                carry_score=best_byline_carry[1],
-                components=best_byline_carry[2].get("components", {}),
-                delivery_support=delivery_support,
-                tick=tick,
+        if getattr(config, "rust_byline_carry_selection_adapter_enabled", False):
+            from .rust_adapter import select_byline_carry_rust
+
+            byline_selection = select_byline_carry_rust(
+                self,
+                teammates,
+                carry_candidates,
+                attacking_right,
+                config,
             )
+            delivery_support = byline_selection["delivery_support"]
+            selected_idx = byline_selection["candidate_index"]
+            if selected_idx is None:
+                best_byline_carry = None
+            else:
+                selected = carry_candidates[selected_idx]
+                best_byline_carry = (byline_selection["value"], byline_selection["score"], selected[2])
+        else:
+            best_byline_carry = None
+            delivery_support = byline_delivery_support()
+            for score, action_type, details in carry_candidates:
+                if action_type != "carry":
+                    continue
+                components = details.get("components", {}) if details else {}
+                byline_window = float(components.get("byline_carry_window", 0.0) or 0.0)
+                if byline_window <= 0.025:
+                    continue
+                value = score * 0.35 + byline_window * (0.45 + 0.70 * delivery_support)
+                if best_byline_carry is None or value > best_byline_carry[0]:
+                    best_byline_carry = (value, score, details)
+        if best_byline_carry is not None and not current_cut_release:
+            if getattr(config, "rust_byline_goal_adapter_enabled", False):
+                from .goal import PlayerGoal, goal_context
+                from .rust_adapter import evaluate_drive_byline_goal_rust
+
+                byline_payload = evaluate_drive_byline_goal_rust(
+                    self,
+                    best_byline_carry[2].get("target", self.pos),
+                    attacking_right,
+                    config,
+                    best_byline_carry[1],
+                    best_byline_carry[2].get("components", {}),
+                    delivery_support,
+                )
+                byline_carry_goal = None if byline_payload is None else PlayerGoal(
+                    goal_type="wide_byline_attack",
+                    target_pos=byline_payload["target_pos"],
+                    value=byline_payload["value"],
+                    confidence=byline_payload["confidence"],
+                    created_tick=tick,
+                    last_updated_tick=tick,
+                    context=goal_context(
+                        phase="drive",
+                        completion="reach_byline_delivery_zone",
+                        abort="lane_closed_or_better_release",
+                        handoff="default_value_model",
+                        origin_progress=byline_payload["origin_progress"],
+                        origin_width=byline_payload["origin_width"],
+                        target_progress=byline_payload["target_progress"],
+                        target_width=byline_payload["target_width"],
+                        progress_gain=float(best_byline_carry[2].get("components", {}).get("progress_gain", 0.0) or 0.0),
+                        byline_carry_window=float(best_byline_carry[2].get("components", {}).get("byline_carry_window", 0.0) or 0.0),
+                        path_feasibility=float(best_byline_carry[2].get("components", {}).get("path_feasibility", best_byline_carry[2].get("components", {}).get("success_prob", 0.0)) or 0.0),
+                        space_manipulation=float(best_byline_carry[2].get("components", {}).get("space_manipulation", 0.0) or 0.0),
+                        delivery_support=delivery_support,
+                    ),
+                )
+            else:
+                byline_carry_goal = evaluate_drive_byline_goal(
+                    player_pos=self.pos,
+                    carry_target=best_byline_carry[2].get("target", self.pos),
+                    attacking_right=attacking_right,
+                    pitch_length=pitch.length,
+                    pitch_width=pitch.width,
+                    carry_score=best_byline_carry[1],
+                    components=best_byline_carry[2].get("components", {}),
+                    delivery_support=delivery_support,
+                    tick=tick,
+                )
             if byline_carry_goal is not None:
                 goal_candidates.append(byline_carry_goal)
 
-        best_overlap = None
-        for score, action_type, details in pass_candidates:
-            if action_type != "pass":
-                continue
-            target = details.get("target")
-            components = details.get("components", {})
-            if not target:
-                continue
-            target_progress = (
-                target[0] / pitch.length
-                if attacking_right
-                else (pitch.length - target[0]) / pitch.length
+        if getattr(config, "rust_overlap_selection_adapter_enabled", False):
+            from .rust_adapter import select_overlap_candidate_rust
+
+            overlap_payload = select_overlap_candidate_rust(
+                self,
+                pass_candidates,
+                attacking_right,
+                config,
             )
-            target_width = abs(target[1] - pitch.width / 2.0) / (pitch.width / 2.0)
-            carrier_width = abs(self.pos[1] - pitch.width / 2.0) / (pitch.width / 2.0)
-            forward_gap = (target[0] - self.pos[0]) * (1.0 if attacking_right else -1.0)
-            overlap_value = (
-                max(0.0, score)
-                * max(0.0, min(1.0, forward_gap / 14.0))
-                * max(0.0, min(1.0, (target_width - carrier_width + 0.25) / 0.45))
-                * (1.0 - min(1.0, float(components.get("receiver_pressure", 0.0) or 0.0)))
-                * max(0.0, min(1.0, (target_progress - 0.62) / 0.22))
+            best_overlap = None if overlap_payload is None else (
+                overlap_payload["value"],
+                overlap_payload["target"],
             )
-            if best_overlap is None or overlap_value > best_overlap[0]:
-                best_overlap = (overlap_value, target)
+        else:
+            best_overlap = None
+            for score, action_type, details in pass_candidates:
+                if action_type != "pass":
+                    continue
+                target = details.get("target")
+                components = details.get("components", {})
+                if not target:
+                    continue
+                target_progress = (
+                    target[0] / pitch.length
+                    if attacking_right
+                    else (pitch.length - target[0]) / pitch.length
+                )
+                target_width = abs(target[1] - pitch.width / 2.0) / (pitch.width / 2.0)
+                carrier_width = abs(self.pos[1] - pitch.width / 2.0) / (pitch.width / 2.0)
+                forward_gap = (target[0] - self.pos[0]) * (1.0 if attacking_right else -1.0)
+                overlap_value = (
+                    max(0.0, score)
+                    * max(0.0, min(1.0, forward_gap / 14.0))
+                    * max(0.0, min(1.0, (target_width - carrier_width + 0.25) / 0.45))
+                    * (1.0 - min(1.0, float(components.get("receiver_pressure", 0.0) or 0.0)))
+                    * max(0.0, min(1.0, (target_progress - 0.62) / 0.22))
+                )
+                if best_overlap is None or overlap_value > best_overlap[0]:
+                    best_overlap = (overlap_value, target)
         if best_overlap is not None:
-            wide_hold_goal = evaluate_wide_hold_for_overlap_goal(
-                player_pos=self.pos,
-                overlap_target=best_overlap[1],
-                attacking_right=attacking_right,
-                pitch_length=pitch.length,
-                pitch_width=pitch.width,
-                overlap_value=best_overlap[0],
-                immediate_best_score=immediate_best_score,
-                tick=tick,
-            )
+            if getattr(config, "rust_overlap_goal_adapter_enabled", False):
+                from .goal import PlayerGoal, goal_context
+                from .rust_adapter import evaluate_wide_hold_overlap_goal_rust
+
+                overlap_payload = evaluate_wide_hold_overlap_goal_rust(
+                    self,
+                    best_overlap[1],
+                    attacking_right,
+                    config,
+                    best_overlap[0],
+                    immediate_best_score,
+                )
+                wide_hold_goal = None if overlap_payload is None else PlayerGoal(
+                    goal_type="wide_hold_for_overlap",
+                    target_pos=overlap_payload["target_pos"],
+                    value=overlap_payload["value"],
+                    confidence=overlap_payload["confidence"],
+                    created_tick=tick,
+                    last_updated_tick=tick,
+                    context=goal_context(
+                        phase="wait",
+                        completion="overlap_pass_or_space_opens",
+                        abort="immediate_action_clears_window",
+                        handoff="default_value_model",
+                        progress=overlap_payload["progress"],
+                        width=overlap_payload["width"],
+                        overlap_value=overlap_payload["overlap_value"],
+                        immediate_best_score=overlap_payload["immediate_best_score"],
+                        target_progress=overlap_payload["target_progress"],
+                        target_width=overlap_payload["target_width"],
+                        forward_gap=overlap_payload["forward_gap"],
+                        same_lane=overlap_payload["same_lane"],
+                    ),
+                )
+            else:
+                wide_hold_goal = evaluate_wide_hold_for_overlap_goal(
+                    player_pos=self.pos,
+                    overlap_target=best_overlap[1],
+                    attacking_right=attacking_right,
+                    pitch_length=pitch.length,
+                    pitch_width=pitch.width,
+                    overlap_value=best_overlap[0],
+                    immediate_best_score=immediate_best_score,
+                    tick=tick,
+                )
             if wide_hold_goal is not None:
                 goal_candidates.append(wide_hold_goal)
 
@@ -807,28 +1288,99 @@ class Player:
             components = details.get("components", {})
             if not target:
                 continue
-            through_goal = evaluate_through_ball_goal(
-                player_pos=self.pos,
-                pass_target=target,
-                attacking_right=attacking_right,
-                pitch_length=pitch.length,
-                pitch_width=pitch.width,
-                pass_score=score,
-                components=components,
-                tick=tick,
-            )
+            if getattr(config, "rust_through_ball_goal_adapter_enabled", False):
+                from .goal import PlayerGoal, goal_context
+                from .rust_adapter import evaluate_through_ball_goal_rust
+
+                through_payload = evaluate_through_ball_goal_rust(
+                    self,
+                    target,
+                    attacking_right,
+                    config,
+                    score,
+                    components,
+                )
+                through_goal = None if through_payload is None else PlayerGoal(
+                    goal_type="through_ball_behind",
+                    target_pos=through_payload["target_pos"],
+                    value=through_payload["value"],
+                    confidence=through_payload["confidence"],
+                    created_tick=tick,
+                    last_updated_tick=tick,
+                    context=goal_context(
+                        phase="release",
+                        completion="through_ball_pass",
+                        abort="lane_closed_or_receiver_offside",
+                        handoff="default_value_model",
+                        origin_progress=through_payload["origin_progress"],
+                        target_progress=through_payload["target_progress"],
+                        centrality=through_payload["centrality"],
+                        progress_gain=through_payload["progress_gain"],
+                        high_threat_space=through_payload["high_threat_space"],
+                        success_prob=through_payload["success_prob"],
+                        receiver_pressure=through_payload["receiver_pressure"],
+                        lane_risk=through_payload["lane_risk"],
+                    ),
+                )
+            else:
+                through_goal = evaluate_through_ball_goal(
+                    player_pos=self.pos,
+                    pass_target=target,
+                    attacking_right=attacking_right,
+                    pitch_length=pitch.length,
+                    pitch_width=pitch.width,
+                    pass_score=score,
+                    components=components,
+                    tick=tick,
+                )
             if through_goal is not None and (best_through_ball is None or through_goal.value > best_through_ball.value):
                 best_through_ball = through_goal
-            byline_goal = evaluate_byline_delivery_goal(
-                player_pos=self.pos,
-                delivery_target=target,
-                attacking_right=attacking_right,
-                pitch_length=pitch.length,
-                pitch_width=pitch.width,
-                pass_score=score,
-                components=components,
-                tick=tick,
-            )
+            if getattr(config, "rust_byline_goal_adapter_enabled", False):
+                from .goal import PlayerGoal, goal_context
+                from .rust_adapter import evaluate_byline_delivery_goal_rust
+
+                byline_payload = evaluate_byline_delivery_goal_rust(
+                    self,
+                    target,
+                    attacking_right,
+                    config,
+                    score,
+                    components,
+                )
+                byline_goal = None if byline_payload is None else PlayerGoal(
+                    goal_type="wide_byline_attack",
+                    target_pos=byline_payload["target_pos"],
+                    value=byline_payload["value"],
+                    confidence=byline_payload["confidence"],
+                    created_tick=tick,
+                    last_updated_tick=tick,
+                    context=goal_context(
+                        phase="release",
+                        completion="box_delivery",
+                        abort="delivery_lane_closed_or_better_shot",
+                        handoff="default_value_model",
+                        origin_progress=byline_payload["origin_progress"],
+                        origin_width=byline_payload["origin_width"],
+                        target_progress=byline_payload["target_progress"],
+                        centrality=byline_payload["centrality"],
+                        high_threat_space=byline_payload["high_threat_space"],
+                        final_third_combination=byline_payload["final_third_combination"],
+                        success_prob=byline_payload["success_prob"],
+                        receiver_pressure=byline_payload["receiver_pressure"],
+                        lane_risk=byline_payload["lane_risk"],
+                    ),
+                )
+            else:
+                byline_goal = evaluate_byline_delivery_goal(
+                    player_pos=self.pos,
+                    delivery_target=target,
+                    attacking_right=attacking_right,
+                    pitch_length=pitch.length,
+                    pitch_width=pitch.width,
+                    pass_score=score,
+                    components=components,
+                    tick=tick,
+                )
             if byline_goal is not None and (best_byline_delivery is None or byline_goal.value > best_byline_delivery.value):
                 best_byline_delivery = byline_goal
         if best_through_ball is not None:
@@ -836,193 +1388,372 @@ class Player:
         if best_byline_delivery is not None:
             goal_candidates.append(best_byline_delivery)
 
-        attracted_pressure = 0.0
-        for opp in opponents:
-            if opp.is_goalkeeper:
-                continue
-            d = distance(self.pos, opp.pos)
-            if d < 11.0:
-                attracted_pressure += 1.0 - d / 11.0
-        attracted_pressure = min(1.0, attracted_pressure * 0.42)
-        best_layoff = None
-        for score, action_type, details in pass_candidates:
-            if action_type != "pass":
-                continue
-            target = details.get("target")
-            if not target:
-                continue
-            pass_distance = distance(self.pos, target)
-            components = details.get("components", {})
-            target_progress = (
-                target[0] / pitch.length
-                if attacking_right
-                else (pitch.length - target[0]) / pitch.length
-            )
-            target_centrality = 1.0 - min(1.0, abs(target[1] - pitch.width / 2.0) / (pitch.width / 2.0))
-            backward_depth = (self.pos[0] - target[0]) * (1.0 if attacking_right else -1.0)
-            layoff_value = (
-                max(0.0, score)
-                * max(0.0, min(1.0, (18.0 - abs(pass_distance - 12.0)) / 18.0))
-                * max(0.0, min(1.0, (target_centrality - 0.20) / 0.65))
-                * max(0.0, min(1.0, (0.28 - abs(target_progress - (self.pos[0] / pitch.length if attacking_right else (pitch.length - self.pos[0]) / pitch.length))) / 0.28))
-                * (1.0 - min(1.0, float(components.get("receiver_pressure", 0.0) or 0.0)))
-                * max(0.0, min(1.0, (backward_depth + 4.0) / 16.0))
-            )
-            if best_layoff is None or layoff_value > best_layoff[0]:
-                best_layoff = (layoff_value, target)
-        if best_layoff is not None:
-            layoff_goal = evaluate_release_pressure_with_layoff_goal(
-                player_pos=self.pos,
-                layoff_target=best_layoff[1],
-                attacking_right=attacking_right,
-                pitch_length=pitch.length,
-                pitch_width=pitch.width,
-                attracted_pressure=attracted_pressure,
-                layoff_value=best_layoff[0],
-                immediate_best_score=immediate_best_score,
-                tick=tick,
-            )
-            if layoff_goal is not None:
-                goal_candidates.append(layoff_goal)
+        if getattr(config, "rust_layoff_selection_adapter_enabled", False):
+            from .rust_adapter import select_layoff_candidate_rust
 
-        best_arriving_support = None
-        for score, action_type, details in pass_candidates:
-            if action_type != "pass":
-                continue
-            target = details.get("target")
-            components = details.get("components", {})
-            if not target:
-                continue
-            receiver_goal_fit = float(components.get("receiver_goal_fit", 0.0) or 0.0)
-            support_value = max(
-                float(components.get("second_line_arrival_value", 0.0) or 0.0),
-                float(components.get("second_line_cutback_value", 0.0) or 0.0),
-                float(components.get("layoff_support_value", 0.0) or 0.0),
-                max(0.0, score) * 0.55,
+            layoff_payload = select_layoff_candidate_rust(
+                self,
+                pass_candidates,
+                opponents,
+                attacking_right,
+                config,
             )
-            fit = receiver_goal_fit * (support_value + max(0.0, score) * 0.35)
-            if best_arriving_support is None or fit > best_arriving_support[0]:
-                best_arriving_support = (fit, target, support_value, receiver_goal_fit)
-        if best_arriving_support is not None:
-            attracted_pressure_for_release = 0.0
+            best_layoff = None if layoff_payload is None else (
+                layoff_payload["value"],
+                layoff_payload["target"],
+            )
+            attracted_pressure = 0.0 if layoff_payload is None else layoff_payload["attracted_pressure"]
+        else:
+            attracted_pressure = 0.0
             for opp in opponents:
                 if opp.is_goalkeeper:
                     continue
                 d = distance(self.pos, opp.pos)
                 if d < 11.0:
-                    attracted_pressure_for_release += 1.0 - d / 11.0
-            attracted_pressure_for_release = min(1.0, attracted_pressure_for_release * 0.42)
-            arriving_goal = evaluate_release_to_arriving_support_goal(
-                player_pos=self.pos,
-                support_target=best_arriving_support[1],
-                attacking_right=attacking_right,
-                pitch_length=pitch.length,
-                pitch_width=pitch.width,
-                support_value=best_arriving_support[2],
-                receiver_goal_fit=best_arriving_support[3],
-                shot_components=shoot_details.get("components", {}),
-                consecutive_carries=self.consecutive_carries,
-                attracted_pressure=attracted_pressure_for_release,
-                tick=tick,
-            )
-            if arriving_goal is not None:
-                goal_candidates.append(arriving_goal)
-
-        best_support = None
-        for score, action_type, details in pass_candidates:
-            if action_type != "pass":
-                continue
-            target = details.get("target")
-            if not target:
-                continue
-            components = details.get("components", {})
-            support_value = max(
-                float(components.get("layoff_support_value", 0.0) or 0.0),
-                float(components.get("short_combination_value", 0.0) or 0.0),
-                float(components.get("second_line_cutback_value", 0.0) or 0.0),
-                float(components.get("layoff_retention_value", 0.0) or 0.0),
-                max(0.0, score) * 0.45,
-            )
-            pass_distance = distance(self.pos, target)
-            target_progress = (
-                target[0] / pitch.length
-                if attacking_right
-                else (pitch.length - target[0]) / pitch.length
-            )
-            target_centrality = 1.0 - min(1.0, abs(target[1] - pitch.width / 2.0) / (pitch.width / 2.0))
-            fit = (
-                support_value
-                * max(0.0, min(1.0, (18.0 - abs(pass_distance - 12.0)) / 18.0))
-                * max(0.0, min(1.0, (target_centrality - 0.18) / 0.70))
-                * max(0.0, min(1.0, (0.90 - target_progress) / 0.26))
-            )
-            if best_support is None or fit > best_support[0]:
-                best_support = (fit, target, support_value)
-        hold_support = 0.0
-        no_clear_release = 0.0
-        for candidate in candidates:
-            if candidate.action_type != "hold":
-                continue
-            hold_support = max(
-                hold_support,
-                float((candidate.value.components or {}).get("opportunity_wait", 0.0) or 0.0),
-                float((candidate.value.components or {}).get("opportunity_wait_value", 0.0) or 0.0),
-            )
-            no_clear_release = max(
-                no_clear_release,
-                float((candidate.value.components or {}).get("no_clear_release", 0.0) or 0.0),
-            )
-        if best_support is None and (hold_support > 0.0 or no_clear_release > 0.0):
-            target = self.pos
-            best_support = (max(hold_support, no_clear_release) * 0.065, target, max(hold_support, no_clear_release) * 0.10)
-        if best_support is not None:
-            clear_carry_plan = 0.0
-            for _, action_type, details in carry_candidates:
-                if action_type != "carry":
-                    continue
-                components = details.get("components", {})
-                clear_carry_plan = max(
-                    clear_carry_plan,
-                    float(components.get("carry_to_shoot_window", 0.0) or 0.0),
-                    float(components.get("wide_second_line_carry_window", 0.0) or 0.0),
-                    float(components.get("future_shot_gain", 0.0) or 0.0),
-                )
-            current_opportunity_goal = (
-                self.current_goal
-                if self.current_goal and self.current_goal.goal_type == "hold_for_opportunity"
-                else None
-            )
-            support_plan_quality = 0.0
+                    attracted_pressure += 1.0 - d / 11.0
+            attracted_pressure = min(1.0, attracted_pressure * 0.42)
+            best_layoff = None
             for score, action_type, details in pass_candidates:
                 if action_type != "pass":
                     continue
-                components = details.get("components", {}) if details else {}
-                support_plan_quality = max(
-                    support_plan_quality,
-                    _smoothstep(0.28, 0.70, float(components.get("receiver_goal_fit", 0.0) or 0.0)),
-                    _smoothstep(
-                        0.012,
-                        0.080,
-                        float(components.get("second_line_arrival_value", 0.0) or 0.0)
-                        + float(components.get("second_line_cutback_value", 0.0) or 0.0),
+                target = details.get("target")
+                if not target:
+                    continue
+                pass_distance = distance(self.pos, target)
+                components = details.get("components", {})
+                target_progress = (
+                    target[0] / pitch.length
+                    if attacking_right
+                    else (pitch.length - target[0]) / pitch.length
+                )
+                target_centrality = 1.0 - min(1.0, abs(target[1] - pitch.width / 2.0) / (pitch.width / 2.0))
+                backward_depth = (self.pos[0] - target[0]) * (1.0 if attacking_right else -1.0)
+                layoff_value = (
+                    max(0.0, score)
+                    * max(0.0, min(1.0, (18.0 - abs(pass_distance - 12.0)) / 18.0))
+                    * max(0.0, min(1.0, (target_centrality - 0.20) / 0.65))
+                    * max(0.0, min(1.0, (0.28 - abs(target_progress - (self.pos[0] / pitch.length if attacking_right else (pitch.length - self.pos[0]) / pitch.length))) / 0.28))
+                    * (1.0 - min(1.0, float(components.get("receiver_pressure", 0.0) or 0.0)))
+                    * max(0.0, min(1.0, (backward_depth + 4.0) / 16.0))
+                )
+                if best_layoff is None or layoff_value > best_layoff[0]:
+                    best_layoff = (layoff_value, target)
+        if best_layoff is not None:
+            if getattr(config, "rust_layoff_goal_adapter_enabled", False):
+                from .goal import PlayerGoal, goal_context
+                from .rust_adapter import evaluate_layoff_goal_rust
+
+                layoff_payload = evaluate_layoff_goal_rust(
+                    self,
+                    best_layoff[1],
+                    attacking_right,
+                    config,
+                    attracted_pressure,
+                    best_layoff[0],
+                    immediate_best_score,
+                )
+                layoff_goal = None if layoff_payload is None else PlayerGoal(
+                    goal_type="release_pressure_with_layoff",
+                    target_pos=layoff_payload["target_pos"],
+                    value=layoff_payload["value"],
+                    confidence=layoff_payload["confidence"],
+                    created_tick=tick,
+                    last_updated_tick=tick,
+                    context=goal_context(
+                        phase="release",
+                        completion="layoff_pass",
+                        abort="pressure_released_or_better_action",
+                        handoff="default_value_model",
+                        progress=layoff_payload["progress"],
+                        target_progress=layoff_payload["target_progress"],
+                        target_centrality=layoff_payload["target_centrality"],
+                        attracted_pressure=layoff_payload["attracted_pressure"],
+                        layoff_value=layoff_payload["layoff_value"],
+                        immediate_best_score=layoff_payload["immediate_best_score"],
+                        pass_distance=layoff_payload["pass_distance"],
+                        backward_depth=layoff_payload["backward_depth"],
                     ),
                 )
-            carry_interrupt = _smoothstep(0.070, 0.185, clear_carry_plan) * (1.0 - 0.55 * support_plan_quality)
-            if carry_interrupt < 0.72 or current_opportunity_goal is not None:
-                opportunity_goal = evaluate_hold_for_opportunity_goal(
+            else:
+                layoff_goal = evaluate_release_pressure_with_layoff_goal(
                     player_pos=self.pos,
-                    support_target=best_support[1],
+                    layoff_target=best_layoff[1],
                     attacking_right=attacking_right,
                     pitch_length=pitch.length,
                     pitch_width=pitch.width,
-                    support_value=best_support[2],
-                    hold_value=hold_support,
-                    shot_components=shoot_details.get("components", {}),
+                    attracted_pressure=attracted_pressure,
+                    layoff_value=best_layoff[0],
                     immediate_best_score=immediate_best_score,
-                    goal_age_ticks=max(0, tick - current_opportunity_goal.created_tick) if current_opportunity_goal else 0,
-                    created_tick=current_opportunity_goal.created_tick if current_opportunity_goal else None,
                     tick=tick,
                 )
+            if layoff_goal is not None:
+                goal_candidates.append(layoff_goal)
+
+        if getattr(config, "rust_arriving_support_selection_adapter_enabled", False):
+            from .rust_adapter import select_arriving_support_rust
+
+            arriving_payload = select_arriving_support_rust(
+                self,
+                pass_candidates,
+                opponents,
+            )
+            best_arriving_support = None if arriving_payload is None else (
+                arriving_payload["fit"],
+                arriving_payload["target"],
+                arriving_payload["support_value"],
+                arriving_payload["receiver_goal_fit"],
+                arriving_payload["attracted_pressure"],
+            )
+        else:
+            best_arriving_support = None
+            for score, action_type, details in pass_candidates:
+                if action_type != "pass":
+                    continue
+                target = details.get("target")
+                components = details.get("components", {})
+                if not target:
+                    continue
+                receiver_goal_fit = float(components.get("receiver_goal_fit", 0.0) or 0.0)
+                support_value = max(
+                    float(components.get("second_line_arrival_value", 0.0) or 0.0),
+                    float(components.get("second_line_cutback_value", 0.0) or 0.0),
+                    float(components.get("layoff_support_value", 0.0) or 0.0),
+                    max(0.0, score) * 0.55,
+                )
+                fit = receiver_goal_fit * (support_value + max(0.0, score) * 0.35)
+                if best_arriving_support is None or fit > best_arriving_support[0]:
+                    best_arriving_support = (fit, target, support_value, receiver_goal_fit)
+        if best_arriving_support is not None:
+            if len(best_arriving_support) >= 5:
+                attracted_pressure_for_release = best_arriving_support[4]
+            else:
+                attracted_pressure_for_release = 0.0
+                for opp in opponents:
+                    if opp.is_goalkeeper:
+                        continue
+                    d = distance(self.pos, opp.pos)
+                    if d < 11.0:
+                        attracted_pressure_for_release += 1.0 - d / 11.0
+                attracted_pressure_for_release = min(1.0, attracted_pressure_for_release * 0.42)
+            if getattr(config, "rust_release_support_goal_adapter_enabled", False):
+                from .goal import PlayerGoal, goal_context
+                from .rust_adapter import evaluate_release_support_goal_rust
+
+                release_payload = evaluate_release_support_goal_rust(
+                    self,
+                    best_arriving_support[1],
+                    attacking_right,
+                    config,
+                    best_arriving_support[2],
+                    best_arriving_support[3],
+                    shoot_details.get("components", {}),
+                    self.consecutive_carries,
+                    attracted_pressure_for_release,
+                )
+                arriving_goal = None if release_payload is None else PlayerGoal(
+                    goal_type="release_to_arriving_support",
+                    target_pos=release_payload["target_pos"],
+                    value=release_payload["value"],
+                    confidence=release_payload["confidence"],
+                    created_tick=tick,
+                    last_updated_tick=tick,
+                    context=goal_context(
+                        phase="release",
+                        completion="support_pass",
+                        abort="support_window_closed_or_shot_opens",
+                        handoff="default_value_model",
+                        progress=release_payload["progress"],
+                        target_progress=release_payload["target_progress"],
+                        target_centrality=release_payload["target_centrality"],
+                        pass_distance=release_payload["pass_distance"],
+                        layer_gap=release_payload["layer_gap"],
+                        support_value=release_payload["support_value"],
+                        receiver_goal_fit=release_payload["receiver_goal_fit"],
+                        current_shot=release_payload["current_shot"],
+                        shot_readiness=release_payload["shot_readiness"],
+                        consecutive_carries=release_payload["consecutive_carries"],
+                        attracted_pressure=release_payload["attracted_pressure"],
+                        release_maturity=release_payload["release_maturity"],
+                    ),
+                )
+            else:
+                arriving_goal = evaluate_release_to_arriving_support_goal(
+                    player_pos=self.pos,
+                    support_target=best_arriving_support[1],
+                    attacking_right=attacking_right,
+                    pitch_length=pitch.length,
+                    pitch_width=pitch.width,
+                    support_value=best_arriving_support[2],
+                    receiver_goal_fit=best_arriving_support[3],
+                    shot_components=shoot_details.get("components", {}),
+                    consecutive_carries=self.consecutive_carries,
+                    attracted_pressure=attracted_pressure_for_release,
+                    tick=tick,
+                )
+            if arriving_goal is not None:
+                goal_candidates.append(arriving_goal)
+
+        current_opportunity_goal = (
+            self.current_goal
+            if self.current_goal and self.current_goal.goal_type == "hold_for_opportunity"
+            else None
+        )
+        if getattr(config, "rust_hold_support_selection_adapter_enabled", False):
+            from .rust_adapter import select_hold_support_rust
+
+            hold_payload = select_hold_support_rust(
+                self,
+                pass_candidates,
+                carry_candidates,
+                candidates,
+                attacking_right,
+                config,
+                current_opportunity_goal is not None,
+            )
+            best_support = (
+                (hold_payload["fit"], hold_payload["target"], hold_payload["support_value"])
+                if hold_payload["has_support"]
+                else None
+            )
+            hold_support = hold_payload["hold_support"]
+            clear_carry_plan = hold_payload["clear_carry_plan"]
+            support_plan_quality = hold_payload["support_plan_quality"]
+            carry_interrupt = hold_payload["carry_interrupt"]
+        else:
+            best_support = None
+            for score, action_type, details in pass_candidates:
+                if action_type != "pass":
+                    continue
+                target = details.get("target")
+                if not target:
+                    continue
+                components = details.get("components", {})
+                support_value = max(
+                    float(components.get("layoff_support_value", 0.0) or 0.0),
+                    float(components.get("short_combination_value", 0.0) or 0.0),
+                    float(components.get("second_line_cutback_value", 0.0) or 0.0),
+                    float(components.get("layoff_retention_value", 0.0) or 0.0),
+                    max(0.0, score) * 0.45,
+                )
+                pass_distance = distance(self.pos, target)
+                target_progress = (
+                    target[0] / pitch.length
+                    if attacking_right
+                    else (pitch.length - target[0]) / pitch.length
+                )
+                target_centrality = 1.0 - min(1.0, abs(target[1] - pitch.width / 2.0) / (pitch.width / 2.0))
+                fit = (
+                    support_value
+                    * max(0.0, min(1.0, (18.0 - abs(pass_distance - 12.0)) / 18.0))
+                    * max(0.0, min(1.0, (target_centrality - 0.18) / 0.70))
+                    * max(0.0, min(1.0, (0.90 - target_progress) / 0.26))
+                )
+                if best_support is None or fit > best_support[0]:
+                    best_support = (fit, target, support_value)
+            hold_support = 0.0
+            no_clear_release = 0.0
+            for candidate in candidates:
+                if candidate.action_type != "hold":
+                    continue
+                hold_support = max(
+                    hold_support,
+                    float((candidate.value.components or {}).get("opportunity_wait", 0.0) or 0.0),
+                    float((candidate.value.components or {}).get("opportunity_wait_value", 0.0) or 0.0),
+                )
+                no_clear_release = max(
+                    no_clear_release,
+                    float((candidate.value.components or {}).get("no_clear_release", 0.0) or 0.0),
+                )
+            if best_support is None and (hold_support > 0.0 or no_clear_release > 0.0):
+                target = self.pos
+                best_support = (max(hold_support, no_clear_release) * 0.065, target, max(hold_support, no_clear_release) * 0.10)
+        if best_support is not None:
+            if not getattr(config, "rust_hold_support_selection_adapter_enabled", False):
+                clear_carry_plan = 0.0
+                for _, action_type, details in carry_candidates:
+                    if action_type != "carry":
+                        continue
+                    components = details.get("components", {})
+                    clear_carry_plan = max(
+                        clear_carry_plan,
+                        float(components.get("carry_to_shoot_window", 0.0) or 0.0),
+                        float(components.get("wide_second_line_carry_window", 0.0) or 0.0),
+                        float(components.get("future_shot_gain", 0.0) or 0.0),
+                    )
+                support_plan_quality = 0.0
+                for score, action_type, details in pass_candidates:
+                    if action_type != "pass":
+                        continue
+                    components = details.get("components", {}) if details else {}
+                    support_plan_quality = max(
+                        support_plan_quality,
+                        _smoothstep(0.28, 0.70, float(components.get("receiver_goal_fit", 0.0) or 0.0)),
+                        _smoothstep(
+                            0.012,
+                            0.080,
+                            float(components.get("second_line_arrival_value", 0.0) or 0.0)
+                            + float(components.get("second_line_cutback_value", 0.0) or 0.0),
+                        ),
+                    )
+                carry_interrupt = _smoothstep(0.070, 0.185, clear_carry_plan) * (1.0 - 0.55 * support_plan_quality)
+            if carry_interrupt < 0.72 or current_opportunity_goal is not None:
+                opportunity_age = max(0, tick - current_opportunity_goal.created_tick) if current_opportunity_goal else 0
+                if getattr(config, "rust_hold_opportunity_goal_adapter_enabled", False):
+                    from .goal import PlayerGoal, goal_context
+                    from .rust_adapter import evaluate_hold_opportunity_goal_rust
+
+                    opportunity_payload = evaluate_hold_opportunity_goal_rust(
+                        self,
+                        best_support[1],
+                        attacking_right,
+                        config,
+                        best_support[2],
+                        hold_support,
+                        shoot_details.get("components", {}),
+                        immediate_best_score,
+                        opportunity_age,
+                    )
+                    opportunity_goal = None if opportunity_payload is None else PlayerGoal(
+                        goal_type="hold_for_opportunity",
+                        target_pos=opportunity_payload["target_pos"],
+                        value=opportunity_payload["value"],
+                        confidence=opportunity_payload["confidence"],
+                        created_tick=tick if current_opportunity_goal is None else current_opportunity_goal.created_tick,
+                        last_updated_tick=tick,
+                        context=goal_context(
+                            phase="scan",
+                            completion="better_option_opens",
+                            abort="opportunity_window_closed_or_shot_opens",
+                            handoff="default_value_model",
+                            progress=opportunity_payload["progress"],
+                            target_progress=opportunity_payload["target_progress"],
+                            target_centrality=opportunity_payload["target_centrality"],
+                            pass_distance=opportunity_payload["pass_distance"],
+                            lateral_gap=opportunity_payload["lateral_gap"],
+                            support_value=opportunity_payload["support_value"],
+                            hold_value=opportunity_payload["hold_value"],
+                            opportunity_window=opportunity_payload["opportunity_window"],
+                            current_shot=opportunity_payload["current_shot"],
+                            shot_readiness=opportunity_payload["shot_readiness"],
+                            immediate_best_score=opportunity_payload["immediate_best_score"],
+                            goal_age_ticks=opportunity_payload["goal_age_ticks"],
+                        ),
+                    )
+                else:
+                    opportunity_goal = evaluate_hold_for_opportunity_goal(
+                        player_pos=self.pos,
+                        support_target=best_support[1],
+                        attacking_right=attacking_right,
+                        pitch_length=pitch.length,
+                        pitch_width=pitch.width,
+                        support_value=best_support[2],
+                        hold_value=hold_support,
+                        shot_components=shoot_details.get("components", {}),
+                        immediate_best_score=immediate_best_score,
+                        goal_age_ticks=opportunity_age,
+                        created_tick=current_opportunity_goal.created_tick if current_opportunity_goal else None,
+                        tick=tick,
+                    )
                 if opportunity_goal is not None:
                     goal_candidates.append(opportunity_goal)
 
@@ -1034,8 +1765,22 @@ class Player:
             iq=self.iq_value,
             goal_noise_scale=getattr(config, "goal_noise_scale", 0.0),
         )
-        candidate_choice = select_goal_candidate(goal_candidates, context) if goal_candidates else None
-        candidate_goal = candidate_choice.goal if candidate_choice is not None else None
+        candidate_choice = None
+        candidate_choice_payload = None
+        if goal_candidates:
+            if getattr(config, "rust_goal_candidate_selection_adapter_enabled", False):
+                from .rust_adapter import select_goal_candidate_rust
+
+                candidate_choice_payload = select_goal_candidate_rust(goal_candidates, context)
+                if candidate_choice_payload is not None:
+                    candidate_goal = goal_candidates[candidate_choice_payload["index"]]
+                else:
+                    candidate_goal = None
+            else:
+                candidate_choice = select_goal_candidate(goal_candidates, context)
+                candidate_goal = candidate_choice.goal if candidate_choice is not None else None
+        else:
+            candidate_goal = None
         if candidate_goal is None and self.current_goal is None:
             return candidates, None
 
@@ -1057,7 +1802,12 @@ class Player:
         selection = select_goal(self.current_goal, candidate_goal, context)
         self.current_goal = selection.goal
         goal_trace = selection.to_dict()
-        if candidate_choice is not None:
+        if candidate_choice_payload is not None:
+            goal_trace["candidate_choice"] = {
+                "candidate_noise": candidate_choice_payload["candidate_noise"],
+                "noisy_value": candidate_choice_payload["noisy_value"],
+            }
+        elif candidate_choice is not None:
             goal_trace["candidate_choice"] = candidate_choice.to_dict()
         selected_phase = selection.goal.context.get("phase", "") if selection.goal and selection.goal.context else ""
         if selection.goal.goal_type != "cut_inside_to_shoot":
@@ -1070,6 +1820,35 @@ class Player:
                 "release_to_arriving_support",
             ):
                 return candidates, goal_trace
+
+        if getattr(config, "rust_specialized_on_ball_bias_adapter_enabled", False):
+            from .rust_adapter import apply_specialized_on_ball_bias_rust
+
+            bias_result = apply_specialized_on_ball_bias_rust(
+                self,
+                candidates,
+                selection.goal,
+                selected_phase,
+                config,
+            )
+            opportunity_indices = set(bias_result.get("opportunity_target_indices", []))
+            biased = []
+            for idx, (candidate, score) in enumerate(zip(candidates, bias_result["biased_scores"])):
+                candidate = candidate.with_score(score)
+                if idx in opportunity_indices:
+                    details = dict(candidate.details or {})
+                    details["opportunity_target"] = selection.goal.target_pos
+                    details["opportunity_goal"] = selection.goal.to_dict()
+                    candidate = candidate.__class__(
+                        phase=candidate.phase,
+                        action_type=candidate.action_type,
+                        target=candidate.target,
+                        value=candidate.value,
+                        details=details,
+                        source=candidate.source,
+                    )
+                biased.append(candidate)
+            return biased, goal_trace
 
         biased = []
         bias = max(0.0, float(getattr(config, "goal_cut_inside_bias", 0.0)))
@@ -1258,8 +2037,22 @@ class Player:
             for score, action_type, details in candidates
         ]
 
-    def _apply_support_opportunity_cost(self, carry_candidates, pass_candidates, pitch: "Pitch", attacking_right: bool):
+    def _apply_support_opportunity_cost(
+        self,
+        carry_candidates,
+        pass_candidates,
+        pitch: "Pitch",
+        attacking_right: bool,
+        config: "EngineConfig" = None,
+    ):
         """Reduce carry value when a live second-line support pass is already available."""
+        # `pitch` and `attacking_right` are kept for interface stability; the
+        # current value model uses only candidate scores/components here.
+        if pass_candidates and getattr(config, "rust_support_opportunity_cost_adapter_enabled", False):
+            from .rust_adapter import apply_support_opportunity_cost_rust
+
+            return apply_support_opportunity_cost_rust(carry_candidates, pass_candidates)
+
         support_pressure = 0.0
         for score, action_type, details in pass_candidates:
             if action_type != "pass":
@@ -1337,12 +2130,35 @@ class Player:
         """
         from .position_value import position_value
 
+        if getattr(config, "rust_carry_options_adapter_enabled", False):
+            from .rust_adapter import score_carry_options_rust
+
+            return score_carry_options_rust(
+                self,
+                teammates,
+                opponents,
+                config,
+                attacking_right,
+                current_state_value,
+            )
+
         results = []
         forward_dir = 1.0 if attacking_right else -1.0
-        current_pv = position_value(
-            self.pos[0], self.pos[1], pitch, attacking_right,
-            opp_positions, tm_positions, config
-        )
+        if getattr(config, "rust_position_value_adapter_enabled", False):
+            from .rust_adapter import position_values_rust
+
+            current_pv = position_values_rust(
+                [self.pos],
+                opponents,
+                [t for t in teammates if t.index != self.index],
+                config,
+                attacking_right,
+            )[0]
+        else:
+            current_pv = position_value(
+                self.pos[0], self.pos[1], pitch, attacking_right,
+                opp_positions, tm_positions, config
+            )
 
         # Sample reachable space around the carrier. Direction is not the
         # action; it is just candidate generation for the value model.
@@ -1439,8 +2255,18 @@ class Player:
                 (-forward_dir * base_dist * 0.30, base_dist * 0.45),
                 (-forward_dir * base_dist * 0.30, -base_dist * 0.45),
             ])
+        if getattr(config, "rust_carry_target_sampling_adapter_enabled", False):
+            from .rust_adapter import generate_carry_offsets_rust
+
+            candidate_offsets = generate_carry_offsets_rust(
+                self,
+                opponents,
+                config,
+                attacking_right,
+            )
 
         seen_targets = set()
+        pending_rust_carries = []
         for dx, dy in candidate_offsets:
             target = pitch.clamp(self.pos[0] + dx, self.pos[1] + dy)
             key = (round(target[0], 1), round(target[1], 1))
@@ -1456,109 +2282,152 @@ class Player:
 
             # Path feasibility: can I carry forward before defenders reach me?
             # Pure physics: my time to reach target vs defender time to intercept my path
-            feasibility = 1.0
-            my_speed = max(config.carrier_speed, 0.1)
-            time_i_carry = math.sqrt(dx*dx + dy*dy) / my_speed  # time for me to reach target
-            path_min_perp = 99.0
-            path_peak_threat = 0.0
-            path_peak_proj = 0.0
-            path_peak_final_third_control = 0.0
-            path_peak_control_factor = 0.0
-            
-            for opp in opponents:
-                if opp.is_goalkeeper:
-                    continue
-                # How long would this defender take to reach my carry path?
-                # Project defender onto my movement direction to find closest intercept point
-                opp_dx = opp.pos[0] - self.pos[0]
-                opp_dy = opp.pos[1] - self.pos[1]
-                move_len = math.sqrt(dx * dx + dy * dy)
-                if move_len < 0.1:
-                    continue
-                
-                # Perpendicular distance to my path
-                perp_dist = abs(opp_dx * (dy/move_len) - opp_dy * (dx/move_len))
-                # Forward projection (is defender ahead of me or behind?)
-                proj = (opp_dx * dx + opp_dy * dy) / (move_len * move_len)
-                
-                if proj < -0.5 or proj > 2.0:
-                    continue  # defender is behind me or way ahead — irrelevant
-                path_min_perp = min(path_min_perp, perp_dist)
-                
-                # Time for defender to reach my path
-                def_speed = (opp.abilities.get("Speed", 50) / 100.0) * config.player_max_speed
-                time_def_reaches = perp_dist / max(def_speed, 0.1)
-                intent_factor = 0.62
-                speed_factor = 0.82 + 0.36 * (opp.abilities.get("Speed", 50) / 100.0)
-                defence_factor = 0.82 + 0.30 * (opp.abilities.get("Defence", 50) / 100.0)
-                control_range = config.tackle_range * intent_factor * speed_factor * defence_factor
-                duel_control = (
-                    max(0.0, 1.0 - perp_dist / max(0.1, control_range))
-                    * max(0.0, min(1.0, (proj + 0.10) / 1.10))
-                    * max(0.0, min(1.0, (1.10 - proj) / 1.10))
-                )
-                if duel_control > 0.0:
-                    my_drib = self.abilities.get("Dribbling", 50) / 100.0
-                    def_tack = opp.abilities.get("Tackling", 50) / 100.0
-                    control_factor = def_tack / (my_drib + def_tack + 0.01)
-                    feasibility *= max(0.34, 1.0 - duel_control * control_factor * 0.46)
-                    path_peak_threat = max(path_peak_threat, duel_control)
+            if getattr(config, "rust_carry_path_adapter_enabled", False):
+                from .rust_adapter import evaluate_carry_path_rust
 
-                target_progress = target[0] / config.pitch_length if attacking_right else (config.pitch_length - target[0]) / config.pitch_length
-                central_lane = 1.0 - min(1.0, abs(target[1] - config.pitch_width / 2.0) / (config.pitch_width / 2.0))
-                final_third_control = (
-                    max(0.0, min(1.0, (target_progress - 0.72) / 0.18))
-                    * central_lane
-                    * max(0.0, 1.0 - perp_dist / 5.8)
-                    * max(0.0, min(1.0, (proj + 0.15) / 1.15))
-                    * max(0.0, min(1.0, (1.15 - proj) / 1.15))
+                path_metrics = evaluate_carry_path_rust(
+                    self,
+                    target,
+                    opponents,
+                    config,
+                    attacking_right,
                 )
-                if final_third_control > 0.0:
-                    my_drib = self.abilities.get("Dribbling", 50) / 100.0
-                    def_tack = opp.abilities.get("Tackling", 50) / 100.0
-                    control_factor = def_tack / (my_drib + def_tack + 0.01)
-                    if final_third_control > path_peak_final_third_control:
-                        path_peak_final_third_control = final_third_control
-                        path_peak_proj = proj
-                        path_peak_control_factor = control_factor
-                    feasibility *= max(0.48, 1.0 - final_third_control * control_factor * 0.34)
+                feasibility = path_metrics["feasibility"]
+                path_min_perp = path_metrics["path_min_perp"]
+                path_peak_threat = path_metrics["path_peak_threat"]
+                path_peak_proj = path_metrics["path_peak_proj"]
+                path_peak_final_third_control = path_metrics["path_peak_final_third_control"]
+                path_peak_control_factor = path_metrics["path_peak_control_factor"]
+            else:
+                feasibility = 1.0
+                my_speed = max(config.carrier_speed, 0.1)
+                time_i_carry = math.sqrt(dx*dx + dy*dy) / my_speed  # time for me to reach target
+                path_min_perp = 99.0
+                path_peak_threat = 0.0
+                path_peak_proj = 0.0
+                path_peak_final_third_control = 0.0
+                path_peak_control_factor = 0.0
                 
-                # If defender can reach my path before I pass that point → obstacle
-                if time_def_reaches < time_i_carry:
-                    # How much of a threat? Depends on timing margin
-                    threat = max(0.0, 1.0 - time_def_reaches / time_i_carry)  # 0=barely makes it, 1=already there
-                    # Skill contest: my dribbling vs their tackling
-                    my_drib = self.abilities.get("Dribbling", 50) / 100.0
-                    def_tack = opp.abilities.get("Tackling", 50) / 100.0
-                    skill_factor = my_drib / (my_drib + def_tack + 0.01)  # 0.5 = equal
-                    # Feasibility reduction: high threat + low skill = big reduction
-                    reduction = threat * (1.0 - skill_factor)  # 0..0.5 for equal players
-                    if threat > path_peak_threat:
-                        path_peak_threat = threat
-                        path_peak_proj = proj
-                    feasibility *= max(0.2, 1.0 - reduction)
+                for opp in opponents:
+                    if opp.is_goalkeeper:
+                        continue
+                    # How long would this defender take to reach my carry path?
+                    # Project defender onto my movement direction to find closest intercept point
+                    opp_dx = opp.pos[0] - self.pos[0]
+                    opp_dy = opp.pos[1] - self.pos[1]
+                    move_len = math.sqrt(dx * dx + dy * dy)
+                    if move_len < 0.1:
+                        continue
+
+                    # Perpendicular distance to my path
+                    perp_dist = abs(opp_dx * (dy/move_len) - opp_dy * (dx/move_len))
+                    # Forward projection (is defender ahead of me or behind?)
+                    proj = (opp_dx * dx + opp_dy * dy) / (move_len * move_len)
+
+                    if proj < -0.5 or proj > 2.0:
+                        continue  # defender is behind me or way ahead — irrelevant
+                    path_min_perp = min(path_min_perp, perp_dist)
+
+                    # Time for defender to reach my path
+                    def_speed = (opp.abilities.get("Speed", 50) / 100.0) * config.player_max_speed
+                    time_def_reaches = perp_dist / max(def_speed, 0.1)
+                    intent_factor = 0.62
+                    speed_factor = 0.82 + 0.36 * (opp.abilities.get("Speed", 50) / 100.0)
+                    defence_factor = 0.82 + 0.30 * (opp.abilities.get("Defence", 50) / 100.0)
+                    control_range = config.tackle_range * intent_factor * speed_factor * defence_factor
+                    duel_control = (
+                        max(0.0, 1.0 - perp_dist / max(0.1, control_range))
+                        * max(0.0, min(1.0, (proj + 0.10) / 1.10))
+                        * max(0.0, min(1.0, (1.10 - proj) / 1.10))
+                    )
+                    if duel_control > 0.0:
+                        my_drib = self.abilities.get("Dribbling", 50) / 100.0
+                        def_tack = opp.abilities.get("Tackling", 50) / 100.0
+                        control_factor = def_tack / (my_drib + def_tack + 0.01)
+                        feasibility *= max(0.34, 1.0 - duel_control * control_factor * 0.46)
+                        path_peak_threat = max(path_peak_threat, duel_control)
+
+                    target_progress = target[0] / config.pitch_length if attacking_right else (config.pitch_length - target[0]) / config.pitch_length
+                    central_lane = 1.0 - min(1.0, abs(target[1] - config.pitch_width / 2.0) / (config.pitch_width / 2.0))
+                    final_third_control = (
+                        max(0.0, min(1.0, (target_progress - 0.72) / 0.18))
+                        * central_lane
+                        * max(0.0, 1.0 - perp_dist / 5.8)
+                        * max(0.0, min(1.0, (proj + 0.15) / 1.15))
+                        * max(0.0, min(1.0, (1.15 - proj) / 1.15))
+                    )
+                    if final_third_control > 0.0:
+                        my_drib = self.abilities.get("Dribbling", 50) / 100.0
+                        def_tack = opp.abilities.get("Tackling", 50) / 100.0
+                        control_factor = def_tack / (my_drib + def_tack + 0.01)
+                        if final_third_control > path_peak_final_third_control:
+                            path_peak_final_third_control = final_third_control
+                            path_peak_proj = proj
+                            path_peak_control_factor = control_factor
+                        feasibility *= max(0.48, 1.0 - final_third_control * control_factor * 0.34)
+
+                    # If defender can reach my path before I pass that point → obstacle
+                    if time_def_reaches < time_i_carry:
+                        # How much of a threat? Depends on timing margin
+                        threat = max(0.0, 1.0 - time_def_reaches / time_i_carry)  # 0=barely makes it, 1=already there
+                        # Skill contest: my dribbling vs their tackling
+                        my_drib = self.abilities.get("Dribbling", 50) / 100.0
+                        def_tack = opp.abilities.get("Tackling", 50) / 100.0
+                        skill_factor = my_drib / (my_drib + def_tack + 0.01)  # 0.5 = equal
+                        # Feasibility reduction: high threat + low skill = big reduction
+                        reduction = threat * (1.0 - skill_factor)  # 0..0.5 for equal players
+                        if threat > path_peak_threat:
+                            path_peak_threat = threat
+                            path_peak_proj = proj
+                        feasibility *= max(0.2, 1.0 - reduction)
 
             # Carry should be rewarded for improving the situation, not for
             # repeatedly re-claiming the absolute value of an already good
             # shooting position. This prevents one-more-touch loops near goal.
             pv_gain = pv - current_pv
             retain_value = current_pv * 0.18
-            from .value_model import evaluate_carry_target
-            value = evaluate_carry_target(
-                self, target, pv, current_pv, current_state_value,
-                feasibility, teammates, opponents, config, pitch, attacking_right,
+            if getattr(config, "rust_on_ball_evaluator_adapter_enabled", False):
+                pending_rust_carries.append({
+                    "target": target,
+                    "pv": pv,
+                    "feasibility": feasibility,
+                    "path_min_perp": path_min_perp,
+                    "path_peak_threat": path_peak_threat,
+                    "path_peak_proj": path_peak_proj,
+                    "path_peak_final_third_control": path_peak_final_third_control,
+                    "path_peak_control_factor": path_peak_control_factor,
+                })
+                continue
+            else:
+                from .value_model import evaluate_carry_target
+                value = evaluate_carry_target(
+                    self, target, pv, current_pv, current_state_value,
+                    feasibility, teammates, opponents, config, pitch, attacking_right,
             )
             components = dict(value.components)
-            conflict_load = max(path_peak_threat, path_peak_final_third_control)
-            repeated_load = _smoothstep(0.0, 3.0, max(0, self.consecutive_carries))
-            feasibility_loss = _smoothstep(0.0, 0.55, 1.0 - feasibility)
-            conflict_cost = (conflict_load ** 1.35) * (
-                0.020
-                + 0.115 * repeated_load
-                + 0.075 * feasibility_loss
-                + 0.105 * repeated_load * feasibility_loss
-            )
-            score = max(0.0, value.score - conflict_cost)
+            if getattr(config, "rust_carry_finalize_adapter_enabled", False):
+                from .rust_adapter import finalize_carry_score_rust
+
+                carry_final = finalize_carry_score_rust(
+                    value,
+                    feasibility,
+                    path_peak_threat,
+                    path_peak_final_third_control,
+                    self.consecutive_carries,
+                )
+                conflict_cost = carry_final["conflict_cost"]
+                score = carry_final["score"]
+            else:
+                conflict_load = max(path_peak_threat, path_peak_final_third_control)
+                repeated_load = _smoothstep(0.0, 3.0, max(0, self.consecutive_carries))
+                feasibility_loss = _smoothstep(0.0, 0.55, 1.0 - feasibility)
+                conflict_cost = (conflict_load ** 1.35) * (
+                    0.020
+                    + 0.115 * repeated_load
+                    + 0.075 * feasibility_loss
+                    + 0.105 * repeated_load * feasibility_loss
+                )
+                score = max(0.0, value.score - conflict_cost)
             components.update({
                 "path_min_perp": path_min_perp if path_min_perp < 99.0 else 0.0,
                 "path_peak_threat": path_peak_threat,
@@ -1575,6 +2444,68 @@ class Player:
                 "after_value": value.after_value,
                 "components": components,
             }))
+
+        if pending_rust_carries:
+            from .rust_adapter import evaluate_carries_rust
+
+            rust_values = evaluate_carries_rust(
+                self,
+                [
+                    (idx, item["target"], item["pv"], item["feasibility"])
+                    for idx, item in enumerate(pending_rust_carries)
+                ],
+                current_pv,
+                current_state_value,
+                teammates,
+                opponents,
+                config,
+                attacking_right,
+            )
+            for idx, item in enumerate(pending_rust_carries):
+                value = rust_values[idx]
+                components = dict(value.components)
+                feasibility = item["feasibility"]
+                path_peak_threat = item["path_peak_threat"]
+                path_peak_final_third_control = item["path_peak_final_third_control"]
+                if getattr(config, "rust_carry_finalize_adapter_enabled", False):
+                    from .rust_adapter import finalize_carry_score_rust
+
+                    carry_final = finalize_carry_score_rust(
+                        value,
+                        feasibility,
+                        path_peak_threat,
+                        path_peak_final_third_control,
+                        self.consecutive_carries,
+                    )
+                    conflict_cost = carry_final["conflict_cost"]
+                    score = carry_final["score"]
+                else:
+                    conflict_load = max(path_peak_threat, path_peak_final_third_control)
+                    repeated_load = _smoothstep(0.0, 3.0, max(0, self.consecutive_carries))
+                    feasibility_loss = _smoothstep(0.0, 0.55, 1.0 - feasibility)
+                    conflict_cost = (conflict_load ** 1.35) * (
+                        0.020
+                        + 0.115 * repeated_load
+                        + 0.075 * feasibility_loss
+                        + 0.105 * repeated_load * feasibility_loss
+                    )
+                    score = max(0.0, value.score - conflict_cost)
+                components.update({
+                    "path_min_perp": item["path_min_perp"] if item["path_min_perp"] < 99.0 else 0.0,
+                    "path_peak_threat": path_peak_threat,
+                    "path_peak_proj": item["path_peak_proj"],
+                    "path_peak_final_third_control": path_peak_final_third_control,
+                    "path_peak_control_factor": item["path_peak_control_factor"],
+                    "path_conflict_cost": conflict_cost,
+                })
+                results.append((score, "carry", {
+                    "target": item["target"],
+                    "success_prob": feasibility,
+                    "risk_cost": value.risk_cost,
+                    "current_value": current_state_value,
+                    "after_value": value.after_value,
+                    "components": components,
+                }))
 
         return results
 
@@ -1639,6 +2570,20 @@ class Player:
         opportunity_wait_value = self._opportunity_wait_value(
             teammates, config, pitch, attacking_right, shoot_score
         )
+        if getattr(config, "rust_on_ball_evaluator_adapter_enabled", False):
+            from .rust_adapter import evaluate_hold_rust
+
+            return evaluate_hold_rust(
+                self,
+                current_pv=current_pv,
+                pressure=pressure,
+                nearest_pressure=nearest_pressure,
+                developing_runs=developing_runs,
+                best_pass_score=best_pass,
+                shoot_score=shoot_score,
+                opportunity_wait_value=opportunity_wait_value,
+            )
+
         from .value_model import evaluate_hold
         return evaluate_hold(
             self, current_pv, pressure, nearest_pressure,
@@ -1725,6 +2670,19 @@ class Player:
         current_state_value: float,
     ) -> List[Tuple[float, str, dict]]:
         """Generate and score all pass-to-point candidates with one model."""
+        if getattr(config, "rust_pass_batch_adapter_enabled", False):
+            from .rust_adapter import score_pass_point_option_tuples_rust
+
+            return score_pass_point_option_tuples_rust(
+                self,
+                teammates,
+                opponents,
+                config,
+                pitch,
+                attacking_right,
+                current_value=current_state_value,
+            )
+
         from .value_model import evaluate_pass_target
         from .position_value import position_value
         from .vision import build_vision_context
@@ -2301,6 +3259,10 @@ class Player:
         pitch: "Pitch",
         attacking_right: bool,
     ) -> float:
+        if getattr(config, "rust_state_value_adapter_enabled", False):
+            from .rust_adapter import state_value_rust
+
+            return state_value_rust(self, teammates, opponents, config, pitch, attacking_right)
         from .value_model import state_value
         return state_value(
             self.pos, self, teammates, opponents, config, pitch, attacking_right
@@ -2471,6 +3433,20 @@ class Player:
 
         score = on_target_prob * (1 - gk_save_estimate) * goal_reward_constant
         """
+        if attacking_right is None:
+            attacking_right = goal_center[0] >= config.pitch_length / 2.0
+        if getattr(config, "rust_shot_option_adapter_enabled", False):
+            from .rust_adapter import score_shot_option_rust
+
+            return score_shot_option_rust(
+                self,
+                opponents,
+                teammates or [],
+                config,
+                attacking_right,
+                current_state_value,
+            )
+
         from .physics import angle_to_goal
 
         finishing = self.abilities.get("Finishing", 50) / 100.0
@@ -2524,15 +3500,33 @@ class Player:
                     if perp < 4.5:
                         lane_factor *= max(0.65, 1.0 - (4.5 - perp) * 0.05)
 
-        from .value_model import evaluate_shot
-        value = evaluate_shot(
-            self, goal_center, config, opponents, dist_to_goal,
-            angle_factor, pressure_factor, lane_factor, dist_factor,
-            current_state_value,
-            teammates=teammates,
-            pitch=pitch,
-            attacking_right=attacking_right,
-        )
+        if getattr(config, "rust_on_ball_evaluator_adapter_enabled", False):
+            from .rust_adapter import evaluate_shot_rust
+
+            value = evaluate_shot_rust(
+                self,
+                self.pos,
+                dist_to_goal=dist_to_goal,
+                angle_factor=angle_factor,
+                pressure_factor=pressure_factor,
+                lane_factor=lane_factor,
+                dist_factor=dist_factor,
+                current_state_value=current_state_value,
+                teammates=teammates or [],
+                opponents=opponents,
+                config=config,
+                attacking_right=attacking_right,
+            )
+        else:
+            from .value_model import evaluate_shot
+            value = evaluate_shot(
+                self, goal_center, config, opponents, dist_to_goal,
+                angle_factor, pressure_factor, lane_factor, dist_factor,
+                current_state_value,
+                teammates=teammates,
+                pitch=pitch,
+                attacking_right=attacking_right,
+            )
 
         return (value.score, {
             "target": goal_center,
@@ -2549,6 +3543,11 @@ class Player:
         return self._score_clear_value(x_progress, pressure, config).score
 
     def _score_clear_value(self, x_progress: float, pressure: int, config: "EngineConfig"):
+        if getattr(config, "rust_on_ball_evaluator_adapter_enabled", False):
+            from .rust_adapter import evaluate_clear_rust
+
+            return evaluate_clear_rust(x_progress, pressure, config.clear_reward_base)
+
         from .value_model import evaluate_clear
         return evaluate_clear(x_progress, pressure, config)
 
@@ -2561,6 +3560,18 @@ class Player:
         attacking_right: bool,
     ) -> Tuple[str, dict]:
         """Goalkeeper distribution uses the same pass-to-point model."""
+        if getattr(config, "rust_gk_choice_adapter_enabled", False):
+            from .rust_adapter import choose_gk_distribution_rust
+
+            return choose_gk_distribution_rust(
+                self,
+                teammates,
+                opponents,
+                config,
+                pitch,
+                attacking_right,
+            )
+
         current_state_value = self._current_state_value(
             teammates, opponents, config, pitch, attacking_right
         )
@@ -2623,8 +3634,13 @@ class Player:
                 "components": {**value.components, "target_kind": "feet", "gk_fallback": True},
             })
 
-        forward_x = config.pitch_length * (0.55 if attacking_right else 0.45)
-        target = pitch.clamp(forward_x, config.pitch_width / 2)
+        if getattr(config, "rust_gk_fallback_target_adapter_enabled", False):
+            from .rust_adapter import generate_gk_fallback_target_rust
+
+            target = generate_gk_fallback_target_rust(attacking_right, config)
+        else:
+            forward_x = config.pitch_length * (0.55 if attacking_right else 0.45)
+            target = pitch.clamp(forward_x, config.pitch_width / 2)
         return ("pass", {"target": target, "target_player_idx": -1, "success_prob": 0.35, "is_long": True, "pass_type": "long_pass"})
 
     # =========================================================================
@@ -2715,37 +3731,20 @@ class Player:
         search_radius = 10.0 + 16.0 * role_progress
         raw_candidates = []
         off_ball_goal_trace = None
-
-        # Spatial samples around the dynamic role anchor.
-        raw_candidates.append((anchor[0], anchor[1], anchor))
-        # A forward-biased anchor sample lets the dynamic formation field create
-        # runs naturally when the anchor itself moves beyond the ball.
-        anchor_progress = (anchor[0] - ball_pos[0]) * forward_dir
-        if anchor_progress > 0.0:
-            raw_candidates.append((
-                anchor[0] + forward_dir * min(10.0, anchor_progress * 0.45),
-                anchor[1],
-                anchor,
-            ))
-        for _ in range(8):
-            angle = random.random() * math.tau
-            radius = random.random() ** 0.65 * search_radius
-            raw_candidates.append((
-                anchor[0] + math.cos(angle) * radius,
-                anchor[1] + math.sin(angle) * radius,
-                anchor,
-            ))
+        anchor_random_samples = [(random.random(), random.random()) for _ in range(8)]
+        support_random_samples = None
 
         # Spatial samples around useful support spaces near the ball carrier.
         if ball_carrier is not None:
             if getattr(config, "goal_continuity_enabled", False):
                 from .goal import (
                     GoalSwitchContext,
-                    evaluate_arc_arrival_for_cutback_goal,
-                    evaluate_attack_far_post_goal,
+                    PlayerGoal,
+                    goal_context,
                     select_goal_candidate,
                     select_goal,
                 )
+                from .rust_adapter import evaluate_off_ball_arrival_goals_rust
 
                 off_ball_goal_candidates = []
                 def attenuate_arrival_goal(goal):
@@ -2776,28 +3775,28 @@ class Player:
                         confidence=min(goal.confidence, max(adjusted_value, 0.0)),
                     )
 
-                for goal in (
-                    evaluate_arc_arrival_for_cutback_goal(
-                        player_pos=self.pos,
-                        anchor_pos=anchor,
-                        ball_pos=ball_pos,
-                        attacking_right=attacking_right,
-                        pitch_length=pitch.length,
-                        pitch_width=pitch.width,
-                        tick=0,
-                        base_pos=getattr(self, "base_formation_pos", anchor),
-                    ),
-                    evaluate_attack_far_post_goal(
-                        player_pos=self.pos,
-                        anchor_pos=anchor,
-                        ball_pos=ball_pos,
-                        attacking_right=attacking_right,
-                        pitch_length=pitch.length,
-                        pitch_width=pitch.width,
-                        goal_width=config.goal_width,
-                        tick=0,
-                    ),
+                for payload in evaluate_off_ball_arrival_goals_rust(
+                    self,
+                    anchor,
+                    ball_pos,
+                    attacking_right,
+                    config,
                 ):
+                    goal = PlayerGoal(
+                        goal_type=payload["goal_type"],
+                        target_pos=payload["target_pos"],
+                        value=payload["value"],
+                        confidence=payload["confidence"],
+                        created_tick=0,
+                        last_updated_tick=0,
+                        context=goal_context(
+                            phase=payload["phase"],
+                            completion=payload["completion"],
+                            abort=payload["abort"],
+                            handoff=payload["handoff"],
+                            **payload["context"],
+                        ),
+                    )
                     goal = attenuate_arrival_goal(goal)
                     if goal is not None:
                         off_ball_goal_candidates.append(goal)
@@ -2844,89 +3843,78 @@ class Player:
                             self.current_goal.target_pos[1],
                             self.current_goal.target_pos,
                         ))
-            # Low-depth roles are the rest-defense layer. They should still
-            # support possession, but their candidate field should stay mostly
-            # around the tactical anchor instead of being pulled near the ball.
-            # This is based on role depth and space, not a position-name rule.
-            support_pull = _smoothstep(0.38, 0.64, role_progress)
-            support_depth = (role_progress - 0.46) * 34.0
-            ball_support_x = ball_pos[0] + forward_dir * support_depth
-            ball_support_y = ball_pos[1] * (1.0 - 0.30 * width_factor) + anchor[1] * (0.30 * width_factor)
-            support_center = (
-                anchor[0] * (1.0 - support_pull) + ball_support_x * support_pull,
-                anchor[1] * (1.0 - support_pull) + ball_support_y * support_pull,
-            )
-            for _ in range(5):
-                angle = random.random() * math.tau
-                radius = random.random() ** 0.7 * (7.0 + 15.0 * role_progress)
-                raw_candidates.append((
-                    support_center[0] + math.cos(angle) * radius,
-                    support_center[1] + math.sin(angle) * radius,
-                    (
-                        anchor[0] * 0.35 + support_center[0] * 0.65,
-                        anchor[1] * 0.50 + support_center[1] * 0.50,
-                    ),
-                ))
+            support_random_samples = [(random.random(), random.random()) for _ in range(5)]
 
-            ball_progress = ball_pos[0] / config.pitch_length if attacking_right else (config.pitch_length - ball_pos[0]) / config.pitch_length
-            if ball_progress > 0.68 and not self.is_defender:
-                # When the ball is already high, support value often comes from
-                # short angles around the carrier: cut-backs, lay-offs, and
-                # half-space outlets. This is spatial support, not a role script.
-                side_sign = 1.0 if anchor[1] >= config.pitch_width / 2.0 else -1.0
-                width_signed = (anchor[1] - config.pitch_width / 2.0) / (config.pitch_width / 2.0)
-                weak_side = max(0.0, min(1.0, -width_signed * ((ball_pos[1] - config.pitch_width / 2.0) / (config.pitch_width / 2.0))))
-                support_centers = (
-                    (
-                        support_center[0] * 0.55 + ball_pos[0] * 0.45,
-                        support_center[1] * 0.55 + ball_pos[1] * 0.45,
-                    ),
-                    (
-                        anchor[0] * 0.35 + ball_pos[0] * 0.65,
-                        anchor[1] * 0.45 + ball_pos[1] * 0.55,
-                    ),
+        from .rust_adapter import generate_off_ball_attack_raw_candidates_rust
+
+        raw_candidates.extend(generate_off_ball_attack_raw_candidates_rust(
+            anchor,
+            ball_pos,
+            attacking_right,
+            config.pitch_length,
+            config.pitch_width,
+            self.is_defender,
+            ball_carrier is not None,
+            anchor_random_samples,
+            support_random_samples or [],
+        ))
+        if getattr(config, "rust_off_ball_attack_choice_adapter_enabled", False):
+            from .rust_adapter import choose_off_ball_attack_rust
+
+            candidate_count = len(raw_candidates) + 1
+            noise_scale = iq_decision_noise(self.iq_value) * config.iq_noise_scale
+            score_noises = [
+                random.gauss(0.0, noise_scale)
+                for _ in range(candidate_count)
+            ]
+            rng_after_noise = random.getstate()
+            roll_rng = random.Random()
+            roll_rng.setstate(rng_after_noise)
+            softmax_roll = roll_rng.random()
+            rust_choice = choose_off_ball_attack_rust(
+                self,
+                ball_pos,
+                stay_score,
+                raw_candidates,
+                teammates,
+                opponents,
+                config,
+                attacking_right,
+                score_noises,
+                softmax_roll,
+            )
+            if rust_choice is not None:
+                if rust_choice.get("used_roll"):
+                    random.random()
+                if rust_choice["max_score"] < 0.01:
+                    self.set_movement_target(anchor, "recover_shape")
+                    return self.target_pos
+                return self._commit_off_ball_attack_choice(
+                    rust_choice["target"],
+                    rust_choice.get("components", {}),
+                    rust_choice["max_score"],
+                    [],
+                    anchor,
+                    forward_dir,
+                    config,
+                    tick,
+                    trace,
+                    team_side,
+                    off_ball_goal_trace,
                 )
-                angle_bias = math.atan2(config.pitch_width / 2.0 - ball_pos[1], 10.0)
-                support_angles = (
-                    angle_bias - 1.65,
-                    angle_bias - 0.95,
-                    angle_bias - 0.35,
-                    angle_bias,
-                    angle_bias + 0.35,
-                    angle_bias + 0.95,
-                    angle_bias + 1.65,
-                )
-                support_radii = (
-                    6.0,
-                    10.0 + 3.0 * _smoothstep(0.72, 0.88, ball_progress),
-                    15.0 + 5.0 * _smoothstep(0.70, 0.90, ball_progress),
-                )
-                for center_x, center_y in support_centers:
-                    for radius in support_radii:
-                        for angle in support_angles:
-                            sx = center_x - forward_dir * math.cos(angle) * radius
-                            sy = center_y + math.sin(angle) * radius
-                            raw_candidates.append((sx, sy, (sx, sy)))
-                if width_factor > 0.38 and role_progress > 0.58:
-                    arrival_t = max(0.0, min(1.0, (ball_progress - 0.68) / 0.20))
-                    arrival_depth = 6.0 + 7.0 * arrival_t
-                    center_lane = config.pitch_width / 2.0
-                    half_space = center_lane + side_sign * config.pitch_width * (0.06 + 0.06 * (1.0 - weak_side))
-                    central_arrival_x = ball_pos[0] - forward_dir * arrival_depth
-                    for sy in (half_space, center_lane):
-                        raw_candidates.append((
-                            central_arrival_x,
-                            sy,
-                            (central_arrival_x, sy),
-                        ))
-                    if weak_side > 0.18:
-                        far_post_x = ball_pos[0] + forward_dir * (2.0 + 4.0 * arrival_t)
-                        far_post_y = center_lane + side_sign * config.pitch_width * 0.08
-                        raw_candidates.append((
-                            far_post_x,
-                            far_post_y,
-                            (far_post_x, far_post_y),
-                        ))
+        if getattr(config, "rust_off_ball_attack_scoring_adapter_enabled", False):
+            from .rust_adapter import score_off_ball_attack_candidates_rust
+
+            candidates.extend(score_off_ball_attack_candidates_rust(
+                self,
+                ball_pos,
+                raw_candidates,
+                teammates,
+                opponents,
+                config,
+                attacking_right,
+            ))
+            raw_candidates = []
         for raw_x, raw_y, anchor_pos in raw_candidates:
             pos = pitch.clamp(raw_x, raw_y)
 
@@ -3148,6 +4136,16 @@ class Player:
         total = sum(exp_scores)
         if total < 1e-10:
             chosen_pos = noisy_candidates[0][1]
+        elif getattr(config, "rust_softmax_selection_adapter_enabled", False):
+            from .rust_adapter import softmax_select_index_with_temperature_rust
+
+            chosen_index = softmax_select_index_with_temperature_rust(
+                scores,
+                temperature,
+                random.random(),
+                fallback_index=0,
+            )
+            chosen_pos = noisy_candidates[chosen_index if chosen_index is not None else 0][1]
         else:
             r = random.random() * total
             cumulative = 0.0
@@ -3158,9 +4156,37 @@ class Player:
                     chosen_pos = noisy_candidates[i][1]
                     break
 
+        chosen_components = next((components for _, pos, components in noisy_candidates if pos == chosen_pos), {})
+        return self._commit_off_ball_attack_choice(
+            chosen_pos,
+            chosen_components,
+            max_score,
+            noisy_candidates,
+            anchor,
+            forward_dir,
+            config,
+            tick,
+            trace,
+            team_side,
+            off_ball_goal_trace,
+        )
+
+    def _commit_off_ball_attack_choice(
+        self,
+        chosen_pos: Tuple[float, float],
+        chosen_components: dict,
+        max_score: float,
+        noisy_candidates,
+        anchor: Tuple[float, float],
+        forward_dir: float,
+        config: "EngineConfig",
+        tick: int,
+        trace=None,
+        team_side: str = "",
+        off_ball_goal_trace=None,
+    ) -> Tuple[float, float]:
         # Hard roam clamp removed: role_distance_decay in position_value provides
         # the soft pull toward formation area instead of a hard boundary.
-        chosen_components = next((components for _, pos, components in noisy_candidates if pos == chosen_pos), {})
         move_progress = (chosen_pos[0] - self.pos[0]) * forward_dir
         anchor_run = (anchor[0] - self.pos[0]) * forward_dir
         support_urgency = max(
@@ -3186,13 +4212,8 @@ class Player:
         self.set_movement_target(chosen_pos, intent)
         if getattr(config, "goal_continuity_enabled", False):
             if self.current_goal is None or self.current_goal.goal_type not in ("arc_arrival_for_cutback", "attack_far_post"):
-                from .goal import GoalSwitchContext, build_off_ball_attack_goal, select_goal
-                generic_goal = build_off_ball_attack_goal(
-                    target_pos=chosen_pos,
-                    value=max_score,
-                    tick=tick,
-                    components=chosen_components,
-                )
+                from .rust_adapter import build_off_ball_attack_goal_rust
+
                 previous_goal = (
                     self.current_goal
                     if self.current_goal is not None
@@ -3207,32 +4228,32 @@ class Player:
                     }
                     else None
                 )
-                context = GoalSwitchContext(
-                    base=0.020,
-                    context_stability=1.0,
-                    role_discipline=1.0,
-                    pressure_interrupt=0.0,
+                goal_result = build_off_ball_attack_goal_rust(
+                    chosen_pos,
+                    max_score,
+                    tick,
+                    chosen_components,
+                    current_goal=previous_goal,
                     iq=self.iq_value,
-                    goal_noise_scale=getattr(config, "goal_noise_scale", 0.0),
                 )
-                selection = select_goal(previous_goal, generic_goal, context)
-                self.current_goal = selection.goal
-                if selection.goal is not generic_goal:
-                    goal_target = selection.goal.target_pos
+                selected_goal = goal_result["selected_goal"]
+                self.current_goal = selected_goal
+                if not goal_result["selected_is_candidate"]:
+                    goal_target = selected_goal.target_pos
                     self.set_movement_target((
                         self.target_pos[0] * 0.55 + goal_target[0] * 0.45,
                         self.target_pos[1] * 0.55 + goal_target[1] * 0.45,
                     ), intent)
                     chosen_pos = self.target_pos
-                off_ball_goal_trace = selection.to_dict()
+                off_ball_goal_trace = goal_result["trace"]
                 self.current_goal = replace(
-                    selection.goal,
+                    selected_goal,
                     target_pos=self.target_pos,
                     last_updated_tick=tick,
                 )
                 off_ball_goal_trace["goal"] = self.current_goal.to_dict()
         if trace is not None and config.trace.should_trace(tick, self.index, "off_ball_attack"):
-            ranked = sorted(noisy_candidates, key=lambda item: item[0], reverse=True)
+            ranked = sorted(noisy_candidates, key=lambda item: item[0], reverse=True) if noisy_candidates else []
             alternatives = [
                 {
                     "phase": "off_ball_attack",
@@ -3292,6 +4313,70 @@ class Player:
         # Stunned players can't do anything
         if self.state == PlayerState.STUNNED:
             return ("hold_position", {"target": self.pos})
+
+        defense_random_samples = [(random.random(), random.random()) for _ in range(3)]
+        if getattr(config, "rust_off_ball_defense_choice_adapter_enabled", False):
+            from .rust_adapter import choose_off_ball_defense_rust
+
+            rng_state_after_samples = random.getstate()
+            max_rust_candidates = 64
+            noise_scale = iq_decision_noise(self.iq_value) * config.iq_noise_scale
+            noise_rng = random.Random()
+            noise_rng.setstate(rng_state_after_samples)
+            score_noises = [
+                noise_rng.gauss(0.0, noise_scale)
+                for _ in range(max_rust_candidates)
+            ]
+            roll_by_count = [0.0 for _ in range(max_rust_candidates + 1)]
+            fallback_index_by_count = [0 for _ in range(max_rust_candidates + 1)]
+            for count in range(max_rust_candidates + 1):
+                count_rng = random.Random()
+                count_rng.setstate(rng_state_after_samples)
+                for _ in range(count):
+                    count_rng.gauss(0.0, noise_scale)
+                roll_by_count[count] = count_rng.random()
+                if count > 0:
+                    fallback_rng = random.Random()
+                    fallback_rng.setstate(rng_state_after_samples)
+                    for _ in range(count):
+                        fallback_rng.gauss(0.0, noise_scale)
+                    fallback_index_by_count[count] = fallback_rng.randrange(count)
+
+            rust_choice = choose_off_ball_defense_rust(
+                self,
+                ball_pos,
+                ball_carrier,
+                teammates,
+                opponents,
+                config,
+                attacking_right,
+                defense_random_samples,
+                score_noises,
+                roll_by_count,
+                fallback_index_by_count,
+            )
+            if rust_choice is not None:
+                candidate_count = rust_choice["candidate_count"]
+                for _ in range(candidate_count):
+                    random.gauss(0.0, noise_scale)
+                if rust_choice.get("used_random_choice") and candidate_count > 0:
+                    random.randrange(candidate_count)
+                elif rust_choice.get("used_roll"):
+                    random.random()
+                return self._commit_defensive_choice(
+                    rust_choice["action_type"],
+                    rust_choice["target"],
+                    rust_choice["score"],
+                    rust_choice["pressure_responsibility"],
+                    rust_choice["shot_danger"],
+                    rust_choice["carrier_stale_threat"],
+                    rust_choice.get("previous_goal_score"),
+                    tick,
+                    config,
+                    trace,
+                    team_side,
+                    chosen_components=rust_choice.get("components"),
+                )
 
         dist_to_ball = distance(self.pos, ball_pos)
         own_goal_x = 0.0 if attacking_right else config.pitch_length
@@ -3390,8 +4475,6 @@ class Player:
 
         candidates = []
 
-        # Defensive movement is now spatial: sample useful points, then classify
-        # the chosen point for compatibility with trace/interactions.
         sampled_points = [
             anchor,
             pitch.clamp(
@@ -3463,15 +4546,32 @@ class Player:
                     sampled_points.append(pitch.clamp(lane_x, lane_y + side_offset))
 
         # Local spatial samples around dynamic responsibility area.
-        for _ in range(3):
-            angle = random.random() * math.tau
-            radius = random.random() ** 0.7 * (8.0 + shot_danger * 4.0)
+        for angle_unit, radius_unit in defense_random_samples:
+            angle = angle_unit * math.tau
+            radius = radius_unit ** 0.7 * (8.0 + shot_danger * 4.0)
             sampled_points.append(pitch.clamp(
                 anchor[0] + math.cos(angle) * radius,
                 anchor[1] + math.sin(angle) * radius,
             ))
         if self.last_def_action:
             sampled_points.append(self.last_def_target)
+        if getattr(config, "rust_off_ball_defense_raw_adapter_enabled", False):
+            from .rust_adapter import generate_off_ball_defense_raw_candidates_rust
+
+            sampled_points = generate_off_ball_defense_raw_candidates_rust(
+                self,
+                ball_pos,
+                attacking_right,
+                config,
+                local_attackers,
+                dangerous_receivers,
+                ball_carrier,
+                carrier_stale_threat,
+                field_press_context,
+                shot_danger,
+                shot_lane_threat,
+                defense_random_samples,
+            )
 
         def score_def_candidate(point: Tuple[float, float]) -> float:
             base_score = score_def_pos(point)
@@ -3542,13 +4642,33 @@ class Player:
             return max(0.0, score)
 
         seen = set()
+        unique_points = []
         for point in sampled_points:
             key = (round(point[0], 1), round(point[1], 1))
             if key in seen:
                 continue
             seen.add(key)
+            unique_points.append(point)
 
-            candidates.append((score_def_candidate(point), "defend_space", {"target": point}))
+        if getattr(config, "rust_off_ball_defense_scoring_adapter_enabled", False):
+            from .rust_adapter import score_off_ball_defense_candidates_rust
+
+            candidates.extend(
+                (score, "defend_space", {"target": point, "components": components})
+                for score, point, components in score_off_ball_defense_candidates_rust(
+                    self,
+                    ball_pos,
+                    ball_carrier,
+                    unique_points,
+                    teammates,
+                    opponents,
+                    config,
+                    attacking_right,
+                )
+            )
+        else:
+            for point in unique_points:
+                candidates.append((score_def_candidate(point), "defend_space", {"target": point}))
 
         if not candidates:
             self.set_movement_target(anchor, "defend_shape")
@@ -3596,16 +4716,47 @@ class Player:
         else:
             action_type = "hold_position"
 
-        from .goal import GoalSwitchContext, build_defensive_goal, select_goal, PlayerGoal
-
-        candidate_goal = build_defensive_goal(
-            action_type=action_type,
-            target_pos=raw_target,
-            value=chosen_score,
-            tick=tick,
-            pressure=chosen_press_responsibility,
-            threat=max(shot_danger, carrier_stale_threat),
+        return self._commit_defensive_choice(
+            action_type,
+            raw_target,
+            chosen_score,
+            chosen_press_responsibility,
+            shot_danger,
+            carrier_stale_threat,
+            score_def_candidate(previous_goal.target_pos) if (
+                (previous_goal := (
+                    self.current_goal
+                    if self.current_goal is not None
+                    and self.current_goal.goal_type.startswith("defend_")
+                    else None
+                )) is not None
+            ) else None,
+            tick,
+            config,
+            trace,
+            team_side,
+            chosen_components=details.get("components"),
         )
+
+    def _commit_defensive_choice(
+        self,
+        action_type: str,
+        raw_target: Tuple[float, float],
+        chosen_score: float,
+        chosen_press_responsibility: float,
+        shot_danger: float,
+        carrier_stale_threat: float,
+        previous_goal_score: Optional[float],
+        tick: int,
+        config: "EngineConfig",
+        trace=None,
+        team_side: str = "",
+        chosen_components: Optional[dict] = None,
+    ) -> Tuple[str, dict]:
+        from .goal import PlayerGoal
+        from .rust_adapter import build_defensive_goal_rust
+
+        threat = max(shot_danger, carrier_stale_threat)
         previous_goal = (
             self.current_goal
             if self.current_goal is not None
@@ -3616,30 +4767,29 @@ class Player:
             previous_goal = PlayerGoal(
                 goal_type=previous_goal.goal_type,
                 target_pos=previous_goal.target_pos,
-                value=score_def_candidate(previous_goal.target_pos),
+                value=previous_goal_score if previous_goal_score is not None else previous_goal.value,
                 confidence=previous_goal.confidence,
                 created_tick=previous_goal.created_tick,
                 last_updated_tick=previous_goal.last_updated_tick,
                 context=dict(previous_goal.context),
             )
-        defensive_context = GoalSwitchContext(
-            base=0.022,
-            context_stability=1.0,
-            role_discipline=1.0,
-            pressure_interrupt=max(shot_danger, carrier_stale_threat) * 0.55,
+        goal_result = build_defensive_goal_rust(
+            action_type,
+            raw_target,
+            chosen_score,
+            tick,
+            chosen_press_responsibility,
+            threat,
+            current_goal=previous_goal,
             iq=self.iq_value,
-            goal_noise_scale=getattr(config, "goal_noise_scale", 0.0),
         )
-        goal_selection = select_goal(previous_goal, candidate_goal, defensive_context)
-        defensive_goal = goal_selection.goal
-        if defensive_goal is not candidate_goal:
+        defensive_goal = goal_result["selected_goal"]
+        if not goal_result["selected_is_candidate"]:
             raw_target = defensive_goal.target_pos
             goal_action = defensive_goal.context.get("action", action_type) if defensive_goal.context else action_type
             if goal_action in ("approach", "tackle", "mark_runner", "block_lane", "hold_position"):
                 action_type = goal_action
 
-        # Hard roam clamp removed: role_distance_decay in position_value provides
-        # the soft pull toward formation area instead of a hard boundary.
         if self.last_def_action:
             smoothed_target = (
                 self.last_def_target[0] * 0.75 + raw_target[0] * 0.25,
@@ -3669,12 +4819,14 @@ class Player:
             target_pos=self.target_pos,
             last_updated_tick=tick,
         )
-        goal_payload = goal_selection.to_dict()
+        goal_payload = goal_result["trace"]
         goal_payload["goal"] = defensive_goal.to_dict()
         self.last_def_target = self.target_pos
         self.last_def_action = action_type
         self.current_goal = defensive_goal
         if trace is not None and config.trace.should_trace(tick, self.index, "off_ball_defense"):
+            components = dict(chosen_components or {})
+            components.setdefault("threat", max(shot_danger, carrier_stale_threat))
             trace.log_decision(
                 tick=tick,
                 team=team_side,
@@ -3685,7 +4837,7 @@ class Player:
                     "phase": "off_ball_defense",
                     "action_type": action_type,
                     "target": self.target_pos,
-                    "value": {"score": chosen_score, "components": {"threat": max(shot_danger, carrier_stale_threat)}},
+                    "value": {"score": chosen_score, "components": components},
                 },
                 alternatives=[],
                 pos=self.pos,
@@ -3699,24 +4851,9 @@ class Player:
         score = success_rate * ball_value - (1-success_rate) * stun_cost
         Only positive when very close + high Tackling.
         """
-        tackling = self.abilities.get("Tackling", 50)
-        dribbling = ball_carrier.abilities.get("Dribbling", 50)
+        from .rust_adapter import tackle_score_rust
 
-        # Success rate based on Tackling vs Dribbling and distance.
-        # Real tackling requires tight distance; at the edge, pressure is more
-        # rational than committing a foot in.
-        dist_factor = max(0.0, 1.0 - dist_to_ball / max(config.tackle_range * 0.9, 0.1))
-        success_rate = (tackling / (tackling + dribbling + 1.0)) * dist_factor
-        success_rate = max(0.0, min(0.75, success_rate))
-
-        # Ball value: how valuable is winning the ball here
-        ball_value = 1.8
-
-        # Stun cost: penalty for being stunned
-        stun_cost = 0.35
-
-        score = success_rate * ball_value - (1.0 - success_rate) * stun_cost
-        return max(0.0, score)
+        return tackle_score_rust(self, ball_carrier, dist_to_ball, config)
 
     def _score_mark_runner_zone(
         self,
@@ -3730,45 +4867,9 @@ class Player:
 
         Threat = based on proximity to ball and to our goal.
         """
-        if not attackers_in_zone:
-            return (0.0, self.tactical_anchor)
+        from .rust_adapter import defense_zone_helper_rust
 
-        # Pick the most threatening attacker in zone
-        # Threat = proximity to ball * forward position
-        best_threat = 0.0
-        best_target = None
-        for opp in attackers_in_zone:
-            dist_to_ball = distance(opp.pos, ball_pos)
-            ball_proximity = max(0.2, 1.0 - dist_to_ball / 30.0)
-
-            # How advanced is this attacker (toward our goal)
-            if attacking_right:
-                # We're defending left goal (x=0). Attackers at low x are dangerous
-                advance = 1.0 - opp.pos[0] / config.pitch_length
-            else:
-                # We're defending right goal. Attackers at high x are dangerous
-                advance = opp.pos[0] / config.pitch_length
-
-            threat = ball_proximity * 0.6 + advance * 0.4
-            if threat > best_threat:
-                best_threat = threat
-                best_target = opp
-
-        if best_target is None:
-            return (0.0, self.tactical_anchor)
-
-        # Mark position: slightly goalside of the attacker
-        offset = 1.5
-        if attacking_right:
-            # Defending left goal (x=0), so goalside = lower x
-            mark_x = best_target.pos[0] - offset
-        else:
-            # Defending right goal, goalside = higher x
-            mark_x = best_target.pos[0] + offset
-        mark_target = pitch.clamp(mark_x, best_target.pos[1])
-
-        score = best_threat * 0.6  # marking is important
-        return (score, mark_target)
+        return defense_zone_helper_rust("mark", self, ball_pos, attackers_in_zone, attacking_right, config)
 
     def _score_block_lane_zone(
         self,
@@ -3782,26 +4883,9 @@ class Player:
 
         Position between ball and attacker in my zone.
         """
-        if not attackers_in_zone:
-            return (0.0, self.tactical_anchor)
+        from .rust_adapter import defense_zone_helper_rust
 
-        # Pick the closest attacker in zone to me
-        target_opp = min(attackers_in_zone, key=lambda o: distance(self.pos, o.pos))
-
-        # Position between ball and this opponent
-        mid_x = (ball_pos[0] + target_opp.pos[0]) / 2.0
-        mid_y = (ball_pos[1] + target_opp.pos[1]) / 2.0
-        lane_target = pitch.clamp(mid_x, mid_y)
-
-        # Threat level based on proximity of attacker to ball
-        dist_opp_to_ball = distance(target_opp.pos, ball_pos)
-        if dist_opp_to_ball > 40.0:
-            threat = 0.2
-        else:
-            threat = max(0.2, 1.0 - dist_opp_to_ball / 40.0)
-
-        score = threat * 0.5
-        return (score, lane_target)
+        return defense_zone_helper_rust("block", self, ball_pos, attackers_in_zone, attacking_right, config)
 
     def _score_block_lane(
         self,
@@ -3813,19 +4897,9 @@ class Player:
     ) -> Tuple[float, Tuple[float, float]]:
         """Legacy: Score for blocking a passing lane."""
         dangerous = [o for o in opponents if not o.is_goalkeeper and distance(self.pos, o.pos) < 25.0]
-        if not dangerous:
-            return (0.0, self.tactical_anchor)
-        target_opp = min(dangerous, key=lambda o: distance(self.pos, o.pos))
-        mid_x = (ball_pos[0] + target_opp.pos[0]) / 2.0
-        mid_y = (ball_pos[1] + target_opp.pos[1]) / 2.0
-        lane_target = pitch.clamp(mid_x, mid_y)
-        dist_opp_to_ball = distance(target_opp.pos, ball_pos)
-        if dist_opp_to_ball > 40.0:
-            threat = 0.2
-        else:
-            threat = max(0.2, 1.0 - dist_opp_to_ball / 40.0)
-        score = threat * 0.5
-        return (score, lane_target)
+        from .rust_adapter import defense_zone_helper_rust
+
+        return defense_zone_helper_rust("block_legacy", self, ball_pos, dangerous, attacking_right, config)
 
     def _score_mark_runner(
         self,
@@ -3840,35 +4914,17 @@ class Player:
             o for o in opponents
             if not o.is_goalkeeper and distance(self.pos, o.pos) < 25.0
         ]
-        if not nearby_attackers:
-            return (0.0, self.tactical_anchor)
-        target = min(nearby_attackers, key=lambda o: distance(self.pos, o.pos))
-        dist_to_ball = distance(target.pos, ball_pos)
-        threat = max(0.2, 1.0 - dist_to_ball / 30.0)
-        offset = 1.5
-        if attacking_right:
-            mark_x = target.pos[0] - offset
-        else:
-            mark_x = target.pos[0] + offset
-        mark_target = pitch.clamp(mark_x, target.pos[1])
-        score = threat * 0.6
-        return (score, mark_target)
+        from .rust_adapter import defense_zone_helper_rust
+
+        return defense_zone_helper_rust("mark_legacy", self, ball_pos, nearby_attackers, attacking_right, config)
 
     def _gk_position_adjust(
         self, ball_pos: Tuple[float, float], config: "EngineConfig", pitch: "Pitch", attacking_right: bool
     ):
         """Adjust GK position based on ball position."""
-        if attacking_right:
-            # We attack right, so our goal is at x=0
-            goal_x = 5.0
-        else:
-            goal_x = config.pitch_length - 5.0
+        from .rust_adapter import gk_position_adjust_rust
 
-        goal_y = config.pitch_width / 2.0
-
-        # Position between ball and center of goal
-        shift_y = (ball_pos[1] - goal_y) * 0.3
-        self.target_pos = pitch.clamp(goal_x, goal_y + shift_y)
+        self.target_pos = gk_position_adjust_rust(ball_pos, attacking_right, config)
 
     # =========================================================================
     # Softmax Selection (shared utility)
@@ -3904,6 +4960,17 @@ class Player:
         total = sum(exp_scores)
         if total < 1e-10:
             return candidates[0]
+
+        if getattr(config, "rust_softmax_selection_adapter_enabled", False):
+            from .rust_adapter import softmax_select_index_rust
+
+            chosen_index = softmax_select_index_rust(
+                scores,
+                self.iq_value,
+                random.random(),
+                fallback_index=0,
+            )
+            return candidates[chosen_index if chosen_index is not None else 0]
 
         r = random.random() * total
         cumulative = 0.0

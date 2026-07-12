@@ -73,7 +73,8 @@ def _create_test_db(tmp_path):
             Total_Tackle INTEGER DEFAULT 0, Total_Save INTEGER DEFAULT 0,
             Locked INTEGER DEFAULT 0,
             Ext_Abilities TEXT DEFAULT NULL,
-            Breach INTEGER DEFAULT 0
+            Breach INTEGER DEFAULT 0,
+            Talents TEXT DEFAULT NULL
         );
         CREATE TABLE team (
             ID INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -144,6 +145,15 @@ def match_db(tmp_path):
 
 
 class TestMatchService:
+    def test_engine_v2_defaults_to_rust_full_runner(self, match_db):
+        from psl_core.engine_v2.config import load_config_from_service
+        from server.services.game_config import GameConfigService
+
+        config_service = GameConfigService(match_db)
+        assert config_service.get("engine_v2.engine_version") == "v2"
+        assert config_service.get("engine_v2.rust_full_match_runner_enabled") is True
+        assert load_config_from_service(config_service).rust_full_match_runner_enabled is True
+
     def test_quick_match(self, match_db):
         from server.services.match import MatchService
         svc = MatchService(match_db)

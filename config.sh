@@ -5,6 +5,16 @@ echo "====== Required OS: Ubuntu 20.04+ / macOS"
 echo "====== 安装 Python 依赖库"
 pip3 install nonebot2[fastapi] nonebot-adapter-onebot pydantic-settings requests pillow pytest
 
+echo "====== 检查 Rust 工具链"
+if ! command -v cargo >/dev/null 2>&1; then
+  echo "未检测到 cargo，正在安装 Rust stable 工具链"
+  curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
+  export PATH="$HOME/.cargo/bin:$PATH"
+fi
+
+echo "====== 编译 Rust 比赛引擎"
+(cd rust/engine_v2_core && cargo build --release --bin engine)
+
 echo "====== 初始化 SQLite 数据库"
 python3 database/init_db.py
 

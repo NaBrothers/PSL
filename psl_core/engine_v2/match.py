@@ -31,7 +31,7 @@ from .interactions import (
 from .stats import MatchStats
 from .trace import MatchTrace
 from .rating import compute_team_ratings
-from .replay_adapter import build_header, build_frame, build_ball_flight_data
+from .replay_adapter import build_header, build_frame
 
 
 def _smoothstep(edge0: float, edge1: float, value: float) -> float:
@@ -72,6 +72,7 @@ class MatchV2:
         away_formation: str,
         config: Optional[EngineConfig] = None,
         config_service=None,
+        seed: Optional[int] = None,
     ):
         """Initialize match."""
         if config is not None:
@@ -82,6 +83,9 @@ class MatchV2:
             self.config = EngineConfig()
 
         self.pitch = Pitch(config=self.config)
+        self.seed = seed
+        self.home_cards = home_cards
+        self.away_cards = away_cards
         self.home_formation_key = home_formation
         self.away_formation_key = away_formation
 
@@ -108,6 +112,8 @@ class MatchV2:
 
         # Replay frames
         self._replay_frames: List[Dict] = []
+        self._rust_replay_data: Optional[List[Dict]] = None
+        self._rust_trace_data: Optional[Dict] = None
         self._pending_event_text: Optional[str] = None
         self._pending_ball_flight: Optional[Dict] = None
         self._pending_pause_ms: Optional[int] = None
@@ -163,6 +169,9 @@ class MatchV2:
 
     def run(self) -> MatchResult:
         """Run the full match simulation. Returns MatchResult."""
+        if getattr(self.config, "rust_full_match_runner_enabled", False):
+            return self._run_via_rust_match_runner()
+
         # First half
         self.half = 1
         self._kickoff("home")
@@ -180,8 +189,44 @@ class MatchV2:
         self._result = self._compile_result()
         return self._result
 
+    def _run_via_rust_match_runner(self) -> MatchResult:
+        """Run the complete match through the Rust single-entry runner."""
+        from .rust_adapter import run_match_v2_rust
+
+        response = run_match_v2_rust(
+            self.home_cards,
+            self.away_cards,
+            self.home_formation_key,
+            self.away_formation_key,
+            self.config,
+            seed=self.seed if self.seed is not None else random.getrandbits(64),
+        )
+        self.home_score = int(response["home_score"])
+        self.away_score = int(response["away_score"])
+        self._rust_replay_data = list(response.get("replay", []))
+        self._replay_frames = self._rust_replay_data[1:] if self._rust_replay_data else []
+        trace_payload = response.get("trace", {})
+        self._rust_trace_data = trace_payload
+        self.trace.trace_id = response.get("trace_id", self.trace.trace_id)
+        self._result = MatchResult(
+            home_score=self.home_score,
+            away_score=self.away_score,
+            goals=response.get("goals", []),
+            home_stats=response.get("home_stats", {}),
+            away_stats=response.get("away_stats", {}),
+            home_player_stats=response.get("home_player_stats", []),
+            away_player_stats=response.get("away_player_stats", []),
+            home_ratings=response.get("home_ratings", []),
+            away_ratings=response.get("away_ratings", []),
+            replay_url=response.get("replay_url"),
+            trace_id=trace_payload.get("trace_id", response.get("trace_id", "")),
+        )
+        return self._result
+
     def get_replay_data(self) -> List[Dict]:
         """Get replay data as list of JSONL-compatible dicts."""
+        if self._rust_replay_data is not None:
+            return self._rust_replay_data
         header = build_header(
             self.home,
             self.away,
@@ -194,6 +239,8 @@ class MatchV2:
 
     def get_trace(self) -> Dict:
         """Get trace data for debugging."""
+        if self._rust_trace_data is not None:
+            return self._rust_trace_data
         return self.trace.to_dict()
 
     # -------------------------------------------------------------------------
@@ -361,41 +408,61 @@ class MatchV2:
         interception_interaction = None
         wasted_tackles = []
 
-        if holder_action_type == "carry":
-            # Duel detection: holder carries + defender tackles within range
-            duel_interaction = detect_duel(
-                holder, "carry", opp_team.players, defender_actions, self.config,
+        if getattr(self.config, "rust_interaction_detection_adapter_enabled", False):
+            from .rust_adapter import detect_interactions_rust
+
+            action_target = holder_details.get("target", holder.pos)
+            duel_interaction, interception_interaction, wasted_tackles = detect_interactions_rust(
+                holder,
+                holder_action_type,
+                action_target,
+                opp_team.players,
+                defender_actions,
                 defender_new_positions,
-                carry_target=holder_details.get("target", holder.pos),
+                self.config,
             )
-            # Check for wasted tackles (defender tackles but no conflict)
-            if duel_interaction is None:
+            if holder_action_type != "carry":
+                duel_interaction = None
+            if holder_action_type != "pass":
+                interception_interaction = None
+            if holder_action_type == "carry" and duel_interaction is not None:
+                wasted_tackles = []
+        else:
+            if holder_action_type == "carry":
+                # Duel detection: holder carries + defender tackles within range
+                duel_interaction = detect_duel(
+                    holder, "carry", opp_team.players, defender_actions, self.config,
+                    defender_new_positions,
+                    carry_target=holder_details.get("target", holder.pos),
+                )
+                # Check for wasted tackles (defender tackles but no conflict)
+                if duel_interaction is None:
+                    wasted_tackles = detect_wasted_tackle(
+                        holder, "carry", opp_team.players, defender_actions, self.config
+                    )
+
+            elif holder_action_type == "pass":
+                # Pass + defender on path = potential interception
+                pass_target = holder_details.get("target", holder.pos)
+                interception_interaction = detect_interception(
+                    holder.pos, pass_target,
+                    opp_team.players, defender_new_positions, self.config
+                )
+                # Wasted tackles: defender tackled but attacker passed
                 wasted_tackles = detect_wasted_tackle(
-                    holder, "carry", opp_team.players, defender_actions, self.config
+                    holder, "pass", opp_team.players, defender_actions, self.config
                 )
 
-        elif holder_action_type == "pass":
-            # Pass + defender on path = potential interception
-            pass_target = holder_details.get("target", holder.pos)
-            interception_interaction = detect_interception(
-                holder.pos, pass_target,
-                opp_team.players, defender_new_positions, self.config
-            )
-            # Wasted tackles: defender tackled but attacker passed
-            wasted_tackles = detect_wasted_tackle(
-                holder, "pass", opp_team.players, defender_actions, self.config
-            )
+            elif holder_action_type == "shoot":
+                # Wasted tackles on shoot
+                wasted_tackles = detect_wasted_tackle(
+                    holder, "shoot", opp_team.players, defender_actions, self.config
+                )
 
-        elif holder_action_type == "shoot":
-            # Wasted tackles on shoot
-            wasted_tackles = detect_wasted_tackle(
-                holder, "shoot", opp_team.players, defender_actions, self.config
-            )
-
-        elif holder_action_type == "clear":
-            wasted_tackles = detect_wasted_tackle(
-                holder, "clear", opp_team.players, defender_actions, self.config
-            )
+            elif holder_action_type == "clear":
+                wasted_tackles = detect_wasted_tackle(
+                    holder, "clear", opp_team.players, defender_actions, self.config
+                )
 
         self._track_defensive_pressures(
             holder,
@@ -448,19 +515,15 @@ class MatchV2:
     # -------------------------------------------------------------------------
 
     def _is_attacking_box_pos(self, pos: Tuple[float, float], attacking_right: bool) -> bool:
-        progress = pos[0] / self.pitch.length if attacking_right else (self.pitch.length - pos[0]) / self.pitch.length
-        return (
-            progress > 1.0 - 16.5 / self.pitch.length
-            and abs(pos[1] - self.pitch.width / 2.0) < 20.2
-        )
+        from .rust_adapter import is_attacking_box_pos_rust
+
+        return is_attacking_box_pos_rust(pos, attacking_right, self.config)
 
     def _residual_ball_velocity(self, flight: BallFlight, factor: float = 0.16) -> Tuple[float, float]:
         """Small remaining roll after an incomplete pass reaches its target."""
-        dx = flight.target[0] - flight.origin[0]
-        dy = flight.target[1] - flight.origin[1]
-        length = max(0.1, (dx * dx + dy * dy) ** 0.5)
-        residual = min(6.0, max(0.7, flight.speed * factor))
-        return (dx / length * residual, dy / length * residual)
+        from .rust_adapter import residual_ball_velocity_rust
+
+        return residual_ball_velocity_rust(flight, factor)
 
     def _track_defensive_pressures(
         self,
@@ -473,6 +536,31 @@ class MatchV2:
         interception_detected: bool,
     ):
         """Track pressure attempts separately from tackles/interceptions."""
+        if getattr(self.config, "rust_interaction_detection_adapter_enabled", False):
+            from .rust_adapter import track_defensive_pressures_rust
+
+            pressure_events = track_defensive_pressures_rust(
+                holder,
+                holder_action_type,
+                opp_team.players,
+                defender_actions,
+                defender_new_positions,
+                self.config,
+                duel_detected,
+                interception_detected,
+            )
+            for defender in opp_team.players:
+                successful = pressure_events.get(defender.index)
+                if successful is None:
+                    continue
+                if self.tick - defender.last_pressure_tick < 3:
+                    continue
+                defender.last_pressure_tick = self.tick
+                defender.pressures += 1
+                if successful:
+                    defender.successful_pressures += 1
+            return
+
         successful_action = holder_action_type in ("pass", "shoot", "clear")
         for defender in opp_team.players:
             if defender.is_goalkeeper:
@@ -515,9 +603,42 @@ class MatchV2:
         defender.tackles_attempted += 1
         holder.dribbles_attempted += 1
 
-        result = resolve_duel(interaction, self.config)
+        loose_pos = None
+        if getattr(self.config, "rust_phase_plan_adapter_enabled", False):
+            from .rust_adapter import duel_phase_plan_rust
 
-        if result.outcome == DuelOutcome.ATTACKER_WINS:
+            rng = random.Random()
+            rng.setstate(random.getstate())
+            duel_randoms = [
+                -12.0 + 24.0 * rng.random(),
+                -12.0 + 24.0 * rng.random(),
+                rng.random(),
+                rng.random(),
+            ]
+            duel_plan = duel_phase_plan_rust(
+                holder,
+                defender,
+                self.config,
+                duel_randoms,
+            )
+            for _ in range(duel_plan["randoms_used"]):
+                random.random()
+            outcome = duel_plan["outcome"]
+            loose_pos = duel_plan["loose_pos"]
+        elif getattr(self.config, "rust_interaction_resolution_adapter_enabled", False):
+            from .rust_adapter import resolve_duel_rust
+
+            result = resolve_duel_rust(
+                interaction,
+                random.uniform(-12, 12),
+                random.uniform(-12, 12),
+            )
+            outcome = result.outcome.value
+        else:
+            result = resolve_duel(interaction, self.config)
+            outcome = result.outcome.value
+
+        if outcome == "attacker_wins":
             # Attacker keeps ball, defender stunned
             holder.dribbles_completed += 1
             defender.apply_stun(self.config)
@@ -529,7 +650,7 @@ class MatchV2:
                 winner=holder.name, loser=defender.name, outcome="attacker_wins",
             )
 
-        elif result.outcome == DuelOutcome.DEFENDER_WINS:
+        elif outcome == "defender_wins":
             # Clean tackle - defender wins ball
             defender.tackles_won += 1
             holder.dispossessed += 1
@@ -544,10 +665,11 @@ class MatchV2:
         else:  # LOOSE_BALL
             # Ball goes contested
             holder.state = PlayerState.OFF_BALL
-            loose_pos = self.pitch.clamp(
-                holder.pos[0] + random.uniform(-3, 3),
-                holder.pos[1] + random.uniform(-2, 2),
-            )
+            if loose_pos is None:
+                loose_pos = self.pitch.clamp(
+                    holder.pos[0] + random.uniform(-3, 3),
+                    holder.pos[1] + random.uniform(-2, 2),
+                )
             self.ball.set_contested(loose_pos)
             self.match_stats.record_contested()
             self.trace.log_event(
@@ -565,34 +687,82 @@ class MatchV2:
         holder.hold_ticks = 0
         target = details.get("target", holder.pos)
 
-        # Move toward target at adaptive carry speed.
-        carry_speed, carry_difficulty = self._compute_carry_speed(
-            holder, target, holder_team
-        )
         old_pos = holder.pos
-        new_pos = move_toward(holder.pos, target, carry_speed)
-        new_pos = self.pitch.clamp(new_pos[0], new_pos[1])
+        if getattr(self.config, "rust_phase_plan_adapter_enabled", False):
+            from .rust_adapter import carry_phase_plan_rust
+
+            rng = random.Random()
+            rng.setstate(random.getstate())
+            carry_randoms = [rng.random() for _ in range(3)]
+            carry_result = carry_phase_plan_rust(
+                holder,
+                target,
+                holder_team.attacking_right,
+                self.away.players if holder_team.side == "home" else self.home.players,
+                self.config,
+                carry_randoms,
+            )
+            for _ in range(carry_result["randoms_used"]):
+                random.random()
+            carry_speed = carry_result["carry_speed"]
+            new_pos = carry_result["new_pos"]
+            error_chance = carry_result["error_chance"]
+            carry_error = carry_result["is_error"]
+            loose_pos = carry_result["loose_pos"]
+            distance_covered = carry_result["distance_covered"]
+        elif getattr(self.config, "rust_carry_execution_adapter_enabled", False):
+            from .rust_adapter import execute_carry_rust
+
+            rng = random.Random()
+            rng.setstate(random.getstate())
+            carry_randoms = [rng.random() for _ in range(3)]
+            carry_result = execute_carry_rust(
+                holder,
+                target,
+                holder_team.attacking_right,
+                self.away.players if holder_team.side == "home" else self.home.players,
+                self.config,
+                carry_randoms,
+            )
+            for _ in range(carry_result["randoms_used"]):
+                random.random()
+            carry_speed = carry_result["carry_speed"]
+            new_pos = carry_result["new_pos"]
+            error_chance = carry_result["error_chance"]
+            carry_error = carry_result["is_error"]
+            loose_pos = carry_result["loose_pos"]
+            distance_covered = carry_result["distance_covered"]
+        else:
+            # Move toward target at adaptive carry speed.
+            carry_speed, carry_difficulty = self._compute_carry_speed(
+                holder, target, holder_team
+            )
+            new_pos = move_toward(holder.pos, target, carry_speed)
+            new_pos = self.pitch.clamp(new_pos[0], new_pos[1])
+
+            # Unforced carry error scales with control ability and carry difficulty.
+            dribbling = holder.abilities.get("Dribbling", 50)
+            progress = new_pos[0] / self.pitch.length if holder_team.attacking_right else (self.pitch.length - new_pos[0]) / self.pitch.length
+            centrality = 1.0 - min(1.0, abs(new_pos[1] - self.pitch.width / 2.0) / (self.pitch.width / 2.0))
+            final_third_control = max(0.0, min(1.0, (progress - 0.72) / 0.18)) * max(0.0, min(1.0, centrality))
+            stale_carry_difficulty = 1.0 + max(0, holder.consecutive_carries - 1) * 0.24 * final_third_control
+            error_chance = ((100 - dribbling) / self.config.carry_error_divisor) * carry_difficulty * stale_carry_difficulty
+            carry_error = random.random() < error_chance
+            loose_pos = self.pitch.clamp(
+                new_pos[0] + random.uniform(-3, 3),
+                new_pos[1] + random.uniform(-2, 2),
+            )
+            distance_covered = distance(old_pos, new_pos)
         holder.pos = new_pos
-        holder.distance_covered += distance(old_pos, new_pos)
+        holder.distance_covered += distance_covered
         self.ball.position = new_pos
 
-        # Unforced carry error scales with control ability and carry difficulty.
-        dribbling = holder.abilities.get("Dribbling", 50)
-        progress = new_pos[0] / self.pitch.length if holder_team.attacking_right else (self.pitch.length - new_pos[0]) / self.pitch.length
-        centrality = 1.0 - min(1.0, abs(new_pos[1] - self.pitch.width / 2.0) / (self.pitch.width / 2.0))
-        final_third_control = max(0.0, min(1.0, (progress - 0.72) / 0.18)) * max(0.0, min(1.0, centrality))
-        stale_carry_difficulty = 1.0 + max(0, holder.consecutive_carries - 1) * 0.24 * final_third_control
-        error_chance = ((100 - dribbling) / self.config.carry_error_divisor) * carry_difficulty * stale_carry_difficulty
-        if random.random() < error_chance:
+        if carry_error:
             # Ball goes loose
             holder.unforced_errors += 1
             holder.turnovers += 1
             holder.consecutive_carries = 0
             holder.state = PlayerState.OFF_BALL
-            loose_pos = self.pitch.clamp(
-                new_pos[0] + random.uniform(-3, 3),
-                new_pos[1] + random.uniform(-2, 2),
-            )
             self.ball.set_contested(loose_pos)
             self.match_stats.record_contested()
             self.trace.log_event(self.tick, "error", player=holder.name, error_type="carry")
@@ -668,52 +838,46 @@ class MatchV2:
         ideal_target = details.get("target", passer.pos)
         is_long = details.get("is_long", False)
 
-        # Pass accuracy unforced error: (100-Passing)/500
         passing = passer.abilities.get("Short_Passing", 50)
         if is_long:
             passing = passer.abilities.get("Long_Passing", 50)
-        dist_to_target = distance(passer.pos, ideal_target)
-        pressure = sum(1 for o in opp_team.players if not o.is_goalkeeper and distance(o.pos, passer.pos) < 8.0)
         lane_risk = details.get("lane_risk", 0.0)
-        ability_factor = max(0.0, min(1.0, passing / 100.0))
-        error_radius = (
-            (1.0 - ability_factor) * (1.2 + dist_to_target / 12.0)
-            + pressure * 0.35
-            + lane_risk * 2.5
-        )
-        if error_radius > 0.05:
-            angle = random.uniform(0, math.tau)
-            mag = random.random() * error_radius
-            target = self.pitch.clamp(
-                ideal_target[0] + math.cos(angle) * mag,
-                ideal_target[1] + math.sin(angle) * mag,
-            )
-        else:
-            target = ideal_target
+        intended_receiver_idx = details.get("intended_receiver", details.get("target_player_idx", -1))
+        intended_receiver = None
+        if 0 <= intended_receiver_idx < len(passer_team.players):
+            intended_receiver = passer_team.players[intended_receiver_idx]
 
-        error_chance = (100 - passing) / self.config.pass_error_divisor
-        if random.random() < error_chance:
-            # Pass goes astray -- ball contested
-            passer.unforced_errors += 1
-            passer.turnovers += 1
-            passer.state = PlayerState.OFF_BALL
-            stray_pos = self.pitch.clamp(
-                ideal_target[0] + random.uniform(-8, 8),
-                ideal_target[1] + random.uniform(-8, 8),
-            )
-            self.ball.set_contested(stray_pos)
-            self.match_stats.record_contested()
-            self.trace.log_event(self.tick, "error", player=passer.name, error_type="pass_accuracy")
-            return
+        if getattr(self.config, "rust_phase_plan_adapter_enabled", False):
+            from .rust_adapter import pass_phase_plan_rust
 
-        # Check if interception happens immediately
-        if interception_interaction is not None:
-            interceptor = interception_interaction.defender
-            intercepted = resolve_interception(
-                interception_interaction, passing, self.config
+            rng = random.Random()
+            rng.setstate(random.getstate())
+            pass_randoms = [rng.random() for _ in range(5)]
+            pass_plan = pass_phase_plan_rust(
+                passer,
+                ideal_target,
+                is_long,
+                lane_risk,
+                opp_team.players,
+                intended_receiver,
+                interception_interaction,
+                self.config,
+                pass_randoms,
             )
-            if intercepted:
-                # Defender intercepts!
+            for _ in range(pass_plan["randoms_used"]):
+                random.random()
+
+            if pass_plan["outcome"] == "pass_accuracy_error":
+                passer.unforced_errors += 1
+                passer.turnovers += 1
+                passer.state = PlayerState.OFF_BALL
+                self.ball.set_contested(pass_plan["stray_pos"])
+                self.match_stats.record_contested()
+                self.trace.log_event(self.tick, "error", player=passer.name, error_type="pass_accuracy")
+                return
+
+            if pass_plan["outcome"] == "interception" and interception_interaction is not None:
+                interceptor = interception_interaction.defender
                 interceptor.interceptions += 1
                 passer.state = PlayerState.OFF_BALL
                 self._give_ball(interceptor, opp_team)
@@ -723,16 +887,154 @@ class MatchV2:
                 )
                 return
 
+            flight_type = FlightType.LONG_PASS if pass_plan["flight_type_code"] == 1 else FlightType.SHORT_PASS
+            flight = BallFlight(
+                origin=passer.pos,
+                target=pass_plan["target"],
+                flight_type=flight_type,
+                speed=pass_plan["speed"],
+                ticks_total=pass_plan["ticks_needed"],
+                passer_idx=passer.index,
+                passer_team=passer_team.side,
+                is_pass_to_space=False,
+                intended_receiver_idx=intended_receiver_idx,
+            )
+
+            self.last_passer_idx = passer.index
+            self.last_passer_team = passer_team.side
+            passer.state = PlayerState.OFF_BALL
+            passer.current_goal = None
+            self.ball.set_flight(flight)
+
+            from .rust_adapter import flag_offside_players_rust
+
+            defending_team = self.away if passer_team.side == "home" else self.home
+            self._offside_flagged = flag_offside_players_rust(
+                passer_team,
+                defending_team,
+                passer.index,
+                passer.pos,
+                self.config,
+            )
+
+            self.trace.log_action(
+                self.tick, passer_team.side, passer.name,
+                "pass",
+                target=pass_plan["target"],
+                ideal_target=ideal_target,
+                target_player=intended_receiver_idx,
+                pass_type=pass_plan["pass_type"],
+                target_kind=pass_plan["target_kind"],
+            )
+            self._pending_ball_flight = pass_plan["ball_flight"]
+            return
+
+        if getattr(self.config, "rust_pass_execution_adapter_enabled", False):
+            from .rust_adapter import execute_pass_rust
+
+            rng = random.Random()
+            rng.setstate(random.getstate())
+            pass_randoms = [rng.random() for _ in range(5)]
+            pass_result = execute_pass_rust(
+                passer,
+                ideal_target,
+                is_long,
+                lane_risk,
+                opp_team.players,
+                self.config,
+                pass_randoms,
+            )
+            for _ in range(pass_result["randoms_used"]):
+                random.random()
+            target = pass_result["target"]
+            pass_accuracy_error = pass_result["is_error"]
+            stray_pos = pass_result["stray_pos"]
+            speed = pass_result["speed"]
+            ticks_needed = pass_result["ticks_needed"]
+            flight_type_code = pass_result["flight_type_code"]
+        else:
+            # Pass accuracy unforced error: (100-Passing)/500
+            dist_to_target = distance(passer.pos, ideal_target)
+            pressure = sum(1 for o in opp_team.players if not o.is_goalkeeper and distance(o.pos, passer.pos) < 8.0)
+            ability_factor = max(0.0, min(1.0, passing / 100.0))
+            error_radius = (
+                (1.0 - ability_factor) * (1.2 + dist_to_target / 12.0)
+                + pressure * 0.35
+                + lane_risk * 2.5
+            )
+            if error_radius > 0.05:
+                angle = random.uniform(0, math.tau)
+                mag = random.random() * error_radius
+                target = self.pitch.clamp(
+                    ideal_target[0] + math.cos(angle) * mag,
+                    ideal_target[1] + math.sin(angle) * mag,
+                )
+            else:
+                target = ideal_target
+
+            error_chance = (100 - passing) / self.config.pass_error_divisor
+            pass_accuracy_error = random.random() < error_chance
+            stray_pos = self.pitch.clamp(
+                ideal_target[0] + random.uniform(-8, 8),
+                ideal_target[1] + random.uniform(-8, 8),
+            ) if pass_accuracy_error else None
+            speed = self.config.ball_long_pass_speed if is_long else self.config.ball_pass_speed
+            dist = distance(passer.pos, target)
+            ticks_needed = max(1, math.ceil(dist / speed))
+            flight_type_code = 1 if is_long else 0
+
+        intercepted = False
+        interceptor = interception_interaction.defender if interception_interaction is not None else None
+        if interception_interaction is not None and not pass_accuracy_error:
+            if getattr(self.config, "rust_interaction_resolution_adapter_enabled", False):
+                from .rust_adapter import resolve_interception_rust
+
+                intercepted = resolve_interception_rust(
+                    interception_interaction,
+                    passing,
+                    random.random(),
+                    self.config,
+                )
+            else:
+                intercepted = resolve_interception(
+                    interception_interaction, passing, self.config
+                )
+
+        from .rust_adapter import pass_phase_outcome_rust
+
+        pass_outcome = pass_phase_outcome_rust(
+            pass_accuracy_error,
+            interception_interaction is not None,
+            intercepted,
+        )
+
+        if pass_outcome == "pass_accuracy_error":
+            # Pass goes astray -- ball contested
+            passer.unforced_errors += 1
+            passer.turnovers += 1
+            passer.state = PlayerState.OFF_BALL
+            self.ball.set_contested(stray_pos)
+            self.match_stats.record_contested()
+            self.trace.log_event(self.tick, "error", player=passer.name, error_type="pass_accuracy")
+            return
+
+        if pass_outcome == "interception" and interceptor is not None:
+            # Defender intercepts!
+            interceptor.interceptions += 1
+            passer.state = PlayerState.OFF_BALL
+            self._give_ball(interceptor, opp_team)
+            self.trace.log_event(
+                self.tick, "interception",
+                player=interceptor.name, team=opp_team.side,
+            )
+            return
+
         # No interception -- ball enters flight
-        speed = self.config.ball_long_pass_speed if is_long else self.config.ball_pass_speed
-        flight_type = FlightType.LONG_PASS if is_long else FlightType.SHORT_PASS
-        dist = distance(passer.pos, target)
-        ticks_needed = max(1, math.ceil(dist / speed))
+        flight_type = FlightType.LONG_PASS if flight_type_code == 1 else FlightType.SHORT_PASS
 
         # Internal action and replay event are unified as pass_to_point.
         # pass_type/target_kind remain diagnostic fields, not action types.
         components = details.get("components", {}) if details else {}
-        intended_receiver_idx = details.get("intended_receiver", details.get("target_player_idx", -1))
 
         flight = BallFlight(
             origin=passer.pos,
@@ -753,32 +1055,33 @@ class MatchV2:
         self.ball.set_flight(flight)
 
         # Record which attacking players are offside at this moment
-        opp_team = self.away if passer_team.side == "home" else self.home
-        self._offside_flagged = set()
-        for p in passer_team.players:
-            if p.index == passer.index:
-                continue
-            if self._is_offside(p, passer_team, opp_team, pass_origin=passer.pos):
-                self._offside_flagged.add(p.index)
+        from .rust_adapter import flag_offside_players_rust
 
-        intended_receiver = None
-        if 0 <= intended_receiver_idx < len(passer_team.players):
-            intended_receiver = passer_team.players[intended_receiver_idx]
-        target_kind = "space" if (
-            intended_receiver is not None
-            and distance(target, intended_receiver.pos) > 4.0
-        ) else "feet"
+        opp_team = self.away if passer_team.side == "home" else self.home
+        self._offside_flagged = flag_offside_players_rust(
+            passer_team,
+            opp_team,
+            passer.index,
+            passer.pos,
+            self.config,
+        )
+
+        from .rust_adapter import pass_trace_payload_rust
+
+        pass_trace = pass_trace_payload_rust(target, intended_receiver, is_long)
         self.trace.log_action(
             self.tick, passer_team.side, passer.name,
             "pass",
             target=target,
             ideal_target=ideal_target,
             target_player=intended_receiver_idx,
-            pass_type="long_pass" if is_long else "short_pass",
-            target_kind=target_kind,
+            pass_type=pass_trace["pass_type"],
+            target_kind=pass_trace["target_kind"],
         )
 
-        self._pending_ball_flight = build_ball_flight_data(
+        from .rust_adapter import build_ball_flight_data_rust
+
+        self._pending_ball_flight = build_ball_flight_data_rust(
             passer.pos, target, "pass", on_target=False
         )
 
@@ -791,48 +1094,121 @@ class MatchV2:
         shooter.consecutive_carries = 0
 
         # Track key pass for the player who assisted the shot
-        if self.last_passer_team == ("home" if shooter.team_side == "home" else "away"):
-            assisting_team = self.home if self.last_passer_team == "home" else self.away
-            if 0 <= self.last_passer_idx < len(assisting_team.players):
-                if self.last_passer_idx != shooter.index:
-                    assisting_team.players[self.last_passer_idx].key_passes += 1
+        from .rust_adapter import key_pass_for_shot_rust
+
+        key_pass = key_pass_for_shot_rust(
+            shooter,
+            shooter_team,
+            self.last_passer_team,
+            self.last_passer_idx,
+        )
+        if key_pass["has_key_pass"]:
+            shooter_team.players[key_pass["passer_idx"]].key_passes += 1
 
         on_target_prob = details.get("on_target_prob", 0.3)
+        if getattr(self.config, "rust_phase_plan_adapter_enabled", False):
+            from .rust_adapter import shot_phase_plan_rust
+
+            rng = random.Random()
+            rng.setstate(random.getstate())
+            shot_randoms = [rng.random() for _ in range(3)]
+            shot_plan = shot_phase_plan_rust(
+                shooter,
+                details,
+                on_target_prob,
+                shooter_team.attacking_right,
+                self.config,
+                shot_randoms,
+            )
+            for _ in range(shot_plan["randoms_used"]):
+                random.random()
+            shooter.xg += shot_plan["shot_xg"]
+            if shot_plan["on_target"]:
+                shooter.shots_on_target += 1
+
+            flight = BallFlight(
+                origin=shooter.pos,
+                target=shot_plan["target"],
+                flight_type=FlightType.SHOT,
+                speed=shot_plan["speed"],
+                ticks_total=shot_plan["ticks_needed"],
+                passer_idx=shooter.index,
+                passer_team=shooter_team.side,
+                on_target=shot_plan["on_target"],
+            )
+
+            self.last_passer_idx = shooter.index
+            self.last_passer_team = shooter_team.side
+            shooter.state = PlayerState.OFF_BALL
+            shooter.current_goal = None
+            self.ball.set_flight(flight)
+
+            self.trace.log_action(
+                self.tick, shooter_team.side, shooter.name, "shot",
+                on_target=shot_plan["on_target"], distance=round(shot_plan["distance"], 1),
+            )
+
+            self._pending_ball_flight = shot_plan["ball_flight"]
+            self._pending_event_text = shot_plan["event_text"]
+            return
+
         # Estimate xG from shot details
-        shot_xg = details.get("xg", on_target_prob * self.config.goal_reward_constant * 0.5)
-        shot_xg = min(0.95, max(0.01, shot_xg))
+        from .rust_adapter import shot_xg_rust
+
+        shot_xg = shot_xg_rust(details, on_target_prob, self.config)
         shooter.xg += shot_xg
 
-        on_target = random.random() < on_target_prob
+        if getattr(self.config, "rust_shot_execution_adapter_enabled", False):
+            from .rust_adapter import execute_shot_rust
+
+            rng = random.Random()
+            rng.setstate(random.getstate())
+            shot_randoms = [rng.random() for _ in range(3)]
+            shot_result = execute_shot_rust(
+                shooter,
+                on_target_prob,
+                shooter_team.attacking_right,
+                self.config,
+                shot_randoms,
+            )
+            for _ in range(shot_result["randoms_used"]):
+                random.random()
+            on_target = shot_result["on_target"]
+            target = shot_result["target"]
+            ticks_needed = shot_result["ticks_needed"]
+            shot_speed = shot_result["speed"]
+            dist = shot_result["distance"]
+            pending_event_text = shot_result["event_text"]
+        else:
+            on_target = random.random() < on_target_prob
+            if on_target:
+                goal_y_min = self.pitch.goal_y_min
+                goal_y_max = self.pitch.goal_y_max
+                target_y = random.uniform(goal_y_min + 0.5, goal_y_max - 0.5)
+                if shooter_team.attacking_right:
+                    target = (self.config.pitch_length, target_y)
+                else:
+                    target = (0.0, target_y)
+            else:
+                if shooter_team.attacking_right:
+                    target_x = self.config.pitch_length + random.uniform(0.5, 3.0)
+                else:
+                    target_x = -random.uniform(0.5, 3.0)
+                target_y = random.uniform(self.pitch.goal_y_min - 5, self.pitch.goal_y_max + 5)
+                target = (target_x, target_y)
+
+            dist = distance(shooter.pos, target)
+            ticks_needed = max(1, math.ceil(dist / self.config.ball_shot_speed))
+            shot_speed = self.config.ball_shot_speed
+            pending_event_text = f"{'SHOT ON TARGET' if on_target else 'SHOT'} {shooter.name} shoots!"
         if on_target:
             shooter.shots_on_target += 1
-
-        goal_center = details.get("target", (self.config.pitch_length, self.config.pitch_width / 2))
-
-        if on_target:
-            goal_y_min = self.pitch.goal_y_min
-            goal_y_max = self.pitch.goal_y_max
-            target_y = random.uniform(goal_y_min + 0.5, goal_y_max - 0.5)
-            if shooter_team.attacking_right:
-                target = (self.config.pitch_length, target_y)
-            else:
-                target = (0.0, target_y)
-        else:
-            if shooter_team.attacking_right:
-                target_x = self.config.pitch_length + random.uniform(0.5, 3.0)
-            else:
-                target_x = -random.uniform(0.5, 3.0)
-            target_y = random.uniform(self.pitch.goal_y_min - 5, self.pitch.goal_y_max + 5)
-            target = (target_x, target_y)
-
-        dist = distance(shooter.pos, target)
-        ticks_needed = max(1, math.ceil(dist / self.config.ball_shot_speed))
 
         flight = BallFlight(
             origin=shooter.pos,
             target=target,
             flight_type=FlightType.SHOT,
-            speed=self.config.ball_shot_speed,
+            speed=shot_speed,
             ticks_total=ticks_needed,
             passer_idx=shooter.index,
             passer_team=shooter_team.side,
@@ -850,10 +1226,12 @@ class MatchV2:
             on_target=on_target, distance=round(dist, 1),
         )
 
-        self._pending_ball_flight = build_ball_flight_data(
+        from .rust_adapter import build_ball_flight_data_rust
+
+        self._pending_ball_flight = build_ball_flight_data_rust(
             shooter.pos, target, "shot", on_target=on_target
         )
-        self._pending_event_text = f"{'SHOT ON TARGET' if on_target else 'SHOT'} {shooter.name} shoots!"
+        self._pending_event_text = pending_event_text
 
     def _execute_clear_phase3(
         self, clearer: Player, details: dict, clearer_team: Team, opp_team: Team
@@ -865,14 +1243,34 @@ class MatchV2:
         clearer.consecutive_carries = 0
         target = details.get("target", clearer.pos)
 
-        dist = distance(clearer.pos, target)
-        ticks_needed = max(1, math.ceil(dist / self.config.ball_long_pass_speed))
+        if getattr(self.config, "rust_phase_plan_adapter_enabled", False):
+            from .rust_adapter import clear_phase_plan_rust
+
+            clear_result = clear_phase_plan_rust(clearer, target, self.config)
+            clear_speed = clear_result["speed"]
+            ticks_needed = clear_result["ticks_needed"]
+            flight_origin = clear_result["origin"]
+            flight_target = clear_result["target"]
+        elif getattr(self.config, "rust_clear_execution_adapter_enabled", False):
+            from .rust_adapter import execute_clear_rust
+
+            clear_result = execute_clear_rust(clearer, target, self.config)
+            clear_speed = clear_result["speed"]
+            ticks_needed = clear_result["ticks_needed"]
+            flight_origin = clear_result["origin"]
+            flight_target = clear_result["target"]
+        else:
+            dist = distance(clearer.pos, target)
+            clear_speed = self.config.ball_long_pass_speed
+            ticks_needed = max(1, math.ceil(dist / clear_speed))
+            flight_origin = clearer.pos
+            flight_target = target
 
         flight = BallFlight(
-            origin=clearer.pos,
-            target=target,
+            origin=flight_origin,
+            target=flight_target,
             flight_type=FlightType.CLEARANCE,
-            speed=self.config.ball_long_pass_speed,
+            speed=clear_speed,
             ticks_total=ticks_needed,
             passer_idx=clearer.index,
             passer_team=clearer_team.side,
@@ -895,6 +1293,86 @@ class MatchV2:
         holder.consecutive_carries = 0
         opp_team = self.away if holder_team.side == "home" else self.home
         details = details or {}
+
+        if getattr(self.config, "rust_phase_plan_adapter_enabled", False):
+            from .rust_adapter import hold_phase_plan_rust
+
+            opportunity_target = details.get("opportunity_target")
+            rng = random.Random()
+            rng.setstate(random.getstate())
+            hold_randoms = [rng.random() for _ in range(3)]
+            hold_result = hold_phase_plan_rust(
+                holder,
+                holder_team.attacking_right,
+                opp_team.players,
+                opportunity_target,
+                self.config,
+                hold_randoms,
+            )
+            for _ in range(hold_result["randoms_used"]):
+                random.random()
+            holder.pos = hold_result["new_pos"]
+            holder.distance_covered += hold_result["distance_covered"]
+            self.ball.position = holder.pos
+            if hold_result["is_error"]:
+                holder.unforced_errors += 1
+                holder.turnovers += 1
+                holder.state = PlayerState.OFF_BALL
+                self.ball.set_contested(hold_result["loose_pos"])
+                self.match_stats.record_contested()
+                self.trace.log_event(self.tick, "error", player=holder.name, error_type="shield")
+                return
+
+            self.trace.log_action(
+                self.tick, holder_team.side, holder.name, "hold",
+                hold_ticks=holder.hold_ticks,
+                pos=holder.pos,
+                opportunity_target=opportunity_target,
+                pressure=hold_result["trace_pressure"],
+                nearest_def=hold_result["trace_nearest_def"],
+            )
+            return
+
+        if getattr(self.config, "rust_hold_execution_adapter_enabled", False):
+            from .rust_adapter import execute_hold_rust
+
+            opportunity_target = details.get("opportunity_target")
+            rng = random.Random()
+            rng.setstate(random.getstate())
+            hold_randoms = [rng.random() for _ in range(3)]
+            hold_result = execute_hold_rust(
+                holder,
+                holder_team.attacking_right,
+                opp_team.players,
+                opportunity_target,
+                self.config,
+                hold_randoms,
+            )
+            for _ in range(hold_result["randoms_used"]):
+                random.random()
+            holder.pos = hold_result["new_pos"]
+            holder.distance_covered += hold_result["distance_covered"]
+            self.ball.position = holder.pos
+            pressure = hold_result["pressure"]
+            nearest_dist = hold_result["nearest_dist"]
+            if hold_result["is_error"]:
+                holder.unforced_errors += 1
+                holder.turnovers += 1
+                holder.state = PlayerState.OFF_BALL
+                self.ball.set_contested(hold_result["loose_pos"])
+                self.match_stats.record_contested()
+                self.trace.log_event(self.tick, "error", player=holder.name, error_type="shield")
+                return
+
+            self.trace.log_action(
+                self.tick, holder_team.side, holder.name, "hold",
+                hold_ticks=holder.hold_ticks,
+                pos=holder.pos,
+                opportunity_target=opportunity_target,
+                pressure=hold_result["trace_pressure"],
+                nearest_def=hold_result["trace_nearest_def"],
+            )
+            return
 
         pressure_x = 0.0
         pressure_y = 0.0
@@ -987,7 +1465,14 @@ class MatchV2:
 
     def _tick_flight(self):
         """Process a tick where the ball is in flight."""
-        completed = self.ball.tick_flight()
+        if self.ball.flight is None:
+            return
+        from .rust_adapter import tick_ball_flight_rust
+
+        flight_tick = tick_ball_flight_rust(self.ball.flight)
+        self.ball.flight.ticks_elapsed = flight_tick["ticks_elapsed"]
+        self.ball.position = flight_tick["position"]
+        completed = flight_tick["complete"]
 
         if not completed:
             # Move players while ball is in flight
@@ -1020,18 +1505,68 @@ class MatchV2:
         opp_team = self.away if flight.passer_team == "home" else self.home
 
         if flight.flight_type == FlightType.CLEARANCE:
-            # Clearance: ball goes to closest player at target
-            closest_home = self.home.get_closest_to(target_pos, exclude_gk=False)
-            closest_away = self.away.get_closest_to(target_pos, exclude_gk=False)
-            d_home = distance(closest_home.pos, target_pos) if closest_home else 999
-            d_away = distance(closest_away.pos, target_pos) if closest_away else 999
-            if d_home < d_away:
-                self._give_ball(closest_home, self.home)
-                if passer_team.side == "home":
-                    passer_team.players[flight.passer_idx].passes_completed += 1
+            if getattr(self.config, "rust_phase_plan_adapter_enabled", False):
+                from .rust_adapter import clearance_arrival_plan_rust
+
+                arrival = clearance_arrival_plan_rust(target_pos, flight, self.home, self.away)
+                if arrival["winner_team"] == "home":
+                    closest_home = (
+                        self.home.players[arrival["player_idx"]]
+                        if arrival["player_idx"] is not None and 0 <= arrival["player_idx"] < len(self.home.players)
+                        else None
+                    )
+                    closest_away = None
+                else:
+                    closest_home = None
+                    closest_away = (
+                        self.away.players[arrival["player_idx"]]
+                        if arrival["player_idx"] is not None and 0 <= arrival["player_idx"] < len(self.away.players)
+                        else None
+                    )
+                passer_completed = arrival["passer_completed"]
+            elif getattr(self.config, "rust_clearance_arrival_adapter_enabled", False):
+                from .rust_adapter import resolve_clearance_arrival_rust
+
+                arrival = resolve_clearance_arrival_rust(target_pos, self.home, self.away)
+                if arrival["winner_team"] == "home":
+                    closest_home = (
+                        self.home.players[arrival["player_idx"]]
+                        if arrival["player_idx"] is not None and 0 <= arrival["player_idx"] < len(self.home.players)
+                        else None
+                    )
+                    closest_away = None
+                else:
+                    closest_home = None
+                    closest_away = (
+                        self.away.players[arrival["player_idx"]]
+                        if arrival["player_idx"] is not None and 0 <= arrival["player_idx"] < len(self.away.players)
+                        else None
+                    )
+                passer_completed = (
+                    (arrival["winner_team"] == "home" and passer_team.side == "home")
+                    or (arrival["winner_team"] == "away" and passer_team.side == "away")
+                )
             else:
+                # Clearance: ball goes to closest player at target
+                closest_home = self.home.get_closest_to(target_pos, exclude_gk=False)
+                closest_away = self.away.get_closest_to(target_pos, exclude_gk=False)
+                d_home = distance(closest_home.pos, target_pos) if closest_home else 999
+                d_away = distance(closest_away.pos, target_pos) if closest_away else 999
+                if d_home >= d_away:
+                    closest_home = None
+                else:
+                    closest_away = None
+                passer_completed = (
+                    (closest_home is not None and passer_team.side == "home")
+                    or (closest_away is not None and passer_team.side == "away")
+                )
+            if closest_home is not None:
+                self._give_ball(closest_home, self.home)
+                if passer_completed:
+                    passer_team.players[flight.passer_idx].passes_completed += 1
+            elif closest_away is not None:
                 self._give_ball(closest_away, self.away)
-                if passer_team.side == "away":
+                if passer_completed:
                     passer_team.players[flight.passer_idx].passes_completed += 1
             return
 
@@ -1043,27 +1578,52 @@ class MatchV2:
         passer_team: Team, opp_team: Team
     ):
         """Resolve a pass-to-point arrival as teammate/opponent/loose control."""
-        best_receiver, best_receiver_score, _ = self._best_pass_arrival_player(
-            flight,
-            target_pos,
-            passer_team,
-            intended_receiver_idx=flight.intended_receiver_idx,
-            target_occupation_weight=0.18,
-        )
-        best_opp, best_opp_score, _ = self._best_pass_arrival_player(
-            flight,
-            target_pos,
-            opp_team,
-            intended_receiver_idx=-1,
-            target_occupation_weight=0.18,
-        )
-        receiver_control = self._pass_control_strength(best_receiver_score)
-        opponent_control = self._pass_control_strength(best_opp_score)
-        loose_control = self._pass_loose_control_strength(receiver_control, opponent_control)
-        winner = max(
-            (("receiver", receiver_control), ("opponent", opponent_control), ("loose", loose_control)),
-            key=lambda item: item[1],
-        )[0]
+        loose_velocity = None
+        if getattr(self.config, "rust_phase_plan_adapter_enabled", False):
+            from .rust_adapter import pass_arrival_plan_rust
+
+            arrival = pass_arrival_plan_rust(
+                flight,
+                target_pos,
+                passer_team,
+                opp_team,
+                self.config,
+                target_occupation_weight=0.18,
+            )
+            winner = arrival["winner"]
+            loose_velocity = arrival["loose_velocity"]
+            best_receiver = (
+                passer_team.players[arrival["receiver_idx"]]
+                if arrival["receiver_idx"] is not None and 0 <= arrival["receiver_idx"] < len(passer_team.players)
+                else None
+            )
+            best_opp = (
+                opp_team.players[arrival["opponent_idx"]]
+                if arrival["opponent_idx"] is not None and 0 <= arrival["opponent_idx"] < len(opp_team.players)
+                else None
+            )
+        else:
+            best_receiver, best_receiver_score, _ = self._best_pass_arrival_player(
+                flight,
+                target_pos,
+                passer_team,
+                intended_receiver_idx=flight.intended_receiver_idx,
+                target_occupation_weight=0.18,
+            )
+            best_opp, best_opp_score, _ = self._best_pass_arrival_player(
+                flight,
+                target_pos,
+                opp_team,
+                intended_receiver_idx=-1,
+                target_occupation_weight=0.18,
+            )
+            receiver_control = self._pass_control_strength(best_receiver_score)
+            opponent_control = self._pass_control_strength(best_opp_score)
+            loose_control = self._pass_loose_control_strength(receiver_control, opponent_control)
+            winner = max(
+                (("receiver", receiver_control), ("opponent", opponent_control), ("loose", loose_control)),
+                key=lambda item: item[1],
+            )[0]
 
         if winner == "opponent" and best_opp:
             best_opp.interceptions += 1
@@ -1085,7 +1645,10 @@ class MatchV2:
             )
         else:
             # No one close enough -- ball goes contested
-            self.ball.set_contested(target_pos, self._residual_ball_velocity(flight, 0.26))
+            self.ball.set_contested(
+                target_pos,
+                loose_velocity if loose_velocity is not None else self._residual_ball_velocity(flight, 0.26),
+            )
             self.match_stats.record_contested()
 
     def _resolve_shot_arrival(self, flight: BallFlight):
@@ -1094,74 +1657,137 @@ class MatchV2:
         defending_team = self.away if flight.passer_team == "home" else self.home
         shooter = shooter_team.players[flight.passer_idx]
 
-        in_box = self._is_attacking_box_pos(flight.origin, shooter_team.attacking_right)
+        if getattr(self.config, "rust_phase_plan_adapter_enabled", False):
+            from .rust_adapter import shot_arrival_plan_rust
+
+            save_roll = random.random() if flight.on_target else 0.0
+            shot_plan = shot_arrival_plan_rust(
+                flight,
+                shooter,
+                shooter_team,
+                defending_team,
+                self.config,
+                save_roll,
+            )
+            shooter.shot_log.append(shot_plan["shot_log"])
+
+            if shot_plan["outcome"] == "off_target":
+                self._pending_event_text = shot_plan["pending_event_text"]
+                self.ball.set_dead("goal_kick", defending_team.side, self.config.goal_kick_restart_ticks)
+                self._record_frame()
+                return
+
+            gk = defending_team.goalkeeper
+            gk.psxg_faced += shot_plan["psxg_delta"]
+
+            if shot_plan["outcome"] == "saved":
+                gk.saves += 1
+                self._give_ball(gk, defending_team)
+                self._pending_event_text = shot_plan["pending_event_text"]
+                self._pending_pause_ms = shot_plan["pause_ms"]
+                self.trace.log_event(self.tick, "save", keeper=gk.name, shooter=shooter.name)
+                self._record_frame()
+                return
+
+            gk.goals_conceded += 1
+            self._score_goal(shooter, shooter_team, defending_team)
+            return
+
+        if getattr(self.config, "rust_shot_arrival_adapter_enabled", False):
+            from .rust_adapter import resolve_shot_arrival_rust
+
+            save_roll = random.random() if flight.on_target else 0.0
+            shot_arrival = resolve_shot_arrival_rust(
+                flight,
+                shooter_team,
+                defending_team,
+                self.config,
+                save_roll,
+            )
+            in_box = shot_arrival["in_box"]
+            save_prob = shot_arrival["save_prob"]
+            shot_outcome = shot_arrival["outcome"]
+        else:
+            in_box = self._is_attacking_box_pos(flight.origin, shooter_team.attacking_right)
+            if flight.on_target:
+                gk = defending_team.goalkeeper
+                save_prob = compute_gk_save_probability(
+                    gk, flight.target, flight.origin, self.config
+                )
+                shot_outcome = "saved" if random.random() < save_prob else "goal"
+            else:
+                save_prob = 0.0
+                shot_outcome = "off_target"
 
         if not flight.on_target:
-            shooter.shot_log.append({
-                "x": round(flight.origin[0], 1),
-                "y": round(flight.origin[1], 1),
-                "xg": round(shooter.xg - sum(s.get("xg", 0) for s in shooter.shot_log), 2),
-                "in_box": in_box,
-                "outcome": "off_target",
-            })
-            self._pending_event_text = f"{shooter.name}'s shot goes wide!"
+            from .rust_adapter import shot_arrival_event_rust, shot_log_entry_rust, shot_log_xg_rust
+
+            shot_log_xg = shot_log_xg_rust(shooter.xg, shooter.shot_log)
+            shot_event = shot_arrival_event_rust(shooter.name, "", "off_target")
+            shooter.shot_log.append(shot_log_entry_rust(
+                flight.origin,
+                None,
+                shot_log_xg["rounded_xg"],
+                in_box,
+                "off_target",
+            ))
+            self._pending_event_text = shot_event["pending_event_text"]
             self.ball.set_dead("goal_kick", defending_team.side, self.config.goal_kick_restart_ticks)
             self._record_frame()
             return
 
-        # Shot is on target - GK save check
         gk = defending_team.goalkeeper
-        save_prob = compute_gk_save_probability(
-            gk, flight.target, flight.origin, self.config
-        )
 
         # Track xG for GK
-        last_xg = shooter.xg - sum(s.get("xg", 0) for s in shooter.shot_log)
+        from .rust_adapter import shot_log_xg_rust
+
+        shot_log_xg = shot_log_xg_rust(shooter.xg, shooter.shot_log)
+        last_xg = shot_log_xg["raw_xg"]
         gk.psxg_faced += max(0, last_xg)
 
-        if random.random() < save_prob:
+        if shot_outcome == "saved":
             # SAVE!
+            from .rust_adapter import shot_arrival_event_rust, shot_log_entry_rust
+
+            shot_event = shot_arrival_event_rust(shooter.name, gk.name, "saved")
             gk.saves += 1
-            shooter.shot_log.append({
-                "x": round(flight.origin[0], 1),
-                "y": round(flight.origin[1], 1),
-                "xg": round(last_xg, 2),
-                "in_box": in_box,
-                "outcome": "saved",
-                "target_x": round(flight.target[0], 1),
-                "target_y": round(flight.target[1], 1),
-            })
+            shooter.shot_log.append(shot_log_entry_rust(
+                flight.origin,
+                flight.target,
+                shot_log_xg["rounded_xg"],
+                in_box,
+                "saved",
+            ))
             self._give_ball(gk, defending_team)
-            self._pending_event_text = f"{gk.name} saves {shooter.name}'s shot!"
-            self._pending_pause_ms = 1000
+            self._pending_event_text = shot_event["pending_event_text"]
+            self._pending_pause_ms = shot_event["pause_ms"]
             self.trace.log_event(self.tick, "save", keeper=gk.name, shooter=shooter.name)
             self._record_frame()
         else:
             # GOAL!
-            shooter.shot_log.append({
-                "x": round(flight.origin[0], 1),
-                "y": round(flight.origin[1], 1),
-                "xg": round(last_xg, 2),
-                "in_box": in_box,
-                "outcome": "goal",
-                "target_x": round(flight.target[0], 1),
-                "target_y": round(flight.target[1], 1),
-            })
+            from .rust_adapter import shot_log_entry_rust
+
+            shooter.shot_log.append(shot_log_entry_rust(
+                flight.origin,
+                flight.target,
+                shot_log_xg["rounded_xg"],
+                in_box,
+                "goal",
+            ))
             gk.goals_conceded += 1
             self._score_goal(shooter, shooter_team, defending_team)
 
     def _pass_control_strength(self, score: float) -> float:
         """Continuous control strength from pass-arrival score."""
-        if score == float("inf"):
-            return 0.0
-        scale = max(0.1, self.config.contest_radius * 1.55)
-        return 1.0 / (1.0 + (max(0.0, score) / scale) ** 2)
+        from .rust_adapter import pass_control_strength_rust
+
+        return pass_control_strength_rust(score, self.config)
 
     def _pass_loose_control_strength(self, teammate_control: float, opponent_control: float) -> float:
         """Continuous loose-ball control when neither side owns the target."""
-        strongest = max(0.0, min(1.0, teammate_control), min(1.0, opponent_control))
-        balance = 1.0 - abs(max(0.0, teammate_control) - max(0.0, opponent_control))
-        return max(0.0, 1.0 - strongest) * (0.25 + 0.20 * max(0.0, min(1.0, balance)))
+        from .rust_adapter import pass_loose_control_strength_rust
+
+        return pass_loose_control_strength_rust(teammate_control, opponent_control)
 
     def _pass_arrival_score(
         self,
@@ -1228,14 +1854,84 @@ class MatchV2:
         passer_team: Team,
         opp_team: Team,
     ) -> None:
-        iq = receiver.abilities.get("IQ", 50)
-        touch_error_chance = (100 - iq) / self.config.first_touch_error_divisor
-        if random.random() < touch_error_chance:
-            receiver.unforced_errors += 1
+        if getattr(self.config, "rust_phase_plan_adapter_enabled", False):
+            from .rust_adapter import pass_receive_plan_rust
+
+            rng = random.Random()
+            rng.setstate(random.getstate())
+            touch_randoms = [rng.random() for _ in range(3)]
+            receive_plan = pass_receive_plan_rust(
+                receiver,
+                target_pos,
+                receiver.index in self._offside_flagged,
+                self.config,
+                touch_randoms,
+            )
+            for _ in range(receive_plan["randoms_used"]):
+                random.random()
+
+            if receive_plan["outcome"] == "first_touch_error":
+                receiver.unforced_errors += 1
+                self.ball.set_contested(receive_plan["loose_pos"])
+                self.match_stats.record_contested()
+                self.trace.log_event(
+                    self.tick, "error",
+                    player=receiver.name, error_type="first_touch",
+                )
+                return
+
+            if receive_plan["outcome"] == "offside":
+                receiver.offsides += 1
+                self.ball.set_dead("offside", opp_team.side, restart_ticks=2)
+                self._offside_flagged = set()
+                self.trace.log_event(
+                    self.tick, "offside",
+                    player=receiver.name, team=passer_team.side,
+                )
+                return
+            self._offside_flagged = set()
+
+            receive_pos = receive_plan["receive_pos"]
+            receiver.pos = receive_pos
+            receiver.target_pos = receive_pos
+            receiver.distance_covered += receive_plan["distance_covered"]
+
+            self._give_ball(receiver, passer_team, receive_origin=flight.origin)
+            passer = passer_team.players[flight.passer_idx]
+            passer.passes_completed += 1
+            self._track_pass_stats(passer, flight.origin, receive_pos, passer_team.attacking_right)
+            self.trace.log_action(
+                self.tick, passer_team.side, receiver.name, "receive",
+                success=True, pos=receive_pos, receive_kind=receive_plan["receive_kind"],
+            )
+            return
+
+        if getattr(self.config, "rust_first_touch_adapter_enabled", False):
+            from .rust_adapter import resolve_first_touch_rust
+
+            rng = random.Random()
+            rng.setstate(random.getstate())
+            touch_randoms = [rng.random() for _ in range(3)]
+            first_touch = resolve_first_touch_rust(
+                receiver,
+                target_pos,
+                self.config,
+                touch_randoms,
+            )
+            for _ in range(first_touch["randoms_used"]):
+                random.random()
+            touch_error = first_touch["is_error"]
+            loose_pos = first_touch["loose_pos"]
+        else:
+            iq = receiver.abilities.get("IQ", 50)
+            touch_error_chance = (100 - iq) / self.config.first_touch_error_divisor
+            touch_error = random.random() < touch_error_chance
             loose_pos = self.pitch.clamp(
                 target_pos[0] + random.uniform(-4, 4),
                 target_pos[1] + random.uniform(-4, 4),
-            )
+            ) if touch_error else None
+        if touch_error:
+            receiver.unforced_errors += 1
             self.ball.set_contested(loose_pos)
             self.match_stats.record_contested()
             self.trace.log_event(
@@ -1273,26 +1969,30 @@ class MatchV2:
 
     def _score_goal(self, scorer: Player, scoring_team: Team, conceding_team: Team):
         """Record a goal."""
+        from .rust_adapter import score_goal_plan_rust
+
+        goal_plan = score_goal_plan_rust(
+            scorer,
+            scoring_team,
+            conceding_team,
+            self.home_score,
+            self.away_score,
+            self.last_passer_team,
+            self.last_passer_idx,
+            self.tick,
+            self.config,
+        )
         scorer.goals += 1
 
-        assister_name = ""
-        assister_color = ""
-        if self.last_passer_team == scoring_team.side and self.last_passer_idx != scorer.index:
-            if self.last_passer_idx < len(scoring_team.players):
-                assister = scoring_team.players[self.last_passer_idx]
-                assister.assists += 1
-                assister_name = assister.name
-                assister_color = assister.color
-
-        if scoring_team.side == "home":
-            self.home_score += 1
-        else:
-            self.away_score += 1
-
-        minute = self._tick_to_minute()
+        if goal_plan["has_assist"]:
+            scoring_team.players[goal_plan["assister_idx"]].assists += 1
+        assister_name = goal_plan["assister_name"]
+        assister_color = goal_plan["assister_color"]
+        self.home_score = goal_plan["home_score"]
+        self.away_score = goal_plan["away_score"]
 
         self.match_stats.record_goal(
-            minute=minute,
+            minute=goal_plan["minute"],
             team_side=scoring_team.side,
             scorer_name=scorer.name,
             assister_name=assister_name,
@@ -1303,16 +2003,15 @@ class MatchV2:
         self.trace.log_event(
             self.tick, "goal",
             scorer=scorer.name, team=scoring_team.side,
-            assister=assister_name, minute=minute,
+            assister=assister_name, minute=goal_plan["minute"],
         )
 
-        assist_text = f" (assist: {assister_name})" if assister_name else ""
-        self._pending_event_text = f"GOAL! {scorer.name} scores!{assist_text} [{self.home_score}-{self.away_score}]"
-        self._pending_pause_ms = 3000
+        self._pending_event_text = goal_plan["event_text"]
+        self._pending_pause_ms = goal_plan["pause_ms"]
         self._record_frame()
 
         # Reset for kickoff
-        self.ball.set_dead("kickoff", conceding_team.side, 3)
+        self.ball.set_dead("kickoff", goal_plan["restart_team"], goal_plan["restart_ticks"])
 
         home_formation_data = FORMATION.get(self.home_formation_key, FORMATION["442"])
         away_formation_data = FORMATION.get(self.away_formation_key, FORMATION["442"])
@@ -1328,7 +2027,20 @@ class MatchV2:
 
         Players race to ball. Closest picks it up.
         """
-        self.ball.tick_contested()
+        if getattr(self.config, "rust_contested_owner_adapter_enabled", False):
+            from .rust_adapter import contested_tick_plan_rust
+
+            contested_plan = contested_tick_plan_rust(
+                self.ball,
+                self.home,
+                self.away,
+                self.config,
+            )
+            self.ball.contested_ticks = contested_plan["contested_ticks"]
+            self.ball.position = contested_plan["position"]
+            self.ball.loose_velocity = contested_plan["loose_velocity"]
+        else:
+            self.ball.tick_contested()
         ball_pos = self.pitch.clamp(self.ball.position[0], self.ball.position[1])
         self.ball.position = ball_pos
         self.home.update_phase(False, True, self.config)
@@ -1336,27 +2048,53 @@ class MatchV2:
         self._clear_team_goals(self.home)
         self._clear_team_goals(self.away)
 
-        # Find closest player from each team
-        best_player = None
-        best_team = None
-        best_dist = float("inf")
-
-        for p in self.home.players:
-            d = distance(p.pos, ball_pos)
-            if d < best_dist:
-                best_dist = d
-                best_player = p
+        if getattr(self.config, "rust_contested_owner_adapter_enabled", False):
+            if contested_plan["winner_team"] == "home":
                 best_team = self.home
-
-        for p in self.away.players:
-            d = distance(p.pos, ball_pos)
-            if d < best_dist:
-                best_dist = d
-                best_player = p
+                best_player = (
+                    self.home.players[contested_plan["player_idx"]]
+                    if contested_plan["player_idx"] is not None
+                    and 0 <= contested_plan["player_idx"] < len(self.home.players)
+                    else None
+                )
+            elif contested_plan["winner_team"] == "away":
                 best_team = self.away
+                best_player = (
+                    self.away.players[contested_plan["player_idx"]]
+                    if contested_plan["player_idx"] is not None
+                    and 0 <= contested_plan["player_idx"] < len(self.away.players)
+                    else None
+                )
+            else:
+                best_team = None
+                best_player = None
+            best_dist = contested_plan["distance"]
+            immediate_win = contested_plan["immediate_win"]
+            forced_win = contested_plan["forced_win"]
+        else:
+            # Find closest player from each team
+            best_player = None
+            best_team = None
+            best_dist = float("inf")
+
+            for p in self.home.players:
+                d = distance(p.pos, ball_pos)
+                if d < best_dist:
+                    best_dist = d
+                    best_player = p
+                    best_team = self.home
+
+            for p in self.away.players:
+                d = distance(p.pos, ball_pos)
+                if d < best_dist:
+                    best_dist = d
+                    best_player = p
+                    best_team = self.away
+            immediate_win = best_player is not None and best_dist < self.config.contest_radius
+            forced_win = self.ball.contested_ticks > 5 and best_player is not None and best_team is not None
 
         # If someone is close enough, they win the ball
-        if best_player and best_dist < self.config.contest_radius:
+        if best_player and immediate_win:
             self._give_ball(best_player, best_team)
             self.trace.log_event(
                 self.tick, "contested_won",
@@ -1370,56 +2108,67 @@ class MatchV2:
                     ball_pos, self.config, self.pitch,
                     opponent_players=other.players,
                 )
-                for p in team.players:
-                    if p.state == PlayerState.STUNNED:
-                        continue
-                    if p.is_goalkeeper:
-                        p.target_pos = p.tactical_anchor
-                        p.movement_intent = "recover_shape"
-                        continue
+                if getattr(self.config, "rust_contested_targets_adapter_enabled", False):
+                    from .rust_adapter import select_contested_targets_rust
 
-                    dist_to_ball = distance(p.pos, ball_pos)
-                    speed = player_speed(
-                        p.speed_value,
-                        self.config.player_max_speed,
-                        self.config.player_min_speed,
-                    )
-                    time_to_ball = dist_to_ball / max(speed, 0.1)
-                    nearby_teammates = sum(
-                        1
-                        for teammate in team.players
-                        if teammate.index != p.index
-                        and not teammate.is_goalkeeper
-                        and distance(teammate.pos, ball_pos) < dist_to_ball + 1.5
-                    )
-                    iq = p.iq_value / 100.0
-                    race_reach = self.config.contested_race_radius * (0.84 + 0.22 * speed / max(self.config.player_max_speed, 0.1))
-                    first_ball_value = max(0.0, 1.0 - dist_to_ball / max(1.0, race_reach))
-                    first_ball_value = first_ball_value * first_ball_value * (3.0 - 2.0 * first_ball_value)
-                    contest_score = first_ball_value * (1.08 + 0.34 * iq) / (1.0 + nearby_teammates * 0.35)
+                    contested_targets = select_contested_targets_rust(ball_pos, team, self.config)
+                    for p in team.players:
+                        result = contested_targets.get(p.index)
+                        if result is None:
+                            continue
+                        p.target_pos = result["target"]
+                        p.movement_intent = result["intent"]
+                else:
+                    for p in team.players:
+                        if p.state == PlayerState.STUNNED:
+                            continue
+                        if p.is_goalkeeper:
+                            p.target_pos = p.tactical_anchor
+                            p.movement_intent = "recover_shape"
+                            continue
 
-                    support_x = p.tactical_anchor[0] * 0.88 + ball_pos[0] * 0.12
-                    support_y = p.tactical_anchor[1] * 0.90 + ball_pos[1] * 0.10
-                    support_pos = self.pitch.clamp(support_x, support_y)
-                    support_dist = distance(p.pos, support_pos)
-                    support_score = (
-                        0.05
-                        + min(0.24, nearby_teammates * 0.08)
-                        + min(0.08, support_dist / 80.0)
-                        + (1.0 - first_ball_value) * 0.08
-                    )
+                        dist_to_ball = distance(p.pos, ball_pos)
+                        speed = player_speed(
+                            p.speed_value,
+                            self.config.player_max_speed,
+                            self.config.player_min_speed,
+                        )
+                        time_to_ball = dist_to_ball / max(speed, 0.1)
+                        nearby_teammates = sum(
+                            1
+                            for teammate in team.players
+                            if teammate.index != p.index
+                            and not teammate.is_goalkeeper
+                            and distance(teammate.pos, ball_pos) < dist_to_ball + 1.5
+                        )
+                        iq = p.iq_value / 100.0
+                        race_reach = self.config.contested_race_radius * (0.84 + 0.22 * speed / max(self.config.player_max_speed, 0.1))
+                        first_ball_value = max(0.0, 1.0 - dist_to_ball / max(1.0, race_reach))
+                        first_ball_value = first_ball_value * first_ball_value * (3.0 - 2.0 * first_ball_value)
+                        contest_score = first_ball_value * (1.08 + 0.34 * iq) / (1.0 + nearby_teammates * 0.35)
 
-                    if contest_score > support_score:
-                        p.target_pos = ball_pos
-                        p.movement_intent = "contest"
-                    else:
-                        p.target_pos = support_pos
-                        p.movement_intent = "recover_shape"
+                        support_x = p.tactical_anchor[0] * 0.88 + ball_pos[0] * 0.12
+                        support_y = p.tactical_anchor[1] * 0.90 + ball_pos[1] * 0.10
+                        support_pos = self.pitch.clamp(support_x, support_y)
+                        support_dist = distance(p.pos, support_pos)
+                        support_score = (
+                            0.05
+                            + min(0.24, nearby_teammates * 0.08)
+                            + min(0.08, support_dist / 80.0)
+                            + (1.0 - first_ball_value) * 0.08
+                        )
+
+                        if contest_score > support_score:
+                            p.target_pos = ball_pos
+                            p.movement_intent = "contest"
+                        else:
+                            p.target_pos = support_pos
+                            p.movement_intent = "recover_shape"
 
                 team.move_all(self.config, self.pitch)
 
             # If contested too long, award to closest
-            if self.ball.contested_ticks > 5 and best_player and best_team:
+            if forced_win and best_player and best_team:
                 self._give_ball(best_player, best_team)
 
         # Track possession (neutral during contested)
@@ -1437,6 +2186,42 @@ class MatchV2:
         holder_action_type: str,
     ):
         """Nudge responsible defenders toward the latest carrier position."""
+        defenders = [
+            p for p in opp_team.players
+            if not p.is_goalkeeper and p.state != PlayerState.STUNNED
+        ]
+        ball_is_held_by_holder = (
+            self.ball.state == BallState.HELD
+            and self.ball.holder_team == holder_team.side
+            and self.ball.holder_idx == holder.index
+        )
+        from .rust_adapter import defensive_pressure_adjust_plan_rust
+
+        pressure_adjustments = defensive_pressure_adjust_plan_rust(
+            holder,
+            holder_team.attacking_right,
+            opp_team.attacking_right,
+            holder_action_type,
+            ball_is_held_by_holder,
+            defenders,
+            self.config,
+        )
+        for defender in defenders:
+            adjustment = pressure_adjustments.get(defender.index)
+            if adjustment is None:
+                continue
+            defender.target_pos = adjustment["target"]
+            if adjustment["movement_intent"] is not None:
+                defender.movement_intent = adjustment["movement_intent"]
+
+    def _adjust_defensive_pressure_targets_after_carry_legacy(
+        self,
+        holder_team: Team,
+        opp_team: Team,
+        holder: Player,
+        holder_action_type: str,
+    ):
+        """Legacy Python pressure-target composition for parity checks."""
         if holder_action_type not in ("carry", "hold"):
             return
         if (
@@ -1547,16 +2332,22 @@ class MatchV2:
         atk_team.compute_dynamic_positions(target_pos, self.config, self.pitch, opponent_players=def_team.players)
         def_team.compute_dynamic_positions(target_pos, self.config, self.pitch, opponent_players=atk_team.players)
 
+        from .rust_adapter import flight_movement_plan_rust
+
+        movement_plan = flight_movement_plan_rust(
+            target_pos,
+            self.ball.flight,
+            atk_team,
+            def_team,
+            self.config,
+        )
+
         for p in atk_team.players:
+            planned = movement_plan.get((atk_team.side, p.index), {})
             if p.state == PlayerState.STUNNED:
                 p.tick_stun(self.config)
                 continue
-            dist_to_target = distance(p.pos, target_pos)
-            if (
-                self.ball.flight
-                and p.index != self.ball.flight.passer_idx
-                and dist_to_target < self.config.contested_race_radius * 1.35
-            ):
+            if planned.get("action") == "attack_ai":
                 p.choose_off_ball_attack(
                     target_pos, self.config, self.pitch, atk_team.attacking_right,
                     opponents=def_team.players, teammates=atk_team.players,
@@ -1565,24 +2356,21 @@ class MatchV2:
                     trace=self.trace,
                 )
             else:
-                support_x = p.tactical_anchor[0] * 0.86 + target_pos[0] * 0.14
-                support_y = p.tactical_anchor[1] * 0.88 + target_pos[1] * 0.12
-                p.set_movement_target(self.pitch.clamp(support_x, support_y), "recover_shape")
+                p.set_movement_target(planned.get("target", p.tactical_anchor), "recover_shape")
             p.move_tick(self.config, self.pitch)
 
         for p in def_team.players:
+            planned = movement_plan.get((def_team.side, p.index), {})
             if p.state == PlayerState.STUNNED:
                 p.tick_stun(self.config)
                 continue
-            if distance(p.pos, target_pos) < self.config.contested_race_radius * 1.25:
+            if planned.get("action") == "defense_ai":
                 p.choose_off_ball_defend(
                     target_pos, self.config, self.pitch, def_team.attacking_right,
                     opponents=atk_team.players, teammates=def_team.players,
                 )
             else:
-                support_x = p.tactical_anchor[0] * 0.88 + target_pos[0] * 0.12
-                support_y = p.tactical_anchor[1] * 0.90 + target_pos[1] * 0.10
-                p.set_movement_target(self.pitch.clamp(support_x, support_y), "defend_shape")
+                p.set_movement_target(planned.get("target", p.tactical_anchor), "defend_shape")
             p.move_tick(self.config, self.pitch)
 
     # -------------------------------------------------------------------------
@@ -1603,61 +2391,25 @@ class MatchV2:
 
     def _track_pass_stats(self, passer, origin, target, attacking_right: bool):
         """Track progressive pass, passes into box, long pass, key pass stats."""
-        dist = distance(origin, target)
-        forward_dir = 1.0 if attacking_right else -1.0
-        progress = (target[0] - origin[0]) * forward_dir
-        origin_progress = origin[0] / self.pitch.length if attacking_right else (self.pitch.length - origin[0]) / self.pitch.length
-        target_progress = target[0] / self.pitch.length if attacking_right else (self.pitch.length - target[0]) / self.pitch.length
-        origin_wide = abs(origin[1] - self.pitch.width / 2) > self.pitch.width * 0.28
-        target_in_box = (
-            target_progress > (1.0 - 16.5 / self.pitch.length)
-            and abs(target[1] - self.pitch.width / 2) < 20.2
-        )
-        if origin_wide and target_in_box and progress > 3.0:
-            passer.crosses_attempted += 1
-            passer.crosses_completed += 1
+        from .rust_adapter import track_pass_stats_rust
 
-        # Progressive pass: moves ball >10m toward opponent goal
-        if progress > 10.0:
-            passer.progressive_passes += 1
-
-        # Long pass
-        if dist > 30.0:
-            passer.long_passes += 1
-            passer.completed_long_passes += 1
-
-        # Pass into final third
-        if attacking_right:
-            if target[0] > self.pitch.length * 2 / 3:
-                passer.passes_into_final_third += 1
-            if target[0] > self.pitch.length - 16.5 and abs(target[1] - self.pitch.width / 2) < 20.2:
-                passer.passes_into_box += 1
-        else:
-            if target[0] < self.pitch.length / 3:
-                passer.passes_into_final_third += 1
-            if target[0] < 16.5 and abs(target[1] - self.pitch.width / 2) < 20.2:
-                passer.passes_into_box += 1
+        stats = track_pass_stats_rust(origin, target, attacking_right, self.config)
+        passer.crosses_attempted += stats["crosses_attempted"]
+        passer.crosses_completed += stats["crosses_completed"]
+        passer.progressive_passes += stats["progressive_passes"]
+        passer.long_passes += stats["long_passes"]
+        passer.completed_long_passes += stats["completed_long_passes"]
+        passer.passes_into_final_third += stats["passes_into_final_third"]
+        passer.passes_into_box += stats["passes_into_box"]
 
     def _track_carry_stats(self, player, old_pos, new_pos, attacking_right: bool):
         """Track progressive carries, carries into box."""
-        forward_dir = 1.0 if attacking_right else -1.0
-        progress = (new_pos[0] - old_pos[0]) * forward_dir
+        from .rust_adapter import track_carry_stats_rust
 
-        if progress > 5.0:
-            player.progressive_carries += 1
-
-        if attacking_right:
-            if new_pos[0] > self.pitch.length * 2 / 3 and old_pos[0] <= self.pitch.length * 2 / 3:
-                player.carries_into_final_third += 1
-            if new_pos[0] > self.pitch.length - 16.5 and abs(new_pos[1] - self.pitch.width / 2) < 20.2:
-                if old_pos[0] <= self.pitch.length - 16.5:
-                    player.carries_into_box += 1
-        else:
-            if new_pos[0] < self.pitch.length / 3 and old_pos[0] >= self.pitch.length / 3:
-                player.carries_into_final_third += 1
-            if new_pos[0] < 16.5 and abs(new_pos[1] - self.pitch.width / 2) < 20.2:
-                if old_pos[0] >= 16.5:
-                    player.carries_into_box += 1
+        stats = track_carry_stats_rust(old_pos, new_pos, attacking_right, self.config)
+        player.progressive_carries += stats["progressive_carries"]
+        player.carries_into_final_third += stats["carries_into_final_third"]
+        player.carries_into_box += stats["carries_into_box"]
 
     def _is_offside(self, receiver, attacking_team, defending_team, pass_origin=None) -> bool:
         """Check if receiver is in an offside position.
@@ -1666,54 +2418,28 @@ class MatchV2:
         at the moment the pass was played, AND in opponent's half.
         pass_origin: ball position when the pass was made.
         """
-        if receiver.is_goalkeeper:
-            return False
+        from .rust_adapter import is_offside_rust
 
-        # Use pass origin for the 'ahead of ball' check, NOT current ball position
         ball_x = pass_origin[0] if pass_origin else self.ball.position[0]
-
-        if attacking_team.attacking_right:
-            if receiver.pos[0] <= self.pitch.length / 2:
-                return False
-
-            # Defenders protect goal at x=105: last defender = highest x
-            def_xs = sorted(
-                [p.pos[0] for p in defending_team.players if not p.is_goalkeeper],
-                reverse=True
-            )
-            offside_line = def_xs[1] if len(def_xs) >= 2 else def_xs[0] if def_xs else self.pitch.length
-
-            return receiver.pos[0] > offside_line and receiver.pos[0] > ball_x
-        else:
-            if receiver.pos[0] >= self.pitch.length / 2:
-                return False
-
-            # Defenders protect goal at x=0: last defender = lowest x
-            def_xs = sorted(
-                [p.pos[0] for p in defending_team.players if not p.is_goalkeeper],
-                reverse=False
-            )
-            offside_line = def_xs[1] if len(def_xs) >= 2 else def_xs[0] if def_xs else 0.0
-
-            return receiver.pos[0] < offside_line and receiver.pos[0] < ball_x
+        return is_offside_rust(receiver, attacking_team, defending_team, ball_x, self.config)
 
     def _give_ball(self, player: Player, team: Team, receive_origin: Tuple[float, float] = None):
         """Give the ball to a specific player."""
-        previous_team = self.ball.holder_team
+        from .rust_adapter import give_ball_plan_rust
+
+        give_plan = give_ball_plan_rust(self.ball, player, team, receive_origin)
         # Clear previous holder state
-        if self.ball.holder_team == "home" and self.ball.holder_idx >= 0:
-            if self.ball.holder_idx < len(self.home.players):
-                self.home.players[self.ball.holder_idx].state = PlayerState.OFF_BALL
-                self.home.players[self.ball.holder_idx].current_goal = None
-        elif self.ball.holder_team == "away" and self.ball.holder_idx >= 0:
-            if self.ball.holder_idx < len(self.away.players):
-                self.away.players[self.ball.holder_idx].state = PlayerState.OFF_BALL
-                self.away.players[self.ball.holder_idx].current_goal = None
+        if give_plan["clear_previous_holder"]:
+            previous_team = self.home if give_plan["previous_holder_team"] == "home" else self.away
+            previous_idx = give_plan["previous_holder_idx"]
+            if 0 <= previous_idx < len(previous_team.players):
+                previous_team.players[previous_idx].state = PlayerState.OFF_BALL
+                previous_team.players[previous_idx].current_goal = None
 
         # If ball changes team, clear offside flags (defender touched ball resets offside)
-        if self.ball.holder_team and self.ball.holder_team != team.side:
+        if give_plan["clear_offside_flags"]:
             self._offside_flagged = set()
-        if previous_team != team.side:
+        if give_plan["clear_team_goals"]:
             self._clear_team_goals(self.home)
             self._clear_team_goals(self.away)
 
@@ -1721,9 +2447,9 @@ class MatchV2:
         player.hold_ticks = 0
         player.possession_ticks = 0
         player.consecutive_carries = 0
-        player.last_receive_origin = receive_origin or player.pos
+        player.last_receive_origin = give_plan["last_receive_origin"]
         player.current_goal = None
-        self.ball.set_held(player.index, team.side, player.pos)
+        self.ball.set_held(give_plan["new_holder_idx"], team.side, give_plan["ball_pos"])
 
     # -------------------------------------------------------------------------
     # Restarts
@@ -1732,94 +2458,94 @@ class MatchV2:
     def _handle_out_of_bounds(self, pos: Tuple[float, float], flight: BallFlight):
         """Handle ball going out of bounds."""
         passer_team_side = flight.passer_team
-        other_team = "away" if passer_team_side == "home" else "home"
+        shooter_team = self.home if passer_team_side == "home" else self.away
+        shooter = (
+            shooter_team.players[flight.passer_idx]
+            if flight.flight_type == FlightType.SHOT and 0 <= flight.passer_idx < len(shooter_team.players)
+            else None
+        )
+        from .rust_adapter import out_of_bounds_plan_rust
 
-        # Log shot that went out of bounds (off-target)
-        if flight.flight_type == FlightType.SHOT:
-            shooter_team = self.home if passer_team_side == "home" else self.away
-            shooter = shooter_team.players[flight.passer_idx]
-            attacking_right = shooter_team.attacking_right
-            last_xg = shooter.xg - sum(s.get("xg", 0) for s in shooter.shot_log)
-            shooter.shot_log.append({
-                "x": round(flight.origin[0], 1),
-                "y": round(flight.origin[1], 1),
-                "xg": round(max(0, last_xg), 2),
-                "in_box": self._is_attacking_box_pos(flight.origin, attacking_right),
-                "outcome": "off_target",
-            })
-
-        if self.pitch.is_over_goal_line(pos[0]):
-            if flight.flight_type == FlightType.SHOT:
-                self.ball.set_dead("goal_kick", other_team, self.config.goal_kick_restart_ticks)
-            else:
-                self.ball.set_dead("goal_kick", other_team, self.config.goal_kick_restart_ticks)
-        else:
-            self.ball.set_dead("throw_in", other_team, self.config.throw_in_restart_ticks)
+        out_plan = out_of_bounds_plan_rust(pos, flight, shooter, shooter_team if shooter is not None else None, self.config)
+        if shooter is not None and out_plan["shot_log"] is not None:
+            shooter.shot_log.append(out_plan["shot_log"])
+        self.ball.set_dead(out_plan["reason"], out_plan["restart_team"], out_plan["restart_ticks"])
 
     def _restart_play(self):
         """Restart play after dead ball."""
         restart_team = self.home if self.ball.restart_team == "home" else self.away
         reason = self.ball.dead_reason
         self._prepare_restart_shape(force=True)
+        from .rust_adapter import restart_play_plan_rust
 
-        if reason == "kickoff":
-            self.ball.position = self.pitch.center
-            closest = restart_team.get_closest_to(self.pitch.center, exclude_gk=True)
-            if closest:
-                closest.pos = (self.pitch.center[0], self.pitch.center[1])
-                self._give_ball(closest, restart_team)
-                self._pending_cut = True
+        corner_roll = float(random.randrange(2)) if reason == "corner" else 0.0
+        restart = restart_play_plan_rust(
+            reason,
+            restart_team,
+            self.ball.position,
+            self.config,
+            corner_roll,
+        )
+        self.ball.position = restart["ball_pos"]
+        receiver = (
+            restart_team.players[restart["receiver_idx"]]
+            if restart["receiver_idx"] is not None
+            and 0 <= restart["receiver_idx"] < len(restart_team.players)
+            else None
+        )
+        if receiver is not None:
+            if restart["set_receiver_pos"]:
+                receiver.pos = restart["ball_pos"]
+                receiver.target_pos = restart["ball_pos"]
+            self._give_ball(receiver, restart_team)
+        if restart["pending_cut"]:
+            self._pending_cut = True
 
-        elif reason == "goal_kick":
-            gk = restart_team.goalkeeper
-            gk.pos = self._goal_kick_spot(restart_team)
-            gk.target_pos = gk.pos
-            self._give_ball(gk, restart_team)
-            self.ball.position = gk.pos
-
-        elif reason == "corner":
-            if restart_team.attacking_right:
-                corner_pos = (self.config.pitch_length - 0.5, random.choice([0.5, self.config.pitch_width - 0.5]))
-            else:
-                corner_pos = (0.5, random.choice([0.5, self.config.pitch_width - 0.5]))
-
-            self.ball.position = corner_pos
-            closest = restart_team.get_closest_to(corner_pos, exclude_gk=True)
-            if closest:
-                closest.pos = corner_pos
-                self._give_ball(closest, restart_team)
-
-        elif reason == "throw_in":
-            ball_pos = self.ball.position
-            ball_pos = self.pitch.clamp(ball_pos[0], ball_pos[1])
-            self.ball.position = ball_pos
-            closest = restart_team.get_closest_to(ball_pos, exclude_gk=True)
-            if closest:
-                self._give_ball(closest, restart_team)
-
-        elif reason == "offside":
-            # Free kick to defending team from offside position
-            ball_pos = self.ball.position
-            ball_pos = self.pitch.clamp(ball_pos[0], ball_pos[1])
-            self.ball.position = ball_pos
-            closest = restart_team.get_closest_to(ball_pos, exclude_gk=True)
-            if closest:
-                self._give_ball(closest, restart_team)
-
-        else:
-            # Fallback: give ball to closest player on restart team
-            ball_pos = self.ball.position
-            ball_pos = self.pitch.clamp(ball_pos[0], ball_pos[1])
-            closest = restart_team.get_closest_to(ball_pos, exclude_gk=True)
-            if closest:
-                self._give_ball(closest, restart_team)
-
-        self.last_passer_idx = -1
-        self.last_passer_team = ""
-        self._offside_flagged: set = set()  # player indices flagged offside at pass time
+        if restart["reset_last_passer"]:
+            self.last_passer_idx = -1
+            self.last_passer_team = ""
+        if restart["clear_offside_flags"]:
+            self._offside_flagged = set()  # player indices flagged offside at pass time
 
     def _prepare_restart_shape(self, force: bool = False):
         """Move players toward restart-specific shape while the ball is dead."""
+        if self.ball.restart_team not in ("home", "away"):
+            return
+        restart_team = self.home if self.ball.restart_team == "home" else self.away
+        defending_team = self.away if restart_team.side == "home" else self.home
+        from .rust_adapter import restart_shape_plan_rust
+
+        restart_shape = restart_shape_plan_rust(
+            self.ball.dead_reason,
+            force,
+            restart_team,
+            defending_team,
+            self.config,
+        )
+        if not restart_shape["has_shape"]:
+            return
+        for team in (restart_team, defending_team):
+            for player in team.players:
+                result = restart_shape["targets"].get((team.side, player.index))
+                if result is None:
+                    continue
+                target = result["target"]
+                player.state = PlayerState.OFF_BALL
+                if force:
+                    player.movement_intent = "recover_shape"
+                    player.target_pos = target
+                    if result["snap"]:
+                        player.pos = target
+                        player.velocity = (0.0, 0.0)
+                    else:
+                        player.move_tick(self.config, self.pitch)
+                else:
+                    player.set_movement_target(target, "recover_shape")
+                    player.move_tick(self.config, self.pitch)
+        self.ball.position = restart_shape["ball_pos"]
+
+    def _prepare_restart_shape_legacy(self, force: bool = False):
+        """Legacy Python composition for restart shape parity fallback."""
         if self.ball.restart_team not in ("home", "away"):
             return
         restart_team = self.home if self.ball.restart_team == "home" else self.away
@@ -1851,106 +2577,40 @@ class MatchV2:
         self.ball.position = ball_pos
 
     def _must_leave_penalty_area_for_goal_kick(self, player: Player, restart_team: Team) -> bool:
-        if player.team_side == restart_team.side:
-            return False
-        if restart_team.attacking_right:
-            return player.pos[0] < 16.5
-        return player.pos[0] > self.pitch.length - 16.5
+        from .rust_adapter import must_leave_penalty_area_for_goal_kick_rust
+
+        return must_leave_penalty_area_for_goal_kick_rust(player, restart_team, self.config)
 
     def _goal_kick_spot(self, team: Team) -> Tuple[float, float]:
-        x = 6.0 if team.attacking_right else self.config.pitch_length - 6.0
-        return (x, self.pitch.width / 2.0)
+        from .rust_adapter import goal_kick_spot_rust
+
+        return goal_kick_spot_rust(team, self.config)
 
     def _goal_kick_shape_targets(self, restart_team: Team, defending_team: Team) -> List[Tuple[Player, Tuple[float, float]]]:
         """Goal-kick setup using formation depth as a reusable set-piece shape."""
+        from .rust_adapter import goal_kick_shape_targets_rust
+
+        rust_targets = goal_kick_shape_targets_rust(restart_team, defending_team, self.config)
         targets: List[Tuple[Player, Tuple[float, float]]] = []
-
-        def progress_of(pos: Tuple[float, float], team: Team) -> float:
-            return pos[0] / self.pitch.length if team.attacking_right else (self.pitch.length - pos[0]) / self.pitch.length
-
-        def x_from_progress(progress: float, team: Team) -> float:
-            return progress * self.pitch.length if team.attacking_right else (1.0 - progress) * self.pitch.length
-
-        def target_progress(base_progress: float, attacking: bool, is_gk: bool) -> float:
-            if is_gk:
-                return 6.0 / self.pitch.length
-            if attacking:
-                if base_progress < 0.28:
-                    return 0.18 + base_progress * 0.42
-                if base_progress < 0.52:
-                    return 0.34 + (base_progress - 0.28) / 0.24 * 0.18
-                if base_progress < 0.70:
-                    return 0.52 + (base_progress - 0.52) / 0.18 * 0.12
-                return 0.64 + (base_progress - 0.70) / 0.30 * 0.12
-            return base_progress
-
-        def defending_distance_from_restart_goal(player: Player) -> float:
-            if player.is_goalkeeper:
-                return self.pitch.length - 6.0
-            if player.is_attacker:
-                return 34.0
-            if player.is_midfielder:
-                return 48.0
-            if player.is_defender:
-                return 63.0
-            return 70.0
-
-        for team, attacking in ((restart_team, True), (defending_team, False)):
-            ball_side = -1.0 if restart_team.attacking_right else 1.0
+        for team in (restart_team, defending_team):
             for player in team.players:
-                base_progress = progress_of(player.base_formation_pos, team)
-                base_width = player.base_formation_pos[1] - self.pitch.width / 2.0
-                if attacking:
-                    progress = target_progress(base_progress, attacking, player.is_goalkeeper)
-                    x = x_from_progress(progress, team)
-                    width_scale = 1.08
-                    y = self.pitch.width / 2.0 + base_width * width_scale
-                else:
-                    distance_from_goal = defending_distance_from_restart_goal(player)
-                    if restart_team.attacking_right:
-                        x = distance_from_goal
-                    else:
-                        x = self.pitch.length - distance_from_goal
-                    width_scale = 0.92
-                    y = self.pitch.width / 2.0 + base_width * width_scale
-                    y += ball_side * 2.2
-                targets.append((player, self.pitch.clamp(x, y)))
-        targets = [
-            (player, target)
-            for player, target in targets
-            if player is not restart_team.goalkeeper
-        ]
+                target = rust_targets.get((team.side, player.index))
+                if target is not None and player is not restart_team.goalkeeper:
+                    targets.append((player, target))
         targets.append((restart_team.goalkeeper, self._goal_kick_spot(restart_team)))
         return targets
 
     def _kickoff_shape_targets(self, restart_team: Team, other_team: Team) -> List[Tuple[Player, Tuple[float, float]]]:
         """Kickoff setup compressed into each team's own half."""
+        from .rust_adapter import kickoff_shape_targets_rust
+
+        shape = kickoff_shape_targets_rust(restart_team, other_team, self.config)
         targets: List[Tuple[Player, Tuple[float, float]]] = []
-        half_x = self.pitch.length / 2.0
-
-        def team_targets(team: Team) -> List[Tuple[Player, Tuple[float, float]]]:
-            rows = []
-            for player, base in zip(team.players, team._formation_coords):
-                progress = base[0] / self.pitch.length if team.attacking_right else (self.pitch.length - base[0]) / self.pitch.length
-                compressed_progress = progress * 0.48
-                if team.attacking_right:
-                    x = max(0.5, min(half_x - 1.0, compressed_progress * self.pitch.length))
-                else:
-                    x = min(self.pitch.length - 0.5, max(half_x + 1.0, self.pitch.length - compressed_progress * self.pitch.length))
-                rows.append((player, self.pitch.clamp(x, base[1])))
-            return rows
-
-        targets.extend(team_targets(restart_team))
-        targets.extend(team_targets(other_team))
-
-        forward_positions = {"ST", "CF", "LW", "RW", "LF", "RF", "LS", "RS"}
-        forward_candidates = [p for p in restart_team.players if p.position in forward_positions]
-        kicker = min(forward_candidates, key=lambda p: distance(p.pos, self.pitch.center), default=None)
-        if kicker is None:
-            kicker = restart_team.get_closest_to(self.pitch.center, exclude_gk=True)
-        if kicker:
-            targets = [(player, target) for player, target in targets if player is not kicker]
-            targets.append((kicker, self.pitch.center))
+        for team in (restart_team, other_team):
+            for player in team.players:
+                target = shape["targets"].get((team.side, player.index))
+                if target is not None:
+                    targets.append((player, target))
         return targets
 
     def _kickoff(self, team_side: str):
@@ -1962,32 +2622,15 @@ class MatchV2:
         self.ball.position = self.pitch.center
         team = self.home if team_side == "home" else self.away
         other_team = self.away if team_side == "home" else self.home
-        half_x = self.pitch.length / 2.0
-
-        def place_team_in_own_half(t):
-            for p, base in zip(t.players, t._formation_coords):
-                progress = base[0] / self.pitch.length if t.attacking_right else (self.pitch.length - base[0]) / self.pitch.length
-                compressed_progress = progress * 0.48
-                if t.attacking_right:
-                    x = max(0.5, min(half_x - 1.0, compressed_progress * self.pitch.length))
-                else:
-                    x = min(self.pitch.length - 0.5, max(half_x + 1.0, self.pitch.length - compressed_progress * self.pitch.length))
-                p.pos = self.pitch.clamp(x, base[1])
-                p.target_pos = p.pos
-                p.tactical_anchor = p.pos
-
-        place_team_in_own_half(team)
-        place_team_in_own_half(other_team)
-
-        # Kicker at center
-        forward_positions = {"ST", "CF", "LW", "RW", "LF", "RF", "LS", "RS"}
-        forward_candidates = [p for p in team.players if p.position in forward_positions]
-        kicker = min(forward_candidates, key=lambda p: distance(p.pos, self.pitch.center), default=None)
-        if kicker is None:
-            kicker = team.get_closest_to(self.pitch.center, exclude_gk=True)
+        targets = self._kickoff_shape_targets(team, other_team)
+        kicker = None
+        for player, target in targets:
+            player.pos = target
+            player.target_pos = target
+            player.tactical_anchor = target
+            if target == self.pitch.center and player.team_side == team.side:
+                kicker = player
         if kicker:
-            kicker.pos = self.pitch.center
-            kicker.target_pos = kicker.pos
             self._give_ball(kicker, team)
         self._pending_cut = True
         self._record_frame()

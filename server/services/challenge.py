@@ -198,25 +198,7 @@ class ChallengeService:
             async def finish(self, *a, **kw): pass
 
         game = Game(NoOpMatcher(), u, 0, npc_idx, difficulty)
-        game.mode = 1
-        game.init_replay_recorder()
-        game.resetPosition()
-        if hasattr(game, 'recorder'):
-            game.recorder.record_frame(game)
-        while game.time < 45 * 60:
-            game.play_possession()
-        game.half = "下半时"
-        game.time = 0
-        if game.offence is game.home:
-            game.swap()
-        game.resetPosition()
-        game.changeBallHolderToOpen()
-        if hasattr(game, 'recorder'):
-            game.recorder.record_frame(game)
-        while game.time < 45 * 60:
-            game.play_possession()
-
-        result = game.to_result()
+        result = game.run_simulation()
 
         if result.home_stats.point > result.away_stats.point:
             match_result = "win"
@@ -267,12 +249,11 @@ class ChallengeService:
         )
 
         replay_url = None
-        game.replay_path = game.save_replay() if hasattr(game, 'recorder') else ""
-        if game.replay_path:
+        if result.replay_path:
             from model.globalAttr import Global
             base_url = Global.get("replay_base_url", "http://122.51.203.110:8888")
             from utils.replay_server import replay_url as make_url
-            replay_url = make_url(base_url, game.replay_path)
+            replay_url = make_url(base_url, result.replay_path)
 
         return {
             "home_name": result.home_stats.name,

@@ -227,3 +227,50 @@ async def _test_challenge_award_and_npc_formation(core_modules, make_user, monke
     assert len(items.entries) == 1
     assert items.entries[0].name == "初级"
     assert items.entries[0].count == 2
+
+
+def test_web_challenge_uses_rust_match_runner(
+    core_modules, make_user, monkeypatch, tmp_path
+):
+    Formation = core_modules["model.formation"].Formation
+    formation_kernel = core_modules["kernel.formation"]
+    Game = core_modules["engine.game"].Game
+    from server.services.challenge import ChallengeService
+
+    user = make_user(20008, "web-challenger", money=0)
+    build_full_squad(core_modules, user, star=3)
+
+    async def finish_no_raise(*args, **kwargs):
+        return None
+
+    monkeypatch.setattr(formation_kernel.get_team, "finish", finish_no_raise)
+    asyncio.run(formation_kernel.auto_update(user))
+    assert Formation.getFormation(user).isValid()
+
+    observed = {}
+    original_run_simulation = Game.run_simulation
+
+    def tracked_run_simulation(game):
+        result = original_run_simulation(game)
+        observed["backend"] = game.engine_backend
+        observed["trace_id"] = game.engine_trace_id
+        observed["replay_path"] = result.replay_path
+        return result
+
+    def reject_legacy_loop(*args, **kwargs):
+        raise AssertionError("Web challenge must not call the legacy possession loop")
+
+    monkeypatch.setattr(Game, "run_simulation", tracked_run_simulation)
+    monkeypatch.setattr(Game, "play_possession", reject_legacy_loop)
+    monkeypatch.setenv("PSL_PROJECT_DIR", str(tmp_path))
+
+    payload = ChallengeService(None).play(user.qq, "简单")
+
+    assert observed["backend"] == "rust_match_v2"
+    assert observed["trace_id"].startswith("rust-match-v2")
+    assert observed["replay_path"]
+    assert len(payload["home_player_stats"]) == 11
+    assert len(payload["away_player_stats"]) == 11
+    assert payload["home_score"] >= 0
+    assert payload["away_score"] >= 0
+    assert payload["replay_url"]

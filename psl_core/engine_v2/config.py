@@ -88,6 +88,120 @@ class EngineConfig:
     goal_continuity_enabled: bool = True
     goal_cut_inside_bias: float = 0.035
     goal_noise_scale: float = 0.008
+    rust_on_ball_full_decision_adapter_enabled: bool = True
+    rust_pass_batch_adapter_enabled: bool = True
+    rust_on_ball_evaluator_adapter_enabled: bool = True
+    rust_on_ball_selection_adapter_enabled: bool = True
+    rust_state_value_adapter_enabled: bool = True
+    rust_position_value_adapter_enabled: bool = True
+    rust_shot_option_adapter_enabled: bool = True
+    rust_carry_target_sampling_adapter_enabled: bool = True
+    rust_carry_path_adapter_enabled: bool = True
+    rust_carry_finalize_adapter_enabled: bool = True
+    rust_carry_options_adapter_enabled: bool = True
+    rust_off_ball_attack_scoring_adapter_enabled: bool = True
+    rust_off_ball_attack_raw_adapter_enabled: bool = False
+    rust_off_ball_attack_choice_adapter_enabled: bool = True
+    rust_off_ball_defense_scoring_adapter_enabled: bool = True
+    rust_off_ball_defense_raw_adapter_enabled: bool = True
+    rust_off_ball_defense_choice_adapter_enabled: bool = True
+    rust_interaction_detection_adapter_enabled: bool = True
+    rust_interaction_resolution_adapter_enabled: bool = True
+    rust_carry_execution_adapter_enabled: bool = True
+    rust_pass_execution_adapter_enabled: bool = True
+    rust_shot_execution_adapter_enabled: bool = True
+    rust_clear_execution_adapter_enabled: bool = True
+    rust_hold_execution_adapter_enabled: bool = True
+    rust_phase_plan_adapter_enabled: bool = True
+    rust_pass_arrival_adapter_enabled: bool = True
+    rust_shot_arrival_adapter_enabled: bool = True
+    rust_clearance_arrival_adapter_enabled: bool = True
+    rust_first_touch_adapter_enabled: bool = True
+    rust_contested_owner_adapter_enabled: bool = True
+    rust_contested_targets_adapter_enabled: bool = True
+    rust_generic_on_ball_goal_adapter_enabled: bool = True
+    rust_specialized_on_ball_bias_adapter_enabled: bool = True
+    rust_cut_inside_goal_adapter_enabled: bool = True
+    rust_byline_goal_adapter_enabled: bool = True
+    rust_through_ball_goal_adapter_enabled: bool = True
+    rust_overlap_goal_adapter_enabled: bool = True
+    rust_layoff_goal_adapter_enabled: bool = True
+    rust_release_support_goal_adapter_enabled: bool = True
+    rust_hold_opportunity_goal_adapter_enabled: bool = True
+    rust_overlap_selection_adapter_enabled: bool = True
+    rust_byline_carry_selection_adapter_enabled: bool = True
+    rust_layoff_selection_adapter_enabled: bool = True
+    rust_arriving_support_selection_adapter_enabled: bool = True
+    rust_hold_support_selection_adapter_enabled: bool = True
+    rust_goal_candidate_selection_adapter_enabled: bool = True
+    rust_support_opportunity_cost_adapter_enabled: bool = True
+    rust_clear_target_adapter_enabled: bool = True
+    rust_gk_fallback_target_adapter_enabled: bool = True
+    rust_gk_choice_adapter_enabled: bool = True
+    rust_softmax_selection_adapter_enabled: bool = True
+    rust_player_move_speed_adapter_enabled: bool = True
+    rust_player_move_tick_adapter_enabled: bool = True
+    rust_player_set_movement_target_adapter_enabled: bool = True
+    rust_team_shape_plan_adapter_enabled: bool = True
+    rust_full_match_runner_enabled: bool = True
+
+    def enable_rust_adapters_for_verified_on_ball(self):
+        """Enable currently parity-verified Rust adapter slices."""
+        self.rust_on_ball_full_decision_adapter_enabled = True
+        self.rust_pass_batch_adapter_enabled = True
+        self.rust_on_ball_evaluator_adapter_enabled = True
+        self.rust_on_ball_selection_adapter_enabled = True
+        self.rust_state_value_adapter_enabled = True
+        self.rust_position_value_adapter_enabled = True
+        self.rust_shot_option_adapter_enabled = True
+        self.rust_carry_target_sampling_adapter_enabled = True
+        self.rust_carry_path_adapter_enabled = True
+        self.rust_carry_finalize_adapter_enabled = True
+        self.rust_carry_options_adapter_enabled = True
+        self.rust_off_ball_attack_scoring_adapter_enabled = True
+        self.rust_off_ball_attack_choice_adapter_enabled = True
+        self.rust_off_ball_defense_scoring_adapter_enabled = True
+        self.rust_off_ball_defense_raw_adapter_enabled = True
+        self.rust_off_ball_defense_choice_adapter_enabled = True
+        self.rust_interaction_detection_adapter_enabled = True
+        self.rust_interaction_resolution_adapter_enabled = True
+        self.rust_carry_execution_adapter_enabled = True
+        self.rust_pass_execution_adapter_enabled = True
+        self.rust_shot_execution_adapter_enabled = True
+        self.rust_clear_execution_adapter_enabled = True
+        self.rust_hold_execution_adapter_enabled = True
+        self.rust_phase_plan_adapter_enabled = True
+        self.rust_pass_arrival_adapter_enabled = True
+        self.rust_shot_arrival_adapter_enabled = True
+        self.rust_clearance_arrival_adapter_enabled = True
+        self.rust_first_touch_adapter_enabled = True
+        self.rust_contested_owner_adapter_enabled = True
+        self.rust_contested_targets_adapter_enabled = True
+        self.rust_generic_on_ball_goal_adapter_enabled = True
+        self.rust_specialized_on_ball_bias_adapter_enabled = True
+        self.rust_cut_inside_goal_adapter_enabled = True
+        self.rust_byline_goal_adapter_enabled = True
+        self.rust_through_ball_goal_adapter_enabled = True
+        self.rust_overlap_goal_adapter_enabled = True
+        self.rust_layoff_goal_adapter_enabled = True
+        self.rust_release_support_goal_adapter_enabled = True
+        self.rust_hold_opportunity_goal_adapter_enabled = True
+        self.rust_overlap_selection_adapter_enabled = True
+        self.rust_byline_carry_selection_adapter_enabled = True
+        self.rust_layoff_selection_adapter_enabled = True
+        self.rust_arriving_support_selection_adapter_enabled = True
+        self.rust_hold_support_selection_adapter_enabled = True
+        self.rust_goal_candidate_selection_adapter_enabled = True
+        self.rust_support_opportunity_cost_adapter_enabled = True
+        self.rust_clear_target_adapter_enabled = True
+        self.rust_gk_fallback_target_adapter_enabled = True
+        self.rust_gk_choice_adapter_enabled = True
+        self.rust_softmax_selection_adapter_enabled = True
+        self.rust_player_move_speed_adapter_enabled = True
+        self.rust_player_move_tick_adapter_enabled = True
+        self.rust_player_set_movement_target_adapter_enabled = True
+        self.rust_team_shape_plan_adapter_enabled = True
+        return self
 
     # Formation positioning
     formation_pull_strength: float = 0.5  # how strongly players return to formation
@@ -242,6 +356,7 @@ class EngineConfig:
 
 # Default config keys for GameConfigService integration
 ENGINE_V2_CONFIG_KEYS = {
+    "engine_v2.rust_full_match_runner_enabled": True,
     "engine_v2.tick_duration": 2.0,
     "engine_v2.total_ticks": 2700,
     "engine_v2.frame_interval": 2,

@@ -69,13 +69,19 @@ def squad_db(tmp_path):
             Total_Tackle INTEGER DEFAULT 0, Total_Save INTEGER DEFAULT 0,
             Locked INTEGER DEFAULT 0,
             Ext_Abilities TEXT DEFAULT NULL,
-            Breach INTEGER DEFAULT 0
+            Breach INTEGER DEFAULT 0,
+            Talents TEXT DEFAULT NULL
         );
         CREATE TABLE team (
             ID INTEGER PRIMARY KEY AUTOINCREMENT,
             User INTEGER NOT NULL,
             Card INTEGER NOT NULL,
             Position INTEGER NOT NULL
+        );
+        CREATE TABLE "global" (
+            ID INTEGER PRIMARY KEY AUTOINCREMENT,
+            Name TEXT NOT NULL UNIQUE,
+            Value TEXT DEFAULT NULL
         );
 
         INSERT INTO users (QQ, Name, Money, Formation) VALUES (10001, 'Alice', 5000, '442');

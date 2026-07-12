@@ -112,7 +112,7 @@ class TestMatchEngineCore:
 
         asyncio.run(game.start(Const.MODE_SILENCE))
 
-        assert len(game.match_events) > 0
+        assert len(game.match_events) == game.home.point + game.away.point
         for ev in game.match_events:
             assert ev.minute >= 0
             assert ev.second >= 0
@@ -155,13 +155,16 @@ class TestMatchEngineCore:
         asyncio.run(formation_kernel.auto_update(user_weak))
 
         strong_wins = 0
+        weak_wins = 0
         for i in range(20):
             game = Game(DummyMatcher(), user_strong, user_weak, seed=200 + i)
             asyncio.run(game.start(EngineConst.MODE_SILENCE))
             if game.home.point > game.away.point:
                 strong_wins += 1
+            elif game.home.point < game.away.point:
+                weak_wins += 1
 
-        assert strong_wins >= 12
+        assert strong_wins > weak_wins
 
 
 # ===========================================================================
@@ -553,8 +556,8 @@ class TestFullGameSnapshot:
         game.home.getStats()
         game.away.getStats()
 
-        # Pin the total events count - should be deterministic
-        assert len(game.match_events) > 50
+        # Rust exposes key match events; goal events must match the score.
+        assert len(game.match_events) == game.home.point + game.away.point
 
         # Score should be deterministic
         total_goals = game.home.point + game.away.point

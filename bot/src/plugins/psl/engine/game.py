@@ -10,8 +10,11 @@ from utils.image import toImage
 from engine.display import Display
 from presentation.stats import _display_width, _format_stat_line
 from config import PROJECT_DIR
+import json
+import os
 import random
 import math
+import re
 import time
 from dataclasses import dataclass
 
@@ -54,6 +57,7 @@ class Game:
         self.match_events = []
         self.current_events = []
         self.mode = Const.MODE_NORMAL
+        self.seed = seed
         self.rng = rng or random.Random(seed)
         self.commentary = CommentaryRenderer(self.rng)
         self.possession_action_count = 0
@@ -113,6 +117,294 @@ class Game:
             total += player.ability["Finishing"] + player.ability["Short_Passing"] + player.ability["Dribbling"] + player.ability["Defence"]
         return total / max(1, len(team.players) * 4)
 
+    def _load_engine_v2_context(self):
+        if hasattr(self, "_engine_v2_context"):
+            return self._engine_v2_context
+
+        from psl_core.engine_v2.config import EngineConfig, load_config_from_service
+
+        version = "v2"
+        config = EngineConfig()
+        try:
+            from server.database import Database
+            from server.services.game_config import GameConfigService
+
+            db_path = os.environ.get("PSL_DB_PATH", os.path.join(PROJECT_DIR, "psl.db"))
+            config_db = Database(db_path)
+            try:
+                config_service = GameConfigService(config_db)
+                version = str(config_service.get("engine_v2.engine_version"))
+                config = load_config_from_service(config_service)
+            finally:
+                config_db.close()
+        except Exception:
+            # Engine V2 with the Rust full runner is the production-safe default.
+            version = "v2"
+            config.rust_full_match_runner_enabled = True
+
+        self._engine_v2_context = (version, config)
+        return self._engine_v2_context
+
+    def _should_use_engine_v2(self):
+        version, _ = self._load_engine_v2_context()
+        return version == "v2"
+
+    def _formation_key(self, team):
+        formation = getattr(team.coach, "formation", "442")
+        return formation if formation else "442"
+
+    def _rust_card_payload(self, player):
+        card = player.card
+        colored_name = card.getNameWithColor()
+        color_match = re.match(r"/~([^/])", colored_name)
+        try:
+            overall = card.getRealOverall(player.position)
+        except Exception:
+            overall = getattr(card, "overall", 50)
+        return {
+            "name": player.getName(False),
+            "player_id": getattr(card.player, "ID", ""),
+            "position": player.position,
+            "color": color_match.group(1) if color_match else "w",
+            "overall": overall,
+            "abilities": dict(player.ability),
+        }
+
+    def _apply_rust_player_stats(self, team, stats):
+        field_map = {
+            "goals": "goals",
+            "assists": "assists",
+            "shots": "shoots",
+            "shots_on_target": "shoots_in_target",
+            "xg": "xg",
+            "npxg": "npxg",
+            "post_shot_xg": "post_shot_xg",
+            "big_chances": "big_chances",
+            "big_chances_missed": "big_chances_missed",
+            "passes": "passes",
+            "completed_passes": "successful_passes",
+            "key_passes": "key_passes",
+            "xa": "xa",
+            "progressive_passes": "progressive_passes",
+            "passes_into_final_third": "passes_into_final_third",
+            "passes_into_box": "passes_into_box",
+            "long_passes": "long_passes",
+            "completed_long_passes": "completed_long_passes",
+            "crosses": "crosses",
+            "successful_crosses": "successful_crosses",
+            "carries": "carries",
+            "progressive_carries": "progressive_carries",
+            "carries_into_final_third": "carries_into_final_third",
+            "carries_into_box": "carries_into_box",
+            "take_ons": "take_ons",
+            "successful_take_ons": "successful_take_ons",
+            "tackles_attempted": "tackle_attempts",
+            "tackles_won": "tackles",
+            "interceptions": "interceptions",
+            "blocks": "blocks",
+            "clearances": "clearances",
+            "pressures": "pressures",
+            "successful_pressures": "successful_pressures",
+            "turnovers": "turnovers",
+            "dispossessed": "dispossessed",
+            "offsides": "offsides",
+            "saves": "saves",
+            "goals_conceded": "goals_conceded",
+            "psxg_faced": "psxg_faced",
+            "goals_prevented": "goals_prevented",
+        }
+        for index, player in enumerate(team.players):
+            player_stats = stats[index] if index < len(stats) else {}
+            for source, target in field_map.items():
+                setattr(player, target, player_stats.get(source, 0))
+
+            player.short_passes = max(0, player.passes - player.long_passes)
+            player.completed_short_passes = max(
+                0, player.successful_passes - player.completed_long_passes
+            )
+            player.dribbles = player.successful_take_ons
+            player.shot_log = list(player_stats.get("shot_log", []))
+            player.position_samples = [
+                tuple(sample) for sample in player_stats.get("position_samples", [])
+            ]
+            player.goals_detailed = []
+            player.current_carry_progress = 0
+
+            pass_network = {}
+            for receiver_idx, count in player_stats.get("pass_network", {}).items():
+                try:
+                    receiver = team.players[int(receiver_idx)]
+                except (ValueError, IndexError, TypeError):
+                    continue
+                pass_network[id(receiver)] = count
+            player.pass_connections = pass_network
+
+    def _find_rust_player(self, team, name):
+        return next(
+            (player for player in team.players if player.getName(False) == name),
+            None,
+        )
+
+    def _apply_rust_goals(self, goals):
+        self.timeline = []
+        self.match_events = []
+        self.current_events = []
+        self.assist_records = []
+        self.event_seq = 0
+        home_score = 0
+        away_score = 0
+
+        for goal in sorted(goals, key=lambda item: int(item.get("minute", 0))):
+            minute = int(goal.get("minute", 0))
+            side = goal.get("team_side", "home")
+            team = self.home if side == "home" else self.away
+            scorer = self._find_rust_player(team, goal.get("scorer", ""))
+            assister = self._find_rust_player(team, goal.get("assister", ""))
+            if scorer is None:
+                continue
+
+            scorer.goals_detailed.append(minute)
+            self.timeline.append((minute, team, scorer, assister))
+            self.assist_records.append({
+                "team": side,
+                "scorer": scorer.getName(False),
+                "assisted": assister is not None,
+                "assister": assister.getName(False) if assister else "",
+                "age_actions": 0 if assister else None,
+                "pass_type": "",
+                "distance": 0,
+                "xg": 0,
+            })
+            event_home_score = home_score
+            event_away_score = away_score
+            if side == "home":
+                home_score += 1
+            else:
+                away_score += 1
+            self.event_seq += 1
+            text = scorer.getName() + " 破门"
+            if assister is not None:
+                text += "，助攻 " + assister.getName()
+            self.match_events.append(MatchEvent(
+                minute=minute,
+                second=0,
+                seq=self.event_seq,
+                event_type="goal",
+                text=text,
+                home_score=event_home_score,
+                away_score=event_away_score,
+                importance=5,
+                team=team,
+                player=scorer,
+                target=assister,
+                result="goal",
+            ))
+
+    def _apply_rust_team_stats(self, team, raw_stats, score):
+        team.getStats()
+        possession = float(raw_stats.get("possession", 50.0))
+        team.point = int(score)
+        team.goals = int(score)
+        team.control = int(round(possession * 54.0))
+        team.shots_in_box = sum(
+            1
+            for player in team.players
+            for shot in player.shot_log
+            if shot.get("in_box")
+        )
+        team.shots_outside_box = max(0, team.shoots - team.shots_in_box)
+        team.xg = round(sum(player.xg for player in team.players), 3)
+        team.open_play_xg = team.xg
+        team.set_piece_xg = 0
+        team.npxg = round(sum(player.npxg for player in team.players), 3)
+        team.adjusted_xg = team.xg
+        team.xt = 0
+        team.final_third_entries = sum(
+            player.passes_into_final_third + player.carries_into_final_third
+            for player in team.players
+        )
+        team.box_entries = sum(
+            player.passes_into_box + player.carries_into_box
+            for player in team.players
+        )
+        team.key_passes = sum(player.key_passes for player in team.players)
+        team.box_touches = team.box_entries
+        team.big_chances = sum(player.big_chances for player in team.players)
+        team.corners = int(raw_stats.get("corners", 0))
+        team.offsides_forced = int(raw_stats.get("offsides_forced", 0))
+        team.possessions = max(1, team.turnovers + team.shoots + team.passes // 4)
+        team.avg_possession_duration = team.control / team.possessions
+        team.zone_stats = {
+            "left_channel_attacks": 0,
+            "center_channel_attacks": 0,
+            "right_channel_attacks": 0,
+            "final_third_entries": team.final_third_entries,
+            "box_entries": team.box_entries,
+            "shots_in_box": team.shots_in_box,
+            "shots_outside_box": team.shots_outside_box,
+        }
+
+    def _save_rust_replay(self):
+        replay_data = getattr(self, "_rust_replay_data", None)
+        if not replay_data:
+            return ""
+
+        header = replay_data[0] if replay_data[0].get("type") == "header" else None
+        if header is not None:
+            header.setdefault("home", {})["name"] = self.home.coach.name
+            header.setdefault("away", {})["name"] = self.away.coach.name
+
+        from engine.replay import ReplayRecorder
+
+        replay_dir = os.path.join(
+            os.environ.get("PSL_PROJECT_DIR", PROJECT_DIR), "data", "replays"
+        )
+        os.makedirs(replay_dir, exist_ok=True)
+        timestamp = time.strftime("%Y%m%d_%H%M%S")
+        match_id = format(getattr(self, "_rust_match_seed", 0), "016x")
+        score = f"{self.home.point}-{self.away.point}"
+        home_name = self.home.coach.name.replace(" ", "_")
+        away_name = self.away.coach.name.replace(" ", "_")
+        filename = f"{timestamp}_{match_id}_{home_name}_{away_name}_{score}.jsonl"
+        filepath = os.path.join(replay_dir, filename)
+        with open(filepath, "w", encoding="utf-8") as replay_file:
+            for frame in replay_data:
+                replay_file.write(json.dumps(frame, ensure_ascii=False) + "\n")
+        ReplayRecorder.cleanup(replay_dir, max_files=100)
+        return filepath
+
+    def _run_engine_v2_match(self):
+        from psl_core.engine_v2.match import MatchV2
+
+        _, config = self._load_engine_v2_context()
+        self._rust_match_seed = (
+            self.seed if self.seed is not None else self.rng.getrandbits(64)
+        )
+        match = MatchV2(
+            [self._rust_card_payload(player) for player in self.home.players],
+            [self._rust_card_payload(player) for player in self.away.players],
+            self._formation_key(self.home),
+            self._formation_key(self.away),
+            config=config,
+            seed=self._rust_match_seed,
+        )
+        result = match.run()
+        self.engine_trace_id = result.trace_id
+        self.engine_backend = (
+            "rust_match_v2"
+            if result.trace_id.startswith("rust-match-v2")
+            else "python_match_v2"
+        )
+        self._rust_replay_data = match.get_replay_data()
+        self._apply_rust_player_stats(self.home, result.home_player_stats)
+        self._apply_rust_player_stats(self.away, result.away_player_stats)
+        self._apply_rust_goals(result.goals)
+        self._apply_rust_team_stats(self.home, result.home_stats, result.home_score)
+        self._apply_rust_team_stats(self.away, result.away_stats, result.away_score)
+        self.half = "下半时"
+        self.time = 45 * 60
+        return result
+
     def set_assist_candidate(self, passer, receiver, pass_type, distance):
         self.assister = passer
         self.assist_candidate = {
@@ -146,6 +438,56 @@ class Game:
         return record
 
     async def start(self, mode):
+        if self._should_use_engine_v2():
+            return await self._start_engine_v2(mode)
+        return await self._start_legacy(mode)
+
+    async def _start_engine_v2(self, mode):
+        self.mode = mode
+        if self.mode != Const.MODE_QUICK:
+            await self.send(
+                "主 " + self.home.coach.name + " : "
+                + self.away.coach.name + " 客\n比赛开始"
+            )
+
+        self._run_engine_v2_match()
+
+        if self.mode not in (Const.MODE_QUICK, Const.MODE_SILENCE):
+            first_half = [event for event in self.match_events if event.minute <= 45]
+            second_half = [event for event in self.match_events if event.minute > 45]
+            for events, footer in (
+                (first_half, "上半场结束"),
+                (second_half, "下半场结束"),
+            ):
+                lines = []
+                for event in events:
+                    home_score = event.home_score + (1 if event.team is self.home else 0)
+                    away_score = event.away_score + (1 if event.team is self.away else 0)
+                    score = str(home_score) + ":" + str(away_score)
+                    celebration = self.commentary.render(
+                        "narrative",
+                        "goal_celebration",
+                        scorer=event.player.getName(False),
+                        team=event.team.coach.name,
+                        score=score,
+                    )
+                    lines.append(
+                        "主" + score + "客 "
+                        + ("上半时" if event.minute <= 45 else "下半时")
+                        + str(event.minute) + ":0 " + event.text
+                        + " /~$" + celebration + "/"
+                    )
+                lines.append(footer)
+                await self.send("\n".join(lines))
+
+        stats = await self.printStats()
+        if self.mode in (Const.MODE_NORMAL, Const.MODE_QUICK):
+            self.replay_path = self._save_rust_replay()
+        else:
+            self.replay_path = ""
+        return stats
+
+    async def _start_legacy(self, mode):
         self.mode = mode
         if self.mode in (Const.MODE_NORMAL, Const.MODE_QUICK):
             self.init_replay_recorder()
@@ -1965,6 +2307,17 @@ class Game:
 
     def run_simulation(self):
         """Run the full match simulation without any IO. Returns MatchResult."""
+        if self._should_use_engine_v2():
+            self.mode = Const.MODE_SILENCE
+            self._run_engine_v2_match()
+            result = self.to_result()
+            self.replay_path = self._save_rust_replay()
+            result.replay_path = self.replay_path
+            return result
+        return self._run_simulation_legacy()
+
+    def _run_simulation_legacy(self):
+        """Run the legacy simulation when explicitly selected in config."""
         self.mode = Const.MODE_SILENCE
         self.init_replay_recorder()
 

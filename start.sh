@@ -8,7 +8,11 @@ sleep 1
 echo "Building frontend..."
 cd web && npm run build && cd ..
 
+echo "Building Rust engine..."
+cd rust/engine_v2_core && cargo build --release --bin engine && cd ../..
+
 echo "Starting bot..."
+export PSL_RUST_PROFILE=release
 nohup python3 bot/bot.py > /dev/null 2>&1 &
 
 echo "Starting web server..."

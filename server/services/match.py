@@ -119,7 +119,7 @@ class MatchService:
             version = svc.get("engine_v2.engine_version")
             return version == "v2"
         except Exception:
-            return False
+            return True
 
     def _run_v2_match(self, home_qq: int, away_qq: int) -> MatchResultData:
         """Run a match using engine v2."""
@@ -301,6 +301,18 @@ class MatchService:
 
     def run_watch_match(self, home_qq: int, away_qq: int):
         """Generator that yields broadcast lines then final result dict."""
+        if self._should_use_v2():
+            result_data = self._run_v2_match(home_qq, away_qq)
+            yield {
+                "type": "start",
+                "text": f"主 {result_data.home_name} : {result_data.away_name} 客",
+                "subtext": "比赛开始",
+            }
+            yield {"type": "half", "text": "上半场结束"}
+            yield {"type": "half", "text": "下半场结束"}
+            yield {"type": "result", "data": result_data}
+            return
+
         game = self._create_game(home_qq, away_qq)
         from engine.const import Const
         game.mode = Const.MODE_NORMAL
@@ -374,8 +386,11 @@ class MatchService:
         results = []
         total_h = total_a = wins = draws = losses = 0
         for _ in range(10):
-            game = self._create_game(home_qq, away_qq)
-            r = self._run_and_collect(game)
+            if self._should_use_v2():
+                r = self._run_v2_match(home_qq, away_qq)
+            else:
+                game = self._create_game(home_qq, away_qq)
+                r = self._run_and_collect(game)
             results.append({"home_score": r.home_score, "away_score": r.away_score})
             total_h += r.home_score
             total_a += r.away_score
@@ -390,8 +405,11 @@ class MatchService:
     def run_odds(self, home_qq: int, away_qq: int, samples: int = 20) -> OddsResult:
         win = draw = lose = 1
         for _ in range(samples):
-            game = self._create_game(home_qq, away_qq)
-            r = self._run_and_collect(game)
+            if self._should_use_v2():
+                r = self._run_v2_match(home_qq, away_qq)
+            else:
+                game = self._create_game(home_qq, away_qq)
+                r = self._run_and_collect(game)
             if r.home_score > r.away_score:
                 win += 1
             elif r.home_score == r.away_score:

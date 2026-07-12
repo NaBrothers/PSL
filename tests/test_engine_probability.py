@@ -471,12 +471,11 @@ def test_monte_carlo_smoke_and_strength_signal(core_modules):
     assert even["matches"] == 20
     assert even["home_goals"] + even["away_goals"] >= 0
     assert stronger["home_adjusted_xg"] > stronger["away_adjusted_xg"]
-    assert stronger["home_xt"] > stronger["away_xt"]
+    assert stronger["home_final_third_entries"] > stronger["away_final_third_entries"]
     assert even["home_possessions"] > 0
     assert even["away_possessions"] > 0
     assert even["home_xg"] + even["away_xg"] >= 0
     assert even["home_adjusted_xg"] + even["away_adjusted_xg"] >= 0
-    assert even["home_xt"] + even["away_xt"] > 0
     assert even["home_carries"] + even["away_carries"] >= 0
     assert even["home_tackle_attempts"] + even["away_tackle_attempts"] >= even["home_tackles"] + even["away_tackles"]
     assert even["home_interceptions"] + even["away_interceptions"] >= 0
@@ -514,9 +513,11 @@ def test_normal_commentary_is_possession_summary_not_action_log(core_modules, ma
         return game, process_messages, report_message, detail_message
 
     game, process_messages, report_message, detail_message = asyncio.run(run_game())
-    assert game.match_events
+    assert len(game.match_events) == game.home.point + game.away.point
     assert process_messages
-    assert sum(message.count("\n") for message in process_messages) < len(game.match_events)
+    assert any("比赛开始" in message for message in process_messages)
+    assert any("上半场结束" in message for message in process_messages)
+    assert any("下半场结束" in message for message in process_messages)
     assert "[比赛战报]" in report_message
     assert "[数据统计]" not in report_message
     assert "[比赛战报]" not in detail_message

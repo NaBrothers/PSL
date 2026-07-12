@@ -368,6 +368,62 @@ def test_post_carry_pressure_target_gets_local_responsibility_nudge():
     assert distance(center_back.target_pos, holder.pos) < before
 
 
+def test_post_carry_pressure_adjust_rust_plan_matches_legacy_formula():
+    from psl_core.engine_v2.match import MatchV2
+    from psl_core.engine_v2.rust_adapter import defensive_pressure_adjust_plan_rust
+
+    config, _, _, holder, attackers, defenders = _box_defense_context()
+    dummy_cards = [
+        {
+            "name": player.name,
+            "player_id": player.index,
+            "position": player.position,
+            "color": "gold",
+            "overall": player.overall,
+            "abilities": player.abilities,
+        }
+        for player in defenders
+    ]
+    attacker_cards = [
+        {
+            "name": player.name,
+            "player_id": player.index,
+            "position": player.position,
+            "color": "gold",
+            "overall": player.overall,
+            "abilities": player.abilities,
+        }
+        for player in attackers
+    ]
+    attacker_cards.extend(dummy_cards[: 11 - len(attacker_cards)])
+    match = MatchV2(attacker_cards, dummy_cards, "433", "433", config=config)
+    match.home.players = attackers
+    match.away.players = defenders
+    holder = match.home.players[0]
+    holder.pos = (90.0, 34.0)
+    holder.consecutive_carries = 5
+    match.ball.set_held(holder.index, match.home.side, holder.pos)
+    center_back = match.away.players[2]
+    center_back.pos = (96.0, 32.0)
+    center_back.target_pos = (100.0, 28.0)
+    center_back.movement_intent = "defend_shape"
+
+    rust_plan = defensive_pressure_adjust_plan_rust(
+        holder,
+        match.home.attacking_right,
+        match.away.attacking_right,
+        "carry",
+        True,
+        [p for p in match.away.players if not p.is_goalkeeper and p.state.value != "stunned"],
+        config,
+    )
+
+    match._adjust_defensive_pressure_targets_after_carry_legacy(match.home, match.away, holder, "carry")
+    assert center_back.index in rust_plan
+    assert distance(rust_plan[center_back.index]["target"], center_back.target_pos) < 1e-9
+    assert rust_plan[center_back.index]["movement_intent"] == center_back.movement_intent
+
+
 def test_arc_protection_keeps_midfield_cover_from_crowding_center_backs():
     config, pitch, ball, holder, attackers, defenders = _box_defense_context()
     holder.pos = (89.0, 34.0)

@@ -54,10 +54,10 @@ def test_run_simulation_produces_match_result(core_modules, make_user, monkeypat
     assert result.home_stats.progressive_passes >= 0
     assert result.home_stats.shots_in_box + result.home_stats.shots_outside_box == result.home_stats.shoots
 
-    assert len(result.events) > 50
+    assert len(result.events) == result.home_stats.point + result.away_stats.point
     for ev in result.events:
         assert isinstance(ev, MatchEvent)
-        assert ev.event_type != ""
+        assert ev.event_type == "goal"
         assert ev.seq > 0
 
     total_goals = result.home_stats.point + result.away_stats.point
@@ -66,6 +66,12 @@ def test_run_simulation_produces_match_result(core_modules, make_user, monkeypat
         assert isinstance(goal, GoalRecord)
         assert goal.team_side in ("home", "away")
         assert goal.scorer_name != ""
+
+    assert game._rust_replay_data[0]["type"] == "header"
+    assert game._rust_match_seed == 555
+    assert game.engine_backend == "rust_match_v2"
+    assert game.engine_trace_id.startswith("rust-match-v2")
+    assert result.replay_path
 
 
 def test_run_simulation_deterministic(core_modules, make_user, monkeypatch):
@@ -126,3 +132,91 @@ def test_run_simulation_no_io_side_effects(core_modules, make_user, monkeypatch)
     game.run_simulation()
 
     assert len(matcher.sent) == 0
+
+
+def test_rust_player_stats_feed_league_updates(
+    core_modules, make_user, monkeypatch, tmp_path
+):
+    from conftest import DummyMatcher
+    from test_game_flows import build_full_squad
+
+    Card = core_modules["model.card"].Card
+    Formation = core_modules["model.formation"].Formation
+    League = core_modules["model.league"].League
+    formation_kernel = core_modules["kernel.formation"]
+    Game = core_modules["engine.game"].Game
+    league_kernel = __import__("kernel.league", fromlist=["update_stats"])
+
+    home_user = make_user(70031, "league-home", money=0)
+    away_user = make_user(70032, "league-away", money=0)
+    build_full_squad(core_modules, home_user, star=3)
+    build_full_squad(core_modules, away_user, star=3)
+
+    async def finish_no_raise(*args, **kwargs):
+        return None
+
+    monkeypatch.setattr(formation_kernel.get_team, "finish", finish_no_raise)
+    asyncio.run(formation_kernel.auto_update(home_user))
+    asyncio.run(formation_kernel.auto_update(away_user))
+    monkeypatch.setenv("PSL_PROJECT_DIR", str(tmp_path))
+
+    home_formation = Formation.getFormation(home_user)
+    away_formation = Formation.getFormation(away_user)
+    League.addUser(home_user.qq)
+    League.addUser(away_user.qq)
+
+    game = Game(DummyMatcher(), home_user, away_user, seed=889)
+    game.run_simulation()
+    assert game.engine_backend == "rust_match_v2"
+
+    expected_home = [
+        (player.goals, player.assists, player.tackles, player.saves)
+        for player in game.home.players
+    ]
+    expected_away = [
+        (player.goals, player.assists, player.tackles, player.saves)
+        for player in game.away.players
+    ]
+    assert len(expected_home) == len(expected_away) == 11
+
+    # Presentation may aggregate repeatedly before league persistence.
+    game.home.getStats()
+    game.away.getStats()
+    game.home.getStats()
+    game.away.getStats()
+    assert [
+        (player.goals, player.assists, player.tackles, player.saves)
+        for player in game.home.players
+    ] == expected_home
+    assert [
+        (player.goals, player.assists, player.tackles, player.saves)
+        for player in game.away.players
+    ] == expected_away
+
+    league_kernel.update_stats(game, home_formation, away_formation)
+
+    for formation, expected in (
+        (home_formation, expected_home),
+        (away_formation, expected_away),
+    ):
+        for original_card, player_totals in zip(formation.cards[:11], expected):
+            card = Card.getCardByID(original_card.id)
+            goals, assists, tackles, saves = player_totals
+            assert card.appearance == 1
+            assert card.goal == goals
+            assert card.assist == assists
+            assert card.tackle == tackles
+            assert card.save == saves
+            assert card.total_appearance == 1
+            assert card.total_goal == goals
+            assert card.total_assist == assists
+            assert card.total_tackle == tackles
+            assert card.total_save == saves
+
+    home_entry = League.getLeagueEntryByQQ(home_user.qq)
+    away_entry = League.getLeagueEntryByQQ(away_user.qq)
+    assert home_entry.appearance == away_entry.appearance == 1
+    assert home_entry.goal == game.home.goals
+    assert away_entry.goal == game.away.goals
+    assert home_entry.lost_goal == game.away.goals
+    assert away_entry.lost_goal == game.home.goals
