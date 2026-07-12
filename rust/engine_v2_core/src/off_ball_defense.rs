@@ -25,7 +25,6 @@ pub struct DefenseScoreInput<'a> {
     pub press_radius: f64,
     pub tackle_range: f64,
     pub carrier_speed: f64,
-    pub last_def_target: Option<(f64, f64)>,
     pub candidates: &'a [(f64, f64)],
     pub attackers: &'a [(f64, f64)],
     pub local_attackers: &'a [(f64, f64)],
@@ -68,7 +67,6 @@ pub struct DefenseRawInput<'a> {
     pub ball_carrier_pos: Option<(f64, f64)>,
     pub shot_lane_threat: f64,
     pub random_samples: &'a [DefenseRandomSample],
-    pub last_def_target: Option<(f64, f64)>,
 }
 
 #[derive(Debug)]
@@ -86,14 +84,19 @@ pub struct DefenseChoiceInput<'a> {
     pub tackle_range: f64,
     pub carrier_speed: f64,
     pub iq: f64,
-    pub last_def_target: Option<(f64, f64)>,
-    pub previous_goal_target: Option<(f64, f64)>,
     pub attackers: &'a [(f64, f64)],
     pub teammates: &'a [DefenseTeammateInput],
     pub random_samples: &'a [DefenseRandomSample],
     pub score_noises: &'a [f64],
     pub roll_by_count: &'a [f64],
     pub fallback_index_by_count: &'a [usize],
+}
+
+#[derive(Clone, Copy, Debug)]
+pub struct DefenseGoalCandidate {
+    pub action_type: &'static str,
+    pub target: (f64, f64),
+    pub value: f64,
 }
 
 #[derive(Clone, Debug)]
@@ -107,12 +110,12 @@ pub struct DefenseChoiceOutput {
     pub raw_targets: Vec<(f64, f64)>,
     pub candidate_targets: Vec<(f64, f64)>,
     pub candidate_scores: Vec<f64>,
+    pub goal_candidates: Vec<DefenseGoalCandidate>,
     pub used_roll: bool,
     pub used_random_choice: bool,
     pub pressure_responsibility: f64,
     pub shot_danger: f64,
     pub carrier_stale_threat: f64,
-    pub previous_goal_score: Option<f64>,
     pub base_score: f64,
     pub press_value: f64,
     pub carrier_threat: f64,
@@ -283,9 +286,6 @@ pub fn generate_defense_raw_candidates(input: &DefenseRawInput<'_>) -> Vec<(f64,
             input.pitch_width,
         ));
     }
-    if let Some(last_target) = input.last_def_target {
-        sampled_points.push(last_target);
-    }
     sampled_points
 }
 
@@ -455,12 +455,6 @@ pub fn score_defense_candidates(input: &DefenseScoreInput<'_>) -> Vec<DefenseSco
                     score *= 1.0 + carrier_threat * pressure_responsibility * 0.75;
                 }
             }
-            if let Some(last_def_target) = input.last_def_target {
-                let stability_dist = distance(*point, last_def_target);
-                let stability = (1.0 - stability_dist / 24.0).max(0.0);
-                score *= 1.0 + stability * 0.90;
-            }
-
             DefenseScoreOutput {
                 score: score.max(0.0),
                 target: *point,
@@ -494,6 +488,61 @@ fn python_round_1_key(value: f64) -> i64 {
         lower + 1
     };
     sign * rounded
+}
+
+fn defense_action_type(
+    raw_target: (f64, f64),
+    input: &DefenseChoiceInput<'_>,
+    dist_to_ball: f64,
+    shot_danger: f64,
+    pressure_responsibility: f64,
+    dangerous_receivers: &[(f64, f64)],
+    local_attackers: &[(f64, f64)],
+) -> &'static str {
+    let Some(carrier_pos) = input.ball_carrier_pos else {
+        if dangerous_receivers
+            .iter()
+            .any(|receiver| distance(raw_target, *receiver) < 5.4)
+        {
+            return "mark_runner";
+        }
+        if local_attackers
+            .iter()
+            .any(|attacker| distance(raw_target, *attacker) < 5.0)
+        {
+            return "mark_runner";
+        }
+        return if local_attackers.is_empty() {
+            "hold_position"
+        } else {
+            "block_lane"
+        };
+    };
+
+    if dist_to_ball < input.tackle_range * (0.55 + shot_danger * 0.15)
+        && distance(raw_target, carrier_pos) < input.tackle_range * (0.75 + shot_danger * 0.15)
+        && pressure_responsibility > 0.25
+    {
+        "tackle"
+    } else if distance(raw_target, carrier_pos) < input.press_radius
+        && (pressure_responsibility > 0.18 || shot_danger > 0.72)
+    {
+        "approach"
+    } else if dangerous_receivers
+        .iter()
+        .any(|receiver| distance(raw_target, *receiver) < 5.4)
+    {
+        "mark_runner"
+    } else if local_attackers
+        .iter()
+        .any(|attacker| distance(raw_target, *attacker) < 5.0)
+    {
+        "mark_runner"
+    } else if local_attackers.is_empty() {
+        "hold_position"
+    } else {
+        "block_lane"
+    }
 }
 
 fn unique_points(points: &[(f64, f64)]) -> Vec<(f64, f64)> {
@@ -596,7 +645,6 @@ pub fn choose_defense_action(input: &DefenseChoiceInput<'_>) -> Option<DefenseCh
         ball_carrier_pos: input.ball_carrier_pos,
         shot_lane_threat,
         random_samples: input.random_samples,
-        last_def_target: input.last_def_target,
     });
     let candidates = unique_points(&raw_points);
     if candidates.is_empty() {
@@ -616,7 +664,6 @@ pub fn choose_defense_action(input: &DefenseChoiceInput<'_>) -> Option<DefenseCh
         press_radius: input.press_radius,
         tackle_range: input.tackle_range,
         carrier_speed: input.carrier_speed,
-        last_def_target: input.last_def_target,
         candidates: &candidates,
         attackers: input.attackers,
         local_attackers: &local_attackers,
@@ -679,76 +726,31 @@ pub fn choose_defense_action(input: &DefenseChoiceInput<'_>) -> Option<DefenseCh
             + (defenders_closer_to_ball as f64).powf(1.55)
             + close_defenders_near_ball as f64 * 0.72);
 
-    let action_type = if let Some(carrier_pos) = input.ball_carrier_pos {
-        if dist_to_ball < input.tackle_range * (0.55 + shot_danger * 0.15)
-            && distance(raw_target, carrier_pos) < input.tackle_range * (0.75 + shot_danger * 0.15)
-            && chosen_press_responsibility > 0.25
-        {
-            "tackle"
-        } else if distance(raw_target, carrier_pos) < input.press_radius
-            && (chosen_press_responsibility > 0.18 || shot_danger > 0.72)
-        {
-            "approach"
-        } else if !dangerous_receivers.is_empty()
-            && dangerous_receivers
-                .iter()
-                .any(|receiver| distance(raw_target, *receiver) < 5.4)
-        {
-            "mark_runner"
-        } else if !local_attackers.is_empty()
-            && local_attackers
-                .iter()
-                .any(|attacker| distance(raw_target, *attacker) < 5.0)
-        {
-            "mark_runner"
-        } else if !local_attackers.is_empty() {
-            "block_lane"
-        } else {
-            "hold_position"
-        }
-    } else if !dangerous_receivers.is_empty()
-        && dangerous_receivers
-            .iter()
-            .any(|receiver| distance(raw_target, *receiver) < 5.4)
-    {
-        "mark_runner"
-    } else if !local_attackers.is_empty()
-        && local_attackers
-            .iter()
-            .any(|attacker| distance(raw_target, *attacker) < 5.0)
-    {
-        "mark_runner"
-    } else if !local_attackers.is_empty() {
-        "block_lane"
-    } else {
-        "hold_position"
-    };
-
-    let previous_goal_score = input.previous_goal_target.and_then(|target| {
-        let previous_candidates = [target];
-        score_defense_candidates(&DefenseScoreInput {
-            defender_pos: input.defender_pos,
-            anchor: input.anchor,
-            base_ref: input.base_ref,
-            ball_pos: input.ball_pos,
-            ball_carrier_pos: input.ball_carrier_pos,
-            ball_carrier_consecutive_carries: input.ball_carrier_consecutive_carries,
-            attacking_right: input.attacking_right,
-            pitch_length: input.pitch_length,
-            pitch_width: input.pitch_width,
-            press_radius: input.press_radius,
-            tackle_range: input.tackle_range,
-            carrier_speed: input.carrier_speed,
-            last_def_target: input.last_def_target,
-            candidates: &previous_candidates,
-            attackers: input.attackers,
-            local_attackers: &local_attackers,
-            dangerous_receivers: &dangerous_receivers,
-            teammates: input.teammates,
+    let action_type = defense_action_type(
+        raw_target,
+        input,
+        dist_to_ball,
+        shot_danger,
+        chosen_press_responsibility,
+        &dangerous_receivers,
+        &local_attackers,
+    );
+    let goal_candidates = scored
+        .iter()
+        .map(|candidate| DefenseGoalCandidate {
+            action_type: defense_action_type(
+                candidate.target,
+                input,
+                dist_to_ball,
+                shot_danger,
+                chosen_press_responsibility,
+                &dangerous_receivers,
+                &local_attackers,
+            ),
+            target: candidate.target,
+            value: candidate.score,
         })
-        .first()
-        .map(|output| output.score)
-    });
+        .collect();
 
     Some(DefenseChoiceOutput {
         action_type,
@@ -760,12 +762,12 @@ pub fn choose_defense_action(input: &DefenseChoiceInput<'_>) -> Option<DefenseCh
         raw_targets: raw_points,
         candidate_targets: candidates,
         candidate_scores: scored.iter().map(|candidate| candidate.score).collect(),
+        goal_candidates,
         used_roll,
         used_random_choice,
         pressure_responsibility: chosen_press_responsibility,
         shot_danger,
         carrier_stale_threat,
-        previous_goal_score,
         base_score: chosen.base_score,
         press_value: chosen.press_value,
         carrier_threat: chosen.carrier_threat,

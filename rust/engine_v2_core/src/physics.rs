@@ -38,9 +38,162 @@ pub fn angle_to_goal(pos: (f64, f64), goal_center: (f64, f64), goal_width: f64) 
     (angle_top - angle_bot).abs()
 }
 
+#[derive(Clone, Copy, Debug)]
+pub struct PlayerMotionInput {
+    pub pos: (f64, f64),
+    pub target: (f64, f64),
+    pub velocity: (f64, f64),
+    pub speed_ability: i32,
+    pub desired_speed: f64,
+    pub acceleration_scale: f64,
+    pub player_max_speed: f64,
+    pub player_min_speed: f64,
+    pub pitch_length: f64,
+    pub pitch_width: f64,
+}
+
+#[derive(Clone, Copy, Debug)]
+pub struct PlayerMotionOutput {
+    pub pos: (f64, f64),
+    pub velocity: (f64, f64),
+    pub distance_covered: f64,
+    pub facing_direction: Option<f64>,
+}
+
+fn speed_ability_progress(speed_ability: i32) -> f64 {
+    let ability = speed_ability.max(0) as f64;
+    let regulation = (ability / 99.0).min(1.0);
+    let elite_bonus = 1.0 - (-(ability - 99.0).max(0.0) / 55.0).exp();
+    regulation + 0.18 * elite_bonus
+}
+
 pub fn player_speed(speed_ability: i32, max_speed: f64, min_speed: f64) -> f64 {
-    let t = speed_ability.clamp(0, 99) as f64 / 99.0;
-    min_speed + t * (max_speed - min_speed)
+    min_speed + speed_ability_progress(speed_ability) * (max_speed - min_speed)
+}
+
+fn player_acceleration(speed_ability: i32, max_speed: f64, min_speed: f64) -> f64 {
+    let top_speed = player_speed(speed_ability, max_speed, min_speed);
+    let ability_progress = speed_ability_progress(speed_ability);
+    top_speed * (0.34 + 0.25 * ability_progress)
+}
+
+pub fn advance_player_motion(input: &PlayerMotionInput) -> PlayerMotionOutput {
+    let max_speed = player_speed(
+        input.speed_ability,
+        input.player_max_speed,
+        input.player_min_speed,
+    );
+    let accel = player_acceleration(
+        input.speed_ability,
+        input.player_max_speed,
+        input.player_min_speed,
+    ) * input.acceleration_scale.clamp(0.2, 1.5);
+    let brake_accel = accel * 1.28;
+    let target_distance = distance(input.pos, input.target);
+    let target_direction = direction(input.pos, input.target);
+    let mut current_velocity = input.velocity;
+    let current_speed =
+        (current_velocity.0 * current_velocity.0 + current_velocity.1 * current_velocity.1).sqrt();
+    if current_speed > max_speed * 1.05 {
+        let ratio = max_speed * 1.05 / current_speed;
+        current_velocity.0 *= ratio;
+        current_velocity.1 *= ratio;
+    }
+
+    let forward_speed = if target_distance > 1e-6 {
+        current_velocity.0 * target_direction.0 + current_velocity.1 * target_direction.1
+    } else {
+        0.0
+    };
+    let stopping_speed = (2.0 * brake_accel * target_distance.max(0.0)).sqrt();
+    let arrival_speed = (2.0 * target_distance - forward_speed.max(0.0)).max(0.0);
+    let desired_speed = input
+        .desired_speed
+        .clamp(0.0, max_speed * 0.98)
+        .min(stopping_speed)
+        .min(arrival_speed);
+    let desired_velocity = (
+        target_direction.0 * desired_speed,
+        target_direction.1 * desired_speed,
+    );
+
+    let alignment = if current_speed > 1e-6 && target_distance > 1e-6 {
+        (current_velocity.0 * target_direction.0 + current_velocity.1 * target_direction.1)
+            / current_speed
+    } else {
+        1.0
+    }
+    .clamp(-1.0, 1.0);
+    let turn_severity = if desired_speed <= 1e-6 {
+        1.0
+    } else {
+        (1.0 - alignment) * 0.5
+    };
+    let velocity_response = accel + (brake_accel - accel) * turn_severity;
+    let mut delta_velocity = (
+        desired_velocity.0 - current_velocity.0,
+        desired_velocity.1 - current_velocity.1,
+    );
+    let delta_speed =
+        (delta_velocity.0 * delta_velocity.0 + delta_velocity.1 * delta_velocity.1).sqrt();
+    if delta_speed > velocity_response {
+        let ratio = velocity_response / delta_speed;
+        delta_velocity.0 *= ratio;
+        delta_velocity.1 *= ratio;
+    }
+
+    let mut velocity = (
+        current_velocity.0 + delta_velocity.0,
+        current_velocity.1 + delta_velocity.1,
+    );
+    let velocity_length = (velocity.0 * velocity.0 + velocity.1 * velocity.1).sqrt();
+    if velocity_length > max_speed * 0.98 {
+        let ratio = max_speed * 0.98 / velocity_length;
+        velocity.0 *= ratio;
+        velocity.1 *= ratio;
+    }
+
+    let displacement = (
+        (current_velocity.0 + velocity.0) * 0.5,
+        (current_velocity.1 + velocity.1) * 0.5,
+    );
+    let along_target = displacement.0 * target_direction.0 + displacement.1 * target_direction.1;
+    if target_distance > 1e-6 && along_target >= target_distance {
+        return PlayerMotionOutput {
+            pos: input.target,
+            velocity: (0.0, 0.0),
+            distance_covered: target_distance,
+            facing_direction: if target_distance > 0.1 {
+                Some(angle_between_points(input.pos, input.target))
+            } else {
+                None
+            },
+        };
+    }
+
+    let raw_pos = (input.pos.0 + displacement.0, input.pos.1 + displacement.1);
+    let pos = (
+        raw_pos.0.clamp(0.5, input.pitch_length - 0.5),
+        raw_pos.1.clamp(0.5, input.pitch_width - 0.5),
+    );
+    if pos.0 != raw_pos.0 {
+        velocity.0 = 0.0;
+    }
+    if pos.1 != raw_pos.1 {
+        velocity.1 = 0.0;
+    }
+    let distance_covered = distance(input.pos, pos);
+    let facing_direction = if distance_covered > 0.1 {
+        Some(angle_between_points(input.pos, pos))
+    } else {
+        None
+    };
+    PlayerMotionOutput {
+        pos,
+        velocity,
+        distance_covered,
+        facing_direction,
+    }
 }
 
 pub fn clamp(value: f64, lo: f64, hi: f64) -> f64 {
@@ -140,5 +293,75 @@ mod tests {
         assert_eq!(angle_diff(0.0, -180.0), -180.0);
         assert_eq!(angle_diff(10.0, 370.0), 0.0);
         assert_eq!(angle_diff(170.0, -170.0), 20.0);
+    }
+
+    #[test]
+    fn elite_speed_keeps_a_diminishing_bonus_above_99() {
+        let speed_99 = player_speed(99, 5.5, 2.5);
+        let speed_130 = player_speed(130, 5.5, 2.5);
+        let speed_220 = player_speed(220, 5.5, 2.5);
+
+        assert!(speed_130 > speed_99);
+        assert!(speed_220 > speed_130);
+        assert!(speed_220 < 6.1);
+    }
+
+    #[test]
+    fn motion_accelerates_from_rest_instead_of_jumping_to_cruise_speed() {
+        let output = advance_player_motion(&PlayerMotionInput {
+            pos: (20.0, 34.0),
+            target: (80.0, 34.0),
+            velocity: (0.0, 0.0),
+            speed_ability: 99,
+            desired_speed: 5.0,
+            acceleration_scale: 1.0,
+            player_max_speed: 5.5,
+            player_min_speed: 2.5,
+            pitch_length: 105.0,
+            pitch_width: 68.0,
+        });
+
+        assert!(output.velocity.0 > 0.0);
+        assert!(output.velocity.0 < 5.0);
+        assert!(output.distance_covered < output.velocity.0);
+    }
+
+    #[test]
+    fn motion_brakes_before_reversing_a_full_turn() {
+        let output = advance_player_motion(&PlayerMotionInput {
+            pos: (50.0, 34.0),
+            target: (10.0, 34.0),
+            velocity: (4.5, 0.0),
+            speed_ability: 99,
+            desired_speed: 5.0,
+            acceleration_scale: 1.0,
+            player_max_speed: 5.5,
+            player_min_speed: 2.5,
+            pitch_length: 105.0,
+            pitch_width: 68.0,
+        });
+
+        assert!(output.pos.0 > 50.0);
+        assert!(output.velocity.0 > -1.0);
+        assert!(output.velocity.0 > -5.0);
+    }
+
+    #[test]
+    fn motion_stops_at_a_nearby_target_without_overshooting() {
+        let output = advance_player_motion(&PlayerMotionInput {
+            pos: (50.0, 34.0),
+            target: (52.0, 34.0),
+            velocity: (4.0, 0.0),
+            speed_ability: 99,
+            desired_speed: 5.0,
+            acceleration_scale: 1.0,
+            player_max_speed: 5.5,
+            player_min_speed: 2.5,
+            pitch_length: 105.0,
+            pitch_width: 68.0,
+        });
+
+        assert_eq!(output.pos, (52.0, 34.0));
+        assert_eq!(output.velocity, (0.0, 0.0));
     }
 }

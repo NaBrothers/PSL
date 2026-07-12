@@ -557,17 +557,6 @@ pub fn select_goal_deterministic(
             reason: "current_goal_scan_updated".to_string(),
         };
     }
-    if current_phase == Some("defend") && candidate_phase == Some("defend") {
-        return GoalSelectionOutput {
-            selected: "candidate".to_string(),
-            switched: true,
-            switch_cost: 0.0,
-            value_advantage: advantage,
-            noisy_value_advantage: advantage,
-            reason: "current_defensive_goal_updated".to_string(),
-        };
-    }
-
     let switch_cost = goal_switch_cost(context);
     let noisy_advantage = advantage;
     if noisy_advantage > switch_cost {
@@ -1580,5 +1569,38 @@ mod tests {
             }
         });
         assert!(pressured < stable);
+    }
+
+    #[test]
+    fn defensive_plan_requires_a_clear_value_advantage_to_switch() {
+        let current = GoalInput {
+            goal_type: "defend_mark_runner",
+            value: 0.42,
+            phase: Some("defend"),
+        };
+        let context = GoalSwitchCostInput {
+            base: 0.04,
+            context_stability: 1.0,
+            role_discipline: 1.0,
+            pressure_interrupt: 0.0,
+            iq: 85.0,
+        };
+        let close_alternative = GoalInput {
+            goal_type: "defend_press",
+            value: 0.43,
+            phase: Some("defend"),
+        };
+        let better_alternative = GoalInput {
+            value: 0.52,
+            ..close_alternative
+        };
+
+        let retained = select_goal_deterministic(Some(&current), &close_alternative, &context);
+        assert_eq!(retained.selected, "current");
+        assert!(!retained.switched);
+
+        let released = select_goal_deterministic(Some(&current), &better_alternative, &context);
+        assert_eq!(released.selected, "candidate");
+        assert!(released.switched);
     }
 }

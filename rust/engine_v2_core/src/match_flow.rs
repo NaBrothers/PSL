@@ -327,6 +327,7 @@ pub struct PassTraceOutput {
 pub struct CarryPhasePlanInput<'a> {
     pub holder_pos: (f64, f64),
     pub target: (f64, f64),
+    pub velocity: (f64, f64),
     pub speed_ability: i32,
     pub dribbling: f64,
     pub consecutive_carries: i32,
@@ -348,6 +349,8 @@ pub struct CarryPhasePlanOutput {
     pub carry_speed: f64,
     pub carry_difficulty: f64,
     pub new_pos: (f64, f64),
+    pub velocity: (f64, f64),
+    pub facing_direction: Option<f64>,
     pub distance_covered: f64,
     pub error_chance: f64,
     pub is_error: bool,
@@ -446,10 +449,14 @@ pub struct ClearPhasePlanOutput {
 #[derive(Clone, Debug)]
 pub struct HoldPhasePlanInput<'a> {
     pub holder_pos: (f64, f64),
+    pub velocity: (f64, f64),
+    pub speed_ability: i32,
     pub dribbling: f64,
     pub attacking_right: bool,
     pub pitch_length: f64,
     pub pitch_width: f64,
+    pub player_max_speed: f64,
+    pub player_min_speed: f64,
     pub carry_error_divisor: f64,
     pub opponents: &'a [ExecutionOpponent],
     pub opportunity_target: Option<(f64, f64)>,
@@ -461,6 +468,8 @@ pub struct HoldPhasePlanInput<'a> {
 #[derive(Clone, Debug)]
 pub struct HoldPhasePlanOutput {
     pub new_pos: (f64, f64),
+    pub velocity: (f64, f64),
+    pub facing_direction: Option<f64>,
     pub distance_covered: f64,
     pub pressure: f64,
     pub nearest_dist: f64,
@@ -589,6 +598,7 @@ pub fn carry_phase_plan(input: &CarryPhasePlanInput<'_>) -> CarryPhasePlanOutput
     let carry = execute_carry(&CarryExecutionInput {
         holder_pos: input.holder_pos,
         target: input.target,
+        velocity: input.velocity,
         speed_ability: input.speed_ability,
         dribbling: input.dribbling,
         consecutive_carries: input.consecutive_carries,
@@ -608,6 +618,8 @@ pub fn carry_phase_plan(input: &CarryPhasePlanInput<'_>) -> CarryPhasePlanOutput
         carry_speed: carry.carry_speed,
         carry_difficulty: carry.carry_difficulty,
         new_pos: carry.new_pos,
+        velocity: carry.velocity,
+        facing_direction: carry.facing_direction,
         distance_covered: carry.distance_covered,
         error_chance: carry.error_chance,
         is_error: carry.is_error,
@@ -921,10 +933,14 @@ pub fn clear_phase_plan(input: &ClearPhasePlanInput) -> ClearPhasePlanOutput {
 pub fn hold_phase_plan(input: &HoldPhasePlanInput<'_>) -> HoldPhasePlanOutput {
     let hold = execute_hold(&HoldExecutionInput {
         holder_pos: input.holder_pos,
+        velocity: input.velocity,
+        speed_ability: input.speed_ability,
         dribbling: input.dribbling,
         attacking_right: input.attacking_right,
         pitch_length: input.pitch_length,
         pitch_width: input.pitch_width,
+        player_max_speed: input.player_max_speed,
+        player_min_speed: input.player_min_speed,
         carry_error_divisor: input.carry_error_divisor,
         opponents: input.opponents,
         opportunity_target: input.opportunity_target,
@@ -934,6 +950,8 @@ pub fn hold_phase_plan(input: &HoldPhasePlanInput<'_>) -> HoldPhasePlanOutput {
     });
     HoldPhasePlanOutput {
         new_pos: hold.new_pos,
+        velocity: hold.velocity,
+        facing_direction: hold.facing_direction,
         distance_covered: hold.distance_covered,
         pressure: hold.pressure,
         nearest_dist: hold.nearest_dist,
@@ -1256,11 +1274,6 @@ pub fn player_move_tick(input: &PlayerMoveTickInput<'_>) -> PlayerMoveTickOutput
         };
     }
 
-    let max_speed = crate::physics::player_speed(
-        input.speed_ability,
-        input.player_max_speed,
-        input.player_min_speed,
-    );
     let desired_speed = player_move_speed(&PlayerMoveSpeedInput {
         pos: input.pos,
         target_pos: input.target_pos,
@@ -1272,57 +1285,28 @@ pub fn player_move_tick(input: &PlayerMoveTickInput<'_>) -> PlayerMoveTickOutput
     })
     .speed;
 
-    let dx = input.target_pos.0 - input.pos.0;
-    let dy = input.target_pos.1 - input.pos.1;
-    let dist = (dx * dx + dy * dy).sqrt();
-    let (desired_vx, desired_vy) = if dist < 0.05 {
-        (0.0, 0.0)
-    } else {
-        (dx / dist * desired_speed, dy / dist * desired_speed)
-    };
-
-    let mut vx = input.velocity.0;
-    let mut vy = input.velocity.1;
-    let mut accel = max_speed * 0.42;
-    if matches!(input.movement_intent, "press" | "contest" | "attack_run") {
-        accel *= 1.18;
-    }
-    let mut dvx = desired_vx - vx;
-    let mut dvy = desired_vy - vy;
-    let dv_len = (dvx * dvx + dvy * dvy).sqrt();
-    if dv_len > accel {
-        dvx = dvx / dv_len * accel;
-        dvy = dvy / dv_len * accel;
-    }
-    vx += dvx;
-    vy += dvy;
-
-    let max_velocity = max_speed * 0.95;
-    let v_len = (vx * vx + vy * vy).sqrt();
-    if v_len > max_velocity {
-        vx = vx / v_len * max_velocity;
-        vy = vy / v_len * max_velocity;
-    }
-
-    let raw_pos = (input.pos.0 + vx, input.pos.1 + vy);
-    let new_pos = pitch_clamp(raw_pos, input.pitch_length, input.pitch_width);
-    let velocity = if new_pos != raw_pos {
-        (0.0, 0.0)
-    } else {
-        (vx, vy)
-    };
-    let distance_covered = crate::physics::distance(input.pos, new_pos);
-    let facing_direction = if distance_covered > 0.1 {
-        Some(crate::physics::angle_between_points(input.pos, new_pos))
-    } else {
-        None
-    };
+    let movement = crate::physics::advance_player_motion(&crate::physics::PlayerMotionInput {
+        pos: input.pos,
+        target: input.target_pos,
+        velocity: input.velocity,
+        speed_ability: input.speed_ability,
+        desired_speed,
+        acceleration_scale: if matches!(input.movement_intent, "press" | "contest" | "attack_run") {
+            1.15
+        } else {
+            1.0
+        },
+        player_max_speed: input.player_max_speed,
+        player_min_speed: input.player_min_speed,
+        pitch_length: input.pitch_length,
+        pitch_width: input.pitch_width,
+    });
     PlayerMoveTickOutput {
-        moved: true,
-        pos: new_pos,
-        velocity,
-        distance_covered,
-        facing_direction,
+        moved: movement.distance_covered > 1e-6,
+        pos: movement.pos,
+        velocity: movement.velocity,
+        distance_covered: movement.distance_covered,
+        facing_direction: movement.facing_direction,
         desired_speed,
     }
 }
@@ -2490,7 +2474,21 @@ pub fn team_shape_plan(input: &TeamShapePlanInput<'_>) -> TeamShapePlanOutput {
             (input.pitch_length - base.0) / input.pitch_length
         };
         let base_width_offset = base.1 - input.pitch_width / 2.0;
-        let (mut progress, y) = if is_defending {
+        let (mut progress, y) = if player.is_goalkeeper {
+            let coverage_target = gk_position_adjust(&GkPositionAdjustInput {
+                ball_pos: input.ball_pos,
+                attacking_right: input.attacking_right,
+                pitch_length: input.pitch_length,
+                pitch_width: input.pitch_width,
+            })
+            .target;
+            let progress = if input.attacking_right {
+                coverage_target.0 / input.pitch_length
+            } else {
+                (input.pitch_length - coverage_target.0) / input.pitch_length
+            };
+            (progress, coverage_target.1)
+        } else if is_defending {
             let mut block_center = 0.18 + 0.50 * ball_progress;
             if is_transition_def {
                 block_center += 0.06;
@@ -2499,11 +2497,6 @@ pub fn team_shape_plan(input: &TeamShapePlanInput<'_>) -> TeamShapePlanOutput {
             (
                 (block_center + line_offset).clamp(0.05, 0.92),
                 input.pitch_width / 2.0 + base_width_offset * 0.92 + side_shift * 0.14,
-            )
-        } else if player.is_goalkeeper {
-            (
-                (base_progress + ball_progress * 0.10).clamp(0.02, 0.18),
-                input.pitch_width / 2.0 + side_shift * 0.05,
             )
         } else {
             let advance_pressure = (ball_progress - base_progress).max(0.0);
@@ -2890,5 +2883,49 @@ pub fn track_carry_stats(input: &CarryStatInput) -> CarryStatOutput {
         progressive_carries: if progress > 5.0 { 1 } else { 0 },
         carries_into_final_third: if carries_into_final_third { 1 } else { 0 },
         carries_into_box: if carries_into_box { 1 } else { 0 },
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn gk_shape_player(index: usize) -> TeamShapePlayerInput {
+        TeamShapePlayerInput {
+            index,
+            base_pos: (0.5, 34.0),
+            is_goalkeeper: index == 0,
+        }
+    }
+
+    #[test]
+    fn goalkeeper_shape_anchor_stays_on_goal_coverage_in_every_phase() {
+        let players = [gk_shape_player(0), gk_shape_player(1)];
+        let opponents = [TeamShapeOpponentInput {
+            pos: (80.0, 34.0),
+            is_goalkeeper: false,
+        }];
+
+        for phase in ["attacking", "defending", "transition_def", "contesting"] {
+            let shape = team_shape_plan(&TeamShapePlanInput {
+                ball_pos: (88.0, 60.0),
+                attacking_right: true,
+                phase,
+                pitch_length: 105.0,
+                pitch_width: 68.0,
+                players: &players,
+                opponents: &opponents,
+            });
+            let goalkeeper = shape
+                .anchors
+                .iter()
+                .find(|player| player.index == 0)
+                .expect("goalkeeper anchor");
+            assert!((goalkeeper.tactical_anchor.0 - 5.0).abs() < 1e-9, "{phase}");
+            assert!(
+                (goalkeeper.tactical_anchor.1 - 41.8).abs() < 1e-9,
+                "{phase}"
+            );
+        }
     }
 }

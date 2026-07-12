@@ -1,4 +1,4 @@
-use crate::physics::{distance, move_toward, player_speed};
+use crate::physics::{advance_player_motion, distance, player_speed, PlayerMotionInput};
 
 #[derive(Clone, Copy, Debug)]
 pub struct ExecutionOpponent {
@@ -10,6 +10,7 @@ pub struct ExecutionOpponent {
 pub struct CarryExecutionInput<'a> {
     pub holder_pos: (f64, f64),
     pub target: (f64, f64),
+    pub velocity: (f64, f64),
     pub speed_ability: i32,
     pub dribbling: f64,
     pub consecutive_carries: i32,
@@ -31,6 +32,8 @@ pub struct CarryExecutionOutput {
     pub carry_speed: f64,
     pub carry_difficulty: f64,
     pub new_pos: (f64, f64),
+    pub velocity: (f64, f64),
+    pub facing_direction: Option<f64>,
     pub distance_covered: f64,
     pub error_chance: f64,
     pub is_error: bool,
@@ -130,10 +133,14 @@ pub struct ClearTargetOutput {
 #[derive(Clone, Copy, Debug)]
 pub struct HoldExecutionInput<'a> {
     pub holder_pos: (f64, f64),
+    pub velocity: (f64, f64),
+    pub speed_ability: i32,
     pub dribbling: f64,
     pub attacking_right: bool,
     pub pitch_length: f64,
     pub pitch_width: f64,
+    pub player_max_speed: f64,
+    pub player_min_speed: f64,
     pub carry_error_divisor: f64,
     pub opponents: &'a [ExecutionOpponent],
     pub opportunity_target: Option<(f64, f64)>,
@@ -145,6 +152,8 @@ pub struct HoldExecutionInput<'a> {
 #[derive(Clone, Copy, Debug)]
 pub struct HoldExecutionOutput {
     pub new_pos: (f64, f64),
+    pub velocity: (f64, f64),
+    pub facing_direction: Option<f64>,
     pub distance_covered: f64,
     pub pressure: f64,
     pub nearest_dist: f64,
@@ -209,8 +218,19 @@ pub fn execute_carry(input: &CarryExecutionInput<'_>) -> CarryExecutionOutput {
             .clamp(1.4, personal_carry_cap);
     let difficulty = 1.0 + pressure * 1.4 + (speed - input.carrier_speed).max(0.0) * 0.18;
 
-    let moved = move_toward(input.holder_pos, input.target, speed);
-    let new_pos = pitch_clamp(moved, input.pitch_length, input.pitch_width);
+    let motion = advance_player_motion(&PlayerMotionInput {
+        pos: input.holder_pos,
+        target: input.target,
+        velocity: input.velocity,
+        speed_ability: input.speed_ability,
+        desired_speed: speed,
+        acceleration_scale: 1.0,
+        player_max_speed: input.player_max_speed,
+        player_min_speed: input.player_min_speed,
+        pitch_length: input.pitch_length,
+        pitch_width: input.pitch_width,
+    });
+    let new_pos = motion.pos;
     let progress = if input.attacking_right {
         new_pos.0 / input.pitch_length
     } else {
@@ -239,7 +259,9 @@ pub fn execute_carry(input: &CarryExecutionInput<'_>) -> CarryExecutionOutput {
         carry_speed: speed,
         carry_difficulty: difficulty,
         new_pos,
-        distance_covered: distance(input.holder_pos, new_pos),
+        velocity: motion.velocity,
+        facing_direction: motion.facing_direction,
+        distance_covered: motion.distance_covered,
         error_chance,
         is_error,
         loose_pos,
@@ -416,7 +438,8 @@ pub fn execute_hold(input: &HoldExecutionInput<'_>) -> HoldExecutionOutput {
         opportunity_y = to_target_y / target_len * 0.52;
     }
 
-    let mut new_pos = input.holder_pos;
+    let mut desired_target = input.holder_pos;
+    let mut desired_speed = 0.0;
     if pressure > 0.0 || input.opportunity_target.is_some() {
         let norm = (pressure_x * pressure_x + pressure_y * pressure_y)
             .sqrt()
@@ -444,7 +467,7 @@ pub fn execute_hold(input: &HoldExecutionInput<'_>) -> HoldExecutionOutput {
             0.0
         };
         let move_dist = max_adjust.min(0.35 + pressure * 0.55 + scan_bonus);
-        new_pos = pitch_clamp(
+        desired_target = pitch_clamp(
             (
                 input.holder_pos.0 + adjust_x / adjust_norm * move_dist,
                 input.holder_pos.1 + adjust_y / adjust_norm * move_dist,
@@ -452,7 +475,21 @@ pub fn execute_hold(input: &HoldExecutionInput<'_>) -> HoldExecutionOutput {
             input.pitch_length,
             input.pitch_width,
         );
+        desired_speed = move_dist;
     }
+    let motion = advance_player_motion(&PlayerMotionInput {
+        pos: input.holder_pos,
+        target: desired_target,
+        velocity: input.velocity,
+        speed_ability: input.speed_ability,
+        desired_speed,
+        acceleration_scale: 0.7,
+        player_max_speed: input.player_max_speed,
+        player_min_speed: input.player_min_speed,
+        pitch_length: input.pitch_length,
+        pitch_width: input.pitch_width,
+    });
+    let new_pos = motion.pos;
 
     let error_chance =
         (pressure - 0.6).max(0.0) * (100.0 - input.dribbling) / (input.carry_error_divisor * 1.8);
@@ -467,7 +504,9 @@ pub fn execute_hold(input: &HoldExecutionInput<'_>) -> HoldExecutionOutput {
     );
     HoldExecutionOutput {
         new_pos,
-        distance_covered: distance(input.holder_pos, new_pos),
+        velocity: motion.velocity,
+        facing_direction: motion.facing_direction,
+        distance_covered: motion.distance_covered,
         pressure,
         nearest_dist,
         trace_pressure: (pressure * 100.0).round() / 100.0,
@@ -480,5 +519,37 @@ pub fn execute_hold(input: &HoldExecutionInput<'_>) -> HoldExecutionOutput {
         is_error,
         loose_pos,
         randoms_used: 1 + if is_error { 2 } else { 0 },
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn carry_accelerates_from_rest_and_returns_the_new_velocity() {
+        let output = execute_carry(&CarryExecutionInput {
+            holder_pos: (20.0, 34.0),
+            target: (80.0, 34.0),
+            velocity: (0.0, 0.0),
+            speed_ability: 99,
+            dribbling: 99.0,
+            consecutive_carries: 0,
+            attacking_right: true,
+            pitch_length: 105.0,
+            pitch_width: 68.0,
+            player_max_speed: 5.5,
+            player_min_speed: 2.5,
+            carrier_speed: 3.0,
+            carry_error_divisor: 400.0,
+            opponents: &[],
+            error_roll: 1.0,
+            loose_x_roll: 0.5,
+            loose_y_roll: 0.5,
+        });
+
+        assert!(output.velocity.0 > 0.0);
+        assert!(output.distance_covered > 0.0);
+        assert!(output.distance_covered < output.carry_speed);
     }
 }
