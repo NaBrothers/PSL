@@ -9,7 +9,7 @@
 | API 风格 | 资源式业务 API |
 | 前端栈 | Vite + React + TypeScript + Tailwind + Shadcn/ui |
 | UI 风格 | 深色足球经理手游风格，手机优先 |
-| 后端框架 | FastAPI 独立进程，8888 端口 |
+| 后端框架 | FastAPI 独立进程，8088 端口 |
 | 比赛体验 | 快速模式（同步JSON）+ 观看模式（SSE推送） |
 | 并发 | 完全不限制，多场并发 |
 | 回放 | 嵌入 Web 端作为比赛动画页面 |
@@ -186,7 +186,7 @@ ALTER TABLE users ADD COLUMN WebPinHash TEXT DEFAULT NULL;
 
 - `web/` 下 Vite + React + TypeScript 模板
 - 安装 Tailwind CSS、Shadcn/ui、axios
-- `vite.config.ts`：开发时 proxy `/api` 和 `/replays` 到 localhost:8888
+- `vite.config.ts`：开发时 proxy `/api` 和 `/replays` 到 localhost:8088
 - 基础布局：App shell + 底部 Tab 导航 + React Router
 
 ---
@@ -405,12 +405,11 @@ ALTER TABLE users ADD COLUMN WebPinHash TEXT DEFAULT NULL;
 
 ## Phase 11：部署与联调
 
-- `server/main.py`：`uvicorn server.app:app --host 0.0.0.0 --port 8888`
+- `server/main.py`：`uvicorn server.app:app --host 0.0.0.0 --port 8088`
 - 构建前端：`cd web && npm run build`，产物在 `web/dist/`
 - FastAPI `StaticFiles` mount `web/dist` 作为 SPA fallback
-- 移除旧的 `replay_server.py` 的 `http.server`（由 FastAPI 替代）
-- bot 端的 `start_replay_server(8888)` 改为不启动（由独立 web server 提供）
-- Docker/systemd 配置两个进程：`bot.py`（8080）+ `server`（8888）
+- 保留 `replay_server.py` 的 `http.server` 为 Bot 回放页提供 `8888`
+- Docker/systemd 配置两个进程：`bot.py`（8080，回放 8888）+ `server`（8088）
 
 ---
 

@@ -1,6 +1,13 @@
+use crate::goalkeeper::GkSaveAttributes;
 use crate::physics::{distance, smoothstep};
-use crate::shot_quality::{shot_quality_at, ShotQualityCache, ShotQualityInput};
-use crate::state_value::{pass_receive_value, shot_quality_cache_key, PassReceiveValueInput};
+use crate::shot_quality::{
+    shot_quality_at, ShotContestDefender, ShotQualityCache, ShotQualityInput,
+};
+use crate::state_value::{
+    pass_receive_value_breakdown_with_context_and_precomputed_target_pressures,
+    shot_quality_cache_key, PassReceiveTargetPressure, PassReceiveValueContext,
+    PassReceiveValueInput, PlayerShotProfile,
+};
 
 #[derive(Debug, Clone)]
 pub struct PassLaneRiskInput<'a> {
@@ -38,6 +45,7 @@ pub struct ExpectedPassInput<'a> {
     pub receiver_goal_target: Option<(f64, f64)>,
     pub receiver_goal_value: f64,
     pub target: (f64, f64),
+    pub shot_profiles: &'a [PlayerShotProfile],
     pub teammate_positions: &'a [(usize, f64, f64)],
     pub teammate_goalkeeper_indices: &'a [usize],
     pub opponent_positions: &'a [(f64, f64)],
@@ -48,6 +56,9 @@ pub struct ExpectedPassInput<'a> {
     pub shot_ideal_distance: f64,
     pub shot_on_target_base: f64,
     pub gk_save_base: f64,
+    pub gk_attributes: Option<GkSaveAttributes>,
+    pub gk_pos: Option<(f64, f64)>,
+    pub contest_defenders: Option<&'a [ShotContestDefender]>,
     pub current_value: f64,
     pub base_accuracy: f64,
     pub receiver_arrival: f64,
@@ -61,6 +72,7 @@ pub struct ExpectedPassOutput {
     pub success_prob: f64,
     pub risk_cost: f64,
     pub after_value: f64,
+    pub after_direct_xg: f64,
     pub current_value: f64,
     pub effective_current_value: f64,
     pub delta: f64,
@@ -79,14 +91,46 @@ pub struct ExpectedPassOutput {
     pub layoff_retention_value: f64,
 }
 
-pub fn pass_lane_risk(input: &PassLaneRiskInput<'_>) -> f64 {
+#[derive(Debug, Clone, Copy)]
+pub struct PasserPassValueContext {
+    pub origin_progress: f64,
+    pub attracted_pressure: f64,
+    pub effective_current_value: f64,
+    pub current_shot: f64,
+    pub origin_width: f64,
+}
+
+#[derive(Debug, Clone)]
+pub struct PasserPassValueContextInput<'a> {
+    pub tick: i32,
+    pub passer_index: usize,
+    pub passer_team_home: bool,
+    pub passer_pos: (f64, f64),
+    pub passer_finishing: f64,
+    pub passer_long_shot: f64,
+    pub passer_consecutive_carries: i32,
+    pub opponent_positions: &'a [(f64, f64)],
+    pub pitch_length: f64,
+    pub pitch_width: f64,
+    pub attacking_right: bool,
+    pub shot_ideal_distance: f64,
+    pub shot_on_target_base: f64,
+    pub gk_save_base: f64,
+    pub gk_attributes: Option<GkSaveAttributes>,
+    pub gk_pos: Option<(f64, f64)>,
+    pub contest_defenders: Option<&'a [ShotContestDefender]>,
+    pub current_value: f64,
+    pub shot_quality_cache: Option<&'a ShotQualityCache>,
+}
+
+fn pass_lane_risk_with_distance(input: &PassLaneRiskInput<'_>) -> (f64, f64) {
     let (ox, oy) = input.origin;
     let (tx, ty) = input.target;
     let dx = tx - ox;
     let dy = ty - oy;
     let length = (dx * dx + dy * dy).sqrt();
     if length < 1.0 {
-        return 1.0;
+        return (1.0, length);
     }
 
     let nx = dx / length;
@@ -108,7 +152,11 @@ pub fn pass_lane_risk(input: &PassLaneRiskInput<'_>) -> f64 {
         }
     }
     let length_factor = 1.4_f64.min(length / 35.0);
-    (risk * 0.28 * length_factor).clamp(0.0, 1.0)
+    ((risk * 0.28 * length_factor).clamp(0.0, 1.0), length)
+}
+
+pub fn pass_lane_risk(input: &PassLaneRiskInput<'_>) -> f64 {
+    pass_lane_risk_with_distance(input).0
 }
 
 pub fn receiver_pressure(target: (f64, f64), opponents: &[(f64, f64)]) -> f64 {
@@ -145,31 +193,185 @@ pub fn turnover_consequence(input: &TurnoverConsequenceInput<'_>) -> f64 {
     (goal_danger * 0.55 + central * 0.20 + (nearby_opps * 0.25).min(1.0)).clamp(0.05, 1.0)
 }
 
-pub fn expected_pass_value(input: &ExpectedPassInput<'_>) -> ExpectedPassOutput {
-    let lane_risk = pass_lane_risk(&PassLaneRiskInput {
-        origin: input.passer_pos,
-        target: input.target,
-        opponents: input.opponent_positions,
-        interception_reach: input.interception_reach,
-    });
-    let pressure = receiver_pressure(input.target, input.opponent_positions);
-    let success_prob = (input.base_accuracy
-        * input.receiver_arrival
-        * (1.0 - lane_risk * 0.92)
-        * (1.0 - pressure * 0.55))
-        .clamp(0.02, 0.95);
+#[derive(Clone, Copy)]
+struct PassRiskEvaluation {
+    lane_risk: f64,
+    target_distance: f64,
+    receiver_pressure: f64,
+    target_local_pressure: f64,
+    turnover_consequence: f64,
+}
 
-    let after_value = pass_receive_value(&PassReceiveValueInput {
-        pos: input.target,
-        receiver_index: input.receiver_index,
-        receiver_team_home: input.receiver_team_home,
+fn pass_risk_evaluation(
+    origin: (f64, f64),
+    target: (f64, f64),
+    opponents: &[(f64, f64)],
+    interception_reach: f64,
+    loss_pos: (f64, f64),
+    pitch_length: f64,
+    pitch_width: f64,
+    attacking_right: bool,
+    precomputed_receiver_pressure: Option<f64>,
+) -> PassRiskEvaluation {
+    let (ox, oy) = origin;
+    let (tx, ty) = target;
+    let dx = tx - ox;
+    let dy = ty - oy;
+    let target_distance = (dx * dx + dy * dy).sqrt();
+    let lane_is_degenerate = target_distance < 1.0;
+    let (nx, ny) = if lane_is_degenerate {
+        (0.0, 0.0)
+    } else {
+        (dx / target_distance, dy / target_distance)
+    };
+    let own_goal_x = if attacking_right { 0.0 } else { pitch_length };
+    let own_goal = (own_goal_x, pitch_width / 2.0);
+    let d_goal = distance(loss_pos, own_goal);
+    let goal_danger = (1.0 - d_goal / 60.0).max(0.0);
+    let central =
+        1.0 - ((loss_pos.1 - pitch_width / 2.0).abs() / (pitch_width / 2.0)).min(1.0);
+    let mut lane_risk = 0.0;
+    let mut receiver_pressure = 0.0;
+    let mut target_local_pressure = 0.0;
+    let mut nearby_opponents = 0.0;
+
+    for opponent in opponents {
+        if !lane_is_degenerate {
+            let rel_x = opponent.0 - ox;
+            let rel_y = opponent.1 - oy;
+            let projection = rel_x * nx + rel_y * ny;
+            if projection > 1.5 && projection < target_distance - 1.5 {
+                let perpendicular = (rel_x * ny - rel_y * nx).abs();
+                let reach = interception_reach * 1.8;
+                if perpendicular < reach {
+                    let lane_share = 1.0 - perpendicular / reach;
+                    let centrality = 1.0 - (projection / target_distance - 0.5).abs() * 0.45;
+                    lane_risk += lane_share * centrality;
+                }
+            }
+        }
+        let target_distance_to_opponent = distance(target, *opponent);
+        if precomputed_receiver_pressure.is_none() && target_distance_to_opponent < 12.0 {
+                receiver_pressure += 1.0 - target_distance_to_opponent / 12.0;
+        }
+        if target_distance_to_opponent < 18.0 {
+            target_local_pressure += (1.0 - target_distance_to_opponent / 18.0).powf(1.25);
+        }
+        let loss_distance_to_opponent = distance(loss_pos, *opponent);
+        if loss_distance_to_opponent < 18.0 {
+            nearby_opponents += 1.0 - loss_distance_to_opponent / 18.0;
+        }
+    }
+
+    let lane_risk = if lane_is_degenerate {
+        1.0
+    } else {
+        let length_factor = 1.4_f64.min(target_distance / 35.0);
+        (lane_risk * 0.28 * length_factor).clamp(0.0, 1.0)
+    };
+    let receiver_pressure = precomputed_receiver_pressure
+        .unwrap_or_else(|| (receiver_pressure * 0.35).clamp(0.0, 1.0));
+    let turnover_consequence =
+        (goal_danger * 0.55 + central * 0.20 + (nearby_opponents * 0.25).min(1.0))
+            .clamp(0.05, 1.0);
+
+    PassRiskEvaluation {
+        lane_risk,
+        target_distance,
+        receiver_pressure,
+        target_local_pressure: (target_local_pressure * 0.30).clamp(0.0, 1.0),
+        turnover_consequence,
+    }
+}
+
+pub fn pass_retention_probability(
+    base_accuracy: f64,
+    receiver_arrival: f64,
+    lane_risk: f64,
+    receiver_pressure: f64,
+) -> f64 {
+    let technical = base_accuracy.clamp(0.0, 1.0);
+    let arrival_factor = 0.84 + 0.16 * receiver_arrival.clamp(0.0, 1.0);
+    let lane_factor = 1.0 - 0.50 * lane_risk.clamp(0.0, 1.0);
+    let pressure_factor = 1.0 - 0.30 * receiver_pressure.clamp(0.0, 1.0);
+
+    (technical * arrival_factor * lane_factor * pressure_factor).clamp(0.05, 0.98)
+}
+
+pub fn passer_pass_value_context(
+    input: &PasserPassValueContextInput<'_>,
+) -> PasserPassValueContext {
+    let origin_progress = if input.attacking_right {
+        input.passer_pos.0 / input.pitch_length.max(1.0)
+    } else {
+        (input.pitch_length - input.passer_pos.0) / input.pitch_length.max(1.0)
+    };
+    let mut attracted_pressure = 0.0;
+    for opponent in input.opponent_positions {
+        let distance_to_passer = distance(input.passer_pos, *opponent);
+        if distance_to_passer < 11.0 {
+            attracted_pressure += 1.0 - distance_to_passer / 11.0;
+        }
+    }
+    attracted_pressure = (attracted_pressure * 0.42).min(1.0);
+    let carry_count = input.passer_consecutive_carries.max(0) as f64;
+    let pressured_possession = smoothstep(0.78, 0.92, origin_progress)
+        * smoothstep(0.18, 0.65, attracted_pressure)
+        * smoothstep(1.0, 3.0, carry_count);
+    let stale_possession = smoothstep(0.62, 0.86, origin_progress)
+        * smoothstep(1.0, 4.0, carry_count)
+        * (0.38 + 0.62 * smoothstep(0.08, 0.55, attracted_pressure));
+    let effective_current_value =
+        input.current_value * (1.0 - 0.22 * pressured_possession - 0.18 * stale_possession);
+    let current_shot = shot_quality_at(&ShotQualityInput {
+        x: input.passer_pos.0,
+        y: input.passer_pos.1,
+        finishing: input.passer_finishing,
+        long_shot: input.passer_long_shot,
+        opponents: input.opponent_positions,
+        pitch_length: input.pitch_length,
+        pitch_width: input.pitch_width,
+        attacking_right: input.attacking_right,
+        shot_ideal_distance: input.shot_ideal_distance,
+        shot_on_target_base: input.shot_on_target_base,
+        gk_save_base: input.gk_save_base,
+        gk_attributes: input.gk_attributes,
+        gk_pos: input.gk_pos,
+        contest_defenders: input.contest_defenders,
+        cache: input.shot_quality_cache,
+        cache_key: input.shot_quality_cache.and_then(|_| {
+            input.gk_attributes.is_none().then(|| {
+                shot_quality_cache_key(
+                    input.tick,
+                    input.passer_team_home,
+                    input.passer_index,
+                    input.passer_pos,
+                    input.attacking_right,
+                )
+            })
+        }),
+    });
+    let origin_width =
+        (input.passer_pos.1 - input.pitch_width / 2.0).abs() / (input.pitch_width / 2.0);
+
+    PasserPassValueContext {
+        origin_progress,
+        attracted_pressure,
+        effective_current_value,
+        current_shot,
+        origin_width,
+    }
+}
+
+pub fn expected_pass_value(input: &ExpectedPassInput<'_>) -> ExpectedPassOutput {
+    let passer_context = passer_pass_value_context(&PasserPassValueContextInput {
         tick: input.tick,
-        finishing: input.receiver_finishing,
-        long_shot: input.receiver_long_shot,
-        receiver_anchor: input.receiver_anchor,
-        receiver_base: input.receiver_base,
-        teammate_positions: input.teammate_positions,
-        teammate_goalkeeper_indices: input.teammate_goalkeeper_indices,
+        passer_index: input.passer_index,
+        passer_team_home: input.passer_team_home,
+        passer_pos: input.passer_pos,
+        passer_finishing: input.passer_finishing,
+        passer_long_shot: input.passer_long_shot,
+        passer_consecutive_carries: input.passer_consecutive_carries,
         opponent_positions: input.opponent_positions,
         pitch_length: input.pitch_length,
         pitch_width: input.pitch_width,
@@ -177,22 +379,118 @@ pub fn expected_pass_value(input: &ExpectedPassInput<'_>) -> ExpectedPassOutput 
         shot_ideal_distance: input.shot_ideal_distance,
         shot_on_target_base: input.shot_on_target_base,
         gk_save_base: input.gk_save_base,
-        receiver_goal_type: input.receiver_goal_type,
-        receiver_goal_target: input.receiver_goal_target,
-        receiver_goal_value: input.receiver_goal_value,
+        gk_attributes: input.gk_attributes,
+        gk_pos: input.gk_pos,
+        contest_defenders: input.contest_defenders,
+        current_value: input.current_value,
         shot_quality_cache: input.shot_quality_cache,
     });
+    expected_pass_value_with_passer_context(input, passer_context)
+}
+
+pub(crate) fn expected_pass_value_with_passer_context(
+    input: &ExpectedPassInput<'_>,
+    passer_context: PasserPassValueContext,
+) -> ExpectedPassOutput {
+    expected_pass_value_with_context(input, passer_context, None)
+}
+
+pub(crate) fn expected_pass_value_with_context(
+    input: &ExpectedPassInput<'_>,
+    passer_context: PasserPassValueContext,
+    pass_receive_context: Option<&PassReceiveValueContext>,
+) -> ExpectedPassOutput {
+    expected_pass_value_with_optional_receiver_pressure(
+        input,
+        passer_context,
+        pass_receive_context,
+        None,
+    )
+}
+
+pub(crate) fn expected_pass_value_with_context_and_precomputed_receiver_pressure(
+    input: &ExpectedPassInput<'_>,
+    passer_context: PasserPassValueContext,
+    pass_receive_context: Option<&PassReceiveValueContext>,
+    receiver_pressure: f64,
+) -> ExpectedPassOutput {
+    expected_pass_value_with_optional_receiver_pressure(
+        input,
+        passer_context,
+        pass_receive_context,
+        Some(receiver_pressure),
+    )
+}
+
+fn expected_pass_value_with_optional_receiver_pressure(
+    input: &ExpectedPassInput<'_>,
+    passer_context: PasserPassValueContext,
+    pass_receive_context: Option<&PassReceiveValueContext>,
+    precomputed_receiver_pressure: Option<f64>,
+) -> ExpectedPassOutput {
     let consequence_point = (
         (input.passer_pos.0 + input.target.0) / 2.0,
         (input.passer_pos.1 + input.target.1) / 2.0,
     );
-    let consequence = turnover_consequence(&TurnoverConsequenceInput {
-        loss_pos: consequence_point,
-        opponents: input.opponent_positions,
-        pitch_length: input.pitch_length,
-        pitch_width: input.pitch_width,
-        attacking_right: input.attacking_right,
-    });
+    let risk = pass_risk_evaluation(
+        input.passer_pos,
+        input.target,
+        input.opponent_positions,
+        input.interception_reach,
+        consequence_point,
+        input.pitch_length,
+        input.pitch_width,
+        input.attacking_right,
+        precomputed_receiver_pressure,
+    );
+    let success_prob = pass_retention_probability(
+        input.base_accuracy,
+        input.receiver_arrival,
+        risk.lane_risk,
+        risk.receiver_pressure,
+    );
+
+    let pass_receive_input = PassReceiveValueInput {
+            pos: input.target,
+            receiver_index: input.receiver_index,
+            shot_profiles: input.shot_profiles,
+            receiver_anchor: input.receiver_anchor,
+            receiver_base: input.receiver_base,
+            teammate_positions: input.teammate_positions,
+            teammate_goalkeeper_indices: input.teammate_goalkeeper_indices,
+            opponent_positions: input.opponent_positions,
+            pitch_length: input.pitch_length,
+            pitch_width: input.pitch_width,
+            attacking_right: input.attacking_right,
+            receiver_finishing: input.receiver_finishing,
+            receiver_long_shot: input.receiver_long_shot,
+            shot_ideal_distance: input.shot_ideal_distance,
+            shot_on_target_base: input.shot_on_target_base,
+            gk_save_base: input.gk_save_base,
+            gk_attributes: input.gk_attributes,
+            gk_pos: input.gk_pos,
+            contest_defenders: input.contest_defenders,
+            tick: input.tick,
+            receiver_team_home: input.receiver_team_home,
+            shot_quality_cache: input.shot_quality_cache,
+            receiver_goal_type: input.receiver_goal_type,
+            receiver_goal_target: input.receiver_goal_target,
+            receiver_goal_value: input.receiver_goal_value,
+        };
+    let after_state =
+        pass_receive_value_breakdown_with_context_and_precomputed_target_pressures(
+            &pass_receive_input,
+            pass_receive_context,
+            PassReceiveTargetPressure {
+                local: risk.target_local_pressure,
+                receiver: risk.receiver_pressure,
+            },
+        );
+    let after_value = after_state.value;
+    let lane_risk = risk.lane_risk;
+    let target_distance = risk.target_distance;
+    let pressure = risk.receiver_pressure;
+    let consequence = risk.turnover_consequence;
     let forward_dir = if input.attacking_right { 1.0 } else { -1.0 };
     let progress_gain =
         (input.target.0 - input.passer_pos.0) * forward_dir / input.pitch_length.max(1.0);
@@ -213,28 +511,10 @@ pub fn expected_pass_value(input: &ExpectedPassInput<'_>) -> ExpectedPassOutput 
     } else {
         (input.pitch_length - input.receiver_base.0) / input.pitch_length.max(1.0)
     };
-    let origin_progress = if input.attacking_right {
-        input.passer_pos.0 / input.pitch_length.max(1.0)
-    } else {
-        (input.pitch_length - input.passer_pos.0) / input.pitch_length.max(1.0)
-    };
-    let mut attracted_pressure = 0.0;
-    for opp in input.opponent_positions {
-        let d = distance(input.passer_pos, *opp);
-        if d < 11.0 {
-            attracted_pressure += 1.0 - d / 11.0;
-        }
-    }
-    attracted_pressure = (attracted_pressure * 0.42).min(1.0);
+    let origin_progress = passer_context.origin_progress;
+    let attracted_pressure = passer_context.attracted_pressure;
+    let effective_current_value = passer_context.effective_current_value;
     let carry_count = input.passer_consecutive_carries.max(0) as f64;
-    let pressured_possession = smoothstep(0.78, 0.92, origin_progress)
-        * smoothstep(0.18, 0.65, attracted_pressure)
-        * smoothstep(1.0, 3.0, carry_count);
-    let stale_possession = smoothstep(0.62, 0.86, origin_progress)
-        * smoothstep(1.0, 4.0, carry_count)
-        * (0.38 + 0.62 * smoothstep(0.08, 0.55, attracted_pressure));
-    let effective_current_value =
-        input.current_value * (1.0 - 0.22 * pressured_possession - 0.18 * stale_possession);
     let delta = after_value - effective_current_value;
     let high_threat_space = smoothstep(0.72, 0.90, target_progress)
         * smoothstep(0.24, 0.52, centrality)
@@ -254,7 +534,6 @@ pub fn expected_pass_value(input: &ExpectedPassInput<'_>) -> ExpectedPassOutput 
         * (1.0 - smoothstep(0.42, 0.86, pressure));
     let layoff_retention_value = layoff_retention_space
         * (0.035 + 0.070 * success_prob + 0.030 * smoothstep(0.04, 0.24, lateral_change));
-    let target_distance = distance(input.passer_pos, input.target);
     let pressure_release_space = smoothstep(0.78, 0.92, origin_progress)
         * smoothstep(0.18, 0.65, attracted_pressure)
         * smoothstep(1.0, 3.0, carry_count)
@@ -302,33 +581,8 @@ pub fn expected_pass_value(input: &ExpectedPassInput<'_>) -> ExpectedPassOutput 
         centrality,
         pressure,
     );
-    let origin_width =
-        (input.passer_pos.1 - input.pitch_width / 2.0).abs() / (input.pitch_width / 2.0);
-    let current_shot = shot_quality_at(&ShotQualityInput {
-        x: input.passer_pos.0,
-        y: input.passer_pos.1,
-        finishing: input.passer_finishing,
-        long_shot: input.passer_long_shot,
-        opponents: input.opponent_positions,
-        pitch_length: input.pitch_length,
-        pitch_width: input.pitch_width,
-        attacking_right: input.attacking_right,
-        shot_ideal_distance: input.shot_ideal_distance,
-        shot_on_target_base: input.shot_on_target_base,
-        gk_save_base: input.gk_save_base,
-        gk_attributes: None,
-        gk_pos: None,
-        cache: input.shot_quality_cache,
-        cache_key: input.shot_quality_cache.map(|_| {
-            shot_quality_cache_key(
-                input.tick,
-                input.passer_team_home,
-                input.passer_index,
-                input.passer_pos,
-                input.attacking_right,
-            )
-        }),
-    });
+    let origin_width = passer_context.origin_width;
+    let current_shot = passer_context.current_shot;
     let second_line_cutback_space = smoothstep(0.62, 0.82, origin_progress)
         * smoothstep(0.38, 0.74, origin_width)
         * smoothstep(0.68, 0.82, target_progress)
@@ -459,6 +713,7 @@ pub fn expected_pass_value(input: &ExpectedPassInput<'_>) -> ExpectedPassOutput 
         success_prob,
         risk_cost,
         after_value,
+        after_direct_xg: after_state.direct_xg,
         current_value: input.current_value,
         effective_current_value,
         delta,
@@ -482,6 +737,120 @@ pub fn expected_pass_value(input: &ExpectedPassInput<'_>) -> ExpectedPassOutput 
 mod tests {
     use super::*;
 
+    fn reference_pass_lane_risk(input: &PassLaneRiskInput<'_>) -> f64 {
+        let (ox, oy) = input.origin;
+        let (tx, ty) = input.target;
+        let dx = tx - ox;
+        let dy = ty - oy;
+        let length = (dx * dx + dy * dy).sqrt();
+        if length < 1.0 {
+            return 1.0;
+        }
+
+        let nx = dx / length;
+        let ny = dy / length;
+        let mut risk = 0.0;
+        for opp in input.opponents {
+            let rel_x = opp.0 - ox;
+            let rel_y = opp.1 - oy;
+            let proj = rel_x * nx + rel_y * ny;
+            if proj <= 1.5 || proj >= length - 1.5 {
+                continue;
+            }
+            let perp = (rel_x * ny - rel_y * nx).abs();
+            let reach = input.interception_reach * 1.8;
+            if perp < reach {
+                let lane_share = 1.0 - perp / reach;
+                let centrality = 1.0 - (proj / length - 0.5).abs() * 0.45;
+                risk += lane_share * centrality;
+            }
+        }
+        let length_factor = 1.4_f64.min(length / 35.0);
+        (risk * 0.28 * length_factor).clamp(0.0, 1.0)
+    }
+
+    #[test]
+    fn pass_lane_risk_distance_helper_preserves_reference_values() {
+        for (origin, target, opponents) in [
+            ((40.0, 34.0), (40.5, 34.0), &[(40.2, 34.0)][..]),
+            (
+                (40.0, 34.0),
+                (70.0, 34.0),
+                &[(55.0, 34.0), (61.0, 42.0)][..],
+            ),
+        ] {
+            let input = PassLaneRiskInput {
+                origin,
+                target,
+                opponents,
+                interception_reach: 3.5,
+            };
+            let reference = reference_pass_lane_risk(&input);
+            let (prepared, target_distance) = pass_lane_risk_with_distance(&input);
+
+            assert_eq!(prepared.to_bits(), reference.to_bits());
+            assert_eq!(
+                target_distance.to_bits(),
+                distance(origin, target).to_bits()
+            );
+        }
+    }
+
+    #[test]
+    fn pass_risk_evaluation_preserves_independent_risk_components() {
+        for (origin, target, opponents) in [
+            ((40.0, 34.0), (40.5, 34.0), &[(40.2, 34.0), (44.0, 35.0)][..]),
+            (
+                (40.0, 34.0),
+                (70.0, 28.0),
+                &[(55.0, 32.0), (65.0, 27.0), (35.0, 40.0)][..],
+            ),
+        ] {
+            let loss_pos = (
+                (origin.0 + target.0) / 2.0,
+                (origin.1 + target.1) / 2.0,
+            );
+            let prepared = pass_risk_evaluation(
+                origin,
+                target,
+                opponents,
+                3.5,
+                loss_pos,
+                105.0,
+                68.0,
+                true,
+                None,
+            );
+            let lane_input = PassLaneRiskInput {
+                origin,
+                target,
+                opponents,
+                interception_reach: 3.5,
+            };
+            let turnover_input = TurnoverConsequenceInput {
+                loss_pos,
+                opponents,
+                pitch_length: 105.0,
+                pitch_width: 68.0,
+                attacking_right: true,
+            };
+
+            assert_eq!(prepared.lane_risk.to_bits(), pass_lane_risk(&lane_input).to_bits());
+            assert_eq!(
+                prepared.target_distance.to_bits(),
+                distance(origin, target).to_bits()
+            );
+            assert_eq!(
+                prepared.receiver_pressure.to_bits(),
+                receiver_pressure(target, opponents).to_bits()
+            );
+            assert_eq!(
+                prepared.turnover_consequence.to_bits(),
+                turnover_consequence(&turnover_input).to_bits()
+            );
+        }
+    }
+
     #[test]
     fn lane_risk_increases_when_defender_is_on_path() {
         let clear = pass_lane_risk(&PassLaneRiskInput {
@@ -497,5 +866,15 @@ mod tests {
             interception_reach: 3.5,
         });
         assert!(blocked > clear);
+    }
+
+    #[test]
+    fn pass_retention_calibration_rewards_clean_short_options_and_penalizes_risk() {
+        let clean_short = pass_retention_probability(0.92, 0.90, 0.04, 0.06);
+        let contested_long = pass_retention_probability(0.72, 0.45, 0.58, 0.62);
+
+        assert!(clean_short > 0.80);
+        assert!(contested_long < 0.55);
+        assert!(clean_short > contested_long);
     }
 }

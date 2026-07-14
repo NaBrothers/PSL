@@ -9,6 +9,7 @@ pub struct PositionValueInput<'a> {
     pub attacking_right: bool,
     pub opponent_positions: &'a [(f64, f64)],
     pub teammate_positions: &'a [(f64, f64)],
+    pub skip_teammate_index: Option<usize>,
     pub runner_formation_pos: Option<(f64, f64)>,
 }
 
@@ -22,6 +23,7 @@ pub struct DefensivePositionValueInput<'a> {
     pub attackers: &'a [(f64, f64)],
     pub teammates: &'a [(f64, f64)],
     pub formation_pos: (f64, f64),
+    pub skip_teammate_index: Option<usize>,
 }
 
 pub fn protection_value(pos: (f64, f64), ball_pos: (f64, f64), own_goal_x: f64) -> f64 {
@@ -65,7 +67,10 @@ pub fn position_value(input: &PositionValueInput<'_>) -> f64 {
     let space_factor = 1.0 / (1.0 + opp_count * defender_weight);
 
     let mut tm_count = 0.0;
-    for (tx, ty) in input.teammate_positions {
+    for (teammate_index, (tx, ty)) in input.teammate_positions.iter().enumerate() {
+        if input.skip_teammate_index == Some(teammate_index) {
+            continue;
+        }
         let dx = x - tx;
         let dy = y - ty;
         if dx * dx + dy * dy < 64.0 {
@@ -98,7 +103,10 @@ pub fn position_value(input: &PositionValueInput<'_>) -> f64 {
         let y_center_dist = (y - width / 2.0).abs() / (width / 2.0);
         if y_center_dist > 0.5 {
             let mut box_presence: f64 = 0.0;
-            for (tx, ty) in input.teammate_positions {
+            for (teammate_index, (tx, ty)) in input.teammate_positions.iter().enumerate() {
+                if input.skip_teammate_index == Some(teammate_index) {
+                    continue;
+                }
                 let tm_progress = if input.attacking_right {
                     tx / length
                 } else {
@@ -199,7 +207,10 @@ pub fn defensive_position_value(input: &DefensivePositionValueInput<'_>) -> f64 
     }
 
     let mut crowd = 0.0;
-    for teammate in input.teammates {
+    for (teammate_index, teammate) in input.teammates.iter().enumerate() {
+        if input.skip_teammate_index == Some(teammate_index) {
+            continue;
+        }
         let d = distance(input.pos, *teammate);
         if d < 12.0 {
             crowd += 1.0 - d / 12.0;
@@ -273,6 +284,7 @@ mod tests {
             attacking_right: true,
             opponent_positions: &opponents,
             teammate_positions: &teammates,
+            skip_teammate_index: None,
             runner_formation_pos: None,
         });
         let advanced = position_value(&PositionValueInput {
@@ -283,6 +295,7 @@ mod tests {
             attacking_right: true,
             opponent_positions: &opponents,
             teammate_positions: &teammates,
+            skip_teammate_index: None,
             runner_formation_pos: None,
         });
         assert!(advanced > deep);
@@ -300,6 +313,7 @@ mod tests {
             attacking_right: true,
             opponent_positions: &opponents,
             teammate_positions: &teammates,
+            skip_teammate_index: None,
             runner_formation_pos: None,
         });
         let role_limited = position_value(&PositionValueInput {
@@ -310,8 +324,41 @@ mod tests {
             attacking_right: true,
             opponent_positions: &opponents,
             teammate_positions: &teammates,
+            skip_teammate_index: None,
             runner_formation_pos: Some((45.0, 34.0)),
         });
         assert!(role_limited < no_role);
+    }
+
+    #[test]
+    fn skip_teammate_index_matches_a_position_list_without_the_player() {
+        let opponents = [(88.0, 25.0), (85.0, 39.0), (78.0, 50.0)];
+        let all_teammates = [(92.0, 53.0), (80.0, 40.0), (72.0, 27.0), (56.0, 35.0)];
+        let without_player = [all_teammates[0], all_teammates[2], all_teammates[3]];
+        for (x, y) in [(84.0, 48.0), (91.0, 58.0), (76.0, 22.0)] {
+            let legacy = position_value(&PositionValueInput {
+                x,
+                y,
+                pitch_length: 105.0,
+                pitch_width: 68.0,
+                attacking_right: true,
+                opponent_positions: &opponents,
+                teammate_positions: &without_player,
+                skip_teammate_index: None,
+                runner_formation_pos: Some(all_teammates[1]),
+            });
+            let shared_snapshot = position_value(&PositionValueInput {
+                x,
+                y,
+                pitch_length: 105.0,
+                pitch_width: 68.0,
+                attacking_right: true,
+                opponent_positions: &opponents,
+                teammate_positions: &all_teammates,
+                skip_teammate_index: Some(1),
+                runner_formation_pos: Some(all_teammates[1]),
+            });
+            assert_eq!(legacy.to_bits(), shared_snapshot.to_bits());
+        }
     }
 }

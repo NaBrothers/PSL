@@ -61,7 +61,6 @@ class EngineConfig:
     receive_reachability_scale: float = 0.2
     space_creation_radius: float = 10.0
 
-    pass_error_divisor: float = 800.0
     first_touch_error_divisor: float = 700.0
     carry_error_divisor: float = 900.0
     tackle_fail_stun_seconds: float = 1.5

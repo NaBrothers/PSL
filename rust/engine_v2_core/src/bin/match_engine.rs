@@ -1,4 +1,4 @@
-use std::io::{self, Read};
+use std::io::{self, Read, Write};
 
 use psl_engine_v2_core::{run_match_v2, MatchV2RunRequest};
 
@@ -17,9 +17,9 @@ fn main() -> Result<(), String> {
     let request: MatchV2RunRequest =
         serde_json::from_str(input.trim()).map_err(|err| err.to_string())?;
     let response = run_match_v2(request);
-    println!(
-        "{}",
-        serde_json::to_string(&response).map_err(|err| err.to_string())?
-    );
+    let stdout = io::stdout();
+    let mut stdout = stdout.lock();
+    serde_json::to_writer(&mut stdout, &response).map_err(|err| err.to_string())?;
+    stdout.write_all(b"\n").map_err(|err| err.to_string())?;
     Ok(())
 }

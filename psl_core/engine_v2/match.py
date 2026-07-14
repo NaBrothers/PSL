@@ -21,6 +21,7 @@ class MatchResult:
     events: List[Dict] = field(default_factory=list)
     home_stats: Dict = field(default_factory=dict)
     away_stats: Dict = field(default_factory=dict)
+    match_clock: Dict = field(default_factory=dict)
     home_player_stats: List[Dict] = field(default_factory=list)
     away_player_stats: List[Dict] = field(default_factory=list)
     home_ratings: List[Dict] = field(default_factory=list)
@@ -89,6 +90,7 @@ class MatchV2:
             events=list(response.get("events", [])),
             home_stats=dict(response.get("home_stats", {})),
             away_stats=dict(response.get("away_stats", {})),
+            match_clock=dict(response.get("match_clock", {})),
             home_player_stats=list(response.get("home_player_stats", [])),
             away_player_stats=list(response.get("away_player_stats", [])),
             home_ratings=list(response.get("home_ratings", [])),

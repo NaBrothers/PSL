@@ -3,55 +3,102 @@ use serde_json::json;
 use std::cell::RefCell;
 use std::collections::HashMap;
 
-use crate::shot_quality::ShotQualityCache;
-use crate::{
-    angle_to_goal, apply_specialized_on_ball_bias, apply_support_opportunity_cost,
-    build_defensive_goal, build_off_ball_attack_goal, build_vision_context, carry_phase_plan,
-    choose_defense_action, choose_off_ball_attack_target, clear_phase_plan, clearance_arrival_plan,
-    detect_duel, detect_interception, distance, duel_phase_plan, evaluate_arc_arrival_goal,
-    evaluate_attack_far_post_goal, evaluate_byline_delivery_goal, evaluate_carry,
-    evaluate_carry_path, evaluate_clear, evaluate_cut_inside_goal, evaluate_drive_byline_goal,
-    evaluate_hold, evaluate_hold_opportunity_goal, evaluate_layoff_goal,
-    evaluate_release_support_goal, evaluate_shot, evaluate_through_ball_goal,
-    evaluate_wide_hold_overlap_goal, expected_pass_value, finalize_carry_score,
-    generate_carry_offsets, gk_position_adjust, hold_phase_plan, kickoff_shape_targets,
-    out_of_bounds_plan, pass_arrival_plan, pass_phase_plan, pass_receive_plan, player_apply_stun,
-    player_move_speed, player_move_tick, player_set_movement_target, player_speed,
-    player_tick_stun, position_value, restart_play_plan, restart_shape_plan, score_goal_plan,
-    select_best_arriving_support, select_best_byline_carry, select_best_layoff,
-    select_best_overlap, select_contested_targets, select_goal_candidate_with_gaussians,
-    select_goal_deterministic, select_hold_support, select_on_ball_candidate, shot_arrival_plan,
-    shot_phase_plan, softmax_select_index, state_value, team_pass_candidates_batch,
-    team_shape_plan, tick_ball_flight, tick_contested_ball, track_carry_stats,
-    track_defensive_pressures, track_pass_stats, ArcArrivalGoalInput, ArrivalPlayerInput,
-    ArrivingSupportPassInput, ArrivingSupportSelectionInput, AttackFarPostGoalInput,
-    BylineCarryInput, BylineCarrySelectionInput, BylineDeliveryGoalInput,
-    BylineSupportTeammateInput, CarryFinalizeInput, CarryInput, CarryPathInput,
-    CarryPathOpponentInput, CarryPhasePlanInput, CarryStatInput, CarrySupportPlayer,
-    CarryTargetGenerationInput, ClearInput, ClearPhasePlanInput, ClearanceArrivalPlanInput,
-    ClearancePlayerInput, ContestedTargetPlayerInput, ContestedTargetsInput, ContestedTickInput,
-    CutInsideGoalInput, DefenderActionInput, DefenseChoiceInput, DefenseRandomSample,
-    DefenseTeammateInput, DefensiveGoalBuildInput, DefensivePressureInput, DriveBylineGoalInput,
-    DuelDetectionInput, DuelPhasePlanInput, ExecutionOpponent, ExpectedPassInput, FlightTickInput,
-    GkPositionAdjustInput, GkSaveAttributes, GoalInput, GoalSwitchCostInput, HoldInput,
-    HoldOpportunityGoalInput, HoldPhasePlanInput, HoldSupportCarryInput, HoldSupportHoldInput,
-    HoldSupportPassInput, HoldSupportSelectionInput, InterceptionDetectionInput,
-    KickoffPlayerInput, KickoffShapeInput, LayoffGoalInput, LayoffPassInput, LayoffSelectionInput,
-    OffBallAttackChoiceInput, OffBallAttackGoalBuildInput, OffBallRawGenerationInput,
-    OffBallTeammateInput, OnBallGenericCandidateInput, OnBallGenericGoalInput,
-    OnBallSelectionCandidateInput, OnBallSelectionInput, OnBallSelectionOutput,
-    OnBallSpecializedBiasCandidateInput, OnBallSpecializedBiasInput, OutOfBoundsPlanInput,
-    OverlapPassInput, OverlapSelectionInput, PassArrivalPlanInput, PassPhasePlanInput,
-    PassReceivePlanInput, PassRiskPlayer, PassSpacePlayer, PassStatInput, PassTeamPlayer,
-    PlayerApplyStunInput, PlayerMoveSpeedInput, PlayerMoveTickInput, PlayerSetMovementTargetInput,
-    PlayerTickStunInput, PositionValueInput, RandomPolarSample, ReleaseSupportGoalInput,
-    RestartPlayPlanInput, RestartPlayerInput, RestartShapePlanInput, RestartShapePlayerInput,
-    ScoreGoalPlanInput, ShotArrivalPlanInput, ShotInput, ShotLogEntryOutput, ShotPhasePlanInput,
-    ShotSupportPlayer, StateValueInput, SupportOpportunityCarryInput, SupportOpportunityInput,
-    SupportOpportunityPassInput, TeamPassBatchInput, TeamPhaseUpdateInput, TeamShapeOpponentInput,
-    TeamShapePlanInput, TeamShapePlayerInput, ThroughBallGoalInput, VisionContextInput,
-    WideHoldOverlapGoalInput,
+use crate::off_ball_attack::{
+    choose_off_ball_attack_target_from_scored, generate_off_ball_attack_anchor_candidates_into,
+    generate_off_ball_attack_support_candidates_into, score_off_ball_attack_candidates_into,
+    MAX_FIXED_OFF_BALL_ATTACK_CANDIDATES,
 };
+use crate::off_ball_defense::{
+    best_fixed_team_defense_candidate_with_team_context,
+    fixed_defense_random_branch_from_noisy_max, fixed_defense_team_context,
+    prepare_fixed_defense_choice_with_team_context, FixedDefensePreparedChoice,
+    MAX_FIXED_TEAM_DEFENSE_CANDIDATES,
+};
+use crate::pass_value::{
+    expected_pass_value_with_passer_context, passer_pass_value_context, PasserPassValueContextInput,
+};
+
+const MAX_FIXED_OFF_BALL_ATTACK_CHOICES: usize = MAX_FIXED_OFF_BALL_ATTACK_CANDIDATES + 1;
+use crate::shot_quality::{shot_contest_engagement, ShotQualityCache};
+use crate::state_value::{
+    possession_bellman_geometry, possession_state_value_with_context_and_bellman_geometry,
+};
+use crate::team_plan::project_team_plan_formation_into_with_prepared_targets;
+use crate::{
+    action_timing_plan, angle_between_points, apply_support_opportunity_cost_into,
+    build_defensive_goal, build_off_ball_attack_goal, build_vision_context,
+    carry_batch_value_context, carry_phase_plan,
+    carry_survival_transition_with_defender_response_slices, choose_defense_action,
+    choose_off_ball_attack_target, clear_phase_plan, clearance_arrival_plan,
+    coordinate_team_defense_into, detect_duel, detect_interception, distance, duel_phase_plan,
+    estimate_second_ball_control, evaluate_arc_arrival_goal, evaluate_attack_far_post_goal,
+    evaluate_byline_delivery_goal, evaluate_carry_with_context, evaluate_clear,
+    evaluate_cut_inside_goal, evaluate_drive_byline_goal, evaluate_hold,
+    evaluate_hold_opportunity_goal, evaluate_layoff_goal, evaluate_release_support_goal,
+    evaluate_shot, evaluate_through_ball_goal, evaluate_wide_hold_overlap_goal,
+    finalize_carry_score, generate_carry_offsets_into, gk_position_adjust,
+    hold_phase_plan, kickoff_shape_targets, out_of_bounds_plan, pass_control_transition,
+    pass_phase_plan, pass_receive_plan, player_apply_stun, player_move_speed, player_move_tick,
+    player_set_movement_target_ref, player_speed, player_tick_stun, position_value,
+    prepare_defense_choice, prepared_defense_choice_random_branch,
+    resolve_shot_contest, restart_play_plan, restart_shape_plan,
+    score_goal_plan, select_best_arriving_support, select_best_byline_carry, select_best_layoff,
+    select_best_overlap, select_contested_targets_into, select_goal_candidate_with_gaussians,
+    select_goal_deterministic, select_hold_support, select_prepared_defense_action,
+    possession_state_value_with_context, possession_value_context, select_team_plan,
+    shot_arrival_plan, shot_contest_intent, shot_phase_plan, should_continue_action,
+    softmax_select_index, state_value,
+    team_pass_candidates_batch_into_with_workspace, team_plan_movement_target,
+    team_shape_plan_into, temporal_option_value, tick_ball_flight,
+    tick_contested_ball, track_carry_stats, track_defensive_pressures_into, track_pass_stats,
+    ActionTimingInput, ActionTimingPlan, ArcArrivalGoalInput, ArrivingSupportPassInput,
+    ArrivingSupportSelectionInput, AttackFarPostGoalInput, BylineCarryInput,
+    BylineCarrySelectionInput, BylineDeliveryGoalInput, BylineSupportTeammateInput,
+    CarryBatchValueContextInput, CarryFinalizeInput, CarryInput, CarryPathInput,
+    CarryPathOpponentInput, CarryPhasePlanInput, CarryStatInput, CarrySupportPlayer,
+    CarrySurvivalInput, CarrySurvivalTransition, CarryTargetGenerationInput, ClearInput,
+    ClearPhasePlanInput, ClearanceArrivalPlanInput, ClearancePlayerInput,
+    ContestedTargetPlayerInput, ContestedTargetsInput, ContestedTickInput, CutInsideGoalInput,
+    DefenderActionInput, DefenseChoiceInput, DefenseChoiceOutput, DefenseRandomSample,
+    DefenseTaskKind, DefenseTeammateInput, DefensiveGoalBuildInput, DefensivePressureInput,
+    DriveBylineGoalInput, DuelDetectionInput, DuelPhasePlanInput, ExecutionOpponent,
+    ExpectedPassInput, FlightTickInput, GkPositionAdjustInput, GkSaveAttributes, GoalInput,
+    GoalSwitchCostInput, HoldInput, HoldOpportunityGoalInput, HoldPhasePlanInput,
+    HoldSupportCarryInput, HoldSupportHoldInput, HoldSupportPassInput, HoldSupportSelectionInput,
+    InterceptionDetectionInput, KickoffPlayerInput, KickoffShapeInput, LayoffGoalInput,
+    LayoffPassInput, LayoffSelectionInput, MatchClock, MatchClockPhase, OffBallAttackBatchInput,
+    OffBallAttackCandidateInput, OffBallAttackCandidateOutput, OffBallAttackChoiceInput,
+    OffBallAttackGoalBuildInput, OffBallRawGenerationInput, OffBallTeammateInput,
+    OnBallGenericGoalInput, OutOfBoundsPlanInput, OverlapPassInput, OverlapSelectionInput,
+    PassControlTransitionInput, PassPhasePlanInput, PassReceivePlanInput, PassRiskPlayer,
+    PassSpacePlayer, PassStatInput, PassTeamPlayer, PlayerApplyStunInput, PlayerMoveSpeedInput,
+    PlayerMoveTickInput, PlayerSetMovementTargetInput, PlayerShotProfile, PlayerTickStunInput,
+    PositionValueInput, PossessionControlObservation, PossessionControlState,
+    PossessionControlTransitionInput, PossessionTransition, RandomPolarSample,
+    ReleaseSupportGoalInput, RestartPlayPlanInput, RestartPlayerInput, RestartShapePlanInput,
+    RestartShapePlayerInput, ScoreGoalPlanInput, SecondBallControlEstimate, SecondBallControlInput,
+    SecondBallPlayerInput, ShotArrivalPlanInput, ShotContestDefender, ShotContestEstimate,
+    ShotInput, ShotLogEntryOutput, ShotPhasePlanInput, ShotPossessionTransitionInput,
+    StateValueInput, SupportOpportunityCarryInput, SupportOpportunityInput,
+    SupportOpportunityPassInput, TeamDefenseAssignment, TeamDefenseAssignmentInput,
+    TeamDefenseCandidate, TeamDefensePlayerInput, TeamPassBatchInput, TeamPhaseUpdateInput,
+    TeamPassCandidate, TeamPassWorkspace, TeamPlanFormationProjectionInput,
+    TeamPlanOpponentInput, TeamPlanPlayerInput,
+    TeamPlanProjectionPlayerInput, TeamPlanProjectionPlayerOutput, TeamPlanSignals,
+    TeamPlanState, TeamPlanUpdateInput,
+    TeamShapeOpponentInput, TeamShapePlanInput, TeamShapePlayerInput, TeamShapePlayerOutput,
+    TemporalActionKind, TemporalOptionValueInput, ThroughBallGoalInput, VisionContextInput,
+    WideHoldOverlapGoalInput, EMPTY_TEAM_PASS_CANDIDATE, MAX_CARRY_TARGET_OFFSETS,
+    MAX_PASS_CANDIDATES_PER_RECEIVER, MAX_TEAM_PASS_CANDIDATES,
+};
+
+macro_rules! trace_entry {
+    ($state:expr, $entry:expr) => {
+        if $state.trace_enabled {
+            $state.trace_entries.push($entry);
+        }
+    };
+}
 
 #[derive(Clone, Copy)]
 struct Formation {
@@ -135,7 +182,7 @@ struct RunnerPlayer {
     dispossessed: i32,
     offsides: i32,
     distance_covered: f64,
-    position_samples: Vec<serde_json::Value>,
+    position_samples: Vec<[f64; 2]>,
     hold_ticks: i32,
     possession_ticks: i32,
     consecutive_carries: i32,
@@ -146,6 +193,9 @@ enum RunnerHeldAction {
     Hold {
         opportunity_target: Option<(f64, f64)>,
     },
+    Reorient {
+        target: (f64, f64),
+    },
     Carry {
         target: (f64, f64),
     },
@@ -154,6 +204,7 @@ enum RunnerHeldAction {
         target: (f64, f64),
         is_long: bool,
         lane_risk: f64,
+        retention_probability: f64,
     },
     Clear {
         target: (f64, f64),
@@ -163,7 +214,20 @@ enum RunnerHeldAction {
         xg: f64,
         on_target_prob: f64,
         gk_attributes: GkSaveAttributes,
+        body_release_probability: f64,
+        release_probability: f64,
+        block_probability: f64,
+        blocker_idx: Option<usize>,
+        block_point: (f64, f64),
     },
+}
+
+#[derive(Clone, Copy, Debug)]
+struct RunnerActionCommitment {
+    action: RunnerHeldAction,
+    remaining_ticks: i32,
+    completion_distance: f64,
+    requires_target_completion: bool,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -180,11 +244,13 @@ enum RunnerFlightKind {
     Shot,
 }
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Debug)]
 struct RunnerEvaluatedAction {
     action: RunnerHeldAction,
     score: f64,
     success_prob: f64,
+    carry_survival: Option<CarrySurvivalTransition>,
+    carry_defender_response_index: Option<usize>,
     receiver_pressure: f64,
     high_threat_space: f64,
     final_third_combination: f64,
@@ -213,6 +279,11 @@ struct RunnerEvaluatedAction {
     no_clear_release: f64,
     raw_score: f64,
     debug_final_score: f64,
+    debug_temporal_discount: f64,
+    debug_option_return: f64,
+    debug_turnover_cost: f64,
+    debug_local_shaping: f64,
+    debug_option_duration_ticks: i32,
     debug_hold_ticks: i32,
     debug_possession_ticks: i32,
     debug_best_pass_score: f64,
@@ -221,6 +292,7 @@ struct RunnerEvaluatedAction {
     debug_effective_current_value: f64,
     debug_delta: f64,
     debug_after_value: f64,
+    debug_after_direct_xg: f64,
     debug_effective_delta: f64,
     debug_continuity: f64,
     debug_risk_cost: f64,
@@ -241,7 +313,7 @@ struct RunnerEvaluatedAction {
     debug_path_conflict_cost: f64,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Copy, Debug)]
 struct RunnerSpecializedGoal {
     goal_type: &'static str,
     phase: &'static str,
@@ -251,19 +323,155 @@ struct RunnerSpecializedGoal {
     action_code: u8,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Copy, Debug)]
 struct RunnerGoalSummary {
-    goal_type: String,
+    goal_type: &'static str,
     target: (f64, f64),
     value: f64,
 }
 
 #[derive(Clone, Debug)]
+enum RunnerGoalText {
+    Static(&'static str),
+    Owned(String),
+}
+
+impl RunnerGoalText {
+    fn from_text(value: &str) -> Self {
+        runner_goal_text_static(value)
+            .map(Self::Static)
+            .unwrap_or_else(|| Self::Owned(value.to_string()))
+    }
+
+    fn as_str(&self) -> &str {
+        match self {
+            Self::Static(value) => value,
+            Self::Owned(value) => value.as_str(),
+        }
+    }
+}
+
+fn runner_goal_text_static(value: &str) -> Option<&'static str> {
+    match value {
+        "arc_arrival_for_cutback" => Some("arc_arrival_for_cutback"),
+        "attack_far_post" => Some("attack_far_post"),
+        "support_second_line" => Some("support_second_line"),
+        "drop_between_lines" => Some("drop_between_lines"),
+        "support_carrier" => Some("support_carrier"),
+        "hold_width" => Some("hold_width"),
+        "run_behind" => Some("run_behind"),
+        "attack_box" => Some("attack_box"),
+        "recycle_support" => Some("recycle_support"),
+        "defend_press" => Some("defend_press"),
+        "defend_mark_runner" => Some("defend_mark_runner"),
+        "defend_cover_lane" => Some("defend_cover_lane"),
+        "defend_recover_shape" => Some("defend_recover_shape"),
+        "defend_protect_box" => Some("defend_protect_box"),
+        "create_shot" => Some("create_shot"),
+        "progress_carry" => Some("progress_carry"),
+        "protect_ball" => Some("protect_ball"),
+        "recycle" => Some("recycle"),
+        "switch_play" => Some("switch_play"),
+        "through_ball" => Some("through_ball"),
+        "clear_danger" => Some("clear_danger"),
+        "cut_inside_to_shoot" => Some("cut_inside_to_shoot"),
+        "wide_byline_attack" => Some("wide_byline_attack"),
+        "wide_hold_for_overlap" => Some("wide_hold_for_overlap"),
+        "through_ball_behind" => Some("through_ball_behind"),
+        "release_pressure_with_layoff" => Some("release_pressure_with_layoff"),
+        "hold_for_opportunity" => Some("hold_for_opportunity"),
+        "release_to_arriving_support" => Some("release_to_arriving_support"),
+        "defend" => Some("defend"),
+        "support" => Some("support"),
+        "execute" => Some("execute"),
+        "drive" => Some("drive"),
+        "release" => Some("release"),
+        "finish" => Some("finish"),
+        "scan" => Some("scan"),
+        _ => None,
+    }
+}
+
+#[derive(Clone, Debug)]
+struct RunnerHeldGoalState {
+    goal_type: Option<RunnerGoalText>,
+    goal_phase: Option<RunnerGoalText>,
+    goal_target: (f64, f64),
+    goal_value: f64,
+    goal_created_tick: i32,
+    goal_action_code: u8,
+}
+
+impl RunnerHeldGoalState {
+    fn from_player(player: &RunnerPlayer) -> Self {
+        Self {
+            goal_type: player.goal_type.as_deref().map(RunnerGoalText::from_text),
+            goal_phase: player.goal_phase.as_deref().map(RunnerGoalText::from_text),
+            goal_target: player.goal_target,
+            goal_value: player.goal_value,
+            goal_created_tick: player.goal_created_tick,
+            goal_action_code: player.goal_action_code,
+        }
+    }
+
+    fn clear(&mut self, player_pos: (f64, f64)) {
+        self.goal_type = None;
+        self.goal_phase = None;
+        self.goal_target = player_pos;
+        self.goal_value = 0.0;
+        self.goal_created_tick = 0;
+        self.goal_action_code = 3;
+    }
+
+    fn goal_type(&self) -> Option<&str> {
+        self.goal_type.as_ref().map(RunnerGoalText::as_str)
+    }
+
+    fn goal_phase(&self) -> Option<&str> {
+        self.goal_phase.as_ref().map(RunnerGoalText::as_str)
+    }
+
+    fn set_goal_type(&mut self, goal_type: &str) {
+        self.goal_type = Some(RunnerGoalText::from_text(goal_type));
+    }
+
+    fn set_goal_phase(&mut self, goal_phase: &str) {
+        self.goal_phase = Some(RunnerGoalText::from_text(goal_phase));
+    }
+
+    fn apply_to_player(self, player: &mut RunnerPlayer) {
+        update_runner_optional_text(
+            &mut player.goal_type,
+            self.goal_type.as_ref().map(RunnerGoalText::as_str),
+        );
+        update_runner_optional_text(
+            &mut player.goal_phase,
+            self.goal_phase.as_ref().map(RunnerGoalText::as_str),
+        );
+        player.goal_target = self.goal_target;
+        player.goal_value = self.goal_value;
+        player.goal_created_tick = self.goal_created_tick;
+        player.goal_action_code = self.goal_action_code;
+    }
+}
+
+#[derive(Clone, Copy, Debug)]
 struct RunnerGoalSwitchResult {
     switched: bool,
     switch_cost: f64,
     value_advantage: f64,
-    reason: String,
+    reason: &'static str,
+}
+
+#[derive(Clone)]
+struct CoordinatedDefenseChoice {
+    index: usize,
+    defender: RunnerPlayer,
+    random_samples: Vec<DefenseRandomSample>,
+    score_noises: Vec<f64>,
+    roll: f64,
+    fallback_index: usize,
+    choice: DefenseChoiceOutput,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -280,6 +488,7 @@ struct RunnerBall {
     position: (f64, f64),
     holder_idx: Option<usize>,
     holder_team_home: Option<bool>,
+    control: PossessionControlState,
     flight: Option<RunnerFlight>,
     loose_velocity: (f64, f64),
     contested_ticks: i32,
@@ -295,7 +504,7 @@ struct RunnerFlight {
     passer_idx: usize,
     passer_team_home: bool,
     intended_receiver_idx: Option<usize>,
-    offside_indices: Vec<usize>,
+    offside_flags: [bool; RUNNER_TEAM_SIZE],
     last_passer_team_home: Option<bool>,
     last_passer_idx: i32,
     on_target: bool,
@@ -304,10 +513,63 @@ struct RunnerFlight {
     gk_attributes: Option<GkSaveAttributes>,
     is_long: bool,
     target_is_space: bool,
+    retention_probability: f64,
+    retention_roll: f64,
+    retained_possession: bool,
     possession_id: i32,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Copy, Debug, Serialize)]
+struct RunnerReplayBallFlight {
+    from: [f64; 2],
+    to: [f64; 2],
+    #[serde(rename = "type")]
+    flight_type: &'static str,
+    on_target: bool,
+}
+
+#[derive(Clone, Debug, Serialize)]
+#[serde(untagged)]
+enum RunnerReplayGoalText {
+    Static(&'static str),
+    Owned(String),
+}
+
+impl RunnerReplayGoalText {
+    fn from_player_goal(goal_type: &str) -> Self {
+        runner_goal_text_static(goal_type)
+            .map(Self::Static)
+            .unwrap_or_else(|| Self::Owned(goal_type.to_string()))
+    }
+}
+
+#[derive(Clone, Debug, Serialize)]
+pub struct RunnerReplayFrame {
+    #[serde(rename = "type")]
+    entry_type: &'static str,
+    t: f64,
+    half: i32,
+    home: [[f64; 2]; RUNNER_TEAM_SIZE],
+    away: [[f64; 2]; RUNNER_TEAM_SIZE],
+    home_player_goals: [Option<RunnerReplayGoalText>; RUNNER_TEAM_SIZE],
+    away_player_goals: [Option<RunnerReplayGoalText>; RUNNER_TEAM_SIZE],
+    ball: [f64; 2],
+    ball_holder: Option<usize>,
+    ball_team: Option<&'static str>,
+    score: [i32; 2],
+    ball_flight: Option<RunnerReplayBallFlight>,
+    event_text: Option<&'static str>,
+    pause_ms: Option<i32>,
+    cut: Option<bool>,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(untagged)]
+pub enum RunnerReplayEntry {
+    Raw(serde_json::Value),
+    Frame(RunnerReplayFrame),
+}
+
 struct RunnerMatchState {
     ball: RunnerBall,
     home_score: i32,
@@ -320,25 +582,42 @@ struct RunnerMatchState {
     home_possession_ticks: i32,
     away_possession_ticks: i32,
     neutral_ticks: i32,
+    match_clock: MatchClock,
+    action_commitment: Option<RunnerActionCommitment>,
     dead_reason: Option<String>,
     restart_team_home: Option<bool>,
     restart_ticks_remaining: i32,
     last_passer_team_home: Option<bool>,
     last_passer_idx: i32,
-    pass_network: HashMap<String, i32>,
+    pass_network: RunnerPassNetwork,
     held_action_cursor: usize,
     pending_on_ball_goal_event: Option<serde_json::Value>,
-    pending_ball_flight: Option<serde_json::Value>,
-    pending_replay_frames: Vec<serde_json::Value>,
+    pending_ball_flight: Option<RunnerReplayBallFlight>,
+    pending_replay_frames: Vec<RunnerReplayFrame>,
     trace_entries: Vec<serde_json::Value>,
     trace_decisions: Vec<serde_json::Value>,
     shot_quality_cache: ShotQualityCache,
+    held_action_buffer: Vec<RunnerEvaluatedAction>,
+    carry_defender_response_arena: RunnerCarryDefenderResponseArena,
+    held_decision_arena: RunnerHeldDecisionArena,
+    pass_candidate_buffer: Vec<TeamPassCandidate>,
+    pass_workspace: TeamPassWorkspace,
+    specialized_goal_arena: RunnerSpecializedGoalArena,
+    off_ball_attack_arena: RunnerOffBallAttackArena,
+    team_plan_arena: RunnerTeamPlanArena,
+    team_shape_arena: RunnerTeamShapeArena,
+    fixed_defense_arena: RunnerFixedDefenseArena,
     home_phase_code: u8,
     away_phase_code: u8,
     home_had_possession_last_tick: bool,
     away_had_possession_last_tick: bool,
     home_ticks_since_possession_change: i32,
     away_ticks_since_possession_change: i32,
+    home_plan: TeamPlanState,
+    away_plan: TeamPlanState,
+    home_plan_signals: TeamPlanSignals,
+    away_plan_signals: TeamPlanSignals,
+    trace_enabled: bool,
     rng_trace_enabled: bool,
 }
 
@@ -383,11 +662,9 @@ struct RunnerRuntimeConfig {
     pass_to_space_ball_speed: f64,
     receive_reachability_scale: f64,
     space_creation_radius: f64,
-    pass_error_divisor: f64,
     first_touch_error_divisor: f64,
     carry_error_divisor: f64,
     tackle_fail_stun_seconds: f64,
-    target_occupation_weight: f64,
     runner_forced_action: Option<String>,
     runner_forced_actions: Vec<String>,
     runner_forced_pass_target: Option<(f64, f64)>,
@@ -418,13 +695,14 @@ pub struct MatchV2RunResponse {
     pub events: Vec<serde_json::Value>,
     pub home_stats: serde_json::Value,
     pub away_stats: serde_json::Value,
+    pub match_clock: serde_json::Value,
     pub home_player_stats: Vec<serde_json::Value>,
     pub away_player_stats: Vec<serde_json::Value>,
     pub home_ratings: Vec<serde_json::Value>,
     pub away_ratings: Vec<serde_json::Value>,
     pub replay_url: Option<String>,
     pub trace_id: String,
-    pub replay: Vec<serde_json::Value>,
+    pub replay: Vec<RunnerReplayEntry>,
     pub trace: serde_json::Value,
     pub engine: String,
     pub contract_version: i32,
@@ -443,8 +721,54 @@ struct MatchEventInput<'a> {
     xg: f64,
     origin: Option<(f64, f64)>,
     target: Option<(f64, f64)>,
-    tags: Vec<&'a str>,
+    tags: EventTags<'a>,
     score_before: Option<(i32, i32)>,
+}
+
+const MAX_EVENT_TAGS: usize = 8;
+
+struct EventTags<'a> {
+    values: [&'a str; MAX_EVENT_TAGS],
+    len: usize,
+}
+
+impl<'a> EventTags<'a> {
+    fn empty() -> Self {
+        Self {
+            values: [""; MAX_EVENT_TAGS],
+            len: 0,
+        }
+    }
+
+    fn one(tag: &'a str) -> Self {
+        let mut tags = Self::empty();
+        tags.push(tag);
+        tags
+    }
+
+    fn from_slice(values: &[&'a str]) -> Self {
+        assert!(
+            values.len() <= MAX_EVENT_TAGS,
+            "event tags exceed fixed capacity"
+        );
+        let mut tags = Self::empty();
+        tags.values[..values.len()].copy_from_slice(values);
+        tags.len = values.len();
+        tags
+    }
+
+    fn push(&mut self, tag: &'a str) {
+        assert!(
+            self.len < MAX_EVENT_TAGS,
+            "event tags exceed fixed capacity"
+        );
+        self.values[self.len] = tag;
+        self.len += 1;
+    }
+
+    fn as_slice(&self) -> &[&'a str] {
+        &self.values[..self.len]
+    }
 }
 
 fn event_player(player: Option<&RunnerPlayer>) -> serde_json::Value {
@@ -498,7 +822,7 @@ fn record_match_event(
         "score_after": [state.home_score, state.away_score],
         "origin": event_position(input.origin),
         "target": event_position(input.target),
-        "tags": input.tags,
+        "tags": input.tags.as_slice(),
     }));
 }
 
@@ -511,7 +835,7 @@ fn pass_event_tags(
     receive_pos: (f64, f64),
     config: &RunnerRuntimeConfig,
     home_attacking_right: bool,
-) -> Vec<&'static str> {
+) -> EventTags<'static> {
     let pass_stats = track_pass_stats(&PassStatInput {
         origin: flight.origin,
         target: receive_pos,
@@ -519,7 +843,7 @@ fn pass_event_tags(
         pitch_length: config.pitch_length,
         pitch_width: config.pitch_width,
     });
-    let mut tags = vec![if flight.is_long { "long" } else { "short" }];
+    let mut tags = EventTags::one(if flight.is_long { "long" } else { "short" });
     tags.push(if flight.target_is_space {
         "space"
     } else {
@@ -543,8 +867,8 @@ fn pass_event_tags(
     tags
 }
 
-fn shot_event_tags(flight: &RunnerFlight, in_box: bool, outcome: &str) -> Vec<&'static str> {
-    let mut tags = vec![if in_box { "in_box" } else { "outside_box" }];
+fn shot_event_tags(flight: &RunnerFlight, in_box: bool, outcome: &str) -> EventTags<'static> {
+    let mut tags = EventTags::one(if in_box { "in_box" } else { "outside_box" });
     if flight.on_target {
         tags.push("on_target");
     }
@@ -733,6 +1057,738 @@ mod tests {
         })
     }
 
+    fn runner_test_state() -> RunnerMatchState {
+        RunnerMatchState {
+            ball: RunnerBall {
+                state: RunnerBallState::Held,
+                position: (52.5, 34.0),
+                holder_idx: None,
+                holder_team_home: None,
+                control: PossessionControlState::default(),
+                flight: None,
+                loose_velocity: (0.0, 0.0),
+                contested_ticks: 0,
+            },
+            home_score: 0,
+            away_score: 0,
+            goals: Vec::new(),
+            events: Vec::new(),
+            event_seq: 0,
+            possession_id: 1,
+            possession_team_home: Some(true),
+            home_possession_ticks: 0,
+            away_possession_ticks: 0,
+            neutral_ticks: 0,
+            match_clock: MatchClock::default(),
+            action_commitment: None,
+            dead_reason: None,
+            restart_team_home: None,
+            restart_ticks_remaining: 0,
+            last_passer_team_home: None,
+            last_passer_idx: -1,
+            pass_network: [[[0; RUNNER_TEAM_SIZE]; RUNNER_TEAM_SIZE]; 2],
+            held_action_cursor: 0,
+            pending_on_ball_goal_event: None,
+            pending_ball_flight: None,
+            pending_replay_frames: Vec::new(),
+            trace_entries: Vec::new(),
+            trace_decisions: Vec::new(),
+            shot_quality_cache: RefCell::new(HashMap::new()),
+            held_action_buffer: Vec::with_capacity(RUNNER_MAX_HELD_ACTIONS),
+            carry_defender_response_arena: RunnerCarryDefenderResponseArena::new(),
+            held_decision_arena: RunnerHeldDecisionArena::new(),
+            pass_candidate_buffer: vec![
+                EMPTY_TEAM_PASS_CANDIDATE;
+                MAX_TEAM_PASS_CANDIDATES
+            ],
+            pass_workspace: TeamPassWorkspace::new(),
+            specialized_goal_arena: RunnerSpecializedGoalArena::new(),
+            off_ball_attack_arena: RunnerOffBallAttackArena::new(),
+            team_plan_arena: RunnerTeamPlanArena::new(),
+            team_shape_arena: RunnerTeamShapeArena::new(),
+            fixed_defense_arena: RunnerFixedDefenseArena::new(),
+            home_phase_code: 0,
+            away_phase_code: 2,
+            home_had_possession_last_tick: true,
+            away_had_possession_last_tick: false,
+            home_ticks_since_possession_change: 1,
+            away_ticks_since_possession_change: 1,
+            home_plan: TeamPlanState::default(),
+            away_plan: TeamPlanState::default(),
+            home_plan_signals: TeamPlanSignals::default(),
+            away_plan_signals: TeamPlanSignals::default(),
+            trace_enabled: false,
+            rng_trace_enabled: false,
+        }
+    }
+
+    #[test]
+    fn fixed_off_ball_attack_arena_reserves_a_stay_choice_slot() {
+        let arena = RunnerOffBallAttackArena::new();
+
+        assert_eq!(arena.noises.len(), arena.candidates.len() + 1);
+        assert_eq!(arena.selection_scores.len(), arena.candidates.len() + 1);
+    }
+
+    fn unbatched_second_ball_control(
+        attacking_players: &[RunnerPlayer],
+        defending_players: &[RunnerPlayer],
+        ball_pos: (f64, f64),
+        config: &RunnerRuntimeConfig,
+    ) -> SecondBallControlEstimate {
+        let side_access = |players: &[RunnerPlayer]| {
+            players
+                .iter()
+                .filter(|player| player.position != "GK" && player.state != "stunned")
+                .map(|player| {
+                    let input = runner_second_ball_player_input(player, config);
+                    crate::second_ball_player_access(&input, ball_pos, config.contest_radius)
+                })
+                .sum::<f64>()
+        };
+        let attacking_access = side_access(attacking_players);
+        let defending_access = side_access(defending_players);
+        let total_access = attacking_access + defending_access;
+        if total_access <= 1e-9 {
+            return SecondBallControlEstimate {
+                attacking_control_probability: 0.0,
+                defending_control_probability: 0.0,
+                unresolved_probability: 1.0,
+            };
+        }
+        let resolved_probability = (1.0 - (-total_access).exp()).clamp(0.0, 1.0);
+        SecondBallControlEstimate {
+            attacking_control_probability: resolved_probability * attacking_access / total_access,
+            defending_control_probability: resolved_probability * defending_access / total_access,
+            unresolved_probability: 1.0 - resolved_probability,
+        }
+    }
+
+    fn unbatched_projected_second_ball_control(
+        attacking_players: &[RunnerPlayer],
+        defending_players: &[RunnerPlayer],
+        projected_attackers: &[(usize, f64, f64)],
+        projected_defenders: &[(usize, f64, f64)],
+        ball_pos: (f64, f64),
+        config: &RunnerRuntimeConfig,
+    ) -> SecondBallControlEstimate {
+        let mut attacking = [RUNNER_EMPTY_SECOND_BALL_PLAYER; RUNNER_TEAM_SIZE];
+        let mut attacking_count = 0;
+        for (index, player) in attacking_players.iter().enumerate() {
+            if player.position == "GK" || player.state == "stunned" {
+                continue;
+            }
+            attacking[attacking_count] = SecondBallPlayerInput {
+                pos: player.pos,
+                projected_pos: projected_position(projected_attackers, index, player.pos),
+                speed: player_speed(
+                    player.speed.round() as i32,
+                    config.player_max_speed,
+                    config.player_min_speed,
+                ),
+            };
+            attacking_count += 1;
+        }
+        let mut defending = [RUNNER_EMPTY_SECOND_BALL_PLAYER; RUNNER_TEAM_SIZE];
+        let mut defending_count = 0;
+        for (index, player) in defending_players.iter().enumerate() {
+            if player.position == "GK" || player.state == "stunned" {
+                continue;
+            }
+            defending[defending_count] = SecondBallPlayerInput {
+                pos: player.pos,
+                projected_pos: projected_position(projected_defenders, index, player.pos),
+                speed: player_speed(
+                    player.speed.round() as i32,
+                    config.player_max_speed,
+                    config.player_min_speed,
+                ),
+            };
+            defending_count += 1;
+        }
+        crate::estimate_second_ball_control(&SecondBallControlInput {
+            ball_pos,
+            contest_radius: config.contest_radius,
+            attacking_players: &attacking[..attacking_count],
+            defending_players: &defending[..defending_count],
+        })
+    }
+
+    fn assert_second_ball_estimates_identical(
+        actual: SecondBallControlEstimate,
+        expected: SecondBallControlEstimate,
+    ) {
+        assert_eq!(
+            actual.attacking_control_probability.to_bits(),
+            expected.attacking_control_probability.to_bits()
+        );
+        assert_eq!(
+            actual.defending_control_probability.to_bits(),
+            expected.defending_control_probability.to_bits()
+        );
+        assert_eq!(
+            actual.unresolved_probability.to_bits(),
+            expected.unresolved_probability.to_bits()
+        );
+    }
+
+    #[test]
+    fn prepared_second_ball_inputs_match_unbatched_control_for_multiple_landing_points() {
+        let cards = (0..11)
+            .map(|index| runner_test_card(format!("Home {index}").as_str(), 75.0, 75.0))
+            .collect::<Vec<_>>();
+        let opponent_cards = (0..11)
+            .map(|index| runner_test_card(format!("Away {index}").as_str(), 75.0, 75.0))
+            .collect::<Vec<_>>();
+        let mut teammates = build_players(&cards, formation_data("433"), true, 105.0, 68.0);
+        let mut opponents =
+            build_players(&opponent_cards, formation_data("433"), false, 105.0, 68.0);
+        let config = runtime_config(&json!({}));
+        teammates[5].movement_intent = "attack_run".to_string();
+        teammates[5].target_pos = (84.0, 28.0);
+        teammates[5].velocity = (2.1, -0.8);
+        teammates[7].state = "stunned".to_string();
+        opponents[4].movement_intent = "press".to_string();
+        opponents[4].target_pos = (74.0, 40.0);
+        opponents[4].velocity = (-1.2, 1.6);
+        opponents[8].state = "stunned".to_string();
+
+        let prepared = RunnerSecondBallInputs::from_players(&teammates, &opponents, &config);
+        for ball_pos in [(67.5, 32.0), (89.0, 38.5)] {
+            let expected = unbatched_second_ball_control(&teammates, &opponents, ball_pos, &config);
+            assert_second_ball_estimates_identical(prepared.estimate(ball_pos, &config), expected);
+            assert_second_ball_estimates_identical(
+                runner_second_ball_control(&teammates, &opponents, ball_pos, &config),
+                expected,
+            );
+        }
+    }
+
+    #[test]
+    fn prepared_projected_second_ball_inputs_match_unbatched_control_for_multiple_landing_points() {
+        let cards = (0..11)
+            .map(|index| runner_test_card(format!("Home {index}").as_str(), 75.0, 75.0))
+            .collect::<Vec<_>>();
+        let opponent_cards = (0..11)
+            .map(|index| runner_test_card(format!("Away {index}").as_str(), 75.0, 75.0))
+            .collect::<Vec<_>>();
+        let mut teammates = build_players(&cards, formation_data("433"), true, 105.0, 68.0);
+        let mut opponents =
+            build_players(&opponent_cards, formation_data("433"), false, 105.0, 68.0);
+        let config = runtime_config(&json!({}));
+        teammates[6].state = "stunned".to_string();
+        opponents[3].state = "stunned".to_string();
+        let projected_teammates: [(usize, f64, f64); RUNNER_TEAM_SIZE] =
+            std::array::from_fn(|index| {
+                let player = &teammates[index];
+                (
+                    index,
+                    player.pos.0 + (index as f64 - 5.0) * 0.17,
+                    player.pos.1 + (index as f64 - 3.0) * 0.11,
+                )
+            });
+        let projected_opponents: [(usize, f64, f64); RUNNER_TEAM_SIZE] =
+            std::array::from_fn(|index| {
+                let player = &opponents[index];
+                (
+                    index,
+                    player.pos.0 - (index as f64 - 4.0) * 0.13,
+                    player.pos.1 + (index as f64 - 6.0) * 0.09,
+                )
+            });
+        let prepared = RunnerSecondBallInputs::from_projected_positions(
+            &teammates,
+            &opponents,
+            &projected_teammates,
+            &projected_opponents,
+            &config,
+        );
+
+        for ball_pos in [(52.0, 34.0), (82.5, 20.5)] {
+            let expected = unbatched_projected_second_ball_control(
+                &teammates,
+                &opponents,
+                &projected_teammates,
+                &projected_opponents,
+                ball_pos,
+                &config,
+            );
+            assert_second_ball_estimates_identical(prepared.estimate(ball_pos, &config), expected);
+        }
+
+        let projected_teammates_next: [(usize, f64, f64); RUNNER_TEAM_SIZE] =
+            std::array::from_fn(|index| {
+                let player = &teammates[index];
+                (
+                    index,
+                    player.pos.0 + (index as f64 - 2.0) * 0.21,
+                    player.pos.1 - (index as f64 - 7.0) * 0.07,
+                )
+            });
+        let projected_opponents_next: [(usize, f64, f64); RUNNER_TEAM_SIZE] =
+            std::array::from_fn(|index| {
+                let player = &opponents[index];
+                (
+                    index,
+                    player.pos.0 - (index as f64 - 8.0) * 0.19,
+                    player.pos.1 + (index as f64 - 1.0) * 0.12,
+                )
+            });
+        let mut reused = RunnerSecondBallInputs::empty();
+        reused.prepare_projected_players(&teammates, &opponents, &config);
+        reused.refresh_projected_positions(
+            &teammates,
+            &opponents,
+            &projected_teammates,
+            &projected_opponents,
+        );
+        reused.refresh_projected_positions(
+            &teammates,
+            &opponents,
+            &projected_teammates_next,
+            &projected_opponents_next,
+        );
+        let expected = unbatched_projected_second_ball_control(
+            &teammates,
+            &opponents,
+            &projected_teammates_next,
+            &projected_opponents_next,
+            (74.0, 45.0),
+            &config,
+        );
+        assert_second_ball_estimates_identical(reused.estimate((74.0, 45.0), &config), expected);
+    }
+
+    #[test]
+    fn projected_position_keeps_sparse_lookup_semantics_with_an_indexed_fast_path() {
+        let aligned = [(0, 12.0, 18.0), (1, 28.0, 44.0)];
+        assert_eq!(projected_position(&aligned, 1, (0.0, 0.0)), (28.0, 44.0));
+
+        let sparse = [(2, 36.0, 22.0), (0, 18.0, 46.0)];
+        assert_eq!(projected_position(&sparse, 2, (0.0, 0.0)), (36.0, 22.0));
+        assert_eq!(projected_position(&sparse, 1, (7.0, 9.0)), (7.0, 9.0));
+    }
+
+    #[test]
+    fn defender_phase1_motion_cache_matches_direct_projection_and_falls_back_on_target_change() {
+        let cards = (0..11)
+            .map(|index| runner_test_card(format!("Home {index}").as_str(), 75.0, 75.0))
+            .collect::<Vec<_>>();
+        let config = runtime_config(&json!({}));
+        let signals = crate::team_plan_signals(crate::TeamPlanKind::DefendBlock);
+        let defenders = build_players(&cards, formation_data("433"), false, 105.0, 68.0);
+        let phase1 = defender_phase1_inputs(&defenders, signals, &config);
+        let defender_index = 1;
+        let baseline = &defenders[defender_index];
+        let direct = crate::off_ball_defense::project_defense_action_motion(
+            baseline.pos,
+            baseline.target_pos,
+            baseline.tactical_anchor,
+            "hold_position",
+            runner_defense_movement_input(baseline, signals, &config),
+        );
+
+        let mut cached = baseline.clone();
+        apply_runner_defender_movement(&mut cached, defender_index, signals, &phase1, &config);
+        assert_eq!(cached.pos.0.to_bits(), direct.pos.0.to_bits());
+        assert_eq!(cached.pos.1.to_bits(), direct.pos.1.to_bits());
+        assert_eq!(cached.velocity.0.to_bits(), direct.velocity.0.to_bits());
+        assert_eq!(cached.velocity.1.to_bits(), direct.velocity.1.to_bits());
+        assert_eq!(
+            cached.distance_covered.to_bits(),
+            (baseline.distance_covered + direct.distance_covered).to_bits()
+        );
+        assert_eq!(
+            cached.facing_direction,
+            direct.facing_direction.unwrap_or(baseline.facing_direction)
+        );
+
+        let mut changed = baseline.clone();
+        changed.target_pos = (baseline.target_pos.0 + 4.0, baseline.target_pos.1 - 3.0);
+        let fallback_direct = crate::off_ball_defense::project_defense_action_motion(
+            changed.pos,
+            changed.target_pos,
+            changed.tactical_anchor,
+            "hold_position",
+            runner_defense_movement_input(&changed, signals, &config),
+        );
+        apply_runner_defender_movement(&mut changed, defender_index, signals, &phase1, &config);
+        assert_eq!(changed.pos.0.to_bits(), fallback_direct.pos.0.to_bits());
+        assert_eq!(changed.pos.1.to_bits(), fallback_direct.pos.1.to_bits());
+        assert_eq!(
+            changed.velocity.0.to_bits(),
+            fallback_direct.velocity.0.to_bits()
+        );
+        assert_eq!(
+            changed.velocity.1.to_bits(),
+            fallback_direct.velocity.1.to_bits()
+        );
+        assert_eq!(
+            changed.distance_covered.to_bits(),
+            (baseline.distance_covered + fallback_direct.distance_covered).to_bits()
+        );
+        assert_eq!(
+            changed.facing_direction,
+            fallback_direct
+                .facing_direction
+                .unwrap_or(baseline.facing_direction)
+        );
+    }
+
+    #[test]
+    fn identical_successor_plan_signals_reuse_the_preliminary_team_projection() {
+        let cards = (0..11)
+            .map(|index| runner_test_card(format!("Home {index}").as_str(), 75.0, 75.0))
+            .collect::<Vec<_>>();
+        let opponent_cards = (0..11)
+            .map(|index| runner_test_card(format!("Away {index}").as_str(), 75.0, 75.0))
+            .collect::<Vec<_>>();
+        let teammates = build_players(&cards, formation_data("433"), true, 105.0, 68.0);
+        let opponents = build_players(&opponent_cards, formation_data("433"), false, 105.0, 68.0);
+        let config = runtime_config(&json!({}));
+        let signals = crate::team_plan_signals(crate::TeamPlanKind::Recycle);
+        let ball_pos = (52.0, 34.0);
+        let preliminary = runner_projected_team_positions(
+            &teammates,
+            &opponents,
+            ball_pos,
+            true,
+            "attacking",
+            signals,
+            Some((4, ball_pos)),
+            2,
+            &config,
+        );
+        let mut scratch = RunnerProjectedTeamProjectionScratch::new();
+        let reused = runner_successor_projected_team_positions(
+            preliminary,
+            signals,
+            signals,
+            &teammates,
+            &opponents,
+            ball_pos,
+            true,
+            "attacking",
+            Some((4, ball_pos)),
+            2,
+            &config,
+            &mut scratch,
+        );
+        let direct = runner_projected_team_positions(
+            &teammates,
+            &opponents,
+            ball_pos,
+            true,
+            "attacking",
+            signals,
+            Some((4, ball_pos)),
+            2,
+            &config,
+        );
+
+        assert_eq!(reused.slice(), direct.slice());
+    }
+
+    #[test]
+    fn execution_shape_inputs_preserve_projected_team_positions() {
+        let cards = (0..11)
+            .map(|index| runner_test_card(format!("Home {index}").as_str(), 75.0, 75.0))
+            .collect::<Vec<_>>();
+        let opponent_cards = (0..11)
+            .map(|index| runner_test_card(format!("Away {index}").as_str(), 75.0, 75.0))
+            .collect::<Vec<_>>();
+        let mut teammates = build_players(&cards, formation_data("433"), true, 105.0, 68.0);
+        let mut opponents =
+            build_players(&opponent_cards, formation_data("433"), false, 105.0, 68.0);
+        teammates[4].base_pos = (44.25, 18.75);
+        teammates[4].pos = (47.5, 21.25);
+        teammates[4].target_pos = (55.0, 24.0);
+        teammates[4].velocity = (1.1, -0.4);
+        teammates[4].movement_intent = "attack_run".to_string();
+        opponents[7].base_pos = (71.5, 49.25);
+        opponents[7].pos = (67.5, 45.0);
+        opponents[7].target_pos = (60.5, 41.0);
+        opponents[7].velocity = (-0.8, 0.6);
+        opponents[7].movement_intent = "press".to_string();
+        let config = runtime_config(&json!({}));
+        let team_signals = crate::team_plan_signals(crate::TeamPlanKind::Recycle);
+        let opponent_signals = crate::team_plan_signals(crate::TeamPlanKind::DefendPress);
+        let mut shape_inputs = RunnerProjectedExecutionShapeInputs::new();
+        shape_inputs.refresh(&teammates, &opponents);
+
+        for (
+            players,
+            defending_players,
+            attacking_right,
+            phase,
+            signals,
+            controlled_player,
+            players_are_teammates,
+        ) in [
+            (
+                teammates.as_slice(),
+                opponents.as_slice(),
+                true,
+                "attacking",
+                team_signals,
+                Some((4, (53.0, 24.0))),
+                true,
+            ),
+            (
+                opponents.as_slice(),
+                teammates.as_slice(),
+                false,
+                "defending",
+                opponent_signals,
+                None,
+                false,
+            ),
+        ] {
+            let mut baseline_scratch = RunnerProjectedTeamProjectionScratch::new();
+            let baseline = runner_projected_team_positions_into(
+                players,
+                defending_players,
+                (53.0, 24.0),
+                attacking_right,
+                phase,
+                signals,
+                controlled_player,
+                3,
+                &config,
+                &mut baseline_scratch,
+            );
+            let mut cached_scratch = RunnerProjectedTeamProjectionScratch::new();
+            let cached = runner_projected_execution_team_positions_into(
+                players,
+                defending_players,
+                (53.0, 24.0),
+                attacking_right,
+                phase,
+                signals,
+                controlled_player,
+                3,
+                &config,
+                &shape_inputs,
+                players_are_teammates,
+                &mut cached_scratch,
+            );
+
+            assert_eq!(baseline.len, cached.len);
+            for (baseline_player, cached_player) in
+                baseline.slice().iter().zip(cached.slice().iter())
+            {
+                assert_eq!(baseline_player.0, cached_player.0);
+                assert_eq!(baseline_player.1.to_bits(), cached_player.1.to_bits());
+                assert_eq!(baseline_player.2.to_bits(), cached_player.2.to_bits());
+            }
+        }
+    }
+
+    #[test]
+    fn off_ball_attack_opponent_context_preserves_live_observation() {
+        let cards = (0..11)
+            .map(|index| runner_test_card(format!("Away {index}").as_str(), 75.0, 75.0))
+            .collect::<Vec<_>>();
+        let mut opponents = build_players(&cards, formation_data("433"), false, 105.0, 68.0);
+        opponents[2].pos = (63.25, 24.5);
+        opponents[2].speed = 91.0;
+        opponents[7].pos = (71.75, 48.25);
+        opponents[7].speed = 58.0;
+        let config = runtime_config(&json!({
+            "player_max_speed": 8.0,
+            "player_min_speed": 2.5
+        }));
+
+        for attacking_right in [true, false] {
+            let context =
+                runner_off_ball_attack_opponent_context(&opponents, attacking_right, &config);
+            let expected = opponents
+                .iter()
+                .filter(|player| player.position != "GK")
+                .map(|player| {
+                    (
+                        player.pos,
+                        player_speed(
+                            player.speed.round() as i32,
+                            config.player_max_speed,
+                            config.player_min_speed,
+                        ),
+                    )
+                })
+                .collect::<Vec<_>>();
+
+            assert_eq!(context.count, expected.len());
+            for (index, ((position, speed), context_position)) in expected
+                .iter()
+                .zip(context.positions[..context.count].iter())
+                .enumerate()
+            {
+                assert_eq!(context_position.0.to_bits(), position.0.to_bits());
+                assert_eq!(context_position.1.to_bits(), position.1.to_bits());
+                assert_eq!(context.speeds[index].to_bits(), speed.to_bits());
+            }
+            assert_eq!(
+                context.offside_line.to_bits(),
+                offside_line(&opponents, attacking_right, &config).to_bits()
+            );
+        }
+    }
+
+    #[test]
+    fn held_decision_snapshot_preserves_carry_opponent_pressure_formulas() {
+        let teammate_cards = (0..11)
+            .map(|index| runner_test_card(format!("Home {index}").as_str(), 75.0, 75.0))
+            .collect::<Vec<_>>();
+        let opponent_cards = (0..11)
+            .map(|index| runner_test_card(format!("Away {index}").as_str(), 75.0, 75.0))
+            .collect::<Vec<_>>();
+        let mut teammates =
+            build_players(&teammate_cards, formation_data("433"), true, 105.0, 68.0);
+        let mut opponents =
+            build_players(&opponent_cards, formation_data("433"), false, 105.0, 68.0);
+        let holder_idx = 6;
+        teammates[holder_idx].pos = (51.5, 34.25);
+        opponents[0].pos = (50.0, 34.0);
+        opponents[1].pos = (54.25, 29.5);
+        opponents[4].pos = (46.75, 39.25);
+        opponents[8].pos = (67.5, 22.75);
+        let holder_pos = teammates[holder_idx].pos;
+        let config = runtime_config(&json!({}));
+
+        let expected_nearest = opponents
+            .iter()
+            .filter(|player| player.position != "GK")
+            .map(|player| distance(holder_pos, player.pos))
+            .fold(f64::INFINITY, f64::min);
+        let expected_pressure = opponents
+            .iter()
+            .filter(|player| player.position != "GK")
+            .map(|player| (-distance(holder_pos, player.pos) / 8.0).exp())
+            .sum::<f64>()
+            .min(1.0);
+        let mut scratch = RunnerHeldDecisionScratch::new();
+        scratch.prepare(holder_idx, &teammates, &opponents, &config);
+
+        assert_eq!(
+            scratch.nearest_opponent_distance.to_bits(),
+            expected_nearest.to_bits()
+        );
+        assert_eq!(scratch.local_pressure.to_bits(), expected_pressure.to_bits());
+
+        for opponent in &mut opponents {
+            opponent.position = "GK".to_string();
+        }
+        scratch.prepare(holder_idx, &teammates, &opponents, &config);
+        assert_eq!(
+            scratch.nearest_opponent_distance.to_bits(),
+            f64::INFINITY.to_bits()
+        );
+        assert_eq!(scratch.local_pressure.to_bits(), 0.0f64.to_bits());
+    }
+
+    #[test]
+    fn held_decision_snapshot_preserves_offside_lines_for_both_directions() {
+        let cards = (0..11)
+            .map(|index| runner_test_card(format!("Player {index}").as_str(), 75.0, 75.0))
+            .collect::<Vec<_>>();
+        let config = runtime_config(&json!({}));
+        let teammates = build_players(&cards, formation_data("433"), true, 105.0, 68.0);
+        let mut opponents = build_players(&cards, formation_data("433"), false, 105.0, 68.0);
+        opponents[0].position = "GK".to_string();
+        opponents[0].pos = (102.0, 34.0);
+        opponents[1].pos = (91.0, 22.0);
+        opponents[2].pos = (87.0, 45.0);
+        opponents[3].pos = (79.0, 34.0);
+
+        let mut scratch = RunnerHeldDecisionScratch::new();
+        scratch.prepare(4, &teammates, &opponents, &config);
+
+        for attacking_right in [true, false] {
+            assert_eq!(
+                scratch.offside_line(attacking_right).to_bits(),
+                offside_line(&opponents, attacking_right, &config).to_bits()
+            );
+        }
+    }
+
+    #[test]
+    fn projected_player_selection_preserves_reference_iteration_order() {
+        let cards = (0..11)
+            .map(|index| runner_test_card(format!("Player {index}").as_str(), 75.0, 75.0))
+            .collect::<Vec<_>>();
+        let mut players = build_players(&cards, formation_data("433"), true, 105.0, 68.0);
+        players[0].position = "GK".to_string();
+        players[0].state = "off_ball".to_string();
+        players[1].state = "stunned".to_string();
+        for player in &mut players[2..] {
+            player.state = "off_ball".to_string();
+        }
+        let projected_positions = [
+            (0, 48.0, 34.0),
+            (1, 51.5, 34.0),
+            (2, 53.0, 34.0),
+            (3, 53.0, 34.0),
+            (4, 60.0, 34.0),
+        ];
+        let ball_pos = (52.0, 34.0);
+        let control_radius = 1.1;
+
+        let reference_controller = players
+            .iter()
+            .enumerate()
+            .filter(|(_, player)| player.position != "GK" && player.state != "stunned")
+            .min_by(|(left_index, left), (right_index, right)| {
+                distance(
+                    projected_position(&projected_positions, *left_index, left.pos),
+                    ball_pos,
+                )
+                .partial_cmp(&distance(
+                    projected_position(&projected_positions, *right_index, right.pos),
+                    ball_pos,
+                ))
+                .unwrap_or(std::cmp::Ordering::Equal)
+            })
+            .map(|(index, _)| index);
+        let reference_contact = players
+            .iter()
+            .enumerate()
+            .filter(|(index, player)| {
+                *index != 2
+                    && player.state != "stunned"
+                    && distance(
+                        projected_position(&projected_positions, *index, player.pos),
+                        ball_pos,
+                    ) <= control_radius
+            })
+            .min_by(|(left_index, left), (right_index, right)| {
+                distance(
+                    projected_position(&projected_positions, *left_index, left.pos),
+                    ball_pos,
+                )
+                .partial_cmp(&distance(
+                    projected_position(&projected_positions, *right_index, right.pos),
+                    ball_pos,
+                ))
+                .unwrap_or(std::cmp::Ordering::Equal)
+            })
+            .map(|(index, _)| index);
+
+        assert_eq!(
+            runner_projected_controller_index(&players, &projected_positions, ball_pos),
+            reference_controller
+        );
+        assert_eq!(
+            runner_projected_contacting_player_index(
+                &players,
+                &projected_positions,
+                Some(2),
+                ball_pos,
+                control_radius,
+            ),
+            reference_contact
+        );
+    }
+
     #[test]
     fn runner_rng_matches_python_random_seed_for_known_sequence() {
         let mut rng = RunnerRng::new(20260708);
@@ -754,6 +1810,45 @@ mod tests {
     }
 
     #[test]
+    fn runner_rng_preview_preserves_clone_semantics_across_twist_boundaries() {
+        let mut rng = RunnerRng::new(20260708);
+        for _ in 0..310 {
+            let _ = rng.random();
+        }
+
+        for preview_count in [1usize, 2, 3] {
+            let before = rng.clone();
+            let mut expected_rng = rng.clone();
+            let mut expected = [0.0; 3];
+            for value in expected.iter_mut().take(preview_count) {
+                *value = expected_rng.random();
+            }
+
+            let actual = match preview_count {
+                1 => {
+                    let values = preview_randoms::<1>(&rng);
+                    [values[0], 0.0, 0.0]
+                }
+                2 => {
+                    let values = preview_randoms::<2>(&rng);
+                    [values[0], values[1], 0.0]
+                }
+                3 => preview_randoms::<3>(&rng),
+                _ => unreachable!(),
+            };
+            for index in 0..preview_count {
+                assert_eq!(actual[index].to_bits(), expected[index].to_bits());
+            }
+            assert_eq!(rng.index, before.index);
+            assert_eq!(rng.draws, before.draws);
+            assert_eq!(rng.mt, before.mt);
+            assert_eq!(rng.gauss_next, before.gauss_next);
+
+            let _ = rng.random();
+        }
+    }
+
+    #[test]
     fn runner_rng_gauss_matches_python_random_seed_for_known_sequence() {
         let mut rng = RunnerRng::new(20260708);
         let expected = [
@@ -766,6 +1861,2836 @@ mod tests {
         for expected_value in expected {
             assert!((rng.gauss(0.0, 1.0) - expected_value).abs() < 1e-15);
         }
+    }
+
+    #[test]
+    fn bellman_selector_picks_the_largest_negative_advantage_stably() {
+        let cards = (0..11)
+            .map(|index| runner_test_card(format!("Home {index}").as_str(), 75.0, 75.0))
+            .collect::<Vec<_>>();
+        let opponents = (0..11)
+            .map(|index| runner_test_card(format!("Away {index}").as_str(), 75.0, 75.0))
+            .collect::<Vec<_>>();
+        let teammates = build_players(&cards, formation_data("433"), true, 105.0, 68.0);
+        let opponents = build_players(&opponents, formation_data("433"), false, 105.0, 68.0);
+        let config = runtime_config(&json!({}));
+        let prototype = build_hold_candidate(
+            5,
+            &teammates[5],
+            &teammates,
+            &opponents,
+            0.18,
+            1.0,
+            1.0,
+            0.0,
+            true,
+            &config,
+        )
+        .expect("hold candidate");
+        let mut actions = [prototype.clone(), prototype.clone(), prototype];
+        actions[0].score = -0.18;
+        actions[1].score = -0.04;
+        actions[2].score = -0.04;
+
+        assert_eq!(runner_bellman_best_action_index(&actions), Some(1));
+    }
+
+    #[test]
+    fn retained_control_value_keeps_the_full_after_state_for_controlled_actions() {
+        let full_new_state_value = 0.24;
+
+        assert_eq!(
+            runner_retained_control_value(
+                RunnerHeldAction::Reorient {
+                    target: (72.0, 34.0),
+                },
+                full_new_state_value,
+            ),
+            full_new_state_value,
+        );
+        assert_eq!(
+            runner_retained_control_value(
+                RunnerHeldAction::Pass {
+                    receiver_idx: 4,
+                    target: (72.0, 34.0),
+                    is_long: false,
+                    lane_risk: 0.10,
+                    retention_probability: 0.88,
+                },
+                full_new_state_value,
+            ),
+            full_new_state_value,
+        );
+        assert_eq!(
+            runner_retained_control_value(
+                RunnerHeldAction::Carry {
+                    target: (72.0, 34.0),
+                },
+                full_new_state_value,
+            ),
+            full_new_state_value,
+        );
+        assert_eq!(
+            runner_retained_control_value(
+                RunnerHeldAction::Hold {
+                    opportunity_target: None,
+                },
+                full_new_state_value,
+            ),
+            full_new_state_value,
+        );
+    }
+
+    #[test]
+    fn zero_release_shot_is_replaced_by_a_reorientation_option() {
+        let cards = (0..11)
+            .map(|index| runner_test_card(format!("Home {index}").as_str(), 75.0, 75.0))
+            .collect::<Vec<_>>();
+        let opponents = (0..11)
+            .map(|index| runner_test_card(format!("Away {index}").as_str(), 75.0, 75.0))
+            .collect::<Vec<_>>();
+        let teammates = build_players(&cards, formation_data("433"), true, 105.0, 68.0);
+        let opponents = build_players(&opponents, formation_data("433"), false, 105.0, 68.0);
+        let config = runtime_config(&json!({}));
+        let cache = RefCell::new(HashMap::new());
+        let holder_idx = 10;
+        let current_value = 0.08;
+        let control = PossessionControlState {
+            facing_direction: 180.0,
+            pressure_load: 1.0,
+            containment_load: 1.0,
+            forward_control: 0.0,
+            turn_readiness: 0.0,
+            release_window: 0.0,
+            shape_readiness: 0.0,
+            release_preparation: 0.0,
+            stagnation_load: 0.0,
+        };
+        let shot = build_shot_candidate(
+            holder_idx,
+            &teammates[holder_idx],
+            true,
+            control,
+            &teammates,
+            &opponents,
+            &[],
+            current_value,
+            true,
+            1,
+            &cache,
+            &config,
+        );
+        let hold = build_hold_candidate(
+            holder_idx,
+            &teammates[holder_idx],
+            &teammates,
+            &opponents,
+            current_value,
+            0.0,
+            shot.score,
+            shot.xg,
+            true,
+            &config,
+        )
+        .expect("control option");
+        let reorient =
+            build_reorient_candidate(hold, &teammates[holder_idx], control, true, &config)
+                .expect("misaligned control must have a reorientation option");
+        let mut actions = vec![shot, reorient];
+
+        retain_executable_held_actions(&mut actions, teammates[holder_idx].pos);
+
+        assert!(
+            actions
+                .iter()
+                .all(|action| !matches!(action.action, RunnerHeldAction::Shoot { .. })),
+            "a shot that cannot release the ball must not remain a Bellman option"
+        );
+        assert!(matches!(
+            actions.as_slice(),
+            [RunnerEvaluatedAction {
+                action: RunnerHeldAction::Reorient { .. },
+                ..
+            }]
+        ));
+        assert_eq!(runner_bellman_best_action_index(&actions), Some(0));
+    }
+
+    #[test]
+    fn aligned_controller_does_not_generate_a_zero_change_reorientation() {
+        let cards = (0..11)
+            .map(|index| runner_test_card(format!("Home {index}").as_str(), 75.0, 75.0))
+            .collect::<Vec<_>>();
+        let opponent_cards = (0..11)
+            .map(|index| runner_test_card(format!("Away {index}").as_str(), 75.0, 75.0))
+            .collect::<Vec<_>>();
+        let mut teammates = build_players(&cards, formation_data("433"), true, 105.0, 68.0);
+        let opponents = build_players(&opponent_cards, formation_data("433"), false, 105.0, 68.0);
+        let holder_idx = 10;
+        teammates[holder_idx].pos = (90.0, 34.0);
+        teammates[holder_idx].target_pos = teammates[holder_idx].pos;
+        let config = runtime_config(&json!({}));
+        let control = PossessionControlState {
+            facing_direction: 0.0,
+            ..PossessionControlState::default()
+        };
+        let hold = build_hold_candidate(
+            holder_idx,
+            &teammates[holder_idx],
+            &teammates,
+            &opponents,
+            0.08,
+            0.0,
+            0.0,
+            0.0,
+            true,
+            &config,
+        )
+        .expect("control option");
+
+        assert!(
+            build_reorient_candidate(hold, &teammates[holder_idx], control, true, &config)
+                .is_none(),
+            "an already aligned controller has no reorientation state transition to execute"
+        );
+    }
+
+    #[test]
+    fn boundary_clamped_carries_do_not_enter_bellman_actions() {
+        let cards = (0..11)
+            .map(|index| runner_test_card(format!("Home {index}").as_str(), 75.0, 75.0))
+            .collect::<Vec<_>>();
+        let opponent_cards = (0..11)
+            .map(|index| runner_test_card(format!("Away {index}").as_str(), 75.0, 75.0))
+            .collect::<Vec<_>>();
+        let mut teammates = build_players(&cards, formation_data("433"), true, 105.0, 68.0);
+        let mut opponents =
+            build_players(&opponent_cards, formation_data("433"), false, 105.0, 68.0);
+        let holder_idx = 6;
+        teammates[holder_idx].pos = (48.0, 0.5);
+        teammates[holder_idx].target_pos = teammates[holder_idx].pos;
+        for opponent in &mut opponents {
+            opponent.pos = (92.0, opponent.pos.1);
+            opponent.target_pos = opponent.pos;
+        }
+        let config = runtime_config(&json!({}));
+        let cache = RefCell::new(HashMap::new());
+        let actions = build_carry_candidates(
+            holder_idx,
+            &teammates[holder_idx],
+            true,
+            &teammates,
+            &opponents,
+            &[],
+            0.0,
+            true,
+            1,
+            &cache,
+            crate::team_plan_signals(crate::TeamPlanKind::Recycle),
+            crate::team_plan_signals(crate::TeamPlanKind::DefendBlock),
+            &config,
+        );
+
+        assert!(
+            !actions.is_empty(),
+            "the boundary state must retain executable inward carries"
+        );
+        assert!(
+            actions.iter().all(|action| match action.action {
+                RunnerHeldAction::Carry { target } => {
+                    distance(teammates[holder_idx].pos, target) > 1e-6
+                }
+                _ => true,
+            }),
+            "a carry whose clamped target equals the current position is not a state transition"
+        );
+    }
+
+    #[test]
+    fn low_release_shot_has_no_prepare_control_continuation() {
+        let cards = (0..11)
+            .map(|index| runner_test_card(format!("Home {index}").as_str(), 75.0, 75.0))
+            .collect::<Vec<_>>();
+        let opponent_cards = (0..11)
+            .map(|index| runner_test_card(format!("Away {index}").as_str(), 75.0, 75.0))
+            .collect::<Vec<_>>();
+        let mut teammates = build_players(&cards, formation_data("433"), true, 105.0, 68.0);
+        let mut opponents =
+            build_players(&opponent_cards, formation_data("433"), false, 105.0, 68.0);
+        let holder_idx = 9;
+        teammates[holder_idx].pos = (96.0, 34.0);
+        teammates[holder_idx].target_pos = teammates[holder_idx].pos;
+        teammates[holder_idx].facing_direction = 180.0;
+        for (index, opponent) in opponents.iter_mut().enumerate() {
+            opponent.pos = (94.0 + (index % 3) as f64, 30.0 + index as f64);
+            opponent.target_pos = opponent.pos;
+        }
+        let config = runtime_config(&json!({}));
+        let cache = RefCell::new(HashMap::new());
+        let current_control = PossessionControlState {
+            facing_direction: 180.0,
+            pressure_load: 0.8,
+            containment_load: 0.8,
+            forward_control: 0.12,
+            turn_readiness: 0.16,
+            release_window: 0.24,
+            shape_readiness: 0.35,
+            release_preparation: 0.0,
+            stagnation_load: 0.0,
+        };
+        let action = build_shot_candidate(
+            holder_idx,
+            &teammates[holder_idx],
+            true,
+            current_control,
+            &teammates,
+            &opponents,
+            &[],
+            0.14,
+            true,
+            1,
+            &cache,
+            &config,
+        );
+        let target =
+            runner_action_target(action.action, teammates[holder_idx].pos).expect("shot target");
+        let transition_without_projection = runner_possession_transition(
+            &action,
+            teammates[holder_idx].pos,
+            target,
+            &teammates,
+            &opponents,
+            true,
+            true,
+            None,
+            1,
+            &cache,
+            &config,
+        );
+        let arbitrary_prepare_projection = RunnerProjectedTransitionValues {
+            retained_control_probability: 0.97,
+            retained_control_value: 0.65,
+            opposing_control_probability: 0.03,
+            opposing_control_value: 0.02,
+        };
+        let transition_with_projection = runner_possession_transition(
+            &action,
+            teammates[holder_idx].pos,
+            target,
+            &teammates,
+            &opponents,
+            true,
+            true,
+            Some(arbitrary_prepare_projection),
+            1,
+            &cache,
+            &config,
+        );
+        let body_release_probability = match action.action {
+            RunnerHeldAction::Shoot {
+                body_release_probability,
+                ..
+            } => body_release_probability,
+            _ => unreachable!(),
+        };
+
+        assert!(body_release_probability > 0.0 && body_release_probability < 1.0);
+        assert!(
+            (transition_without_projection.retained_control_probability
+                - transition_with_projection.retained_control_probability)
+                .abs()
+                < 1e-12
+                && (transition_without_projection.retained_control_value
+                    - transition_with_projection.retained_control_value)
+                    .abs()
+                    < 1e-12,
+            "a Shoot option must not inherit retained control from a preparation projection"
+        );
+        let unreleased_second_ball =
+            runner_second_ball_control(&teammates, &opponents, teammates[holder_idx].pos, &config);
+        assert!(
+            transition_without_projection.retained_control_probability
+                >= (1.0 - body_release_probability)
+                    * unreleased_second_ball.attacking_control_probability
+                    - 1e-12,
+            "a failed body release must enter the same contested second-ball state as execution: transition={transition_without_projection:?}"
+        );
+        assert!(
+            transition_without_projection.opposing_control_probability
+                < 1.0 - body_release_probability + 1e-12,
+            "a failed body release cannot be predicted as automatic opponent control: transition={transition_without_projection:?}"
+        );
+    }
+
+    #[test]
+    fn immediate_opposing_control_context_preserves_shot_transition() {
+        let cards = (0..11)
+            .map(|index| runner_test_card(format!("Home {index}").as_str(), 75.0, 75.0))
+            .collect::<Vec<_>>();
+        let opponent_cards = (0..11)
+            .map(|index| runner_test_card(format!("Away {index}").as_str(), 75.0, 75.0))
+            .collect::<Vec<_>>();
+        let mut teammates = build_players(&cards, formation_data("433"), true, 105.0, 68.0);
+        let mut opponents =
+            build_players(&opponent_cards, formation_data("433"), false, 105.0, 68.0);
+        let holder_idx = 9;
+        teammates[holder_idx].pos = (89.0, 34.0);
+        teammates[holder_idx].target_pos = teammates[holder_idx].pos;
+        teammates[holder_idx].facing_direction = 0.0;
+        opponents[1].pos = (89.4, 34.0);
+        opponents[2].pos = (96.0, 34.0);
+        opponents[3].pos = (104.4, 34.0);
+        for opponent in opponents.iter_mut().skip(1) {
+            opponent.target_pos = opponent.pos;
+        }
+        let config = runtime_config(&json!({}));
+        let cache = RefCell::new(HashMap::new());
+        let current_control = PossessionControlState {
+            facing_direction: 0.0,
+            pressure_load: 0.25,
+            containment_load: 0.2,
+            forward_control: 0.75,
+            turn_readiness: 0.8,
+            release_window: 0.9,
+            shape_readiness: 0.7,
+            release_preparation: 0.8,
+            stagnation_load: 0.0,
+        };
+        let action = build_shot_candidate(
+            holder_idx,
+            &teammates[holder_idx],
+            true,
+            current_control,
+            &teammates,
+            &opponents,
+            &[],
+            0.0,
+            true,
+            11,
+            &cache,
+            &config,
+        );
+        let target =
+            runner_action_target(action.action, teammates[holder_idx].pos).expect("shot target");
+        let uncached = runner_possession_transition(
+            &action,
+            teammates[holder_idx].pos,
+            target,
+            &teammates,
+            &opponents,
+            true,
+            true,
+            None,
+            11,
+            &cache,
+            &config,
+        );
+        let mut context = RunnerOpponentControlValueContext::new();
+        context.refresh(&opponents, &teammates, &config);
+        let cached = runner_possession_transition_with_context(
+            &action,
+            teammates[holder_idx].pos,
+            target,
+            &teammates,
+            &opponents,
+            true,
+            true,
+            None,
+            11,
+            &cache,
+            Some(&mut context),
+            &config,
+        );
+
+        for (field, expected, actual) in [
+            (
+                "goal_probability",
+                uncached.goal_probability,
+                cached.goal_probability,
+            ),
+            (
+                "retained_control_probability",
+                uncached.retained_control_probability,
+                cached.retained_control_probability,
+            ),
+            (
+                "retained_control_value",
+                uncached.retained_control_value,
+                cached.retained_control_value,
+            ),
+            (
+                "opposing_control_probability",
+                uncached.opposing_control_probability,
+                cached.opposing_control_probability,
+            ),
+            (
+                "opposing_control_value",
+                uncached.opposing_control_value,
+                cached.opposing_control_value,
+            ),
+        ] {
+            assert!(
+                (expected - actual).abs() < 1e-12,
+                "decision-local opposing control context must preserve shot transition {field}: expected={expected}, actual={actual}"
+            );
+        }
+    }
+
+    #[test]
+    fn gk_fallback_pass_context_preserves_selected_action_and_score() {
+        let cards = (0..11)
+            .map(|index| runner_test_card(format!("Home {index}").as_str(), 75.0, 75.0))
+            .collect::<Vec<_>>();
+        let opponent_cards = (0..11)
+            .map(|index| runner_test_card(format!("Away {index}").as_str(), 75.0, 75.0))
+            .collect::<Vec<_>>();
+        let mut teammates = build_players(&cards, formation_data("433"), true, 105.0, 68.0);
+        let mut opponents =
+            build_players(&opponent_cards, formation_data("433"), false, 105.0, 68.0);
+        let holder_idx = 0;
+        teammates[holder_idx].pos = (8.0, 34.0);
+        teammates[holder_idx].target_pos = teammates[holder_idx].pos;
+        for opponent in &mut opponents {
+            opponent.target_pos = opponent.pos;
+        }
+        let config = runtime_config(&json!({}));
+        let cache = RefCell::new(HashMap::new());
+        let current_state_value = 0.18;
+        let tick = 23;
+        let mut scratch = RunnerHeldDecisionScratch::new();
+        scratch.prepare(holder_idx, &teammates, &opponents, &config);
+        let fallback = gk_fallback_pass_candidate(
+            holder_idx,
+            &teammates[holder_idx],
+            true,
+            &teammates,
+            &opponents,
+            &[],
+            current_state_value,
+            true,
+            tick,
+            &cache,
+            &config,
+            &scratch,
+        )
+        .expect("goalkeeper fallback must produce a legal teammate pass");
+        let (receiver_idx, target, is_long, lane_risk, retention_probability) = match fallback.action
+        {
+            RunnerHeldAction::Pass {
+                receiver_idx,
+                target,
+                is_long,
+                lane_risk,
+                retention_probability,
+            } => (
+                receiver_idx,
+                target,
+                is_long,
+                lane_risk,
+                retention_probability,
+            ),
+            action => panic!("expected fallback pass, got {action:?}"),
+        };
+        let holder = &teammates[holder_idx];
+        let receiver = &teammates[receiver_idx];
+        let distance_to_receiver = distance(holder.pos, target);
+        let expected_is_long = distance_to_receiver > 32.0;
+        let passing = if expected_is_long {
+            holder.long_passing
+        } else {
+            holder.short_passing
+        } / 100.0;
+        let base = if expected_is_long {
+            config.long_pass_base_success
+        } else {
+            config.short_pass_base_success
+        };
+        let base_accuracy = base
+            * (0.35 + 0.65 * passing)
+            * (1.0 - (distance_to_receiver - 10.0).max(0.0) / 72.0).max(0.30);
+        let unbatched = crate::expected_pass_value(&ExpectedPassInput {
+            tick,
+            passer_index: holder_idx,
+            passer_team_home: true,
+            passer_pos: holder.pos,
+            passer_finishing: holder.finishing / 100.0,
+            passer_long_shot: holder.long_shot / 100.0,
+            passer_consecutive_carries: holder.consecutive_carries,
+            receiver_index: receiver_idx,
+            receiver_team_home: true,
+            receiver_finishing: receiver.finishing / 100.0,
+            receiver_long_shot: receiver.long_shot / 100.0,
+            receiver_anchor: receiver.tactical_anchor,
+            receiver_base: receiver.base_pos,
+            receiver_goal_type: receiver.goal_type.as_deref(),
+            receiver_goal_target: receiver.goal_type.as_ref().map(|_| receiver.goal_target),
+            receiver_goal_value: receiver.goal_value,
+            target,
+            shot_profiles: &scratch.shot_profiles[..teammates.len()],
+            teammate_positions: &scratch.teammate_positions[..teammates.len()],
+            teammate_goalkeeper_indices: &scratch.teammate_goalkeeper_indices
+                [..scratch.teammate_goalkeeper_count],
+            opponent_positions: &scratch.opponent_xy[..scratch.opponent_count],
+            pitch_length: config.pitch_length,
+            pitch_width: config.pitch_width,
+            attacking_right: true,
+            interception_reach: config.interception_reach,
+            shot_ideal_distance: config.shot_ideal_distance,
+            shot_on_target_base: config.shot_on_target_base,
+            gk_save_base: config.gk_save_base,
+            gk_attributes: Some(scratch.gk_attributes),
+            gk_pos: scratch.gk_pos,
+            contest_defenders: Some(&[]),
+            current_value: current_state_value,
+            base_accuracy,
+            receiver_arrival: 1.0,
+            continuity: 0.055,
+            shot_quality_cache: Some(&cache),
+        });
+        let expected_safety = unbatched.success_prob
+            * (1.0 - unbatched.receiver_pressure)
+            * (1.0 - unbatched.lane_risk);
+        let expected_rank = unbatched.score + unbatched.after_value * 0.12
+            + expected_safety * 0.040
+            - unbatched.risk_cost * 0.20;
+
+        assert_eq!(target, receiver.pos);
+        assert_eq!(is_long, expected_is_long);
+        assert_eq!(lane_risk.to_bits(), unbatched.lane_risk.to_bits());
+        assert_eq!(
+            retention_probability.to_bits(),
+            unbatched.success_prob.to_bits()
+        );
+        assert_eq!(fallback.score.to_bits(), expected_rank.to_bits());
+        assert_eq!(
+            fallback.debug_after_value.to_bits(),
+            unbatched.after_value.to_bits()
+        );
+        assert_eq!(
+            fallback.debug_turnover_consequence.to_bits(),
+            unbatched.turnover_consequence.to_bits()
+        );
+    }
+
+    #[test]
+    fn defensive_action_target_remains_the_selected_local_responsibility() {
+        let cards = (0..11)
+            .map(|index| runner_test_card(format!("Home {index}").as_str(), 75.0, 75.0))
+            .collect::<Vec<_>>();
+        let mut defenders = build_players(&cards, formation_data("433"), false, 105.0, 68.0);
+        let mut attackers = build_players(&cards, formation_data("433"), true, 105.0, 68.0);
+        let ball_pos = (88.0, 34.0);
+        let defender_idx = 2;
+        defenders[defender_idx].pos = (87.0, 34.0);
+        defenders[defender_idx].target_pos = defenders[defender_idx].pos;
+        defenders[defender_idx].goal_type = Some("defend_mark_runner".to_string());
+        defenders[defender_idx].goal_phase = Some("defend".to_string());
+        defenders[defender_idx].goal_target = (61.0, 52.0);
+        defenders[defender_idx].goal_value = 0.98;
+        attackers[9].pos = ball_pos;
+        attackers[9].target_pos = ball_pos;
+        let config = runtime_config(&json!({
+            "iq_noise_scale": 0.0,
+            "goal_noise_scale": 0.0,
+            "trace_detail": "top_candidates",
+        }));
+        let mut trace_decisions = Vec::new();
+        let mut rng = RunnerRng::new(20260713);
+        apply_off_ball_defense_choices(
+            &mut defenders,
+            &attackers,
+            ball_pos,
+            false,
+            Some(ball_pos),
+            3,
+            4,
+            0.85,
+            TeamPlanSignals::default(),
+            Some(&[
+                false, false, true, false, false, false, false, false, false, false, false,
+            ]),
+            &config,
+            &mut rng,
+            None,
+            &mut trace_decisions,
+            1,
+            false,
+            true,
+        );
+
+        let decision = trace_decisions
+            .iter()
+            .find(|entry| {
+                entry.get("player_idx").and_then(serde_json::Value::as_u64)
+                    == Some(defender_idx as u64)
+            })
+            .expect("active defender decision");
+        let chosen = decision.get("chosen").expect("chosen defense action");
+        assert_eq!(
+            chosen.get("target"),
+            chosen.get("raw_target"),
+            "Goal continuity must not replace the locally selected defense target"
+        );
+        let target = chosen
+            .get("target")
+            .and_then(serde_json::Value::as_array)
+            .expect("chosen target");
+        let target = (
+            target[0].as_f64().expect("target x"),
+            target[1].as_f64().expect("target y"),
+        );
+        assert_eq!(defenders[defender_idx].target_pos, target);
+    }
+
+    #[test]
+    fn open_near_goal_threat_assigns_one_reachable_primary_press() {
+        let cards = (0..11)
+            .map(|index| runner_test_card(format!("Home {index}").as_str(), 75.0, 75.0))
+            .collect::<Vec<_>>();
+        let mut defenders = build_players(&cards, formation_data("433"), false, 105.0, 68.0);
+        let mut attackers = build_players(&cards, formation_data("433"), true, 105.0, 68.0);
+        let carrier_pos = (99.0, 34.0);
+        let primary_defender_idx = 2;
+
+        for (index, attacker) in attackers.iter_mut().enumerate() {
+            if index == 9 {
+                attacker.pos = carrier_pos;
+            } else {
+                attacker.pos = (48.0 + index as f64, 6.0 + (index % 4) as f64 * 18.0);
+            }
+            attacker.target_pos = attacker.pos;
+        }
+        let defender_positions = [
+            (104.0, 34.0),
+            (88.0, 18.0),
+            (98.4, 34.0),
+            (89.0, 50.0),
+            (86.0, 62.0),
+            (78.0, 24.0),
+            (76.0, 34.0),
+            (78.0, 44.0),
+            (70.0, 12.0),
+            (72.0, 34.0),
+            (70.0, 56.0),
+        ];
+        for (index, defender) in defenders.iter_mut().enumerate() {
+            defender.pos = defender_positions[index];
+            defender.target_pos = defender.pos;
+            defender.tactical_anchor = defender.pos;
+        }
+        defenders[primary_defender_idx].tactical_anchor = (96.0, 34.0);
+
+        let config = runtime_config(&json!({
+            "iq_noise_scale": 0.0,
+            "goal_noise_scale": 0.0,
+            "trace_detail": "full",
+        }));
+        let mut trace_decisions = Vec::new();
+        let mut rng = RunnerRng::new(20260713);
+        let plan_signals = crate::team_plan_signals(crate::TeamPlanKind::DefendBlock);
+        apply_off_ball_defense_choices(
+            &mut defenders,
+            &attackers,
+            carrier_pos,
+            false,
+            Some(carrier_pos),
+            4,
+            5,
+            0.90,
+            plan_signals,
+            None,
+            &config,
+            &mut rng,
+            None,
+            &mut trace_decisions,
+            1,
+            false,
+            true,
+        );
+
+        let press_decisions = trace_decisions
+            .iter()
+            .filter(|entry| {
+                matches!(
+                    entry
+                        .pointer("/chosen/action_type")
+                        .and_then(serde_json::Value::as_str),
+                    Some("tackle" | "approach")
+                )
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(
+            press_decisions.len(),
+            1,
+            "an open immediate near-goal threat needs one coordinated primary engager, decisions={trace_decisions:?}"
+        );
+        let primary_press = press_decisions
+            .first()
+            .expect("one primary press decision")
+            .as_object()
+            .expect("press decision object");
+        assert_eq!(
+            primary_press
+                .get("player_idx")
+                .and_then(serde_json::Value::as_u64),
+            Some(primary_defender_idx as u64),
+            "the reachable defender must receive the press responsibility"
+        );
+        let target = primary_press
+            .get("chosen")
+            .and_then(|chosen| chosen.get("target"))
+            .and_then(serde_json::Value::as_array)
+            .expect("press target");
+        assert_eq!(
+            (
+                target[0].as_f64().expect("target x"),
+                target[1].as_f64().expect("target y"),
+            ),
+            carrier_pos,
+            "the press task must remain attached to the actual carrier"
+        );
+        assert_eq!(defenders[primary_defender_idx].movement_intent, "press");
+        assert_eq!(defenders[primary_defender_idx].target_pos, carrier_pos);
+
+        let defender_inputs = defender_phase1_inputs(&defenders, plan_signals, &config);
+        let primary_motion = defender_inputs
+            .into_iter()
+            .find(|input| input.index == primary_defender_idx)
+            .expect("primary press motion");
+        assert!(
+            distance(primary_motion.new_pos, carrier_pos)
+                < distance(primary_motion.pos, carrier_pos),
+            "the assigned press must reduce carrier distance on its physical motion step: {primary_motion:?}"
+        );
+        assert!(
+            distance(primary_motion.pos, primary_motion.new_pos)
+                <= config.player_max_speed + 1e-9,
+            "the press response must remain speed-limited rather than teleporting: {primary_motion:?}"
+        );
+    }
+
+    #[test]
+    fn fixed_defense_path_matches_dynamic_path_and_rng_state() {
+        let cards = (0..11)
+            .map(|index| runner_test_card(format!("Player {index}").as_str(), 75.0, 75.0))
+            .collect::<Vec<_>>();
+        let mut initial_defenders =
+            build_players(&cards, formation_data("433"), false, 105.0, 68.0);
+        let mut attackers = build_players(&cards, formation_data("433"), true, 105.0, 68.0);
+        let carrier_pos = (95.0, 34.0);
+        for (index, attacker) in attackers.iter_mut().enumerate() {
+            attacker.pos = if index == 9 {
+                carrier_pos
+            } else {
+                (58.0 + index as f64 * 1.9, 8.0 + (index % 4) as f64 * 17.0)
+            };
+            attacker.target_pos = attacker.pos;
+        }
+        for (index, defender) in initial_defenders.iter_mut().enumerate() {
+            defender.pos = match index {
+                0 => (103.0, 34.0),
+                1 => (85.0, 16.0),
+                2 => (92.0, 31.0),
+                3 => (89.0, 43.0),
+                4 => (84.0, 57.0),
+                _ => (69.0 + index as f64, 10.0 + (index % 4) as f64 * 15.0),
+            };
+            defender.target_pos = defender.pos;
+            defender.tactical_anchor = defender.pos;
+        }
+        let mut fixed_defenders = initial_defenders.clone();
+        let mut dynamic_defenders = initial_defenders;
+        let fixed_config = runtime_config(&json!({"trace_detail": "off"}));
+        let dynamic_config = runtime_config(&json!({"trace_detail": "full"}));
+        let plan_signals = crate::team_plan_signals(crate::TeamPlanKind::DefendBlock);
+        let mut fixed_rng = RunnerRng::new(20260713);
+        let mut dynamic_rng = fixed_rng.clone();
+        let mut fixed_arena = RunnerFixedDefenseArena::new();
+        let mut fixed_trace = Vec::new();
+        let mut dynamic_trace = Vec::new();
+
+        let fixed = apply_off_ball_defense_choices(
+            &mut fixed_defenders,
+            &attackers,
+            carrier_pos,
+            false,
+            Some(carrier_pos),
+            4,
+            5,
+            0.90,
+            plan_signals,
+            None,
+            &fixed_config,
+            &mut fixed_rng,
+            Some(&mut fixed_arena),
+            &mut fixed_trace,
+            1,
+            false,
+            true,
+        );
+        let dynamic = apply_off_ball_defense_choices(
+            &mut dynamic_defenders,
+            &attackers,
+            carrier_pos,
+            false,
+            Some(carrier_pos),
+            4,
+            5,
+            0.90,
+            plan_signals,
+            None,
+            &dynamic_config,
+            &mut dynamic_rng,
+            None,
+            &mut dynamic_trace,
+            1,
+            false,
+            true,
+        );
+
+        assert_eq!(fixed.0, dynamic.0);
+        assert_eq!(
+            fixed
+                .1
+                .as_ref()
+                .map(|goal| (&goal.goal_type, goal.target, goal.value)),
+            dynamic
+                .1
+                .as_ref()
+                .map(|goal| (&goal.goal_type, goal.target, goal.value))
+        );
+        assert_eq!(fixed.2.len(), dynamic.2.len());
+        for (fixed_input, dynamic_input) in fixed.2.iter().zip(dynamic.2.iter()) {
+            assert_eq!(fixed_input.index, dynamic_input.index);
+            assert_eq!(fixed_input.pos, dynamic_input.pos);
+            assert_eq!(fixed_input.new_pos, dynamic_input.new_pos);
+            assert_eq!(fixed_input.action, dynamic_input.action);
+            assert_eq!(fixed_input.speed, dynamic_input.speed);
+            assert_eq!(fixed_input.defence, dynamic_input.defence);
+            assert_eq!(fixed_input.tackling, dynamic_input.tackling);
+            assert_eq!(fixed_input.is_goalkeeper, dynamic_input.is_goalkeeper);
+        }
+        for (fixed_defender, dynamic_defender) in fixed_defenders.iter().zip(&dynamic_defenders) {
+            assert_eq!(fixed_defender.target_pos, dynamic_defender.target_pos);
+            assert_eq!(fixed_defender.state, dynamic_defender.state);
+            assert_eq!(
+                fixed_defender.movement_intent,
+                dynamic_defender.movement_intent
+            );
+            assert_eq!(
+                fixed_defender.last_def_action,
+                dynamic_defender.last_def_action
+            );
+            assert_eq!(fixed_defender.goal_type, dynamic_defender.goal_type);
+            assert_eq!(fixed_defender.goal_phase, dynamic_defender.goal_phase);
+            assert_eq!(fixed_defender.goal_target, dynamic_defender.goal_target);
+            assert_eq!(fixed_defender.goal_value, dynamic_defender.goal_value);
+            assert_eq!(
+                fixed_defender.goal_created_tick,
+                dynamic_defender.goal_created_tick
+            );
+            assert_eq!(
+                fixed_defender.goal_action_code,
+                dynamic_defender.goal_action_code
+            );
+        }
+        assert_eq!(fixed_rng.draws, dynamic_rng.draws);
+        assert_eq!(fixed_rng.index, dynamic_rng.index);
+        assert_eq!(fixed_rng.mt, dynamic_rng.mt);
+        assert_eq!(fixed_rng.gauss_next, dynamic_rng.gauss_next);
+    }
+
+    #[test]
+    fn skipping_phase1_inputs_preserves_defense_choices_state_and_rng() {
+        let cards = (0..11)
+            .map(|index| runner_test_card(format!("Player {index}").as_str(), 75.0, 75.0))
+            .collect::<Vec<_>>();
+        let mut initial_defenders =
+            build_players(&cards, formation_data("433"), false, 105.0, 68.0);
+        let mut attackers = build_players(&cards, formation_data("433"), true, 105.0, 68.0);
+        let carrier_pos = (95.0, 34.0);
+        for (index, attacker) in attackers.iter_mut().enumerate() {
+            attacker.pos = if index == 9 {
+                carrier_pos
+            } else {
+                (58.0 + index as f64 * 1.9, 8.0 + (index % 4) as f64 * 17.0)
+            };
+            attacker.target_pos = attacker.pos;
+        }
+        for (index, defender) in initial_defenders.iter_mut().enumerate() {
+            defender.pos = match index {
+                0 => (103.0, 34.0),
+                1 => (85.0, 16.0),
+                2 => (92.0, 31.0),
+                3 => (89.0, 43.0),
+                4 => (84.0, 57.0),
+                _ => (69.0 + index as f64, 10.0 + (index % 4) as f64 * 15.0),
+            };
+            defender.target_pos = defender.pos;
+            defender.tactical_anchor = defender.pos;
+        }
+        let decision_state = |players: &[RunnerPlayer]| {
+            players
+                .iter()
+                .map(|player| {
+                    (
+                        (
+                            (player.pos.0.to_bits(), player.pos.1.to_bits()),
+                            (player.target_pos.0.to_bits(), player.target_pos.1.to_bits()),
+                            (
+                                player.tactical_anchor.0.to_bits(),
+                                player.tactical_anchor.1.to_bits(),
+                            ),
+                            (player.velocity.0.to_bits(), player.velocity.1.to_bits()),
+                            player.facing_direction.to_bits(),
+                        ),
+                        (
+                            player.state.clone(),
+                            player.stun_ticks_remaining,
+                            player.movement_intent.clone(),
+                            player.last_def_action.clone(),
+                            player.last_pressure_tick,
+                        ),
+                        (
+                            player.goal_type.clone(),
+                            player.goal_phase.clone(),
+                            (player.goal_target.0.to_bits(), player.goal_target.1.to_bits()),
+                            player.goal_value.to_bits(),
+                            player.goal_created_tick,
+                            player.goal_action_code,
+                        ),
+                    )
+                })
+                .collect::<Vec<_>>()
+        };
+        let plan_signals = crate::team_plan_signals(crate::TeamPlanKind::DefendBlock);
+
+        for trace_detail in ["off", "full"] {
+            let config = runtime_config(&json!({"trace_detail": trace_detail}));
+            let mut with_inputs_defenders = initial_defenders.clone();
+            let mut without_inputs_defenders = initial_defenders.clone();
+            let mut with_inputs_rng = RunnerRng::new(20260713);
+            let mut without_inputs_rng = with_inputs_rng.clone();
+            let mut with_inputs_arena = RunnerFixedDefenseArena::new();
+            let mut without_inputs_arena = RunnerFixedDefenseArena::new();
+            let mut with_inputs_trace = Vec::new();
+            let mut without_inputs_trace = Vec::new();
+
+            let with_inputs = apply_off_ball_defense_choices(
+                &mut with_inputs_defenders,
+                &attackers,
+                carrier_pos,
+                false,
+                Some(carrier_pos),
+                4,
+                5,
+                0.90,
+                plan_signals,
+                None,
+                &config,
+                &mut with_inputs_rng,
+                Some(&mut with_inputs_arena),
+                &mut with_inputs_trace,
+                1,
+                false,
+                true,
+            );
+            let without_inputs = apply_off_ball_defense_choices(
+                &mut without_inputs_defenders,
+                &attackers,
+                carrier_pos,
+                false,
+                Some(carrier_pos),
+                4,
+                5,
+                0.90,
+                plan_signals,
+                None,
+                &config,
+                &mut without_inputs_rng,
+                Some(&mut without_inputs_arena),
+                &mut without_inputs_trace,
+                1,
+                false,
+                false,
+            );
+
+            assert_eq!(with_inputs.0, without_inputs.0);
+            assert_eq!(
+                with_inputs
+                    .1
+                    .as_ref()
+                    .map(|goal| (goal.goal_type, goal.target, goal.value)),
+                without_inputs
+                    .1
+                    .as_ref()
+                    .map(|goal| (goal.goal_type, goal.target, goal.value))
+            );
+            assert_eq!(with_inputs.2.len(), with_inputs_defenders.len());
+            assert!(without_inputs.2.is_empty());
+            assert_eq!(
+                decision_state(&with_inputs_defenders),
+                decision_state(&without_inputs_defenders)
+            );
+            assert_eq!(with_inputs_trace, without_inputs_trace);
+            assert_eq!(with_inputs_rng.draws, without_inputs_rng.draws);
+            assert_eq!(with_inputs_rng.index, without_inputs_rng.index);
+            assert_eq!(with_inputs_rng.mt, without_inputs_rng.mt);
+            assert_eq!(with_inputs_rng.gauss_next, without_inputs_rng.gauss_next);
+        }
+    }
+
+    #[test]
+    fn prepared_attack_team_context_preserves_sequential_flight_choices_and_rng() {
+        let cards = (0..11)
+            .map(|index| runner_test_card(format!("Player {index}").as_str(), 75.0, 75.0))
+            .collect::<Vec<_>>();
+        let mut initial_attackers =
+            build_players(&cards, formation_data("433"), true, 105.0, 68.0);
+        let mut opponents = build_players(&cards, formation_data("433"), false, 105.0, 68.0);
+        let ball_pos = (73.0, 34.0);
+        for (index, attacker) in initial_attackers.iter_mut().enumerate() {
+            attacker.pos = match index {
+                2 => (65.0, 27.0),
+                3 => (67.0, 42.0),
+                4 => (69.0, 34.0),
+                _ => (45.0 + index as f64 * 2.3, 8.0 + (index % 4) as f64 * 16.0),
+            };
+            attacker.target_pos = attacker.pos;
+            attacker.tactical_anchor = attacker.pos;
+        }
+        for (index, opponent) in opponents.iter_mut().enumerate() {
+            opponent.pos = (78.0 + (index % 3) as f64 * 2.5, 8.0 + (index % 4) as f64 * 16.0);
+            opponent.target_pos = opponent.pos;
+            opponent.tactical_anchor = opponent.pos;
+        }
+        let config = runtime_config(&json!({
+            "trace_detail": "off",
+            "iq_noise_scale": 0.25,
+            "goal_noise_scale": 0.01,
+        }));
+        let plan_signals = crate::team_plan_signals(crate::TeamPlanKind::Advance);
+        let opponent_context =
+            runner_off_ball_attack_opponent_context(&opponents, true, &config);
+        let comparable_player_state = |players: &[RunnerPlayer]| {
+            players
+                .iter()
+                .map(|player| {
+                    (
+                        (
+                            (player.pos.0.to_bits(), player.pos.1.to_bits()),
+                            (player.target_pos.0.to_bits(), player.target_pos.1.to_bits()),
+                            (
+                                player.tactical_anchor.0.to_bits(),
+                                player.tactical_anchor.1.to_bits(),
+                            ),
+                            (player.velocity.0.to_bits(), player.velocity.1.to_bits()),
+                            player.facing_direction.to_bits(),
+                        ),
+                        (
+                            player.state.clone(),
+                            player.stun_ticks_remaining,
+                            player.movement_intent.clone(),
+                            player.last_def_action.clone(),
+                            player.last_pressure_tick,
+                        ),
+                        (
+                            player.goal_type.clone(),
+                            player.goal_phase.clone(),
+                            (player.goal_target.0.to_bits(), player.goal_target.1.to_bits()),
+                            player.goal_value.to_bits(),
+                            player.goal_created_tick,
+                            player.goal_action_code,
+                        ),
+                    )
+                })
+                .collect::<Vec<_>>()
+        };
+        let comparable_choice = |choice: &(i32, Option<RunnerGoalSummary>)| {
+            (
+                choice.0,
+                choice.1.as_ref().map(|goal| {
+                    (
+                        goal.goal_type,
+                        (goal.target.0.to_bits(), goal.target.1.to_bits()),
+                        goal.value.to_bits(),
+                    )
+                }),
+            )
+        };
+        let mut rebuilt_attackers = initial_attackers.clone();
+        let mut prepared_attackers = initial_attackers;
+        let mut rebuilt_state = runner_test_state();
+        let mut prepared_state = runner_test_state();
+        rebuilt_state.home_plan_signals = plan_signals;
+        prepared_state.home_plan_signals = plan_signals;
+        let mut rebuilt_rng = RunnerRng::new(20260713);
+        let mut prepared_rng = rebuilt_rng.clone();
+        let mut prepared_team_context = RunnerOffBallAttackTeamContext::new();
+        prepared_team_context.refresh(&prepared_attackers);
+
+        for (step, active_idx) in [2, 3].into_iter().enumerate() {
+            let rebuilt_player_count = rebuilt_attackers.len();
+            let prepared_player_count = prepared_attackers.len();
+            let rebuilt_active = runner_single_active_indices(active_idx, rebuilt_player_count);
+            let prepared_active = runner_single_active_indices(active_idx, prepared_player_count);
+            let rebuilt_choice = apply_off_ball_attack_choices(
+                &mut rebuilt_attackers,
+                &opponents,
+                &mut rebuilt_state,
+                step as i32,
+                true,
+                ball_pos,
+                true,
+                None,
+                Some(&rebuilt_active[..rebuilt_player_count]),
+                Some(opponent_context),
+                None,
+                &config,
+                &mut rebuilt_rng,
+            );
+            let prepared_choice = apply_off_ball_attack_choices(
+                &mut prepared_attackers,
+                &opponents,
+                &mut prepared_state,
+                step as i32,
+                true,
+                ball_pos,
+                true,
+                None,
+                Some(&prepared_active[..prepared_player_count]),
+                Some(opponent_context),
+                Some(&mut prepared_team_context),
+                &config,
+                &mut prepared_rng,
+            );
+
+            assert_eq!(
+                comparable_choice(&rebuilt_choice),
+                comparable_choice(&prepared_choice)
+            );
+            assert_eq!(
+                comparable_player_state(&rebuilt_attackers),
+                comparable_player_state(&prepared_attackers)
+            );
+            assert_eq!(rebuilt_rng.draws, prepared_rng.draws);
+            assert_eq!(rebuilt_rng.index, prepared_rng.index);
+            assert_eq!(rebuilt_rng.mt, prepared_rng.mt);
+            assert_eq!(rebuilt_rng.gauss_next, prepared_rng.gauss_next);
+
+            move_runner_player(
+                &mut rebuilt_attackers[active_idx],
+                plan_signals,
+                &config,
+            );
+            move_runner_player(
+                &mut prepared_attackers[active_idx],
+                plan_signals,
+                &config,
+            );
+            prepared_team_context.update_player(active_idx, &prepared_attackers[active_idx]);
+
+            assert_eq!(
+                comparable_player_state(&rebuilt_attackers),
+                comparable_player_state(&prepared_attackers)
+            );
+        }
+    }
+
+    #[test]
+    fn hold_candidate_survives_zero_legacy_shaping_for_temporal_evaluation() {
+        let cards = (0..11)
+            .map(|index| runner_test_card(format!("Home {index}").as_str(), 75.0, 75.0))
+            .collect::<Vec<_>>();
+        let opponents = (0..11)
+            .map(|index| runner_test_card(format!("Away {index}").as_str(), 75.0, 75.0))
+            .collect::<Vec<_>>();
+        let teammates = build_players(&cards, formation_data("433"), true, 105.0, 68.0);
+        let opponents = build_players(&opponents, formation_data("433"), false, 105.0, 68.0);
+        let config = runtime_config(&json!({}));
+        let holder = &teammates[5];
+
+        let hold = build_hold_candidate(
+            5, holder, &teammates, &opponents, 0.18, 1.0, 1.0, 0.0, true, &config,
+        )
+        .expect("hold must remain available before temporal Bellman comparison");
+
+        assert!(matches!(hold.action, RunnerHeldAction::Hold { .. }));
+        assert_eq!(hold.raw_score, 0.0);
+        assert_eq!(hold.score, 0.0);
+    }
+
+    #[test]
+    fn projected_control_position_cache_preserves_value_with_distinct_control_inputs() {
+        let cards = (0..11)
+            .map(|index| runner_test_card(format!("Home {index}").as_str(), 75.0, 75.0))
+            .collect::<Vec<_>>();
+        let opponent_cards = (0..11)
+            .map(|index| runner_test_card(format!("Away {index}").as_str(), 75.0, 75.0))
+            .collect::<Vec<_>>();
+        let mut teammates = build_players(&cards, formation_data("433"), true, 105.0, 68.0);
+        let mut opponents =
+            build_players(&opponent_cards, formation_data("433"), false, 105.0, 68.0);
+        let holder_idx = 6;
+        let holder_pos = (52.0, 34.0);
+        teammates[holder_idx].pos = holder_pos;
+        teammates[holder_idx].target_pos = holder_pos;
+        for (index, opponent) in opponents.iter_mut().enumerate() {
+            opponent.pos = (68.0 + (index % 3) as f64 * 2.0, 16.0 + index as f64 * 3.0);
+            opponent.target_pos = opponent.pos;
+        }
+        let config = runtime_config(&json!({}));
+        let shot_quality_cache = RefCell::new(HashMap::new());
+        let controlling_signals = crate::team_plan_signals(crate::TeamPlanKind::Recycle);
+        let defending_signals = crate::team_plan_signals(crate::TeamPlanKind::DefendBlock);
+        let controlling_plan = TeamPlanState {
+            kind: crate::TeamPlanKind::Recycle,
+            commitment: 0.6,
+            value: 0.0,
+        };
+        let defending_plan = TeamPlanState {
+            kind: crate::TeamPlanKind::DefendBlock,
+            commitment: 0.6,
+            value: 0.0,
+        };
+        let duration_ticks = 2;
+        let mut cached_context =
+            runner_projected_control_value_context(&teammates, &opponents, &config);
+        let _ = runner_projected_control_value(
+            holder_idx,
+            holder_pos,
+            &teammates,
+            &opponents,
+            true,
+            true,
+            "attacking",
+            "defending",
+            controlling_plan,
+            defending_plan,
+            controlling_signals,
+            defending_signals,
+            PossessionControlState::default(),
+            0.0,
+            1.0,
+            0.0,
+            duration_ticks,
+            0.0,
+            None,
+            1,
+            &shot_quality_cache,
+            &mut cached_context,
+            &config,
+        );
+        assert!(
+            cached_context
+                .projection_cache
+                .get(holder_idx, holder_pos, duration_ticks)
+                .is_some(),
+            "first state-value branch must populate the formation projection cache"
+        );
+
+        let different_control = PossessionControlState {
+            facing_direction: 180.0,
+            pressure_load: 0.54,
+            containment_load: 0.42,
+            forward_control: 0.16,
+            turn_readiness: 0.28,
+            release_window: 0.34,
+            shape_readiness: 0.48,
+            release_preparation: 0.20,
+            stagnation_load: 0.38,
+        };
+        let cached_value = runner_projected_control_value(
+            holder_idx,
+            holder_pos,
+            &teammates,
+            &opponents,
+            true,
+            true,
+            "attacking",
+            "defending",
+            controlling_plan,
+            defending_plan,
+            controlling_signals,
+            defending_signals,
+            different_control,
+            36.0,
+            1.0,
+            0.72,
+            duration_ticks,
+            0.0,
+            Some(0.0),
+            1,
+            &shot_quality_cache,
+            &mut cached_context,
+            &config,
+        );
+        let mut direct_context =
+            runner_projected_control_value_context(&teammates, &opponents, &config);
+        let direct_value = runner_projected_control_value(
+            holder_idx,
+            holder_pos,
+            &teammates,
+            &opponents,
+            true,
+            true,
+            "attacking",
+            "defending",
+            controlling_plan,
+            defending_plan,
+            controlling_signals,
+            defending_signals,
+            different_control,
+            36.0,
+            1.0,
+            0.72,
+            duration_ticks,
+            0.0,
+            Some(0.0),
+            1,
+            &shot_quality_cache,
+            &mut direct_context,
+            &config,
+        );
+
+        assert_eq!(cached_value.to_bits(), direct_value.to_bits());
+        let projection = cached_context
+            .projection_cache
+            .get(holder_idx, holder_pos, duration_ticks)
+            .expect("cached value must retain the projected formation");
+        let direct_control_state =
+            crate::transition_possession_control(&PossessionControlTransitionInput {
+                previous: different_control,
+                observation: PossessionControlObservation {
+                    controller_index: holder_idx,
+                    controller_pos: holder_pos,
+                    teammate_positions: projection.controlling.slice(),
+                    teammate_goalkeeper_indices: &cached_context.state_value_inputs
+                        .teammate_goalkeeper_indices
+                        [..cached_context.state_value_inputs.teammate_goalkeeper_count],
+                    opponent_positions: &projection.projected_defender_positions
+                        [..projection.projected_defender_count],
+                    pitch_length: config.pitch_length,
+                    pitch_width: config.pitch_width,
+                    attacking_right: true,
+                },
+                arrival_heading: 36.0,
+                ownership_continuity: 1.0,
+                contact_load: 0.72,
+                settling_ticks: duration_ticks,
+                movement_distance: 0.0,
+                turn_target: Some(0.0),
+            });
+        let uncached_value = state_value(&StateValueInput {
+            pos: holder_pos,
+            player_index: holder_idx,
+            shot_profiles: &cached_context.state_value_inputs.shot_profiles
+                [..cached_context.state_value_inputs.shot_profile_count],
+            teammate_positions: &projection.projected_teammate_positions
+                [..projection.projected_teammate_count],
+            teammate_goalkeeper_indices: &cached_context.state_value_inputs
+                .teammate_goalkeeper_indices
+                [..cached_context.state_value_inputs.teammate_goalkeeper_count],
+            opponent_positions: &projection.projected_defender_positions
+                [..projection.projected_defender_count],
+            pitch_length: config.pitch_length,
+            pitch_width: config.pitch_width,
+            attacking_right: true,
+            finishing: teammates[holder_idx].finishing / 100.0,
+            long_shot: teammates[holder_idx].long_shot / 100.0,
+            shot_ideal_distance: config.shot_ideal_distance,
+            shot_on_target_base: config.shot_on_target_base,
+            gk_save_base: config.gk_save_base,
+            gk_attributes: Some(cached_context.defending_gk_attributes),
+            gk_pos: projection.projected_gk_pos,
+            contest_defenders: Some(
+                &projection.projected_contest_defenders
+                    [..cached_context.defending_contest_defender_count],
+            ),
+            tick: 1 + duration_ticks,
+            team_home: true,
+            shot_quality_cache: Some(&shot_quality_cache),
+            control_state: Some(direct_control_state),
+        });
+        assert_eq!(cached_value.to_bits(), uncached_value.to_bits());
+    }
+
+    #[test]
+    fn shared_execution_shape_inputs_preserve_projected_control_value_in_both_directions() {
+        let cards = (0..11)
+            .map(|index| runner_test_card(format!("Home {index}").as_str(), 75.0, 75.0))
+            .collect::<Vec<_>>();
+        let opponent_cards = (0..11)
+            .map(|index| runner_test_card(format!("Away {index}").as_str(), 75.0, 75.0))
+            .collect::<Vec<_>>();
+        let mut teammates = build_players(&cards, formation_data("433"), true, 105.0, 68.0);
+        let mut opponents =
+            build_players(&opponent_cards, formation_data("433"), false, 105.0, 68.0);
+        teammates[6].pos = (51.25, 29.5);
+        teammates[6].target_pos = (55.5, 25.0);
+        teammates[6].velocity = (0.8, -0.3);
+        teammates[6].movement_intent = "attack_run".to_string();
+        opponents[5].pos = (58.75, 38.5);
+        opponents[5].target_pos = (53.0, 35.0);
+        opponents[5].velocity = (-0.7, 0.4);
+        opponents[5].movement_intent = "press".to_string();
+        let config = runtime_config(&json!({}));
+        let shot_quality_cache = RefCell::new(HashMap::new());
+        let mut shape_inputs = RunnerProjectedExecutionShapeInputs::new();
+        shape_inputs.refresh(&teammates, &opponents);
+        let retained_plan = TeamPlanState {
+            kind: crate::TeamPlanKind::Recycle,
+            commitment: 0.62,
+            value: 0.0,
+        };
+        let opposing_plan = TeamPlanState {
+            kind: crate::TeamPlanKind::DefendPress,
+            commitment: 0.58,
+            value: 0.0,
+        };
+        let retained_signals = crate::team_plan_signals(retained_plan.kind);
+        let opposing_signals = crate::team_plan_signals(opposing_plan.kind);
+        let retained_control = PossessionControlState {
+            facing_direction: 27.0,
+            pressure_load: 0.33,
+            containment_load: 0.41,
+            forward_control: 0.45,
+            turn_readiness: 0.57,
+            release_window: 0.38,
+            shape_readiness: 0.62,
+            release_preparation: 0.31,
+            stagnation_load: 0.19,
+        };
+
+        for (
+            controller_idx,
+            controller_pos,
+            controlling_players,
+            defending_players,
+            controlling_are_teammates,
+            controlling_home,
+            attacking_right,
+            controlling_phase,
+            defending_phase,
+            controlling_plan,
+            defending_plan,
+            controlling_signals,
+            defending_signals,
+            previous_control,
+        ) in [
+            (
+                6,
+                (54.0, 27.25),
+                teammates.as_slice(),
+                opponents.as_slice(),
+                true,
+                true,
+                true,
+                "attacking",
+                "defending",
+                retained_plan,
+                opposing_plan,
+                retained_signals,
+                opposing_signals,
+                retained_control,
+            ),
+            (
+                5,
+                (51.0, 39.0),
+                opponents.as_slice(),
+                teammates.as_slice(),
+                false,
+                false,
+                false,
+                "defending",
+                "attacking",
+                opposing_plan,
+                retained_plan,
+                opposing_signals,
+                retained_signals,
+                PossessionControlState::default(),
+            ),
+        ] {
+            let mut local_context = runner_projected_control_value_context(
+                controlling_players,
+                defending_players,
+                &config,
+            );
+            let local_value = runner_projected_control_value(
+                controller_idx,
+                controller_pos,
+                controlling_players,
+                defending_players,
+                controlling_home,
+                attacking_right,
+                controlling_phase,
+                defending_phase,
+                controlling_plan,
+                defending_plan,
+                controlling_signals,
+                defending_signals,
+                previous_control,
+                21.0,
+                0.76,
+                0.29,
+                3,
+                4.5,
+                Some(45.0),
+                7,
+                &shot_quality_cache,
+                &mut local_context,
+                &config,
+            );
+            let mut shared_context = runner_projected_control_value_context(
+                controlling_players,
+                defending_players,
+                &config,
+            );
+            let shared_value = runner_projected_control_value_with_shape_inputs(
+                controller_idx,
+                controller_pos,
+                controlling_players,
+                defending_players,
+                &shape_inputs,
+                controlling_are_teammates,
+                controlling_home,
+                attacking_right,
+                controlling_phase,
+                defending_phase,
+                controlling_plan,
+                defending_plan,
+                controlling_signals,
+                defending_signals,
+                previous_control,
+                21.0,
+                0.76,
+                0.29,
+                3,
+                4.5,
+                Some(45.0),
+                7,
+                &shot_quality_cache,
+                &mut shared_context,
+                &config,
+            );
+
+            assert_eq!(local_value.to_bits(), shared_value.to_bits());
+            let local_projection = local_context
+                .projection_cache
+                .get(controller_idx, controller_pos, 3)
+                .expect("local control projection");
+            let shared_projection = shared_context
+                .projection_cache
+                .get(controller_idx, controller_pos, 3)
+                .expect("shared control projection");
+            assert_eq!(local_projection.controlling.slice(), shared_projection.controlling.slice());
+            assert_eq!(
+                local_projection.projected_defender_positions,
+                shared_projection.projected_defender_positions
+            );
+        }
+    }
+
+    #[test]
+    fn control_execution_outcome_cache_preserves_hold_and_reorient_values() {
+        let cards = (0..11)
+            .map(|index| runner_test_card(format!("Home {index}").as_str(), 75.0, 75.0))
+            .collect::<Vec<_>>();
+        let opponent_cards = (0..11)
+            .map(|index| runner_test_card(format!("Away {index}").as_str(), 75.0, 75.0))
+            .collect::<Vec<_>>();
+        let mut teammates = build_players(&cards, formation_data("433"), true, 105.0, 68.0);
+        let mut opponents =
+            build_players(&opponent_cards, formation_data("433"), false, 105.0, 68.0);
+        let holder_idx = 6;
+        let holder_pos = (52.0, 34.0);
+        teammates[holder_idx].pos = holder_pos;
+        teammates[holder_idx].target_pos = holder_pos;
+        for (index, opponent) in opponents.iter_mut().enumerate() {
+            opponent.pos = (62.0 + (index % 3) as f64 * 2.0, 16.0 + index as f64 * 3.0);
+            opponent.target_pos = opponent.pos;
+        }
+        let config = runtime_config(&json!({}));
+        let shot_quality_cache = RefCell::new(HashMap::new());
+        let current_control = PossessionControlState {
+            facing_direction: 180.0,
+            ..PossessionControlState::default()
+        };
+        let hold = build_hold_candidate(
+            holder_idx,
+            &teammates[holder_idx],
+            &teammates,
+            &opponents,
+            0.18,
+            0.0,
+            0.0,
+            0.0,
+            true,
+            &config,
+        )
+        .expect("hold candidate");
+        let reorient = build_reorient_candidate(
+            hold.clone(),
+            &teammates[holder_idx],
+            current_control,
+            true,
+            &config,
+        )
+        .expect("misaligned holder needs a reorientation candidate");
+        let team_signals = crate::team_plan_signals(crate::TeamPlanKind::Recycle);
+        let opponent_signals = crate::team_plan_signals(crate::TeamPlanKind::DefendBlock);
+        let team_plan = TeamPlanState {
+            kind: crate::TeamPlanKind::Recycle,
+            commitment: 0.6,
+            value: 0.0,
+        };
+        let opponent_plan = TeamPlanState {
+            kind: crate::TeamPlanKind::DefendBlock,
+            commitment: 0.6,
+            value: 0.0,
+        };
+
+        let mut shared_actions = [reorient.clone(), hold.clone()];
+        let mut shared_contexts = RunnerProjectedTransitionValueContexts::default();
+        apply_temporal_option_values_with_contexts(
+            &mut shared_actions,
+            None,
+            holder_idx,
+            holder_pos,
+            current_control,
+            &teammates,
+            &opponents,
+            true,
+            true,
+            1,
+            &shot_quality_cache,
+            "attacking",
+            "defending",
+            team_plan,
+            opponent_plan,
+            team_signals,
+            opponent_signals,
+            &mut shared_contexts,
+            &config,
+        );
+        assert!(
+            shared_contexts.control_execution_outcome_cache.is_some(),
+            "equivalent hold and reorient evaluations must retain a reusable execution outcome"
+        );
+
+        let mut reorient_only = [reorient];
+        apply_temporal_option_values(
+            &mut reorient_only,
+            None,
+            holder_idx,
+            holder_pos,
+            current_control,
+            &teammates,
+            &opponents,
+            true,
+            true,
+            1,
+            &shot_quality_cache,
+            "attacking",
+            "defending",
+            team_plan,
+            opponent_plan,
+            team_signals,
+            opponent_signals,
+            &config,
+        );
+        let mut hold_only = [hold];
+        apply_temporal_option_values(
+            &mut hold_only,
+            None,
+            holder_idx,
+            holder_pos,
+            current_control,
+            &teammates,
+            &opponents,
+            true,
+            true,
+            1,
+            &shot_quality_cache,
+            "attacking",
+            "defending",
+            team_plan,
+            opponent_plan,
+            team_signals,
+            opponent_signals,
+            &config,
+        );
+
+        for (cached, direct) in [
+            (&shared_actions[0], &reorient_only[0]),
+            (&shared_actions[1], &hold_only[0]),
+        ] {
+            assert_eq!(cached.score.to_bits(), direct.score.to_bits());
+            assert_eq!(
+                cached.debug_after_value.to_bits(),
+                direct.debug_after_value.to_bits()
+            );
+            assert_eq!(
+                cached.debug_option_return.to_bits(),
+                direct.debug_option_return.to_bits()
+            );
+            assert_eq!(
+                cached.debug_turnover_cost.to_bits(),
+                direct.debug_turnover_cost.to_bits()
+            );
+            assert_eq!(
+                cached.debug_temporal_discount.to_bits(),
+                direct.debug_temporal_discount.to_bits()
+            );
+        }
+    }
+
+    #[test]
+    fn projected_team_control_makes_low_pressure_hold_preferable_to_micro_carry() {
+        let cards = (0..11)
+            .map(|index| runner_test_card(format!("Home {index}").as_str(), 75.0, 75.0))
+            .collect::<Vec<_>>();
+        let opponents = (0..11)
+            .map(|index| runner_test_card(format!("Away {index}").as_str(), 75.0, 75.0))
+            .collect::<Vec<_>>();
+        let mut teammates = build_players(&cards, formation_data("433"), true, 105.0, 68.0);
+        let mut opponents = build_players(&opponents, formation_data("433"), false, 105.0, 68.0);
+        let holder_idx = 6;
+        let holder_pos = (48.0, 34.0);
+        teammates[holder_idx].pos = holder_pos;
+        teammates[holder_idx].target_pos = holder_pos;
+        for (index, player) in teammates.iter_mut().enumerate() {
+            if index == holder_idx || player.position == "GK" {
+                continue;
+            }
+            let offset = (index as f64 - 5.0) * 0.35;
+            player.pos = (48.0 + offset, 34.0 + offset);
+            player.target_pos = player.pos;
+        }
+        opponents.iter_mut().for_each(|player| {
+            player.pos = (82.0, player.pos.1);
+            player.target_pos = player.pos;
+        });
+        let config = runtime_config(&json!({
+            "player_max_speed": 8.0,
+            "player_min_speed": 2.5
+        }));
+        let cache = RefCell::new(HashMap::new());
+        let initial_control = runner_live_control_transition(
+            PossessionControlState::default(),
+            holder_idx,
+            holder_pos,
+            &teammates,
+            &opponents,
+            true,
+            teammates[holder_idx].facing_direction,
+            0.0,
+            0.0,
+            0,
+            0.0,
+            None,
+            config.pitch_length,
+            config.pitch_width,
+        );
+        let current_value = runner_state_value(
+            holder_idx,
+            &teammates[holder_idx],
+            true,
+            initial_control,
+            &teammates,
+            &opponents,
+            &[],
+            true,
+            1,
+            &cache,
+            &config,
+        );
+        let mut hold = build_hold_candidate(
+            holder_idx,
+            &teammates[holder_idx],
+            &teammates,
+            &opponents,
+            current_value,
+            0.0,
+            0.0,
+            0.0,
+            true,
+            &config,
+        )
+        .expect("hold candidate");
+        hold.success_prob = 0.96;
+        hold.opportunity_wait_value = 1.0;
+        hold.pressure = 0.04;
+        let mut micro_carry = hold.clone();
+        micro_carry.action = RunnerHeldAction::Carry {
+            target: (48.0, 34.25),
+        };
+        micro_carry.carry_survival = Some(CarrySurvivalTransition {
+            retained_control_probability: 0.96,
+            unconstrained_control_probability: 0.96,
+            constrained_control_probability: 0.0,
+            opposing_control_probability: 0.04,
+            unresolved_probability: 0.0,
+            unconstrained_control_position: (48.0, 34.25),
+            constrained_control_position: (48.0, 34.25),
+            opposing_control_position: (48.0, 34.25),
+            peak_contact_probability: 0.0,
+            peak_containment_probability: 0.0,
+            segment_count: 1,
+        });
+        micro_carry.opportunity_wait_value = 0.0;
+        micro_carry.opportunity_wait = 0.0;
+        micro_carry.debug_after_value = current_value;
+        let signals = crate::team_plan_signals(crate::TeamPlanKind::Recycle);
+        let defending_signals = crate::team_plan_signals(crate::TeamPlanKind::DefendBlock);
+        let team_plan = TeamPlanState {
+            kind: crate::TeamPlanKind::Recycle,
+            commitment: 0.6,
+            value: 0.0,
+        };
+        let defending_plan = TeamPlanState {
+            kind: crate::TeamPlanKind::DefendBlock,
+            commitment: 0.6,
+            value: 0.0,
+        };
+        let mut actions = [hold, micro_carry];
+        apply_temporal_option_values(
+            &mut actions,
+            None,
+            holder_idx,
+            holder_pos,
+            initial_control,
+            &teammates,
+            &opponents,
+            true,
+            true,
+            1,
+            &cache,
+            "attacking",
+            "defending",
+            team_plan,
+            defending_plan,
+            signals,
+            defending_signals,
+            &config,
+        );
+
+        assert!(
+            actions[0].debug_after_value > current_value,
+            "hold must value the new collective outlets: current={}, projected={}",
+            current_value,
+            actions[0].debug_after_value
+        );
+        assert!(
+            actions[0].score > actions[1].score,
+            "low-pressure wait with an evolving recycle shape must beat a micro carry: hold={:?}, carry={:?}",
+            actions[0],
+            actions[1]
+        );
+    }
+
+    #[test]
+    fn pressure_without_an_emerging_outlet_does_not_prefer_hold_to_micro_carry() {
+        let cards = (0..11)
+            .map(|index| runner_test_card(format!("Home {index}").as_str(), 75.0, 75.0))
+            .collect::<Vec<_>>();
+        let opponents = (0..11)
+            .map(|index| runner_test_card(format!("Away {index}").as_str(), 75.0, 75.0))
+            .collect::<Vec<_>>();
+        let mut teammates = build_players(&cards, formation_data("433"), true, 105.0, 68.0);
+        let mut opponents = build_players(&opponents, formation_data("433"), false, 105.0, 68.0);
+        let holder_idx = 6;
+        let holder_pos = (48.0, 34.0);
+        teammates[holder_idx].pos = holder_pos;
+        teammates[holder_idx].target_pos = holder_pos;
+        for player in teammates
+            .iter_mut()
+            .filter(|player| player.position != "GK")
+        {
+            player.target_pos = (48.0, 34.0);
+            player.tactical_anchor = (48.0, 34.0);
+        }
+        let pressure_positions = [
+            (49.5, 34.0),
+            (48.5, 36.0),
+            (47.0, 32.5),
+            (51.0, 31.5),
+            (45.0, 35.0),
+        ];
+        for (player, pos) in opponents.iter_mut().zip(pressure_positions) {
+            player.pos = pos;
+            player.target_pos = holder_pos;
+            player.movement_intent = "press".to_string();
+        }
+        let config = runtime_config(&json!({
+            "player_max_speed": 8.0,
+            "player_min_speed": 2.5
+        }));
+        let cache = RefCell::new(HashMap::new());
+        let initial_control = runner_live_control_transition(
+            PossessionControlState::default(),
+            holder_idx,
+            holder_pos,
+            &teammates,
+            &opponents,
+            true,
+            teammates[holder_idx].facing_direction,
+            0.0,
+            0.0,
+            0,
+            0.0,
+            None,
+            config.pitch_length,
+            config.pitch_width,
+        );
+        let current_value = runner_state_value(
+            holder_idx,
+            &teammates[holder_idx],
+            true,
+            initial_control,
+            &teammates,
+            &opponents,
+            &[],
+            true,
+            1,
+            &cache,
+            &config,
+        );
+        let mut hold = build_hold_candidate(
+            holder_idx,
+            &teammates[holder_idx],
+            &teammates,
+            &opponents,
+            current_value,
+            0.0,
+            0.0,
+            0.0,
+            true,
+            &config,
+        )
+        .expect("hold candidate");
+        hold.success_prob = 0.60;
+        hold.opportunity_wait_value = 0.0;
+        hold.pressure = 0.40;
+        let mut micro_carry = hold.clone();
+        micro_carry.action = RunnerHeldAction::Carry {
+            target: (50.0, 34.0),
+        };
+        micro_carry.carry_survival = Some(CarrySurvivalTransition {
+            retained_control_probability: 0.60,
+            unconstrained_control_probability: 0.60,
+            constrained_control_probability: 0.0,
+            opposing_control_probability: 0.40,
+            unresolved_probability: 0.0,
+            unconstrained_control_position: (50.0, 34.0),
+            constrained_control_position: (50.0, 34.0),
+            opposing_control_position: (49.0, 34.0),
+            peak_contact_probability: 0.65,
+            peak_containment_probability: 0.0,
+            segment_count: 1,
+        });
+        let signals = crate::team_plan_signals(crate::TeamPlanKind::Advance);
+        let defending_signals = crate::team_plan_signals(crate::TeamPlanKind::DefendPress);
+        let team_plan = TeamPlanState {
+            kind: crate::TeamPlanKind::Advance,
+            commitment: 0.6,
+            value: 0.0,
+        };
+        let defending_plan = TeamPlanState {
+            kind: crate::TeamPlanKind::DefendPress,
+            commitment: 0.6,
+            value: 0.0,
+        };
+        let mut actions = [hold, micro_carry];
+        apply_temporal_option_values(
+            &mut actions,
+            None,
+            holder_idx,
+            holder_pos,
+            initial_control,
+            &teammates,
+            &opponents,
+            true,
+            true,
+            1,
+            &cache,
+            "attacking",
+            "defending",
+            team_plan,
+            defending_plan,
+            signals,
+            defending_signals,
+            &config,
+        );
+
+        assert!(
+            actions[0].debug_after_value < actions[1].debug_after_value,
+            "the carry must still expose a higher retained continuation state: hold={:?}, carry={:?}",
+            actions[0],
+            actions[1]
+        );
+        assert!(
+            actions[1].debug_turnover_cost > actions[0].debug_turnover_cost,
+            "the contested carry must carry its additional execution loss into Bellman: hold={:?}, carry={:?}",
+            actions[0],
+            actions[1]
+        );
+    }
+
+    #[test]
+    fn projected_carry_retained_mass_includes_technical_control_error() {
+        let cards = (0..11)
+            .map(|index| runner_test_card(format!("Home {index}").as_str(), 10.0, 75.0))
+            .collect::<Vec<_>>();
+        let opponents_cards = (0..11)
+            .map(|index| runner_test_card(format!("Away {index}").as_str(), 75.0, 75.0))
+            .collect::<Vec<_>>();
+        let mut teammates = build_players(&cards, formation_data("433"), true, 105.0, 68.0);
+        let mut opponents =
+            build_players(&opponents_cards, formation_data("433"), false, 105.0, 68.0);
+        let holder_idx = 6;
+        teammates[holder_idx].pos = (52.0, 34.0);
+        teammates[holder_idx].target_pos = teammates[holder_idx].pos;
+        for opponent in &mut opponents {
+            opponent.pos = (94.0, opponent.pos.1);
+            opponent.target_pos = opponent.pos;
+        }
+        let config = runtime_config(&json!({
+            "player_max_speed": 8.0,
+            "player_min_speed": 2.5
+        }));
+        let cache = RefCell::new(HashMap::new());
+        let signals = crate::team_plan_signals(crate::TeamPlanKind::Recycle);
+        let defending_signals = crate::team_plan_signals(crate::TeamPlanKind::DefendBlock);
+        let mut actions = Vec::with_capacity(RUNNER_MAX_CARRY_CANDIDATES);
+        let mut response_arena = RunnerCarryDefenderResponseArena::new();
+        let mut candidate_scratch = RunnerHeldDecisionScratch::new();
+        candidate_scratch.prepare(holder_idx, &teammates, &opponents, &config);
+        build_carry_candidates_into(
+            holder_idx,
+            &teammates[holder_idx],
+            true,
+            &teammates,
+            &opponents,
+            &[],
+            0.0,
+            true,
+            1,
+            &cache,
+            signals,
+            defending_signals,
+            &config,
+            &mut actions,
+            &mut response_arena,
+            &mut candidate_scratch,
+        );
+        let action = actions.first().expect("carry candidate");
+        assert_eq!(
+            action.carry_defender_response_index,
+            Some(0),
+            "each generated carry must retain its corresponding response arena index"
+        );
+        let target =
+            runner_action_target(action.action, teammates[holder_idx].pos).expect("carry target");
+        let physical_retained = action
+            .carry_survival
+            .expect("carry survival")
+            .retained_control_probability;
+        let current_control = runner_live_control_transition(
+            PossessionControlState::default(),
+            holder_idx,
+            teammates[holder_idx].pos,
+            &teammates,
+            &opponents,
+            true,
+            teammates[holder_idx].facing_direction,
+            1.0,
+            0.0,
+            0,
+            0.0,
+            None,
+            config.pitch_length,
+            config.pitch_width,
+        );
+        let project = |arena: Option<&RunnerCarryDefenderResponseArena>| {
+            let mut value_contexts = RunnerProjectedTransitionValueContexts::default();
+            runner_projected_transition_values(
+                action,
+                arena,
+                holder_idx,
+                teammates[holder_idx].pos,
+                target,
+                &teammates,
+                &opponents,
+                true,
+                true,
+                "attacking",
+                "defending",
+                TeamPlanState {
+                    kind: crate::TeamPlanKind::Recycle,
+                    commitment: 0.6,
+                    value: 0.0,
+                },
+                TeamPlanState {
+                    kind: crate::TeamPlanKind::DefendBlock,
+                    commitment: 0.6,
+                    value: 0.0,
+                },
+                signals,
+                defending_signals,
+                current_control,
+                2,
+                1,
+                &cache,
+                &mut value_contexts,
+                &config,
+            )
+            .expect("projected carry transition")
+        };
+        let cached_values = project(Some(&response_arena));
+        let values = project(None);
+
+        assert!(
+            (cached_values.retained_control_probability - values.retained_control_probability)
+                .abs()
+                <= 1e-12
+                && (cached_values.retained_control_value - values.retained_control_value).abs()
+                    <= 1e-12
+                && (cached_values.opposing_control_probability - values.opposing_control_probability)
+                    .abs()
+                    <= 1e-12
+                && (cached_values.opposing_control_value - values.opposing_control_value).abs()
+                    <= 1e-12,
+            "cached carry responses must exactly preserve projected transition values: cached={cached_values:?}, rebuilt={values:?}"
+        );
+
+        assert!(
+            values.retained_control_probability < physical_retained,
+            "projected carry retention must include technical control loss: values={values:?}, action={action:?}, target={target:?}"
+        );
+        assert!(
+            values.retained_control_probability + values.opposing_control_probability < 1.0,
+            "technical loss must retain a loose-ball branch rather than becoming an instant turnover: action={action:?}"
+        );
+    }
+
+    #[test]
+    fn projected_pass_receipt_requires_contact_and_sends_first_touch_errors_loose() {
+        let cards = (0..11)
+            .map(|index| runner_test_card(format!("Home {index}").as_str(), 75.0, 75.0))
+            .collect::<Vec<_>>();
+        let opponents_cards = (0..11)
+            .map(|index| runner_test_card(format!("Away {index}").as_str(), 75.0, 75.0))
+            .collect::<Vec<_>>();
+        let mut teammates = build_players(&cards, formation_data("433"), true, 105.0, 68.0);
+        let mut opponents =
+            build_players(&opponents_cards, formation_data("433"), false, 105.0, 68.0);
+        let holder_idx = 6;
+        let receiver_idx = 8;
+        let origin = (46.0, 34.0);
+        let target = (58.0, 43.0);
+        teammates[holder_idx].pos = origin;
+        teammates[holder_idx].target_pos = origin;
+        teammates[receiver_idx].pos = (56.0, 42.0);
+        teammates[receiver_idx].target_pos = target;
+        teammates[receiver_idx].iq = 1.0;
+        for opponent in &mut opponents {
+            opponent.pos = (94.0, opponent.pos.1);
+            opponent.target_pos = opponent.pos;
+        }
+        let config = runtime_config(&json!({
+            "player_max_speed": 8.0,
+            "player_min_speed": 2.5
+        }));
+        let hold = build_hold_candidate(
+            holder_idx,
+            &teammates[holder_idx],
+            &teammates,
+            &opponents,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            true,
+            &config,
+        )
+        .expect("control candidate");
+        let action = RunnerEvaluatedAction {
+            action: RunnerHeldAction::Pass {
+                receiver_idx,
+                target,
+                is_long: false,
+                lane_risk: 0.0,
+                retention_probability: 0.82,
+            },
+            success_prob: 0.82,
+            ..hold
+        };
+        let signals = crate::team_plan_signals(crate::TeamPlanKind::Recycle);
+        let defending_signals = crate::team_plan_signals(crate::TeamPlanKind::DefendBlock);
+        let mut scratch = RunnerProjectedTeamProjectionScratch::new();
+        let outcomes = runner_projected_pass_execution_outcomes(
+            &action,
+            holder_idx,
+            origin,
+            target,
+            &teammates,
+            &opponents,
+            true,
+            "attacking",
+            "defending",
+            signals,
+            defending_signals,
+            1,
+            &config,
+            &mut scratch,
+        );
+        let retained_probability = outcomes
+            .retained
+            .iter()
+            .map(|branch| branch.probability)
+            .sum::<f64>();
+        let loose_probability = outcomes.unresolved_probability
+            + outcomes
+                .opposing
+                .iter()
+                .map(|branch| branch.probability)
+                .sum::<f64>();
+        let retained_receipt = outcomes
+            .retained
+            .iter()
+            .find(|branch| branch.controller_idx == Some(receiver_idx))
+            .expect("a receiver who reached the ball must retain the clean first-touch branch");
+
+        assert!(retained_probability > 0.0);
+        assert!(loose_probability > 0.0);
+        assert_eq!(retained_receipt.controller_idx, Some(receiver_idx));
+        assert!(retained_receipt.probability > 0.0);
+        assert!(distance(retained_receipt.pos, target) <= config.contest_radius);
+        assert!(distance(retained_receipt.pos, target) > 1e-6);
+        assert_eq!(retained_receipt.ownership_continuity, 1.0);
+    }
+
+    #[test]
+    fn projected_pass_to_an_unreachable_target_has_no_direct_receipt() {
+        let cards = (0..11)
+            .map(|index| runner_test_card(format!("Home {index}").as_str(), 75.0, 75.0))
+            .collect::<Vec<_>>();
+        let opponents_cards = (0..11)
+            .map(|index| runner_test_card(format!("Away {index}").as_str(), 75.0, 75.0))
+            .collect::<Vec<_>>();
+        let mut teammates = build_players(&cards, formation_data("433"), true, 105.0, 68.0);
+        let mut opponents =
+            build_players(&opponents_cards, formation_data("433"), false, 105.0, 68.0);
+        let holder_idx = 6;
+        let receiver_idx = 8;
+        let origin = (46.0, 34.0);
+        let target = (86.0, 62.0);
+        teammates[holder_idx].pos = origin;
+        teammates[holder_idx].target_pos = origin;
+        for player in teammates
+            .iter_mut()
+            .filter(|player| player.position != "GK")
+        {
+            if player.pos != origin {
+                player.pos = (20.0, player.pos.1);
+                player.target_pos = player.pos;
+            }
+        }
+        for player in &mut opponents {
+            player.pos = (8.0, player.pos.1);
+            player.target_pos = player.pos;
+        }
+        let config = runtime_config(&json!({}));
+        let hold = build_hold_candidate(
+            holder_idx,
+            &teammates[holder_idx],
+            &teammates,
+            &opponents,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            true,
+            &config,
+        )
+        .expect("control candidate");
+        let action = RunnerEvaluatedAction {
+            action: RunnerHeldAction::Pass {
+                receiver_idx,
+                target,
+                is_long: false,
+                lane_risk: 0.0,
+                retention_probability: 1.0,
+            },
+            success_prob: 1.0,
+            ..hold
+        };
+        let signals = crate::team_plan_signals(crate::TeamPlanKind::Recycle);
+        let defending_signals = crate::team_plan_signals(crate::TeamPlanKind::DefendBlock);
+        let mut scratch = RunnerProjectedTeamProjectionScratch::new();
+        let outcomes = runner_projected_pass_execution_outcomes(
+            &action,
+            holder_idx,
+            origin,
+            target,
+            &teammates,
+            &opponents,
+            true,
+            "attacking",
+            "defending",
+            signals,
+            defending_signals,
+            1,
+            &config,
+            &mut scratch,
+        );
+
+        assert!(outcomes
+            .retained
+            .iter()
+            .all(|branch| branch.probability <= 1e-9));
+    }
+
+    #[test]
+    fn executed_pass_to_an_unreachable_target_stays_loose_without_a_receipt() {
+        let home_cards = (0..11)
+            .map(|index| runner_test_card(format!("Home {index}").as_str(), 75.0, 75.0))
+            .collect();
+        let away_cards = (0..11)
+            .map(|index| runner_test_card(format!("Away {index}").as_str(), 75.0, 75.0))
+            .collect();
+        let response = run_match_v2(MatchV2RunRequest {
+            home_cards,
+            away_cards,
+            home_formation: "442".to_string(),
+            away_formation: "442".to_string(),
+            config: json!({
+                "total_ticks": 12,
+                "half_ticks": 6,
+                "frame_interval": 1,
+                "runner_forced_action": "pass",
+                "runner_forced_pass_target": [100.0, 64.0],
+                "iq_noise_scale": 0.0,
+                "goal_noise_scale": 0.0
+            }),
+            seed: Some(20260713),
+        });
+        let first_forced_pass = response
+            .events
+            .iter()
+            .find(|event| {
+                event.get("event_type").and_then(serde_json::Value::as_str) == Some("pass")
+                    && event.get("origin").is_some()
+            })
+            .expect("forced pass must resolve");
+        let first_pass_tick = first_forced_pass
+            .get("tick")
+            .and_then(serde_json::Value::as_i64)
+            .expect("pass event tick");
+        let received_at_arrival = response
+            .trace
+            .get("entries")
+            .and_then(serde_json::Value::as_array)
+            .expect("trace entries")
+            .iter()
+            .any(|entry| {
+                entry.get("tick").and_then(serde_json::Value::as_i64) == Some(first_pass_tick)
+                    && entry.get("type").and_then(serde_json::Value::as_str) == Some("action")
+                    && entry.get("action").and_then(serde_json::Value::as_str) == Some("receive")
+            });
+
+        assert_eq!(
+            first_forced_pass
+                .get("outcome")
+                .and_then(serde_json::Value::as_str),
+            Some("loose")
+        );
+        assert!(!received_at_arrival);
+    }
+
+    #[test]
+    fn intended_receiver_commitment_moves_continuously_and_wins_its_own_receipt() {
+        let cards = (0..11)
+            .map(|index| runner_test_card(format!("Home {index}").as_str(), 75.0, 75.0))
+            .collect::<Vec<_>>();
+        let mut home = build_players(&cards, formation_data("442"), true, 105.0, 68.0);
+        let mut away = build_players(&cards, formation_data("442"), false, 105.0, 68.0);
+        let config = runtime_config(&json!({
+            "first_touch_error_divisor": 1_000_000_000.0,
+            "iq_noise_scale": 0.0,
+            "goal_noise_scale": 0.0,
+        }));
+        let passer_idx = 6;
+        let receiver_idx = 8;
+        let nearby_teammate_idx = 7;
+        let target = (61.0, 43.0);
+        home[passer_idx].pos = (50.0, 34.0);
+        home[receiver_idx].pos = (59.5, 42.5);
+        home[nearby_teammate_idx].pos = (60.8, 43.0);
+        for player in &mut away {
+            player.pos = (15.0, player.pos.1);
+            player.target_pos = player.pos;
+        }
+        let mut state = runner_test_state();
+        state.ball.state = RunnerBallState::InFlight;
+        state.ball.position = home[passer_idx].pos;
+        let flight = RunnerFlight {
+            kind: RunnerFlightKind::Pass,
+            origin: home[passer_idx].pos,
+            target,
+            ticks_elapsed: 0,
+            ticks_total: 1,
+            passer_idx,
+            passer_team_home: true,
+            intended_receiver_idx: Some(receiver_idx),
+            offside_flags: [false; RUNNER_TEAM_SIZE],
+            last_passer_team_home: None,
+            last_passer_idx: -1,
+            on_target: false,
+            speed: config.ball_pass_speed,
+            xg: 0.0,
+            gk_attributes: None,
+            is_long: false,
+            target_is_space: false,
+            retention_probability: 1.0,
+            retention_roll: 0.0,
+            retained_possession: true,
+            possession_id: state.possession_id,
+        };
+        let receiver_before = home[receiver_idx].pos;
+        let mut rng = RunnerRng::new(20260713);
+        let mut held_tick_arena = RunnerHeldTickArena::new();
+        state.ball.flight = Some(flight);
+
+        tick_match(
+            &mut state,
+            1,
+            1,
+            &mut home,
+            &mut away,
+            &config,
+            true,
+            &mut held_tick_arena,
+            &mut rng,
+        );
+
+        assert!(
+            distance(home[receiver_idx].pos, target) < distance(receiver_before, target),
+            "the intended receiver must advance toward the reception point"
+        );
+        assert!(
+            distance(home[receiver_idx].pos, receiver_before)
+                <= crate::physics::player_speed(
+                    home[receiver_idx].speed.round() as i32,
+                    config.player_max_speed,
+                    config.player_min_speed,
+                ) * 1.05,
+            "the intended receiver must obey the same per-tick motion bound"
+        );
+        assert_eq!(state.ball.holder_team_home, Some(true));
+        assert_eq!(state.ball.holder_idx, Some(receiver_idx));
+        assert!(
+            distance(home[nearby_teammate_idx].pos, target) <= config.contest_radius,
+            "the nearby teammate establishes that receipt ownership is not a nearest-player lookup"
+        );
+    }
+
+    #[test]
+    fn normal_replay_frames_respect_the_player_motion_bound() {
+        let home_cards = (0..11)
+            .map(|index| runner_test_card(format!("Home {index}").as_str(), 75.0, 75.0))
+            .collect();
+        let away_cards = (0..11)
+            .map(|index| runner_test_card(format!("Away {index}").as_str(), 75.0, 75.0))
+            .collect();
+        let config = json!({
+            "total_ticks": 96,
+            "half_ticks": 48,
+            "frame_interval": 1,
+            "player_max_speed": 8.0,
+            "player_min_speed": 2.5,
+        });
+        let response = run_match_v2(MatchV2RunRequest {
+            home_cards,
+            away_cards,
+            home_formation: "442".to_string(),
+            away_formation: "433".to_string(),
+            config: config.clone(),
+            seed: Some(20260713),
+        });
+        let runtime = runtime_config(&config);
+        let maximum_speed = crate::physics::player_speed(
+            i32::MAX,
+            runtime.player_max_speed,
+            runtime.player_min_speed,
+        );
+        let maximum_tick_displacement = maximum_speed * (1.05 + 0.98) * 0.5 + 0.15;
+        let replay = serde_json::to_value(&response.replay)
+            .expect("replay entries must serialize to the public JSON contract");
+        let frames = replay
+            .as_array()
+            .expect("replay serializes as an array")
+            .iter()
+            .filter(|frame| frame.get("type").and_then(serde_json::Value::as_str) == Some("frame"))
+            .collect::<Vec<_>>();
+        let mut checked_segments = 0;
+
+        for pair in frames.windows(2) {
+            let previous = pair[0];
+            let current = pair[1];
+            if previous
+                .get("cut")
+                .and_then(serde_json::Value::as_bool)
+                .unwrap_or(false)
+                || current
+                    .get("cut")
+                    .and_then(serde_json::Value::as_bool)
+                    .unwrap_or(false)
+            {
+                continue;
+            }
+            if previous.get("half") != current.get("half") {
+                continue;
+            }
+            let previous_time = previous
+                .get("t")
+                .and_then(serde_json::Value::as_f64)
+                .expect("previous replay time");
+            let current_time = current
+                .get("t")
+                .and_then(serde_json::Value::as_f64)
+                .expect("current replay time");
+            if (current_time - previous_time - runtime.tick_duration).abs() > 1e-9 {
+                continue;
+            }
+            checked_segments += 1;
+            for side in ["home", "away"] {
+                let previous_players = previous
+                    .get(side)
+                    .and_then(serde_json::Value::as_array)
+                    .expect("previous player positions");
+                let current_players = current
+                    .get(side)
+                    .and_then(serde_json::Value::as_array)
+                    .expect("current player positions");
+                for (index, (previous_pos, current_pos)) in
+                    previous_players.iter().zip(current_players).enumerate()
+                {
+                    let coordinate = |position: &serde_json::Value| {
+                        let position = position.as_array().expect("replay player position");
+                        (
+                            position[1].as_f64().expect("pitch x"),
+                            position[0].as_f64().expect("pitch y"),
+                        )
+                    };
+                    let displacement = distance(coordinate(previous_pos), coordinate(current_pos));
+                    assert!(
+                        displacement <= maximum_tick_displacement,
+                        "{side} player {index} moved {displacement}m beyond the motion bound {maximum_tick_displacement}m"
+                    );
+                }
+            }
+        }
+
+        assert!(checked_segments > 0);
+    }
+
+    #[test]
+    fn shot_candidate_exists_for_continuous_terminal_outcomes() {
+        let cards = (0..11)
+            .map(|index| runner_test_card(format!("Home {index}").as_str(), 75.0, 75.0))
+            .collect::<Vec<_>>();
+        let away_cards = (0..11)
+            .map(|index| runner_test_card(format!("Away {index}").as_str(), 75.0, 75.0))
+            .collect::<Vec<_>>();
+        let mut home = build_players(&cards, formation_data("433"), true, 105.0, 68.0);
+        let mut away = build_players(&away_cards, formation_data("433"), false, 105.0, 68.0);
+        let holder_idx = 10;
+        home[holder_idx].pos = (12.0, 34.0);
+        home[holder_idx].last_receive_origin = home[holder_idx].pos;
+        away[0].pos = (100.5, 34.0);
+        let config = runtime_config(&json!({}));
+        let cache = RefCell::new(HashMap::new());
+        let contest_defenders = [];
+
+        let distant = build_shot_candidate(
+            holder_idx,
+            &home[holder_idx],
+            true,
+            PossessionControlState::default(),
+            &home,
+            &away,
+            &contest_defenders,
+            0.16,
+            true,
+            1,
+            &cache,
+            &config,
+        );
+
+        home[holder_idx].pos = (94.0, 34.0);
+        home[holder_idx].last_receive_origin = (76.0, 34.0);
+        let close = build_shot_candidate(
+            holder_idx,
+            &home[holder_idx],
+            true,
+            PossessionControlState::default(),
+            &home,
+            &away,
+            &contest_defenders,
+            0.16,
+            true,
+            1,
+            &cache,
+            &config,
+        );
+
+        assert!(matches!(distant.action, RunnerHeldAction::Shoot { .. }));
+        assert!(matches!(close.action, RunnerHeldAction::Shoot { .. }));
+        assert!(
+            distant.xg < 0.002,
+            "extreme range must remain a candidate with a negligible continuous xG"
+        );
+        assert!(
+            close.xg > distant.xg,
+            "moving into a central close-range location must improve terminal quality"
+        );
+    }
+
+    #[test]
+    fn open_close_range_finisher_selects_terminal_shot_over_another_carry() {
+        let cards = (0..11)
+            .map(|index| runner_test_card(format!("Home {index}").as_str(), 88.0, 30.0))
+            .collect::<Vec<_>>();
+        let opponent_cards = (0..11)
+            .map(|index| runner_test_card(format!("Away {index}").as_str(), 68.0, 68.0))
+            .collect::<Vec<_>>();
+        let mut home = build_players(&cards, formation_data("433"), true, 105.0, 68.0);
+        let mut away = build_players(&opponent_cards, formation_data("433"), false, 105.0, 68.0);
+        let holder_idx = 10;
+        let holder_pos = (95.0, 34.0);
+        home[holder_idx].pos = holder_pos;
+        home[holder_idx].target_pos = holder_pos;
+        home[holder_idx].last_receive_origin = (85.0, 34.0);
+        home[holder_idx].facing_direction = 0.0;
+        home[holder_idx].possession_ticks = 2;
+        for (index, player) in home.iter_mut().enumerate() {
+            if index == holder_idx || player.position == "GK" {
+                continue;
+            }
+            player.pos = (72.0 + index as f64, 10.0 + (index * 7 % 48) as f64);
+            player.target_pos = player.pos;
+        }
+        for (index, player) in away.iter_mut().enumerate() {
+            if index == 0 {
+                player.pos = (102.0, 34.0);
+            } else {
+                player.pos = (66.0 - (index % 3) as f64, 8.0 + (index * 7 % 48) as f64);
+            }
+            player.target_pos = player.pos;
+        }
+        let config = runtime_config(&json!({
+            "iq_noise_scale": 0.0,
+            "goal_noise_scale": 0.0,
+            "trace_detail": "full",
+        }));
+        let mut state = runner_test_state();
+        state.ball.position = holder_pos;
+        state.ball.holder_idx = Some(holder_idx);
+        state.ball.holder_team_home = Some(true);
+        state.ball.control = PossessionControlState {
+            facing_direction: 0.0,
+            pressure_load: 0.04,
+            containment_load: 0.02,
+            forward_control: 0.96,
+            turn_readiness: 0.90,
+            release_window: 0.96,
+            shape_readiness: 0.72,
+            release_preparation: 0.95,
+            stagnation_load: 0.0,
+        };
+        state.home_plan = TeamPlanState {
+            kind: crate::TeamPlanKind::Advance,
+            commitment: 0.75,
+            value: 0.0,
+        };
+        state.away_plan = TeamPlanState {
+            kind: crate::TeamPlanKind::DefendBlock,
+            commitment: 0.75,
+            value: 0.0,
+        };
+        state.home_plan_signals = crate::team_plan_signals(crate::TeamPlanKind::Advance);
+        state.away_plan_signals = crate::team_plan_signals(crate::TeamPlanKind::DefendBlock);
+        let holder = home[holder_idx].clone();
+        let contest_defenders: [ShotContestDefender; 0] = [];
+        let mut rng = RunnerRng::new(20260713);
+        let mut goal_state = RunnerHeldGoalState::from_player(&holder);
+
+        let selected = choose_default_held_action(
+            holder_idx,
+            &holder,
+            &mut goal_state,
+            &home,
+            &away,
+            &contest_defenders,
+            true,
+            &config,
+            true,
+            &mut state,
+            1,
+            &mut rng,
+        );
+        let decision = state
+            .trace_decisions
+            .iter()
+            .find(|entry| entry.get("phase").and_then(serde_json::Value::as_str) == Some("on_ball"))
+            .expect("on-ball Bellman decision");
+        let candidates = std::iter::once(decision.get("chosen").expect("chosen candidate"))
+            .chain(
+                decision
+                    .get("alternatives")
+                    .and_then(serde_json::Value::as_array)
+                    .expect("alternative candidates")
+                    .iter(),
+            )
+            .collect::<Vec<_>>();
+        let shot_score = candidates
+            .iter()
+            .find(|candidate| {
+                candidate
+                    .get("action_type")
+                    .and_then(serde_json::Value::as_str)
+                    == Some("shoot")
+            })
+            .and_then(|candidate| candidate.get("value"))
+            .and_then(|value| value.get("score"))
+            .and_then(serde_json::Value::as_f64)
+            .expect("executable close-range shot");
+        let best_carry_score = candidates
+            .iter()
+            .filter(|candidate| {
+                candidate
+                    .get("action_type")
+                    .and_then(serde_json::Value::as_str)
+                    == Some("carry")
+            })
+            .filter_map(|candidate| {
+                candidate
+                    .get("value")
+                    .and_then(|value| value.get("score"))
+                    .and_then(serde_json::Value::as_f64)
+            })
+            .fold(f64::NEG_INFINITY, f64::max);
+
+        assert!(
+            matches!(selected, RunnerHeldAction::Shoot { .. }),
+            "an open close-range finisher must select Shoot: selected={selected:?}, candidates={candidates:?}"
+        );
+        assert!(
+            shot_score > best_carry_score,
+            "an open close-range finisher must prefer terminal value over another carry: shot={shot_score}, carry={best_carry_score}, candidates={candidates:?}"
+        );
     }
 
     #[test]
@@ -798,6 +4723,7 @@ mod tests {
                 position: (40.0, 34.0),
                 holder_idx: None,
                 holder_team_home: None,
+                control: PossessionControlState::default(),
                 flight: None,
                 loose_velocity: (0.0, 0.0),
                 contested_ticks: 0,
@@ -812,12 +4738,14 @@ mod tests {
             home_possession_ticks: 0,
             away_possession_ticks: 0,
             neutral_ticks: 0,
+            match_clock: MatchClock::default(),
+            action_commitment: None,
             dead_reason: None,
             restart_team_home: None,
             restart_ticks_remaining: 0,
             last_passer_team_home: None,
             last_passer_idx: -1,
-            pass_network: HashMap::new(),
+            pass_network: [[[0; RUNNER_TEAM_SIZE]; RUNNER_TEAM_SIZE]; 2],
             held_action_cursor: 0,
             pending_on_ball_goal_event: None,
             pending_ball_flight: None,
@@ -825,12 +4753,30 @@ mod tests {
             trace_entries: Vec::new(),
             trace_decisions: Vec::new(),
             shot_quality_cache: RefCell::new(HashMap::new()),
+            held_action_buffer: Vec::with_capacity(RUNNER_MAX_HELD_ACTIONS),
+            carry_defender_response_arena: RunnerCarryDefenderResponseArena::new(),
+            held_decision_arena: RunnerHeldDecisionArena::new(),
+            pass_candidate_buffer: vec![
+                EMPTY_TEAM_PASS_CANDIDATE;
+                MAX_TEAM_PASS_CANDIDATES
+            ],
+            pass_workspace: TeamPassWorkspace::new(),
+            specialized_goal_arena: RunnerSpecializedGoalArena::new(),
+            off_ball_attack_arena: RunnerOffBallAttackArena::new(),
+            team_plan_arena: RunnerTeamPlanArena::new(),
+            team_shape_arena: RunnerTeamShapeArena::new(),
+            fixed_defense_arena: RunnerFixedDefenseArena::new(),
             home_phase_code: 0,
             away_phase_code: 2,
             home_had_possession_last_tick: true,
             away_had_possession_last_tick: false,
             home_ticks_since_possession_change: 1,
             away_ticks_since_possession_change: 1,
+            home_plan: TeamPlanState::default(),
+            away_plan: TeamPlanState::default(),
+            home_plan_signals: TeamPlanSignals::default(),
+            away_plan_signals: TeamPlanSignals::default(),
+            trace_enabled: false,
             rng_trace_enabled: false,
         };
 
@@ -842,6 +4788,8 @@ mod tests {
             true,
             (45.0, 34.0),
             None,
+            true,
+            &runtime_config(&json!({})),
         );
 
         assert_eq!(state.possession_id, 7);
@@ -880,6 +4828,7 @@ mod tests {
                 position: (40.0, 34.0),
                 holder_idx: None,
                 holder_team_home: None,
+                control: PossessionControlState::default(),
                 flight: None,
                 loose_velocity: (0.0, 0.0),
                 contested_ticks: 0,
@@ -894,12 +4843,14 @@ mod tests {
             home_possession_ticks: 0,
             away_possession_ticks: 0,
             neutral_ticks: 0,
+            match_clock: MatchClock::default(),
+            action_commitment: None,
             dead_reason: None,
             restart_team_home: None,
             restart_ticks_remaining: 0,
             last_passer_team_home: None,
             last_passer_idx: -1,
-            pass_network: HashMap::new(),
+            pass_network: [[[0; RUNNER_TEAM_SIZE]; RUNNER_TEAM_SIZE]; 2],
             held_action_cursor: 0,
             pending_on_ball_goal_event: None,
             pending_ball_flight: None,
@@ -907,12 +4858,30 @@ mod tests {
             trace_entries: Vec::new(),
             trace_decisions: Vec::new(),
             shot_quality_cache: RefCell::new(HashMap::new()),
+            held_action_buffer: Vec::with_capacity(RUNNER_MAX_HELD_ACTIONS),
+            carry_defender_response_arena: RunnerCarryDefenderResponseArena::new(),
+            held_decision_arena: RunnerHeldDecisionArena::new(),
+            pass_candidate_buffer: vec![
+                EMPTY_TEAM_PASS_CANDIDATE;
+                MAX_TEAM_PASS_CANDIDATES
+            ],
+            pass_workspace: TeamPassWorkspace::new(),
+            specialized_goal_arena: RunnerSpecializedGoalArena::new(),
+            off_ball_attack_arena: RunnerOffBallAttackArena::new(),
+            team_plan_arena: RunnerTeamPlanArena::new(),
+            team_shape_arena: RunnerTeamShapeArena::new(),
+            fixed_defense_arena: RunnerFixedDefenseArena::new(),
             home_phase_code: 0,
             away_phase_code: 2,
             home_had_possession_last_tick: true,
             away_had_possession_last_tick: false,
             home_ticks_since_possession_change: 1,
             away_ticks_since_possession_change: 1,
+            home_plan: TeamPlanState::default(),
+            away_plan: TeamPlanState::default(),
+            home_plan_signals: TeamPlanSignals::default(),
+            away_plan_signals: TeamPlanSignals::default(),
+            trace_enabled: false,
             rng_trace_enabled: false,
         };
         let config = runtime_config(&json!({}));
@@ -926,7 +4895,7 @@ mod tests {
             passer_idx: 1,
             passer_team_home: true,
             intended_receiver_idx: Some(3),
-            offside_indices: Vec::new(),
+            offside_flags: [false; RUNNER_TEAM_SIZE],
             last_passer_team_home: None,
             last_passer_idx: -1,
             on_target: false,
@@ -935,6 +4904,9 @@ mod tests {
             gk_attributes: None,
             is_long: false,
             target_is_space: false,
+            retention_probability: 1.0,
+            retention_roll: 0.0,
+            retained_possession: true,
             possession_id: 7,
         };
 
@@ -973,6 +4945,7 @@ mod tests {
                 position: (40.0, 34.0),
                 holder_idx: None,
                 holder_team_home: None,
+                control: PossessionControlState::default(),
                 flight: None,
                 loose_velocity: (0.0, 0.0),
                 contested_ticks: 0,
@@ -987,12 +4960,14 @@ mod tests {
             home_possession_ticks: 0,
             away_possession_ticks: 0,
             neutral_ticks: 0,
+            match_clock: MatchClock::default(),
+            action_commitment: None,
             dead_reason: None,
             restart_team_home: None,
             restart_ticks_remaining: 0,
             last_passer_team_home: None,
             last_passer_idx: -1,
-            pass_network: HashMap::new(),
+            pass_network: [[[0; RUNNER_TEAM_SIZE]; RUNNER_TEAM_SIZE]; 2],
             held_action_cursor: 0,
             pending_on_ball_goal_event: None,
             pending_ball_flight: None,
@@ -1000,12 +4975,30 @@ mod tests {
             trace_entries: Vec::new(),
             trace_decisions: Vec::new(),
             shot_quality_cache: RefCell::new(HashMap::new()),
+            held_action_buffer: Vec::with_capacity(RUNNER_MAX_HELD_ACTIONS),
+            carry_defender_response_arena: RunnerCarryDefenderResponseArena::new(),
+            held_decision_arena: RunnerHeldDecisionArena::new(),
+            pass_candidate_buffer: vec![
+                EMPTY_TEAM_PASS_CANDIDATE;
+                MAX_TEAM_PASS_CANDIDATES
+            ],
+            pass_workspace: TeamPassWorkspace::new(),
+            specialized_goal_arena: RunnerSpecializedGoalArena::new(),
+            off_ball_attack_arena: RunnerOffBallAttackArena::new(),
+            team_plan_arena: RunnerTeamPlanArena::new(),
+            team_shape_arena: RunnerTeamShapeArena::new(),
+            fixed_defense_arena: RunnerFixedDefenseArena::new(),
             home_phase_code: 3,
             away_phase_code: 1,
             home_had_possession_last_tick: true,
             away_had_possession_last_tick: false,
             home_ticks_since_possession_change: 1,
             away_ticks_since_possession_change: 1,
+            home_plan: TeamPlanState::default(),
+            away_plan: TeamPlanState::default(),
+            home_plan_signals: TeamPlanSignals::default(),
+            away_plan_signals: TeamPlanSignals::default(),
+            trace_enabled: false,
             rng_trace_enabled: false,
         };
 
@@ -1017,6 +5010,8 @@ mod tests {
             false,
             (45.0, 34.0),
             None,
+            true,
+            &runtime_config(&json!({})),
         );
 
         assert_eq!(state.possession_id, 8);
@@ -1026,12 +5021,12 @@ mod tests {
     }
 
     #[test]
-    fn attacker_winning_runner_duel_still_completes_carry_in_same_tick() {
+    fn attacker_winning_physical_runner_duel_still_completes_carry_in_same_tick() {
         let home_cards = (0..11)
             .map(|index| runner_test_card(format!("Home {index}").as_str(), 99.0, 1.0))
             .collect();
         let away_cards = (0..11)
-            .map(|index| runner_test_card(format!("Away {index}").as_str(), 1.0, 1.0))
+            .map(|index| runner_test_card(format!("Away {index}").as_str(), 80.0, 80.0))
             .collect();
         let response = run_match_v2(MatchV2RunRequest {
             home_cards,
@@ -1039,11 +5034,10 @@ mod tests {
             home_formation: "442".to_string(),
             away_formation: "442".to_string(),
             config: json!({
-                "total_ticks": 4,
-                "half_ticks": 2,
-                "frame_interval": 1,
-                "runner_forced_actions": ["carry", "carry", "carry", "carry"],
-                "tackle_range": 160.0,
+                "total_ticks": 360,
+                "half_ticks": 180,
+                "frame_interval": 60,
+                "runner_forced_action": "carry",
                 "carry_error_divisor": 1_000_000_000.0,
                 "iq_noise_scale": 0.0,
                 "goal_noise_scale": 0.0
@@ -1067,20 +5061,19 @@ mod tests {
 
         assert!(
             !winning_ticks.is_empty(),
-            "scenario must exercise an attacker-won carry duel"
+            "scenario must exercise an attacker-won physical carry duel"
         );
-        for tick in winning_ticks {
-            let carried = entries.iter().any(|entry| {
-                entry.get("tick").and_then(serde_json::Value::as_i64) == Some(tick)
+        let continued_carry = winning_ticks.iter().any(|tick| {
+            entries.iter().any(|entry| {
+                entry.get("tick").and_then(serde_json::Value::as_i64) == Some(*tick)
                     && entry.get("type").and_then(serde_json::Value::as_str) == Some("action")
                     && entry.get("action").and_then(serde_json::Value::as_str) == Some("carry")
-                    && entry.get("from") != entry.get("pos")
-            });
-            assert!(
-                carried,
-                "attacker-won duel at tick {tick} must continue into a carry displacement"
-            );
-        }
+            })
+        });
+        assert!(
+            continued_carry,
+            "at least one attacker-won physical duel must continue into a carry action"
+        );
     }
 }
 
@@ -1202,8 +5195,12 @@ impl RunnerRng {
         if self.index >= 624 {
             self.twist();
         }
-        let mut y = self.mt[self.index];
+        let y = Self::temper_u32(self.mt[self.index]);
         self.index += 1;
+        y
+    }
+
+    fn temper_u32(mut y: u32) -> u32 {
         y ^= y >> 11;
         y ^= (y << 7) & 0x9d2c_5680;
         y ^= (y << 15) & 0xefc6_0000;
@@ -1269,6 +5266,29 @@ impl RunnerRng {
         self.gauss_next = Some(x2pi.sin() * g2rad);
         mu + z * sigma
     }
+
+    fn preview_randoms<const N: usize>(&self) -> [f64; N] {
+        let required_words = N.saturating_mul(2);
+        if self.index.saturating_add(required_words) <= self.mt.len() {
+            let mut index = self.index;
+            let mut values = [0.0; N];
+            for value in &mut values {
+                let a = (Self::temper_u32(self.mt[index]) >> 5) as u64;
+                index += 1;
+                let b = (Self::temper_u32(self.mt[index]) >> 6) as u64;
+                index += 1;
+                *value = ((a << 26) + b) as f64 / 9_007_199_254_740_992.0;
+            }
+            values
+        } else {
+            let mut preview = self.clone();
+            let mut values = [0.0; N];
+            for value in &mut values {
+                *value = preview.random();
+            }
+            values
+        }
+    }
 }
 
 fn iq_score_noises(
@@ -1302,6 +5322,22 @@ fn runner_goal_gaussians(
         vec![0.0; count]
     } else {
         (0..count).map(|_| rng.gauss(0.0, sigma)).collect()
+    }
+}
+
+fn runner_goal_gaussians_into(
+    rng: &mut RunnerRng,
+    input: &GoalSwitchCostInput,
+    goal_noise_scale: f64,
+    gaussians: &mut [f64],
+) {
+    let sigma = goal_noise_sigma(input, goal_noise_scale);
+    if sigma <= 0.0 {
+        gaussians.fill(0.0);
+        return;
+    }
+    for gaussian in gaussians {
+        *gaussian = rng.gauss(0.0, sigma);
     }
 }
 
@@ -1361,32 +5397,23 @@ fn select_runner_goal_with_noise(
     let noisy_advantage = advantage + switch_noise;
     if noisy_advantage > switch_cost {
         crate::GoalSelectionOutput {
-            selected: "candidate".to_string(),
+            selected: "candidate",
             switched: true,
             switch_cost,
             value_advantage: advantage,
             noisy_value_advantage: noisy_advantage,
-            reason: "candidate_clears_switch_cost".to_string(),
+            reason: "candidate_clears_switch_cost",
         }
     } else {
         crate::GoalSelectionOutput {
-            selected: "current".to_string(),
+            selected: "current",
             switched: false,
             switch_cost,
             value_advantage: advantage,
             noisy_value_advantage: noisy_advantage,
-            reason: "current_goal_within_switch_cost".to_string(),
+            reason: "current_goal_within_switch_cost",
         }
     }
-}
-
-fn random_attack_samples(rng: &mut RunnerRng, count: usize) -> Vec<RandomPolarSample> {
-    (0..count)
-        .map(|_| RandomPolarSample {
-            angle_unit: rng.random(),
-            radius_unit: rng.random(),
-        })
-        .collect()
 }
 
 fn random_defense_samples(rng: &mut RunnerRng, count: usize) -> Vec<DefenseRandomSample> {
@@ -1399,12 +5426,7 @@ fn random_defense_samples(rng: &mut RunnerRng, count: usize) -> Vec<DefenseRando
 }
 
 fn preview_randoms<const N: usize>(rng: &RunnerRng) -> [f64; N] {
-    let mut preview = rng.clone();
-    let mut values = [0.0; N];
-    for value in &mut values {
-        *value = preview.random();
-    }
-    values
+    rng.preview_randoms()
 }
 
 fn advance_randoms(rng: &mut RunnerRng, count: usize) {
@@ -1414,36 +5436,42 @@ fn advance_randoms(rng: &mut RunnerRng, count: usize) {
 }
 
 fn preview_next_random(rng: &RunnerRng) -> f64 {
-    let mut preview = rng.clone();
-    preview.random()
+    rng.preview_randoms::<1>()[0]
 }
 
 fn push_rng_trace(state: &mut RunnerMatchState, tick: i32, label: &str, rng: &RunnerRng) {
     if !state.rng_trace_enabled {
         return;
     }
-    state.trace_entries.push(json!({
-        "tick": tick,
-        "type": "event",
-        "event": "rng",
-        "label": label,
-        "draws": rng.draws,
-        "next": preview_next_random(rng),
-        "gauss_cached": rng.gauss_next.is_some()
-    }));
+    trace_entry!(
+        state,
+        json!({
+            "tick": tick,
+            "type": "event",
+            "event": "rng",
+            "label": label,
+            "draws": rng.draws,
+            "next": preview_next_random(rng),
+            "gauss_cached": rng.gauss_next.is_some()
+        })
+    );
 }
 
-fn push_rng_trace_for_player(
-    state: &mut RunnerMatchState,
+fn push_rng_trace_for_player_entries(
+    trace_entries: &mut Vec<serde_json::Value>,
+    trace_enabled: bool,
+    rng_trace_enabled: bool,
     tick: i32,
-    label: &str,
+    phase: &str,
+    player_idx: usize,
     player_name: &str,
     rng: &RunnerRng,
 ) {
-    if !state.rng_trace_enabled {
+    if !rng_trace_enabled || !trace_enabled {
         return;
     }
-    state.trace_entries.push(json!({
+    let label = format!("{phase}:{player_idx}");
+    trace_entries.push(json!({
         "tick": tick,
         "type": "event",
         "event": "rng",
@@ -1501,11 +5529,9 @@ fn runtime_config(config: &serde_json::Value) -> RunnerRuntimeConfig {
         pass_to_space_ball_speed: config_f64(config, "pass_to_space_ball_speed", 18.0),
         receive_reachability_scale: config_f64(config, "receive_reachability_scale", 1.0),
         space_creation_radius: config_f64(config, "space_creation_radius", 10.0),
-        pass_error_divisor: config_f64(config, "pass_error_divisor", 800.0),
         first_touch_error_divisor: config_f64(config, "first_touch_error_divisor", 700.0),
         carry_error_divisor: config_f64(config, "carry_error_divisor", 900.0),
         tackle_fail_stun_seconds: config_f64(config, "tackle_fail_stun_seconds", 1.5),
-        target_occupation_weight: config_f64(config, "target_occupation_weight", 0.18),
         runner_forced_action: config_string(config, "runner_forced_action"),
         runner_forced_actions: config
             .get("runner_forced_actions")
@@ -1749,37 +5775,48 @@ fn frame(
     away: &[RunnerPlayer],
     ball_pos: (f64, f64),
     ball_holder_idx: Option<usize>,
-    ball_team: Option<&str>,
+    ball_team: Option<&'static str>,
     score: (i32, i32),
     cut: Option<bool>,
-    ball_flight: serde_json::Value,
-    event_text: Option<&str>,
+    ball_flight: Option<RunnerReplayBallFlight>,
+    event_text: Option<&'static str>,
     pause_ms: Option<i32>,
-) -> serde_json::Value {
-    let player_goal_payload = |player: &RunnerPlayer| -> serde_json::Value {
-        player
-            .goal_type
-            .as_deref()
-            .map(|goal_type| json!(goal_type))
-            .unwrap_or(serde_json::Value::Null)
+) -> RunnerReplayFrame {
+    assert!(
+        home.len() == RUNNER_TEAM_SIZE && away.len() == RUNNER_TEAM_SIZE,
+        "replay frames require two eleven-player teams"
+    );
+    let player_positions = |players: &[RunnerPlayer]| {
+        std::array::from_fn(|idx| {
+            let player = &players[idx];
+            [round_one(player.pos.1), round_one(player.pos.0)]
+        })
     };
-    json!({
-        "type": "frame",
-        "t": round_one(tick as f64 * tick_duration),
-        "half": half,
-        "home": home.iter().map(|p| json!([round_one(p.pos.1), round_one(p.pos.0)])).collect::<Vec<_>>(),
-        "away": away.iter().map(|p| json!([round_one(p.pos.1), round_one(p.pos.0)])).collect::<Vec<_>>(),
-        "home_player_goals": home.iter().map(player_goal_payload).collect::<Vec<_>>(),
-        "away_player_goals": away.iter().map(player_goal_payload).collect::<Vec<_>>(),
-        "ball": [round_one(ball_pos.1), round_one(ball_pos.0)],
-        "ball_holder": ball_holder_idx.map(|idx| json!(idx)).unwrap_or(serde_json::Value::Null),
-        "ball_team": ball_team.map(|side| json!(side)).unwrap_or(serde_json::Value::Null),
-        "score": [score.0, score.1],
-        "ball_flight": ball_flight,
-        "event_text": event_text.map(|value| json!(value)).unwrap_or(serde_json::Value::Null),
-        "pause_ms": pause_ms.map(|value| json!(value)).unwrap_or(serde_json::Value::Null),
-        "cut": cut.map(|value| json!(value)).unwrap_or(serde_json::Value::Null)
-    })
+    let player_goals = |players: &[RunnerPlayer]| {
+        std::array::from_fn(|idx| {
+            players[idx]
+                .goal_type
+                .as_deref()
+                .map(RunnerReplayGoalText::from_player_goal)
+        })
+    };
+    RunnerReplayFrame {
+        entry_type: "frame",
+        t: round_one(tick as f64 * tick_duration),
+        half,
+        home: player_positions(home),
+        away: player_positions(away),
+        home_player_goals: player_goals(home),
+        away_player_goals: player_goals(away),
+        ball: [round_one(ball_pos.1), round_one(ball_pos.0)],
+        ball_holder: ball_holder_idx,
+        ball_team,
+        score: [score.0, score.1],
+        ball_flight,
+        event_text,
+        pause_ms,
+        cut,
+    }
 }
 
 fn ball_state_name(state: RunnerBallState) -> &'static str {
@@ -1791,20 +5828,20 @@ fn ball_state_name(state: RunnerBallState) -> &'static str {
     }
 }
 
-fn replay_ball_flight(flight: Option<&RunnerFlight>) -> serde_json::Value {
+fn replay_ball_flight(flight: Option<&RunnerFlight>) -> Option<RunnerReplayBallFlight> {
     let Some(flight) = flight else {
-        return serde_json::Value::Null;
+        return None;
     };
     let flight_type = match flight.kind {
         RunnerFlightKind::Pass => "pass",
         RunnerFlightKind::Clearance => "clear",
         RunnerFlightKind::Shot => "shot",
     };
-    json!({
-        "from": [round_one(flight.origin.1), round_one(flight.origin.0)],
-        "to": [round_one(flight.target.1), round_one(flight.target.0)],
-        "type": flight_type,
-        "on_target": flight.on_target,
+    Some(RunnerReplayBallFlight {
+        from: [round_one(flight.origin.1), round_one(flight.origin.0)],
+        to: [round_one(flight.target.1), round_one(flight.target.0)],
+        flight_type,
+        on_target: flight.on_target,
     })
 }
 
@@ -1815,11 +5852,11 @@ fn queue_replay_frame(
     home: &[RunnerPlayer],
     away: &[RunnerPlayer],
     config: &RunnerRuntimeConfig,
-    ball_flight: serde_json::Value,
-    event_text: Option<&str>,
+    ball_flight: Option<RunnerReplayBallFlight>,
+    event_text: Option<&'static str>,
     pause_ms: Option<i32>,
     ball_holder_idx: Option<usize>,
-    ball_team: Option<&str>,
+    ball_team: Option<&'static str>,
 ) {
     state.pending_replay_frames.push(frame(
         tick,
@@ -1843,11 +5880,39 @@ fn queue_replay_frame(
     ));
 }
 
+fn queue_restart_cut_frame(
+    state: &mut RunnerMatchState,
+    tick: i32,
+    half: i32,
+    home: &[RunnerPlayer],
+    away: &[RunnerPlayer],
+    config: &RunnerRuntimeConfig,
+) {
+    state.pending_replay_frames.push(frame(
+        tick,
+        config.tick_duration,
+        half,
+        home,
+        away,
+        state.ball.position,
+        state.ball.holder_idx,
+        state
+            .ball
+            .holder_team_home
+            .map(|home| if home { "home" } else { "away" }),
+        (state.home_score, state.away_score),
+        Some(true),
+        None,
+        None,
+        None,
+    ));
+}
+
 fn sample_player_positions(players: &mut [RunnerPlayer]) {
     for player in players {
         player
             .position_samples
-            .push(json!([round_one(player.pos.0), round_one(player.pos.1)]));
+            .push([round_one(player.pos.0), round_one(player.pos.1)]);
     }
 }
 
@@ -1928,7 +5993,7 @@ fn team_ratings(players: &[RunnerPlayer], team_conceded: i32) -> Vec<serde_json:
 fn player_stat_skeleton(
     players: &[RunnerPlayer],
     _team_home: bool,
-    _pass_network: &HashMap<String, i32>,
+    _pass_network: &RunnerPassNetwork,
 ) -> Vec<serde_json::Value> {
     players
         .iter()
@@ -2221,52 +6286,58 @@ fn update_team_phases(state: &mut RunnerMatchState, config: &RunnerRuntimeConfig
     state.away_ticks_since_possession_change = away_update.ticks_since_possession_change;
 }
 
-fn execution_opponents(players: &[RunnerPlayer]) -> Vec<ExecutionOpponent> {
-    players
-        .iter()
-        .map(|player| ExecutionOpponent {
+fn execution_opponents_into(
+    players: &[RunnerPlayer],
+    output: &mut [ExecutionOpponent; RUNNER_TEAM_SIZE],
+) -> usize {
+    assert!(
+        players.len() <= RUNNER_TEAM_SIZE,
+        "execution opponents expect eleven-player teams"
+    );
+    for (index, player) in players.iter().enumerate() {
+        output[index] = ExecutionOpponent {
             pos: player.pos,
             is_goalkeeper: player.position == "GK",
-        })
-        .collect()
+        };
+    }
+    players.len()
 }
 
-fn arrival_players(
+fn runner_contacting_player_index(
+    players: &[RunnerPlayer],
+    excluded_idx: Option<usize>,
+    ball_pos: (f64, f64),
+    control_radius: f64,
+) -> Option<usize> {
+    players
+        .iter()
+        .enumerate()
+        .filter(|(index, player)| {
+            Some(*index) != excluded_idx
+                && player.state != "stunned"
+                && distance(player.pos, ball_pos) <= control_radius
+        })
+        .min_by(|(_, left), (_, right)| {
+            distance(left.pos, ball_pos)
+                .partial_cmp(&distance(right.pos, ball_pos))
+                .unwrap_or(std::cmp::Ordering::Equal)
+        })
+        .map(|(index, _)| index)
+}
+
+fn runner_intended_receiver_contacting_player_index(
     players: &[RunnerPlayer],
     passer_idx: usize,
     intended_receiver_idx: Option<usize>,
-) -> Vec<ArrivalPlayerInput> {
-    players
-        .iter()
-        .enumerate()
-        .map(|(idx, player)| ArrivalPlayerInput {
-            index: idx,
-            pos: player.pos,
-            target_pos: player.target_pos,
-            current_goal_pos: player.goal_type.as_ref().map(|_| player.goal_target),
-            speed: player.speed.round() as i32,
-            is_passer: idx == passer_idx,
-            is_intended: intended_receiver_idx == Some(idx),
-            is_passer_team: true,
-        })
-        .collect()
-}
-
-fn opponent_arrival_players(players: &[RunnerPlayer]) -> Vec<ArrivalPlayerInput> {
-    players
-        .iter()
-        .enumerate()
-        .map(|(idx, player)| ArrivalPlayerInput {
-            index: idx,
-            pos: player.pos,
-            target_pos: player.target_pos,
-            current_goal_pos: player.goal_type.as_ref().map(|_| player.goal_target),
-            speed: player.speed.round() as i32,
-            is_passer: false,
-            is_intended: false,
-            is_passer_team: false,
-        })
-        .collect()
+    ball_pos: (f64, f64),
+    control_radius: f64,
+) -> Option<usize> {
+    let receiver_idx = intended_receiver_idx?;
+    let receiver = players.get(receiver_idx)?;
+    (receiver_idx != passer_idx
+        && receiver.state != "stunned"
+        && distance(receiver.pos, ball_pos) <= control_radius)
+        .then_some(receiver_idx)
 }
 
 fn clearance_players(players: &[RunnerPlayer]) -> Vec<ClearancePlayerInput> {
@@ -2280,11 +6351,16 @@ fn clearance_players(players: &[RunnerPlayer]) -> Vec<ClearancePlayerInput> {
         .collect()
 }
 
-fn contested_target_players(players: &[RunnerPlayer]) -> Vec<ContestedTargetPlayerInput> {
-    players
-        .iter()
-        .enumerate()
-        .map(|(idx, player)| ContestedTargetPlayerInput {
+fn contested_target_players_into(
+    players: &[RunnerPlayer],
+    output: &mut [ContestedTargetPlayerInput; RUNNER_TEAM_SIZE],
+) -> usize {
+    assert!(
+        players.len() <= RUNNER_TEAM_SIZE,
+        "contested target players exceed team size"
+    );
+    for (idx, player) in players.iter().enumerate() {
+        output[idx] = ContestedTargetPlayerInput {
             index: idx,
             pos: player.pos,
             tactical_anchor: player.tactical_anchor,
@@ -2292,8 +6368,22 @@ fn contested_target_players(players: &[RunnerPlayer]) -> Vec<ContestedTargetPlay
             is_stunned: player.state == "stunned",
             speed: player.speed.round() as i32,
             iq: player.iq,
-        })
-        .collect()
+        };
+    }
+    players.len()
+}
+
+fn runner_single_active_indices(
+    active_index: usize,
+    player_count: usize,
+) -> [bool; RUNNER_TEAM_SIZE] {
+    assert!(
+        player_count <= RUNNER_TEAM_SIZE && active_index < player_count,
+        "active player index exceeds team size"
+    );
+    let mut active_indices = [false; RUNNER_TEAM_SIZE];
+    active_indices[active_index] = true;
+    active_indices
 }
 
 fn give_ball(state: &mut RunnerMatchState, idx: usize, team_home: bool, pos: (f64, f64)) {
@@ -2304,6 +6394,7 @@ fn give_ball(state: &mut RunnerMatchState, idx: usize, team_home: bool, pos: (f6
     state.ball.flight = None;
     state.ball.loose_velocity = (0.0, 0.0);
     state.ball.contested_ticks = 0;
+    state.action_commitment = None;
 }
 
 fn give_ball_to_player(
@@ -2314,8 +6405,20 @@ fn give_ball_to_player(
     team_home: bool,
     pos: (f64, f64),
     receive_origin: Option<(f64, f64)>,
+    home_attacking_right: bool,
+    config: &RunnerRuntimeConfig,
 ) {
     let possession_changed = possession_team_changes(state.possession_team_home, team_home);
+    let controller_changed = !matches!(
+        (state.ball.holder_idx, state.ball.holder_team_home),
+        (Some(previous_idx), Some(previous_home))
+            if previous_idx == idx && previous_home == team_home
+    );
+    let previous_control = if possession_changed || controller_changed || receive_origin.is_none() {
+        PossessionControlState::default()
+    } else {
+        state.ball.control
+    };
     if possession_changed {
         state.possession_id += 1;
         state.possession_team_home = Some(team_home);
@@ -2326,35 +6429,74 @@ fn give_ball_to_player(
     {
         if prev_home {
             if let Some(player) = home.get_mut(prev_idx) {
-                player.state = "off_ball".to_string();
+                update_runner_text(&mut player.state, "off_ball");
                 clear_player_goal(player);
             }
         } else if let Some(player) = away.get_mut(prev_idx) {
-            player.state = "off_ball".to_string();
+            update_runner_text(&mut player.state, "off_ball");
             clear_player_goal(player);
         }
     }
     let mut ball_pos = pos;
+    let mut arrival_heading = receive_origin
+        .map(|origin| angle_between_points(pos, origin))
+        .unwrap_or(0.0);
     if team_home {
         if let Some(player) = home.get_mut(idx) {
-            player.state = "on_ball".to_string();
+            update_runner_text(&mut player.state, "on_ball");
             player.hold_ticks = 0;
             player.possession_ticks = 0;
             player.consecutive_carries = 0;
             player.last_receive_origin = receive_origin.unwrap_or(player.pos);
             ball_pos = player.pos;
+            arrival_heading = receive_origin
+                .map(|origin| angle_between_points(ball_pos, origin))
+                .unwrap_or(player.facing_direction);
             clear_player_goal(player);
         }
     } else if let Some(player) = away.get_mut(idx) {
-        player.state = "on_ball".to_string();
+        update_runner_text(&mut player.state, "on_ball");
         player.hold_ticks = 0;
         player.possession_ticks = 0;
         player.consecutive_carries = 0;
         player.last_receive_origin = receive_origin.unwrap_or(player.pos);
         ball_pos = player.pos;
+        arrival_heading = receive_origin
+            .map(|origin| angle_between_points(ball_pos, origin))
+            .unwrap_or(player.facing_direction);
         clear_player_goal(player);
     }
     give_ball(state, idx, team_home, ball_pos);
+    let (controlling_players, defending_players) = if team_home {
+        (&*home, &*away)
+    } else {
+        (&*away, &*home)
+    };
+    let ownership_continuity = if possession_changed || controller_changed {
+        0.0
+    } else if receive_origin.is_some() {
+        1.0
+    } else {
+        0.0
+    };
+    state.ball.control = runner_live_control_transition(
+        previous_control,
+        idx,
+        ball_pos,
+        controlling_players,
+        defending_players,
+        attacking_right_for(team_home, home_attacking_right),
+        arrival_heading,
+        ownership_continuity,
+        0.0,
+        receive_origin.map(|_| 1).unwrap_or(0),
+        receive_origin
+            .map(|origin| distance(origin, ball_pos))
+            .unwrap_or(0.0),
+        None,
+        config.pitch_length,
+        config.pitch_width,
+    );
 }
 
 fn tick_player_stun(player: &mut RunnerPlayer) {
@@ -2397,6 +6539,7 @@ fn set_dead_ball(
     state.ball.holder_team_home = None;
     state.ball.flight = None;
     state.ball.loose_velocity = (0.0, 0.0);
+    state.action_commitment = None;
     state.dead_reason = Some(reason.to_string());
     state.restart_team_home = Some(restart_team_home);
     state.restart_ticks_remaining = restart_ticks.max(0);
@@ -2424,6 +6567,7 @@ fn set_contested(state: &mut RunnerMatchState, pos: (f64, f64), loose_velocity: 
     state.ball.flight = None;
     state.ball.loose_velocity = loose_velocity;
     state.ball.contested_ticks = 0;
+    state.action_commitment = None;
 }
 
 fn set_contested_and_clear_goals(
@@ -2484,11 +6628,7 @@ fn carry_target(
 ) -> (f64, f64) {
     let dir = if attacking_right { 1.0 } else { -1.0 };
     let center_pull = (config.pitch_width / 2.0 - holder.pos.1).clamp(-4.0, 4.0);
-    pitch_clamp(
-        (holder.pos.0 + dir * 12.0, holder.pos.1 + center_pull * 0.35),
-        config.pitch_length,
-        config.pitch_width,
-    )
+    (holder.pos.0 + dir * 12.0, holder.pos.1 + center_pull * 0.35)
 }
 
 fn clear_target(
@@ -2536,102 +6676,1916 @@ fn choose_pass_receiver(
     best.map(|(idx, _)| idx)
 }
 
-fn opponent_positions(players: &[RunnerPlayer]) -> Vec<(f64, f64)> {
-    players
-        .iter()
-        .filter(|player| player.position != "GK")
-        .map(|player| player.pos)
-        .collect()
+fn opposing_goalkeeper_context(
+    opponents: &[RunnerPlayer],
+    config: &RunnerRuntimeConfig,
+) -> (GkSaveAttributes, Option<(f64, f64)>) {
+    let goalkeeper = opponents.iter().find(|player| player.position == "GK");
+    (
+        GkSaveAttributes {
+            gk_saving: goalkeeper.map(|player| player.gk_saving).unwrap_or(50.0),
+            gk_positioning: goalkeeper
+                .map(|player| player.gk_positioning)
+                .unwrap_or(50.0),
+            gk_reaction: goalkeeper.map(|player| player.gk_reaction).unwrap_or(50.0),
+            gk_position_error_factor: config.gk_position_error_factor,
+            gk_reaction_delay_factor: config.gk_reaction_delay_factor,
+            gk_save_base: config.gk_save_base,
+        },
+        goalkeeper.map(|player| player.pos),
+    )
 }
 
-fn teammate_positions(players: &[RunnerPlayer], holder_idx: usize) -> Vec<(usize, f64, f64)> {
-    players
-        .iter()
-        .enumerate()
-        .filter(|(idx, _)| *idx != holder_idx)
-        .map(|(idx, player)| (idx, player.pos.0, player.pos.1))
-        .collect()
+fn runner_live_control_transition(
+    previous: PossessionControlState,
+    controller_idx: usize,
+    controller_pos: (f64, f64),
+    controlling_players: &[RunnerPlayer],
+    defending_players: &[RunnerPlayer],
+    attacking_right: bool,
+    arrival_heading: f64,
+    ownership_continuity: f64,
+    contact_load: f64,
+    settling_ticks: i32,
+    movement_distance: f64,
+    turn_target: Option<f64>,
+    pitch_length: f64,
+    pitch_width: f64,
+) -> PossessionControlState {
+    assert!(
+        controlling_players.len() <= RUNNER_TEAM_SIZE
+            && defending_players.len() <= RUNNER_TEAM_SIZE,
+        "live control transition expects eleven-player teams"
+    );
+    let mut controlling_positions = [(0, 0.0, 0.0); RUNNER_TEAM_SIZE];
+    let mut teammate_goalkeeper_indices = [0; RUNNER_TEAM_SIZE];
+    let mut teammate_goalkeeper_count = 0;
+    for (index, player) in controlling_players.iter().enumerate() {
+        controlling_positions[index] = (index, player.pos.0, player.pos.1);
+        if player.position == "GK" {
+            teammate_goalkeeper_indices[teammate_goalkeeper_count] = index;
+            teammate_goalkeeper_count += 1;
+        }
+    }
+    let mut opponent_positions = [(0.0, 0.0); RUNNER_TEAM_SIZE];
+    let mut opponent_count = 0;
+    for player in defending_players {
+        if player.position != "GK" {
+            opponent_positions[opponent_count] = player.pos;
+            opponent_count += 1;
+        }
+    }
+    crate::transition_possession_control(&PossessionControlTransitionInput {
+        previous,
+        observation: PossessionControlObservation {
+            controller_index: controller_idx,
+            controller_pos,
+            teammate_positions: &controlling_positions[..controlling_players.len()],
+            teammate_goalkeeper_indices: &teammate_goalkeeper_indices[..teammate_goalkeeper_count],
+            opponent_positions: &opponent_positions[..opponent_count],
+            pitch_length,
+            pitch_width,
+            attacking_right,
+        },
+        arrival_heading,
+        ownership_continuity,
+        contact_load,
+        settling_ticks,
+        movement_distance,
+        turn_target,
+    })
 }
 
-fn all_teammate_positions(players: &[RunnerPlayer]) -> Vec<(usize, f64, f64)> {
-    players
-        .iter()
-        .enumerate()
-        .map(|(idx, player)| (idx, player.pos.0, player.pos.1))
-        .collect()
+const RUNNER_TEAM_SIZE: usize = 11;
+type RunnerPassNetwork = [[[i32; RUNNER_TEAM_SIZE]; RUNNER_TEAM_SIZE]; 2];
+const RUNNER_DEFENSE_RANDOM_SAMPLE_COUNT: usize = 3;
+const RUNNER_MAX_CARRY_CANDIDATES: usize = MAX_CARRY_TARGET_OFFSETS;
+const RUNNER_MAX_PASS_CANDIDATES: usize = (RUNNER_TEAM_SIZE - 1) * MAX_PASS_CANDIDATES_PER_RECEIVER;
+const RUNNER_MAX_HELD_ACTIONS: usize = RUNNER_MAX_CARRY_CANDIDATES + RUNNER_MAX_PASS_CANDIDATES + 4;
+const RUNNER_MAX_CARRY_RESPONSE_SEGMENTS: usize = 4;
+const RUNNER_MAX_SPECIALIZED_GOALS: usize = 9;
+const RUNNER_EMPTY_SECOND_BALL_PLAYER: SecondBallPlayerInput = SecondBallPlayerInput {
+    pos: (0.0, 0.0),
+    projected_pos: (0.0, 0.0),
+    speed: 0.0,
+};
+const RUNNER_EMPTY_DEFENDER_ACTION: DefenderActionInput = DefenderActionInput {
+    index: 0,
+    pos: (0.0, 0.0),
+    new_pos: (0.0, 0.0),
+    action: "hold_position",
+    speed: 0.0,
+    defence: 0.0,
+    tackling: 0.0,
+    is_goalkeeper: false,
+};
+
+#[derive(Clone, Copy, Debug)]
+struct RunnerDefenderPhase1Inputs {
+    inputs: [DefenderActionInput; RUNNER_TEAM_SIZE],
+    snapshots: [RunnerDefenderMotionSnapshot; RUNNER_TEAM_SIZE],
+    count: usize,
 }
 
-fn teammate_goalkeeper_indices(players: &[RunnerPlayer]) -> Vec<usize> {
-    players
-        .iter()
-        .enumerate()
-        .filter(|(_, player)| player.position == "GK")
-        .map(|(idx, _)| idx)
-        .collect()
+#[derive(Clone, Copy, Debug)]
+struct RunnerDefenderMotionSnapshot {
+    pos: (f64, f64),
+    target_pos: (f64, f64),
+    tactical_anchor: (f64, f64),
+    velocity: (f64, f64),
+    speed_ability: i32,
+    state_code: u8,
+    action: &'static str,
+    next_velocity: (f64, f64),
+    distance_covered: f64,
+    facing_direction: Option<f64>,
 }
 
-fn teammate_xy_positions(players: &[RunnerPlayer], holder_idx: usize) -> Vec<(f64, f64)> {
-    players
-        .iter()
-        .enumerate()
-        .filter(|(idx, _)| *idx != holder_idx)
-        .map(|(_, player)| player.pos)
-        .collect()
+const RUNNER_EMPTY_DEFENDER_MOTION_SNAPSHOT: RunnerDefenderMotionSnapshot =
+    RunnerDefenderMotionSnapshot {
+        pos: (0.0, 0.0),
+        target_pos: (0.0, 0.0),
+        tactical_anchor: (0.0, 0.0),
+        velocity: (0.0, 0.0),
+        speed_ability: 0,
+        state_code: 0,
+        action: "hold_position",
+        next_velocity: (0.0, 0.0),
+        distance_covered: 0.0,
+        facing_direction: None,
+    };
+
+impl RunnerDefenderPhase1Inputs {
+    fn empty() -> Self {
+        Self {
+            inputs: [RUNNER_EMPTY_DEFENDER_ACTION; RUNNER_TEAM_SIZE],
+            snapshots: [RUNNER_EMPTY_DEFENDER_MOTION_SNAPSHOT; RUNNER_TEAM_SIZE],
+            count: 0,
+        }
+    }
+
+    fn as_slice(&self) -> &[DefenderActionInput] {
+        &self.inputs[..self.count]
+    }
+}
+
+impl std::ops::Deref for RunnerDefenderPhase1Inputs {
+    type Target = [DefenderActionInput];
+
+    fn deref(&self) -> &Self::Target {
+        self.as_slice()
+    }
+}
+
+#[derive(Clone, Copy, Debug)]
+struct RunnerSecondBallInputs {
+    attacking: [SecondBallPlayerInput; RUNNER_TEAM_SIZE],
+    attacking_count: usize,
+    defending: [SecondBallPlayerInput; RUNNER_TEAM_SIZE],
+    defending_count: usize,
+}
+
+impl RunnerSecondBallInputs {
+    fn empty() -> Self {
+        Self {
+            attacking: [RUNNER_EMPTY_SECOND_BALL_PLAYER; RUNNER_TEAM_SIZE],
+            attacking_count: 0,
+            defending: [RUNNER_EMPTY_SECOND_BALL_PLAYER; RUNNER_TEAM_SIZE],
+            defending_count: 0,
+        }
+    }
+
+    fn clear(&mut self) {
+        self.attacking_count = 0;
+        self.defending_count = 0;
+    }
+
+    fn prepare_projected_players(
+        &mut self,
+        attacking_players: &[RunnerPlayer],
+        defending_players: &[RunnerPlayer],
+        config: &RunnerRuntimeConfig,
+    ) {
+        assert!(
+            attacking_players.len() <= RUNNER_TEAM_SIZE
+                && defending_players.len() <= RUNNER_TEAM_SIZE,
+            "projected second-ball control expects eleven-player teams"
+        );
+        self.clear();
+        for player in attacking_players {
+            if player.position == "GK" || player.state == "stunned" {
+                continue;
+            }
+            self.attacking[self.attacking_count] = SecondBallPlayerInput {
+                pos: player.pos,
+                projected_pos: player.pos,
+                speed: player_speed(
+                    player.speed.round() as i32,
+                    config.player_max_speed,
+                    config.player_min_speed,
+                ),
+            };
+            self.attacking_count += 1;
+        }
+        for player in defending_players {
+            if player.position == "GK" || player.state == "stunned" {
+                continue;
+            }
+            self.defending[self.defending_count] = SecondBallPlayerInput {
+                pos: player.pos,
+                projected_pos: player.pos,
+                speed: player_speed(
+                    player.speed.round() as i32,
+                    config.player_max_speed,
+                    config.player_min_speed,
+                ),
+            };
+            self.defending_count += 1;
+        }
+    }
+
+    fn from_players(
+        attacking_players: &[RunnerPlayer],
+        defending_players: &[RunnerPlayer],
+        config: &RunnerRuntimeConfig,
+    ) -> Self {
+        assert!(
+            attacking_players.len() <= RUNNER_TEAM_SIZE
+                && defending_players.len() <= RUNNER_TEAM_SIZE,
+            "second-ball control expects eleven-player teams"
+        );
+        let mut inputs = Self::empty();
+        for player in attacking_players {
+            if player.position == "GK" || player.state == "stunned" {
+                continue;
+            }
+            inputs.attacking[inputs.attacking_count] =
+                runner_second_ball_player_input(player, config);
+            inputs.attacking_count += 1;
+        }
+        for player in defending_players {
+            if player.position == "GK" || player.state == "stunned" {
+                continue;
+            }
+            inputs.defending[inputs.defending_count] =
+                runner_second_ball_player_input(player, config);
+            inputs.defending_count += 1;
+        }
+        inputs
+    }
+
+    #[cfg(test)]
+    fn from_projected_positions(
+        attacking_players: &[RunnerPlayer],
+        defending_players: &[RunnerPlayer],
+        projected_attackers: &[(usize, f64, f64)],
+        projected_defenders: &[(usize, f64, f64)],
+        config: &RunnerRuntimeConfig,
+    ) -> Self {
+        let mut inputs = Self::empty();
+        inputs.prepare_projected_positions(
+            attacking_players,
+            defending_players,
+            projected_attackers,
+            projected_defenders,
+            config,
+        );
+        inputs
+    }
+
+    #[cfg(test)]
+    fn prepare_projected_positions(
+        &mut self,
+        attacking_players: &[RunnerPlayer],
+        defending_players: &[RunnerPlayer],
+        projected_attackers: &[(usize, f64, f64)],
+        projected_defenders: &[(usize, f64, f64)],
+        config: &RunnerRuntimeConfig,
+    ) {
+        assert!(
+            attacking_players.len() <= RUNNER_TEAM_SIZE
+                && defending_players.len() <= RUNNER_TEAM_SIZE,
+            "projected second-ball control expects eleven-player teams"
+        );
+        self.prepare_projected_players(attacking_players, defending_players, config);
+        self.refresh_projected_positions(
+            attacking_players,
+            defending_players,
+            projected_attackers,
+            projected_defenders,
+        );
+    }
+
+    fn refresh_projected_positions(
+        &mut self,
+        attacking_players: &[RunnerPlayer],
+        defending_players: &[RunnerPlayer],
+        projected_attackers: &[(usize, f64, f64)],
+        projected_defenders: &[(usize, f64, f64)],
+    ) {
+        assert!(
+            attacking_players.len() <= RUNNER_TEAM_SIZE
+                && defending_players.len() <= RUNNER_TEAM_SIZE,
+            "projected second-ball control expects eleven-player teams"
+        );
+        let mut attacking_count = 0;
+        for (index, player) in attacking_players.iter().enumerate() {
+            if player.position == "GK" || player.state == "stunned" {
+                continue;
+            }
+            self.attacking[attacking_count].projected_pos =
+                projected_position(projected_attackers, index, player.pos);
+            attacking_count += 1;
+        }
+        assert_eq!(
+            attacking_count, self.attacking_count,
+            "projected second-ball attacker snapshot must preserve player membership"
+        );
+        let mut defending_count = 0;
+        for (index, player) in defending_players.iter().enumerate() {
+            if player.position == "GK" || player.state == "stunned" {
+                continue;
+            }
+            self.defending[defending_count].projected_pos =
+                projected_position(projected_defenders, index, player.pos);
+            defending_count += 1;
+        }
+        assert_eq!(
+            defending_count, self.defending_count,
+            "projected second-ball defender snapshot must preserve player membership"
+        );
+    }
+
+    fn estimate(
+        &self,
+        ball_pos: (f64, f64),
+        config: &RunnerRuntimeConfig,
+    ) -> SecondBallControlEstimate {
+        estimate_second_ball_control(&SecondBallControlInput {
+            ball_pos,
+            contest_radius: config.contest_radius,
+            attacking_players: &self.attacking[..self.attacking_count],
+            defending_players: &self.defending[..self.defending_count],
+        })
+    }
+}
+
+#[derive(Clone, Copy, Debug)]
+struct RunnerCarryDefenderResponses {
+    segments: [[DefenderActionInput; RUNNER_TEAM_SIZE]; RUNNER_MAX_CARRY_RESPONSE_SEGMENTS],
+    segment_count: usize,
+    defender_count: usize,
+}
+
+const RUNNER_EMPTY_CARRY_DEFENDER_RESPONSES: RunnerCarryDefenderResponses =
+    RunnerCarryDefenderResponses {
+        segments: [[RUNNER_EMPTY_DEFENDER_ACTION; RUNNER_TEAM_SIZE];
+            RUNNER_MAX_CARRY_RESPONSE_SEGMENTS],
+        segment_count: 0,
+        defender_count: 0,
+    };
+
+const RUNNER_EMPTY_FIXED_DEFENSE_TEAMMATE: DefenseTeammateInput = DefenseTeammateInput {
+    pos: (0.0, 0.0),
+    target_pos: (0.0, 0.0),
+    anchor: (0.0, 0.0),
+};
+
+const RUNNER_EMPTY_FIXED_DEFENSE_CANDIDATE: TeamDefenseCandidate = TeamDefenseCandidate {
+    target: (0.0, 0.0),
+    projected_pos: (0.0, 0.0),
+    local_value: 0.0,
+    residual_threat: 1.0,
+    pressure_coverage: 0.0,
+    task_kind: DefenseTaskKind::RecoverShape,
+};
+
+const RUNNER_EMPTY_FIXED_DEFENSE_ASSIGNMENT: TeamDefenseAssignment = TeamDefenseAssignment {
+    index: 0,
+    candidate_index: 0,
+    local_value: 0.0,
+    residual_threat: 1.0,
+};
+
+const RUNNER_EMPTY_DEFENSE_RANDOM_SAMPLE: DefenseRandomSample = DefenseRandomSample {
+    angle_unit: 0.0,
+    radius_unit: 0.0,
+};
+
+const RUNNER_EMPTY_OFF_BALL_ATTACK_TEAMMATE: OffBallTeammateInput = OffBallTeammateInput {
+    index: 0,
+    pos: (0.0, 0.0),
+    target_pos: (0.0, 0.0),
+    tactical_anchor: (0.0, 0.0),
+    is_goalkeeper: false,
+};
+
+const RUNNER_EMPTY_OFF_BALL_ATTACK_CANDIDATE: OffBallAttackCandidateInput =
+    OffBallAttackCandidateInput {
+        pos: (0.0, 0.0),
+        anchor_pos: (0.0, 0.0),
+    };
+
+const RUNNER_EMPTY_OFF_BALL_ATTACK_SCORED: OffBallAttackCandidateOutput =
+    OffBallAttackCandidateOutput {
+        score: 0.0,
+        target: (0.0, 0.0),
+        pv: 0.0,
+        reach: 0.0,
+        movement_reach: 0.0,
+        immediate_reach: 0.0,
+        pass_feasibility: 0.0,
+        space_bonus: 0.0,
+        role_shape_factor: 0.0,
+        team_structure_factor: 0.0,
+        role_overlap_factor: 0.0,
+        role_overlap: 0.0,
+        lane_factor: 0.0,
+        offside_penalty: 0.0,
+        support_angle_value: 0.0,
+        inside_support: 0.0,
+        second_line_support: 0.0,
+        arrival_goal_fit: 0.0,
+        arrival_goal_multiplier: 0.0,
+        arrival_goal_bonus: 0.0,
+        layoff_window: 0.0,
+        candidate_progress: 0.0,
+        candidate_width: 0.0,
+        support_angle_dist: 0.0,
+        dist_to_ball: 0.0,
+    };
+
+const RUNNER_EMPTY_OFF_BALL_ATTACK_SAMPLE: RandomPolarSample = RandomPolarSample {
+    angle_unit: 0.0,
+    radius_unit: 0.0,
+};
+
+#[derive(Clone, Debug)]
+struct RunnerOffBallAttackTeamContext {
+    teammates: [OffBallTeammateInput; RUNNER_TEAM_SIZE],
+    teammate_xy_all: [(f64, f64); RUNNER_TEAM_SIZE],
+}
+
+impl RunnerOffBallAttackTeamContext {
+    fn new() -> Self {
+        Self {
+            teammates: [RUNNER_EMPTY_OFF_BALL_ATTACK_TEAMMATE; RUNNER_TEAM_SIZE],
+            teammate_xy_all: [(0.0, 0.0); RUNNER_TEAM_SIZE],
+        }
+    }
+
+    fn refresh(&mut self, players: &[RunnerPlayer]) {
+        assert!(
+            players.len() <= RUNNER_TEAM_SIZE,
+            "off-ball attack team context expects eleven-player teams"
+        );
+        for (index, player) in players.iter().enumerate() {
+            self.update_player(index, player);
+        }
+    }
+
+    fn update_player(&mut self, index: usize, player: &RunnerPlayer) {
+        assert!(
+            index < RUNNER_TEAM_SIZE,
+            "off-ball attack team context index exceeds team size"
+        );
+        self.teammates[index] = OffBallTeammateInput {
+            index,
+            pos: player.pos,
+            target_pos: player.target_pos,
+            tactical_anchor: player.tactical_anchor,
+            is_goalkeeper: player.position == "GK",
+        };
+        self.teammate_xy_all[index] = player.pos;
+    }
+}
+
+#[derive(Clone, Debug)]
+struct RunnerOffBallAttackArena {
+    team_context: RunnerOffBallAttackTeamContext,
+    candidates: [OffBallAttackCandidateInput; MAX_FIXED_OFF_BALL_ATTACK_CANDIDATES],
+    noises: [f64; MAX_FIXED_OFF_BALL_ATTACK_CHOICES],
+    scored: [OffBallAttackCandidateOutput; MAX_FIXED_OFF_BALL_ATTACK_CANDIDATES],
+    selection_scores: [f64; MAX_FIXED_OFF_BALL_ATTACK_CHOICES],
+    anchor_samples: [RandomPolarSample; 8],
+    support_samples: [RandomPolarSample; 5],
+    arrival_goals: [(&'static str, (f64, f64), f64); 2],
+    arrival_values: [f64; 2],
+    arrival_gaussians: [f64; 2],
+}
+
+impl RunnerOffBallAttackArena {
+    fn new() -> Self {
+        Self {
+            team_context: RunnerOffBallAttackTeamContext::new(),
+            candidates: [RUNNER_EMPTY_OFF_BALL_ATTACK_CANDIDATE;
+                MAX_FIXED_OFF_BALL_ATTACK_CANDIDATES],
+            noises: [0.0; MAX_FIXED_OFF_BALL_ATTACK_CHOICES],
+            scored: [RUNNER_EMPTY_OFF_BALL_ATTACK_SCORED;
+                MAX_FIXED_OFF_BALL_ATTACK_CANDIDATES],
+            selection_scores: [0.0; MAX_FIXED_OFF_BALL_ATTACK_CHOICES],
+            anchor_samples: [RUNNER_EMPTY_OFF_BALL_ATTACK_SAMPLE; 8],
+            support_samples: [RUNNER_EMPTY_OFF_BALL_ATTACK_SAMPLE; 5],
+            arrival_goals: [("", (0.0, 0.0), 0.0); 2],
+            arrival_values: [0.0; 2],
+            arrival_gaussians: [0.0; 2],
+        }
+    }
+}
+
+const RUNNER_EMPTY_TEAM_PLAN_PLAYER: TeamPlanPlayerInput = TeamPlanPlayerInput {
+    pos: (0.0, 0.0),
+    is_goalkeeper: false,
+};
+
+const RUNNER_EMPTY_TEAM_PLAN_OPPONENT: TeamPlanOpponentInput = TeamPlanOpponentInput {
+    pos: (0.0, 0.0),
+    is_goalkeeper: false,
+};
+
+#[derive(Clone, Debug)]
+struct RunnerTeamPlanArena {
+    home_players: [TeamPlanPlayerInput; RUNNER_TEAM_SIZE],
+    away_players: [TeamPlanPlayerInput; RUNNER_TEAM_SIZE],
+    home_opponents: [TeamPlanOpponentInput; RUNNER_TEAM_SIZE],
+    away_opponents: [TeamPlanOpponentInput; RUNNER_TEAM_SIZE],
+}
+
+impl RunnerTeamPlanArena {
+    fn new() -> Self {
+        Self {
+            home_players: [RUNNER_EMPTY_TEAM_PLAN_PLAYER; RUNNER_TEAM_SIZE],
+            away_players: [RUNNER_EMPTY_TEAM_PLAN_PLAYER; RUNNER_TEAM_SIZE],
+            home_opponents: [RUNNER_EMPTY_TEAM_PLAN_OPPONENT; RUNNER_TEAM_SIZE],
+            away_opponents: [RUNNER_EMPTY_TEAM_PLAN_OPPONENT; RUNNER_TEAM_SIZE],
+        }
+    }
+}
+
+const RUNNER_EMPTY_TEAM_SHAPE_PLAYER: TeamShapePlayerInput = TeamShapePlayerInput {
+    index: 0,
+    base_pos: (0.0, 0.0),
+    is_goalkeeper: false,
+};
+
+const RUNNER_EMPTY_TEAM_SHAPE_OPPONENT: TeamShapeOpponentInput = TeamShapeOpponentInput {
+    pos: (0.0, 0.0),
+    is_goalkeeper: false,
+};
+
+const RUNNER_EMPTY_TEAM_SHAPE_OUTPUT: TeamShapePlayerOutput = TeamShapePlayerOutput {
+    index: 0,
+    tactical_anchor: (0.0, 0.0),
+};
+
+const RUNNER_EMPTY_TEAM_PLAN_PROJECTION_PLAYER: TeamPlanProjectionPlayerInput =
+    TeamPlanProjectionPlayerInput {
+        index: 0,
+        pos: (0.0, 0.0),
+        velocity: (0.0, 0.0),
+        target_pos: (0.0, 0.0),
+        tactical_anchor: (0.0, 0.0),
+        speed_ability: 0,
+        desired_speed: 0.0,
+        acceleration_scale: 1.0,
+        is_mobile: false,
+    };
+
+const RUNNER_EMPTY_TEAM_PLAN_PROJECTION_OUTPUT: TeamPlanProjectionPlayerOutput =
+    TeamPlanProjectionPlayerOutput {
+        index: 0,
+        pos: (0.0, 0.0),
+        velocity: (0.0, 0.0),
+    };
+
+#[derive(Clone, Debug)]
+struct RunnerTeamShapeArena {
+    players: [TeamShapePlayerInput; RUNNER_TEAM_SIZE],
+    opponents: [TeamShapeOpponentInput; RUNNER_TEAM_SIZE],
+    anchors: [TeamShapePlayerOutput; RUNNER_TEAM_SIZE],
+}
+
+impl RunnerTeamShapeArena {
+    fn new() -> Self {
+        Self {
+            players: [RUNNER_EMPTY_TEAM_SHAPE_PLAYER; RUNNER_TEAM_SIZE],
+            opponents: [RUNNER_EMPTY_TEAM_SHAPE_OPPONENT; RUNNER_TEAM_SIZE],
+            anchors: [RUNNER_EMPTY_TEAM_SHAPE_OUTPUT; RUNNER_TEAM_SIZE],
+        }
+    }
+}
+
+struct RunnerProjectedTeamProjectionScratch {
+    shape_players: [TeamShapePlayerInput; RUNNER_TEAM_SIZE],
+    shape_opponents: [TeamShapeOpponentInput; RUNNER_TEAM_SIZE],
+    shape_anchors: [TeamShapePlayerOutput; RUNNER_TEAM_SIZE],
+    projection_players: [TeamPlanProjectionPlayerInput; RUNNER_TEAM_SIZE],
+    projection_movement_targets: [(f64, f64); RUNNER_TEAM_SIZE],
+    projection_output: [TeamPlanProjectionPlayerOutput; RUNNER_TEAM_SIZE],
+}
+
+impl RunnerProjectedTeamProjectionScratch {
+    fn new() -> Self {
+        Self {
+            shape_players: [RUNNER_EMPTY_TEAM_SHAPE_PLAYER; RUNNER_TEAM_SIZE],
+            shape_opponents: [RUNNER_EMPTY_TEAM_SHAPE_OPPONENT; RUNNER_TEAM_SIZE],
+            shape_anchors: [RUNNER_EMPTY_TEAM_SHAPE_OUTPUT; RUNNER_TEAM_SIZE],
+            projection_players: [RUNNER_EMPTY_TEAM_PLAN_PROJECTION_PLAYER; RUNNER_TEAM_SIZE],
+            projection_movement_targets: [(0.0, 0.0); RUNNER_TEAM_SIZE],
+            projection_output: [RUNNER_EMPTY_TEAM_PLAN_PROJECTION_OUTPUT; RUNNER_TEAM_SIZE],
+        }
+    }
+}
+
+struct RunnerProjectedExecutionShapeInputs {
+    teammates_as_players: [TeamShapePlayerInput; RUNNER_TEAM_SIZE],
+    teammates_as_opponents: [TeamShapeOpponentInput; RUNNER_TEAM_SIZE],
+    opponents_as_players: [TeamShapePlayerInput; RUNNER_TEAM_SIZE],
+    opponents_as_opponents: [TeamShapeOpponentInput; RUNNER_TEAM_SIZE],
+}
+
+impl RunnerProjectedExecutionShapeInputs {
+    fn new() -> Self {
+        Self {
+            teammates_as_players: [RUNNER_EMPTY_TEAM_SHAPE_PLAYER; RUNNER_TEAM_SIZE],
+            teammates_as_opponents: [RUNNER_EMPTY_TEAM_SHAPE_OPPONENT; RUNNER_TEAM_SIZE],
+            opponents_as_players: [RUNNER_EMPTY_TEAM_SHAPE_PLAYER; RUNNER_TEAM_SIZE],
+            opponents_as_opponents: [RUNNER_EMPTY_TEAM_SHAPE_OPPONENT; RUNNER_TEAM_SIZE],
+        }
+    }
+
+    fn refresh(&mut self, teammates: &[RunnerPlayer], opponents: &[RunnerPlayer]) {
+        assert!(
+            teammates.len() <= RUNNER_TEAM_SIZE && opponents.len() <= RUNNER_TEAM_SIZE,
+            "projected execution shape inputs expect eleven-player teams"
+        );
+        for (index, player) in teammates.iter().enumerate() {
+            let is_goalkeeper = player.position == "GK";
+            self.teammates_as_players[index] = TeamShapePlayerInput {
+                index,
+                base_pos: player.base_pos,
+                is_goalkeeper,
+            };
+            self.opponents_as_opponents[index] = TeamShapeOpponentInput {
+                pos: player.pos,
+                is_goalkeeper,
+            };
+        }
+        for (index, player) in opponents.iter().enumerate() {
+            let is_goalkeeper = player.position == "GK";
+            self.opponents_as_players[index] = TeamShapePlayerInput {
+                index,
+                base_pos: player.base_pos,
+                is_goalkeeper,
+            };
+            self.teammates_as_opponents[index] = TeamShapeOpponentInput {
+                pos: player.pos,
+                is_goalkeeper,
+            };
+        }
+    }
+}
+
+#[derive(Clone, Copy)]
+struct RunnerOffBallAttackOpponentContext {
+    positions: [(f64, f64); RUNNER_TEAM_SIZE],
+    speeds: [f64; RUNNER_TEAM_SIZE],
+    count: usize,
+    offside_line: f64,
+}
+
+fn runner_off_ball_attack_opponent_context(
+    opponents: &[RunnerPlayer],
+    attacking_right: bool,
+    config: &RunnerRuntimeConfig,
+) -> RunnerOffBallAttackOpponentContext {
+    assert!(
+        opponents.len() <= RUNNER_TEAM_SIZE,
+        "off-ball attack opponent context expects eleven-player teams"
+    );
+    let mut positions = [(0.0, 0.0); RUNNER_TEAM_SIZE];
+    let mut speeds = [0.0; RUNNER_TEAM_SIZE];
+    let mut count = 0;
+    for opponent in opponents {
+        if opponent.position == "GK" {
+            continue;
+        }
+        positions[count] = opponent.pos;
+        speeds[count] = player_speed(
+            opponent.speed.round() as i32,
+            config.player_max_speed,
+            config.player_min_speed,
+        );
+        count += 1;
+    }
+    RunnerOffBallAttackOpponentContext {
+        positions,
+        speeds,
+        count,
+        offside_line: offside_line(opponents, attacking_right, config),
+    }
+}
+
+#[derive(Clone, Debug)]
+struct RunnerFixedDefenseArena {
+    attacker_xy: [(f64, f64); RUNNER_TEAM_SIZE],
+    team_defenders: [DefenseTeammateInput; RUNNER_TEAM_SIZE],
+    defender_team_context_indices: [usize; RUNNER_TEAM_SIZE],
+    prepared_choices: [Option<FixedDefensePreparedChoice>; RUNNER_TEAM_SIZE],
+    coordinated_indices: [usize; RUNNER_TEAM_SIZE],
+    coordinated_anchors: [(f64, f64); RUNNER_TEAM_SIZE],
+    candidate_sets: [[TeamDefenseCandidate; MAX_FIXED_TEAM_DEFENSE_CANDIDATES];
+        RUNNER_TEAM_SIZE],
+    score_noises: [f64; MAX_FIXED_TEAM_DEFENSE_CANDIDATES],
+    random_samples: [DefenseRandomSample; RUNNER_DEFENSE_RANDOM_SAMPLE_COUNT],
+    coordination_assignments: [TeamDefenseAssignment; RUNNER_TEAM_SIZE],
+}
+
+impl RunnerFixedDefenseArena {
+    fn new() -> Self {
+        Self {
+            attacker_xy: [(0.0, 0.0); RUNNER_TEAM_SIZE],
+            team_defenders: [RUNNER_EMPTY_FIXED_DEFENSE_TEAMMATE; RUNNER_TEAM_SIZE],
+            defender_team_context_indices: [usize::MAX; RUNNER_TEAM_SIZE],
+            prepared_choices: [None; RUNNER_TEAM_SIZE],
+            coordinated_indices: [0; RUNNER_TEAM_SIZE],
+            coordinated_anchors: [(0.0, 0.0); RUNNER_TEAM_SIZE],
+            candidate_sets: [[RUNNER_EMPTY_FIXED_DEFENSE_CANDIDATE;
+                MAX_FIXED_TEAM_DEFENSE_CANDIDATES]; RUNNER_TEAM_SIZE],
+            score_noises: [0.0; MAX_FIXED_TEAM_DEFENSE_CANDIDATES],
+            random_samples: [RUNNER_EMPTY_DEFENSE_RANDOM_SAMPLE;
+                RUNNER_DEFENSE_RANDOM_SAMPLE_COUNT],
+            coordination_assignments: [RUNNER_EMPTY_FIXED_DEFENSE_ASSIGNMENT;
+                RUNNER_TEAM_SIZE],
+        }
+    }
+}
+
+#[derive(Clone, Debug)]
+struct RunnerCarryDefenderResponseArena {
+    responses: [RunnerCarryDefenderResponses; RUNNER_MAX_CARRY_CANDIDATES],
+    response_count: usize,
+    scratch: RunnerCarryDefenderResponseScratch,
+}
+
+impl RunnerCarryDefenderResponseArena {
+    fn new() -> Self {
+        Self {
+            responses: [RUNNER_EMPTY_CARRY_DEFENDER_RESPONSES; RUNNER_MAX_CARRY_CANDIDATES],
+            response_count: 0,
+            scratch: RunnerCarryDefenderResponseScratch::new(),
+        }
+    }
+
+    fn clear(&mut self) {
+        self.response_count = 0;
+    }
+
+    fn next(
+        &mut self,
+        segment_count: usize,
+        defender_count: usize,
+    ) -> (
+        usize,
+        &mut RunnerCarryDefenderResponses,
+        &mut RunnerCarryDefenderResponseScratch,
+    ) {
+        assert!(
+            self.response_count < RUNNER_MAX_CARRY_CANDIDATES,
+            "carry defender response arena exceeds generated candidate bound"
+        );
+        let index = self.response_count;
+        self.response_count += 1;
+        let Self {
+            responses, scratch, ..
+        } = self;
+        let response = &mut responses[index];
+        response.reset(segment_count, defender_count);
+        (index, response, scratch)
+    }
+
+    fn get(&self, index: usize) -> Option<&RunnerCarryDefenderResponses> {
+        (index < self.response_count).then(|| &self.responses[index])
+    }
+}
+
+#[derive(Clone, Debug)]
+struct RunnerSpecializedGoalArena {
+    goals: [RunnerSpecializedGoal; RUNNER_MAX_SPECIALIZED_GOALS],
+    goal_count: usize,
+    carry_action_indices: [usize; RUNNER_MAX_CARRY_CANDIDATES],
+    byline_carries: [BylineCarryInput; RUNNER_MAX_CARRY_CANDIDATES],
+    hold_carries: [HoldSupportCarryInput; RUNNER_MAX_CARRY_CANDIDATES],
+    carry_count: usize,
+    pass_action_indices: [usize; RUNNER_MAX_PASS_CANDIDATES],
+    overlap_passes: [OverlapPassInput; RUNNER_MAX_PASS_CANDIDATES],
+    layoff_passes: [LayoffPassInput; RUNNER_MAX_PASS_CANDIDATES],
+    arriving_passes: [ArrivingSupportPassInput; RUNNER_MAX_PASS_CANDIDATES],
+    hold_passes: [HoldSupportPassInput; RUNNER_MAX_PASS_CANDIDATES],
+    pass_count: usize,
+    hold_candidates: [HoldSupportHoldInput; RUNNER_MAX_HELD_ACTIONS],
+    hold_count: usize,
+    byline_teammates: [BylineSupportTeammateInput; RUNNER_TEAM_SIZE],
+    opponent_positions: [(f64, f64); RUNNER_TEAM_SIZE],
+    opponent_count: usize,
+    candidate_values: [f64; RUNNER_MAX_SPECIALIZED_GOALS],
+    candidate_gaussians: [f64; RUNNER_MAX_SPECIALIZED_GOALS],
+}
+
+impl RunnerSpecializedGoalArena {
+    fn new() -> Self {
+        Self {
+            goals: [RunnerSpecializedGoal {
+                goal_type: "",
+                phase: "",
+                target: (0.0, 0.0),
+                value: 0.0,
+                created_tick: 0,
+                action_code: 0,
+            }; RUNNER_MAX_SPECIALIZED_GOALS],
+            goal_count: 0,
+            carry_action_indices: [0; RUNNER_MAX_CARRY_CANDIDATES],
+            byline_carries: [BylineCarryInput {
+                score: 0.0,
+                target: (0.0, 0.0),
+                byline_carry_window: 0.0,
+            }; RUNNER_MAX_CARRY_CANDIDATES],
+            hold_carries: [HoldSupportCarryInput {
+                carry_to_shoot_window: 0.0,
+                wide_second_line_carry_window: 0.0,
+                future_shot_gain: 0.0,
+            }; RUNNER_MAX_CARRY_CANDIDATES],
+            carry_count: 0,
+            pass_action_indices: [0; RUNNER_MAX_PASS_CANDIDATES],
+            overlap_passes: [OverlapPassInput {
+                score: 0.0,
+                target: (0.0, 0.0),
+                receiver_pressure: 0.0,
+            }; RUNNER_MAX_PASS_CANDIDATES],
+            layoff_passes: [LayoffPassInput {
+                score: 0.0,
+                target: (0.0, 0.0),
+                receiver_pressure: 0.0,
+            }; RUNNER_MAX_PASS_CANDIDATES],
+            arriving_passes: [ArrivingSupportPassInput {
+                score: 0.0,
+                target: (0.0, 0.0),
+                receiver_goal_fit: 0.0,
+                second_line_arrival_value: 0.0,
+                second_line_cutback_value: 0.0,
+                layoff_support_value: 0.0,
+            }; RUNNER_MAX_PASS_CANDIDATES],
+            hold_passes: [HoldSupportPassInput {
+                score: 0.0,
+                target: (0.0, 0.0),
+                layoff_support_value: 0.0,
+                short_combination_value: 0.0,
+                second_line_cutback_value: 0.0,
+                layoff_retention_value: 0.0,
+                receiver_goal_fit: 0.0,
+                second_line_arrival_value: 0.0,
+            }; RUNNER_MAX_PASS_CANDIDATES],
+            pass_count: 0,
+            hold_candidates: [HoldSupportHoldInput {
+                opportunity_wait: 0.0,
+                opportunity_wait_value: 0.0,
+                no_clear_release: 0.0,
+            }; RUNNER_MAX_HELD_ACTIONS],
+            hold_count: 0,
+            byline_teammates: [BylineSupportTeammateInput {
+                index: 0,
+                pos: (0.0, 0.0),
+                target: (0.0, 0.0),
+                anchor: (0.0, 0.0),
+                is_goalkeeper: false,
+            }; RUNNER_TEAM_SIZE],
+            opponent_positions: [(0.0, 0.0); RUNNER_TEAM_SIZE],
+            opponent_count: 0,
+            candidate_values: [0.0; RUNNER_MAX_SPECIALIZED_GOALS],
+            candidate_gaussians: [0.0; RUNNER_MAX_SPECIALIZED_GOALS],
+        }
+    }
+
+    fn clear(&mut self) {
+        self.goal_count = 0;
+        self.carry_count = 0;
+        self.pass_count = 0;
+        self.hold_count = 0;
+        self.opponent_count = 0;
+    }
+
+    fn push_goal(&mut self, goal: RunnerSpecializedGoal) {
+        assert!(
+            self.goal_count < self.goals.len(),
+            "specialized goal buffer exceeds its fixed capacity"
+        );
+        self.goals[self.goal_count] = goal;
+        self.goal_count += 1;
+    }
+}
+
+#[derive(Clone, Copy, Debug)]
+struct RunnerProjectedDefender {
+    pos: (f64, f64),
+    target_pos: (f64, f64),
+    tactical_anchor: (f64, f64),
+    base_pos: (f64, f64),
+    velocity: (f64, f64),
+    speed: f64,
+    defence: f64,
+    tackling: f64,
+    iq: f64,
+    state: &'static str,
+    last_def_action: &'static str,
+    is_goalkeeper: bool,
+}
+
+#[derive(Clone, Debug)]
+struct RunnerCarryDefenderResponseScratch {
+    projected_defenders: [RunnerProjectedDefender; RUNNER_TEAM_SIZE],
+    attacker_positions: [(f64, f64); RUNNER_TEAM_SIZE],
+    targets: [(f64, f64); RUNNER_TEAM_SIZE],
+    action_types: [&'static str; RUNNER_TEAM_SIZE],
+    team_defenders: [DefenseTeammateInput; RUNNER_TEAM_SIZE],
+    defender_team_context_indices: [usize; RUNNER_TEAM_SIZE],
+}
+
+impl RunnerCarryDefenderResponseScratch {
+    fn new() -> Self {
+        Self {
+            projected_defenders: [RUNNER_EMPTY_PROJECTED_DEFENDER; RUNNER_TEAM_SIZE],
+            attacker_positions: [(0.0, 0.0); RUNNER_TEAM_SIZE],
+            targets: [(0.0, 0.0); RUNNER_TEAM_SIZE],
+            action_types: ["hold_position"; RUNNER_TEAM_SIZE],
+            team_defenders: [RUNNER_EMPTY_FIXED_DEFENSE_TEAMMATE; RUNNER_TEAM_SIZE],
+            defender_team_context_indices: [usize::MAX; RUNNER_TEAM_SIZE],
+        }
+    }
+}
+
+const RUNNER_EMPTY_PROJECTED_DEFENDER: RunnerProjectedDefender = RunnerProjectedDefender {
+    pos: (0.0, 0.0),
+    target_pos: (0.0, 0.0),
+    tactical_anchor: (0.0, 0.0),
+    base_pos: (0.0, 0.0),
+    velocity: (0.0, 0.0),
+    speed: 0.0,
+    defence: 0.0,
+    tackling: 0.0,
+    iq: 0.0,
+    state: "off_ball",
+    last_def_action: "hold_position",
+    is_goalkeeper: false,
+};
+
+impl RunnerCarryDefenderResponses {
+    fn new(segment_count: usize, defender_count: usize) -> Self {
+        let mut responses = RUNNER_EMPTY_CARRY_DEFENDER_RESPONSES;
+        responses.reset(segment_count, defender_count);
+        responses
+    }
+
+    fn reset(&mut self, segment_count: usize, defender_count: usize) {
+        assert!(
+            segment_count <= RUNNER_MAX_CARRY_RESPONSE_SEGMENTS
+                && defender_count <= RUNNER_TEAM_SIZE,
+            "carry defender response buffer exceeds its fixed capacity"
+        );
+        self.segment_count = segment_count;
+        self.defender_count = defender_count;
+    }
+
+    fn segment(&self, index: usize) -> &[DefenderActionInput] {
+        if index >= self.segment_count {
+            &[]
+        } else {
+            &self.segments[index][..self.defender_count]
+        }
+    }
+
+    fn slices(&self) -> [&[DefenderActionInput]; RUNNER_MAX_CARRY_RESPONSE_SEGMENTS] {
+        std::array::from_fn(|index| self.segment(index))
+    }
+}
+
+struct RunnerStateValueInputs {
+    shot_profiles: [PlayerShotProfile; RUNNER_TEAM_SIZE],
+    shot_profile_count: usize,
+    teammate_positions: [(usize, f64, f64); RUNNER_TEAM_SIZE],
+    teammate_count: usize,
+    teammate_goalkeeper_indices: [usize; RUNNER_TEAM_SIZE],
+    teammate_goalkeeper_count: usize,
+    opponent_positions: [(f64, f64); RUNNER_TEAM_SIZE],
+    opponent_count: usize,
+}
+
+#[derive(Clone, Copy)]
+struct RunnerProjectedStateValueStaticInputs {
+    shot_profiles: [PlayerShotProfile; RUNNER_TEAM_SIZE],
+    shot_profile_count: usize,
+    teammate_goalkeeper_indices: [usize; RUNNER_TEAM_SIZE],
+    teammate_goalkeeper_count: usize,
+}
+
+impl RunnerProjectedStateValueStaticInputs {
+    fn empty() -> Self {
+        Self {
+            shot_profiles: [PlayerShotProfile {
+                player_index: 0,
+                finishing: 0.0,
+                long_shot: 0.0,
+            }; RUNNER_TEAM_SIZE],
+            shot_profile_count: 0,
+            teammate_goalkeeper_indices: [0; RUNNER_TEAM_SIZE],
+            teammate_goalkeeper_count: 0,
+        }
+    }
+
+    fn refresh(&mut self, players: &[RunnerPlayer]) {
+        assert!(
+            players.len() <= RUNNER_TEAM_SIZE,
+            "projected match runner state value expects eleven-player teams"
+        );
+        self.shot_profile_count = 0;
+        self.teammate_goalkeeper_count = 0;
+        for (index, player) in players.iter().enumerate() {
+            self.shot_profiles[self.shot_profile_count] = PlayerShotProfile {
+                player_index: index,
+                finishing: player.finishing / 100.0,
+                long_shot: player.long_shot / 100.0,
+            };
+            self.shot_profile_count += 1;
+            if player.position == "GK" {
+                self.teammate_goalkeeper_indices[self.teammate_goalkeeper_count] = index;
+                self.teammate_goalkeeper_count += 1;
+            }
+        }
+    }
+}
+
+#[derive(Clone, Copy)]
+struct RunnerOpponentControlPlayer {
+    pos: (f64, f64),
+    finishing: f64,
+    long_shot: f64,
+    is_goalkeeper: bool,
+}
+
+const RUNNER_EMPTY_OPPONENT_CONTROL_PLAYER: RunnerOpponentControlPlayer =
+    RunnerOpponentControlPlayer {
+        pos: (0.0, 0.0),
+        finishing: 0.0,
+        long_shot: 0.0,
+        is_goalkeeper: false,
+    };
+
+struct RunnerOpponentControlValueContext {
+    players: [RunnerOpponentControlPlayer; RUNNER_TEAM_SIZE],
+    player_count: usize,
+    state_value_inputs: RunnerProjectedStateValueStaticInputs,
+    teammate_positions: [(usize, f64, f64); RUNNER_TEAM_SIZE],
+    possession_value_contexts: [Option<crate::PossessionValueContext>; RUNNER_TEAM_SIZE],
+    opponent_positions: [(f64, f64); RUNNER_TEAM_SIZE],
+    opponent_count: usize,
+    defending_gk_attributes: GkSaveAttributes,
+    defending_gk_pos: Option<(f64, f64)>,
+}
+
+impl RunnerOpponentControlValueContext {
+    fn new() -> Self {
+        Self {
+            players: [RUNNER_EMPTY_OPPONENT_CONTROL_PLAYER; RUNNER_TEAM_SIZE],
+            player_count: 0,
+            state_value_inputs: RunnerProjectedStateValueStaticInputs::empty(),
+            teammate_positions: [(0, 0.0, 0.0); RUNNER_TEAM_SIZE],
+            possession_value_contexts: [None; RUNNER_TEAM_SIZE],
+            opponent_positions: [(0.0, 0.0); RUNNER_TEAM_SIZE],
+            opponent_count: 0,
+            defending_gk_attributes: GkSaveAttributes {
+                gk_saving: 50.0,
+                gk_positioning: 50.0,
+                gk_reaction: 50.0,
+                gk_position_error_factor: 0.0,
+                gk_reaction_delay_factor: 0.0,
+                gk_save_base: 0.0,
+            },
+            defending_gk_pos: None,
+        }
+    }
+
+    fn refresh(
+        &mut self,
+        controlling_players: &[RunnerPlayer],
+        defending_players: &[RunnerPlayer],
+        config: &RunnerRuntimeConfig,
+    ) {
+        assert!(
+            controlling_players.len() <= RUNNER_TEAM_SIZE
+                && defending_players.len() <= RUNNER_TEAM_SIZE,
+            "opponent control value context expects eleven-player teams"
+        );
+        self.player_count = controlling_players.len();
+        self.opponent_count = 0;
+        self.state_value_inputs.refresh(controlling_players);
+        self.possession_value_contexts.fill(None);
+        for (index, player) in controlling_players.iter().enumerate() {
+            self.players[index] = RunnerOpponentControlPlayer {
+                pos: player.pos,
+                finishing: player.finishing / 100.0,
+                long_shot: player.long_shot / 100.0,
+                is_goalkeeper: player.position == "GK",
+            };
+        }
+        for player in defending_players {
+            if player.position != "GK" {
+                self.opponent_positions[self.opponent_count] = player.pos;
+                self.opponent_count += 1;
+            }
+        }
+        (self.defending_gk_attributes, self.defending_gk_pos) =
+            opposing_goalkeeper_context(defending_players, config);
+    }
+
+    fn populate_teammate_positions(&mut self, controller_idx: usize) -> usize {
+        let mut teammate_count = 0;
+        for index in 0..self.player_count {
+            if index != controller_idx {
+                let player = self.players[index];
+                self.teammate_positions[teammate_count] = (index, player.pos.0, player.pos.1);
+                teammate_count += 1;
+            }
+        }
+        teammate_count
+    }
+
+    fn state_value_input<'a>(
+        &'a self,
+        pos: (f64, f64),
+        controller_idx: usize,
+        teammate_count: usize,
+        controlling_home: bool,
+        attacking_right: bool,
+        tick: i32,
+        shot_quality_cache: &'a ShotQualityCache,
+        config: &RunnerRuntimeConfig,
+    ) -> StateValueInput<'a> {
+        let controller = self.players[controller_idx];
+        StateValueInput {
+            pos,
+            player_index: controller_idx,
+            shot_profiles: &self.state_value_inputs.shot_profiles
+                [..self.state_value_inputs.shot_profile_count],
+            teammate_positions: &self.teammate_positions[..teammate_count],
+            teammate_goalkeeper_indices: &self.state_value_inputs.teammate_goalkeeper_indices
+                [..self.state_value_inputs.teammate_goalkeeper_count],
+            opponent_positions: &self.opponent_positions[..self.opponent_count],
+            pitch_length: config.pitch_length,
+            pitch_width: config.pitch_width,
+            attacking_right,
+            finishing: controller.finishing,
+            long_shot: controller.long_shot,
+            shot_ideal_distance: config.shot_ideal_distance,
+            shot_on_target_base: config.shot_on_target_base,
+            gk_save_base: config.gk_save_base,
+            gk_attributes: Some(self.defending_gk_attributes),
+            gk_pos: self.defending_gk_pos,
+            contest_defenders: None,
+            tick,
+            team_home: controlling_home,
+            shot_quality_cache: Some(shot_quality_cache),
+            control_state: None,
+        }
+    }
+
+    fn value(
+        &mut self,
+        pos: (f64, f64),
+        controlling_home: bool,
+        attacking_right: bool,
+        tick: i32,
+        shot_quality_cache: &ShotQualityCache,
+        config: &RunnerRuntimeConfig,
+    ) -> f64 {
+        let Some(controller_idx) = (0..self.player_count)
+            .filter(|&index| !self.players[index].is_goalkeeper)
+            .min_by(|&left, &right| {
+                distance(self.players[left].pos, pos)
+                    .partial_cmp(&distance(self.players[right].pos, pos))
+                    .unwrap_or(std::cmp::Ordering::Equal)
+            })
+        else {
+            return 0.0;
+        };
+        let teammate_count = self.populate_teammate_positions(controller_idx);
+        if self.possession_value_contexts[controller_idx].is_none() {
+            let possession_value_context = {
+                let input = self.state_value_input(
+                    pos,
+                    controller_idx,
+                    teammate_count,
+                    controlling_home,
+                    attacking_right,
+                    tick,
+                    shot_quality_cache,
+                    config,
+                );
+                possession_value_context(&input)
+            };
+            self.possession_value_contexts[controller_idx] = Some(possession_value_context);
+        }
+        let input = self.state_value_input(
+            pos,
+            controller_idx,
+            teammate_count,
+            controlling_home,
+            attacking_right,
+            tick,
+            shot_quality_cache,
+            config,
+        );
+        possession_state_value_with_context(
+            &input,
+            self.possession_value_contexts[controller_idx]
+                .as_ref()
+                .expect("opponent possession value context must be initialized"),
+        )
+        .value
+    }
+}
+
+#[derive(Clone, Copy)]
+struct RunnerProjectedContestDefenderStatic {
+    index: usize,
+    speed: f64,
+    defence: f64,
+    intent: crate::ShotContestIntent,
+    engagement_weight: f64,
+    engagement_reach: f64,
+    is_goalkeeper: bool,
+}
+
+const RUNNER_EMPTY_PROJECTED_CONTEST_DEFENDER_STATIC: RunnerProjectedContestDefenderStatic =
+    RunnerProjectedContestDefenderStatic {
+        index: 0,
+        speed: 0.0,
+        defence: 0.0,
+        intent: crate::ShotContestIntent::HoldPosition,
+        engagement_weight: 0.0,
+        engagement_reach: 0.0,
+        is_goalkeeper: false,
+    };
+
+const RUNNER_EMPTY_PROJECTED_SHOT_CONTEST_DEFENDER: ShotContestDefender =
+    ShotContestDefender {
+        index: 0,
+        pos: (0.0, 0.0),
+        projected_pos: (0.0, 0.0),
+        speed: 0.0,
+        defence: 0.0,
+        intent: crate::ShotContestIntent::HoldPosition,
+        engagement_weight: 0.0,
+        engagement_reach: 0.0,
+        is_goalkeeper: false,
+    };
+
+const RUNNER_EMPTY_EXECUTION_OPPONENT: ExecutionOpponent = ExecutionOpponent {
+    pos: (0.0, 0.0),
+    is_goalkeeper: false,
+};
+
+#[derive(Clone, Debug)]
+struct RunnerHeldTickArena {
+    contest_defenders: [ShotContestDefender; RUNNER_TEAM_SIZE],
+    execution_opponents: [ExecutionOpponent; RUNNER_TEAM_SIZE],
+}
+
+impl RunnerHeldTickArena {
+    fn new() -> Self {
+        Self {
+            contest_defenders: [RUNNER_EMPTY_PROJECTED_SHOT_CONTEST_DEFENDER; RUNNER_TEAM_SIZE],
+            execution_opponents: [RUNNER_EMPTY_EXECUTION_OPPONENT; RUNNER_TEAM_SIZE],
+        }
+    }
+}
+
+#[derive(Clone, Debug)]
+struct RunnerHeldDecisionScratch {
+    carry_support: [CarrySupportPlayer; RUNNER_TEAM_SIZE],
+    path_opponents: [CarryPathOpponentInput; RUNNER_TEAM_SIZE],
+    carry_offsets: [(f64, f64); RUNNER_MAX_CARRY_CANDIDATES],
+    carry_seen: [(i64, i64); RUNNER_MAX_CARRY_CANDIDATES],
+    opponent_xy: [(f64, f64); RUNNER_TEAM_SIZE],
+    teammate_positions: [(usize, f64, f64); RUNNER_TEAM_SIZE],
+    state_value_teammates: [(usize, f64, f64); RUNNER_TEAM_SIZE],
+    teammate_goalkeeper_indices: [usize; RUNNER_TEAM_SIZE],
+    shot_profiles: [PlayerShotProfile; RUNNER_TEAM_SIZE],
+    pass_space_players: [PassSpacePlayer; RUNNER_TEAM_SIZE],
+    pass_risk_opponents: [PassRiskPlayer; RUNNER_TEAM_SIZE],
+    pass_risk_teammates: [PassRiskPlayer; RUNNER_TEAM_SIZE],
+    teammate_xy: [(f64, f64); RUNNER_TEAM_SIZE],
+    support_pass_inputs: [SupportOpportunityPassInput; RUNNER_MAX_PASS_CANDIDATES],
+    support_carry_inputs: [SupportOpportunityCarryInput; RUNNER_MAX_CARRY_CANDIDATES],
+    support_adjusted_scores: [f64; RUNNER_MAX_CARRY_CANDIDATES],
+    support_costs: [f64; RUNNER_MAX_CARRY_CANDIDATES],
+    opponent_count: usize,
+    state_value_teammate_count: usize,
+    teammate_goalkeeper_count: usize,
+    teammate_xy_count: usize,
+    nearest_opponent_distance: f64,
+    local_pressure: f64,
+    offside_line_attacking_right: f64,
+    offside_line_attacking_left: f64,
+    gk_attributes: GkSaveAttributes,
+    gk_pos: Option<(f64, f64)>,
+}
+
+impl RunnerHeldDecisionScratch {
+    fn new() -> Self {
+        Self {
+            carry_support: [CarrySupportPlayer {
+                index: 0,
+                pos: (0.0, 0.0),
+                base: (0.0, 0.0),
+                finishing: 0.0,
+                long_shot: 0.0,
+                is_goalkeeper: false,
+            }; RUNNER_TEAM_SIZE],
+            path_opponents: [CarryPathOpponentInput {
+                pos: (0.0, 0.0),
+                speed: 0.0,
+                defence: 0.0,
+                tackling: 0.0,
+                is_goalkeeper: false,
+            }; RUNNER_TEAM_SIZE],
+            carry_offsets: [(0.0, 0.0); RUNNER_MAX_CARRY_CANDIDATES],
+            carry_seen: [(0, 0); RUNNER_MAX_CARRY_CANDIDATES],
+            opponent_xy: [(0.0, 0.0); RUNNER_TEAM_SIZE],
+            teammate_positions: [(0, 0.0, 0.0); RUNNER_TEAM_SIZE],
+            state_value_teammates: [(0, 0.0, 0.0); RUNNER_TEAM_SIZE],
+            teammate_goalkeeper_indices: [0; RUNNER_TEAM_SIZE],
+            shot_profiles: [PlayerShotProfile {
+                player_index: 0,
+                finishing: 0.0,
+                long_shot: 0.0,
+            }; RUNNER_TEAM_SIZE],
+            pass_space_players: [PassSpacePlayer {
+                index: 0,
+                pos: (0.0, 0.0),
+                target_pos: (0.0, 0.0),
+                tactical_anchor: (0.0, 0.0),
+                is_goalkeeper: false,
+                is_defender: false,
+                is_midfielder: false,
+                is_wide: false,
+            }; RUNNER_TEAM_SIZE],
+            pass_risk_opponents: [PassRiskPlayer {
+                index: 0,
+                pos: (0.0, 0.0),
+                speed: 0,
+                is_goalkeeper: false,
+            }; RUNNER_TEAM_SIZE],
+            pass_risk_teammates: [PassRiskPlayer {
+                index: 0,
+                pos: (0.0, 0.0),
+                speed: 0,
+                is_goalkeeper: false,
+            }; RUNNER_TEAM_SIZE],
+            teammate_xy: [(0.0, 0.0); RUNNER_TEAM_SIZE],
+            support_pass_inputs: [SupportOpportunityPassInput {
+                score: 0.0,
+                receiver_goal_fit: 0.0,
+                second_line_arrival_value: 0.0,
+                second_line_cutback_value: 0.0,
+                layoff_support_value: 0.0,
+            }; RUNNER_MAX_PASS_CANDIDATES],
+            support_carry_inputs: [SupportOpportunityCarryInput {
+                score: 0.0,
+                future_shot_gain: 0.0,
+                carry_to_shoot_window: 0.0,
+                effective_gain: 0.0,
+            }; RUNNER_MAX_CARRY_CANDIDATES],
+            support_adjusted_scores: [0.0; RUNNER_MAX_CARRY_CANDIDATES],
+            support_costs: [0.0; RUNNER_MAX_CARRY_CANDIDATES],
+            opponent_count: 0,
+            state_value_teammate_count: 0,
+            teammate_goalkeeper_count: 0,
+            teammate_xy_count: 0,
+            nearest_opponent_distance: f64::INFINITY,
+            local_pressure: 0.0,
+            offside_line_attacking_right: 0.0,
+            offside_line_attacking_left: 0.0,
+            gk_attributes: GkSaveAttributes {
+                gk_saving: 50.0,
+                gk_positioning: 50.0,
+                gk_reaction: 50.0,
+                gk_position_error_factor: 0.0,
+                gk_reaction_delay_factor: 0.0,
+                gk_save_base: 0.0,
+            },
+            gk_pos: None,
+        }
+    }
+
+    fn prepare(
+        &mut self,
+        holder_idx: usize,
+        teammates: &[RunnerPlayer],
+        opponents: &[RunnerPlayer],
+        config: &RunnerRuntimeConfig,
+    ) {
+        assert!(
+            teammates.len() <= RUNNER_TEAM_SIZE && opponents.len() <= RUNNER_TEAM_SIZE,
+            "held decision snapshot expects eleven-player teams"
+        );
+        let (gk_attributes, gk_pos) = opposing_goalkeeper_context(opponents, config);
+        self.opponent_count = 0;
+        self.state_value_teammate_count = 0;
+        self.teammate_goalkeeper_count = 0;
+        self.teammate_xy_count = 0;
+        self.nearest_opponent_distance = f64::INFINITY;
+        self.local_pressure = 0.0;
+        self.offside_line_attacking_right = offside_line(opponents, true, config);
+        self.offside_line_attacking_left = offside_line(opponents, false, config);
+        self.gk_attributes = gk_attributes;
+        self.gk_pos = gk_pos;
+
+        for (idx, player) in teammates.iter().enumerate() {
+            let is_goalkeeper = player.position == "GK";
+            let is_defender = is_defender_position(player.position.as_str());
+            self.carry_support[idx] = CarrySupportPlayer {
+                index: idx,
+                pos: player.pos,
+                base: player.base_pos,
+                finishing: player.finishing / 100.0,
+                long_shot: player.long_shot / 100.0,
+                is_goalkeeper,
+            };
+            self.teammate_positions[idx] = (idx, player.pos.0, player.pos.1);
+            self.shot_profiles[idx] = PlayerShotProfile {
+                player_index: idx,
+                finishing: player.finishing / 100.0,
+                long_shot: player.long_shot / 100.0,
+            };
+            self.pass_space_players[idx] = PassSpacePlayer {
+                index: idx,
+                pos: player.pos,
+                target_pos: player.target_pos,
+                tactical_anchor: player.tactical_anchor,
+                is_goalkeeper,
+                is_defender,
+                is_midfielder: is_midfielder_position(player.position.as_str()),
+                is_wide: is_wide_position(player.position.as_str()),
+            };
+            self.pass_risk_teammates[idx] = PassRiskPlayer {
+                index: idx,
+                pos: player.pos,
+                speed: player.speed.round() as i32,
+                is_goalkeeper,
+            };
+            if is_goalkeeper {
+                self.teammate_goalkeeper_indices[self.teammate_goalkeeper_count] = idx;
+                self.teammate_goalkeeper_count += 1;
+            }
+            if idx != holder_idx {
+                self.state_value_teammates[self.state_value_teammate_count] =
+                    (idx, player.pos.0, player.pos.1);
+                self.state_value_teammate_count += 1;
+                self.teammate_xy[self.teammate_xy_count] = player.pos;
+                self.teammate_xy_count += 1;
+            }
+        }
+        for (idx, player) in opponents.iter().enumerate() {
+            let is_goalkeeper = player.position == "GK";
+            self.path_opponents[idx] = CarryPathOpponentInput {
+                pos: player.pos,
+                speed: player.speed,
+                defence: player.defence,
+                tackling: player.tackling,
+                is_goalkeeper,
+            };
+            self.pass_risk_opponents[idx] = PassRiskPlayer {
+                index: idx,
+                pos: player.pos,
+                speed: player.speed.round() as i32,
+                is_goalkeeper,
+            };
+            if !is_goalkeeper {
+                let opponent_distance = distance(teammates[holder_idx].pos, player.pos);
+                self.nearest_opponent_distance =
+                    self.nearest_opponent_distance.min(opponent_distance);
+                self.local_pressure += (-opponent_distance / 8.0).exp();
+                self.opponent_xy[self.opponent_count] = player.pos;
+                self.opponent_count += 1;
+            }
+        }
+        self.local_pressure = self.local_pressure.min(1.0);
+    }
+
+    fn offside_line(&self, attacking_right: bool) -> f64 {
+        if attacking_right {
+            self.offside_line_attacking_right
+        } else {
+            self.offside_line_attacking_left
+        }
+    }
+}
+
+struct RunnerHeldDecisionArena {
+    scratch: RunnerHeldDecisionScratch,
+    temporal_value_contexts: RunnerProjectedTransitionValueContexts,
+}
+
+impl RunnerHeldDecisionArena {
+    fn new() -> Self {
+        Self {
+            scratch: RunnerHeldDecisionScratch::new(),
+            temporal_value_contexts: RunnerProjectedTransitionValueContexts::default(),
+        }
+    }
+
+    fn prepare(
+        &mut self,
+        holder_idx: usize,
+        teammates: &[RunnerPlayer],
+        opponents: &[RunnerPlayer],
+        config: &RunnerRuntimeConfig,
+    ) {
+        self.scratch
+            .prepare(holder_idx, teammates, opponents, config);
+    }
+}
+
+struct RunnerProjectedControlValueContext {
+    state_value_inputs: RunnerProjectedStateValueStaticInputs,
+    defending_gk_attributes: GkSaveAttributes,
+    defending_gk_index: Option<usize>,
+    defending_contest_defenders: [RunnerProjectedContestDefenderStatic; RUNNER_TEAM_SIZE],
+    defending_contest_defender_count: usize,
+    projected_plan_scratch: RunnerProjectedTeamPlanScratch,
+    projected_team_scratch: RunnerProjectedTeamProjectionScratch,
+    projection_cache: RunnerProjectedControlProjectionCache,
+}
+
+struct RunnerProjectedTeamPlanScratch {
+    players: [TeamPlanPlayerInput; RUNNER_TEAM_SIZE],
+    opponents: [TeamPlanOpponentInput; RUNNER_TEAM_SIZE],
+}
+
+impl RunnerProjectedTeamPlanScratch {
+    fn new() -> Self {
+        Self {
+            players: [RUNNER_EMPTY_TEAM_PLAN_PLAYER; RUNNER_TEAM_SIZE],
+            opponents: [RUNNER_EMPTY_TEAM_PLAN_OPPONENT; RUNNER_TEAM_SIZE],
+        }
+    }
+}
+
+#[derive(Clone, Copy)]
+struct RunnerProjectedControlProjection {
+    controller_idx: usize,
+    controller_pos: (f64, f64),
+    duration_ticks: i32,
+    controlling: RunnerProjectedTeamPositions,
+    projected_gk_pos: Option<(f64, f64)>,
+    projected_defender_positions: [(f64, f64); RUNNER_TEAM_SIZE],
+    projected_defender_count: usize,
+    projected_contest_defenders: [ShotContestDefender; RUNNER_TEAM_SIZE],
+    projected_teammate_positions: [(usize, f64, f64); RUNNER_TEAM_SIZE],
+    projected_teammate_count: usize,
+    possession_value_context: crate::PossessionValueContext,
+    bellman_geometry: crate::state_value::PossessionBellmanGeometry,
+}
+
+const RUNNER_PROJECTED_CONTROL_PROJECTION_CACHE_SIZE: usize = 8;
+
+struct RunnerProjectedControlProjectionCache {
+    entries:
+        [Option<RunnerProjectedControlProjection>; RUNNER_PROJECTED_CONTROL_PROJECTION_CACHE_SIZE],
+    next_slot: usize,
+}
+
+impl Default for RunnerProjectedControlProjectionCache {
+    fn default() -> Self {
+        Self {
+            entries: [None; RUNNER_PROJECTED_CONTROL_PROJECTION_CACHE_SIZE],
+            next_slot: 0,
+        }
+    }
+}
+
+impl RunnerProjectedControlProjectionCache {
+    fn clear(&mut self) {
+        self.entries.fill(None);
+        self.next_slot = 0;
+    }
+
+    fn get(
+        &self,
+        controller_idx: usize,
+        controller_pos: (f64, f64),
+        duration_ticks: i32,
+    ) -> Option<&RunnerProjectedControlProjection> {
+        self.entries.iter().flatten().find(|projection| {
+            projection.controller_idx == controller_idx
+                && projection.controller_pos.0.to_bits() == controller_pos.0.to_bits()
+                && projection.controller_pos.1.to_bits() == controller_pos.1.to_bits()
+                && projection.duration_ticks == duration_ticks
+        })
+    }
+
+    fn insert(
+        &mut self,
+        projection: RunnerProjectedControlProjection,
+    ) -> &RunnerProjectedControlProjection {
+        let slot = self.next_slot;
+        self.next_slot = (self.next_slot + 1) % self.entries.len();
+        self.entries[slot] = Some(projection);
+        self.entries[slot]
+            .as_ref()
+            .expect("projected control cache entry must be present after insertion")
+    }
+}
+
+struct RunnerProjectedTransitionValueContexts {
+    retained: Option<RunnerProjectedControlValueContext>,
+    opposing: Option<RunnerProjectedControlValueContext>,
+    immediate_opposing_control: Option<RunnerOpponentControlValueContext>,
+    immediate_opposing_control_ready: bool,
+    execution_opponents: [ExecutionOpponent; RUNNER_TEAM_SIZE],
+    execution_opponent_count: usize,
+    execution_opponents_ready: bool,
+    execution_shape_inputs: RunnerProjectedExecutionShapeInputs,
+    execution_shape_inputs_ready: bool,
+    execution_team_scratch: RunnerProjectedTeamProjectionScratch,
+    execution_second_ball_inputs: RunnerSecondBallInputs,
+    execution_outcomes: RunnerProjectedExecutionOutcomes,
+    control_execution_outcome_cache: Option<RunnerProjectedControlExecutionOutcomeCache>,
+}
+
+impl Default for RunnerProjectedTransitionValueContexts {
+    fn default() -> Self {
+        Self {
+            retained: None,
+            opposing: None,
+            immediate_opposing_control: None,
+            immediate_opposing_control_ready: false,
+            execution_opponents: [RUNNER_EMPTY_EXECUTION_OPPONENT; RUNNER_TEAM_SIZE],
+            execution_opponent_count: 0,
+            execution_opponents_ready: false,
+            execution_shape_inputs: RunnerProjectedExecutionShapeInputs::new(),
+            execution_shape_inputs_ready: false,
+            execution_team_scratch: RunnerProjectedTeamProjectionScratch::new(),
+            execution_second_ball_inputs: RunnerSecondBallInputs::empty(),
+            execution_outcomes: RunnerProjectedExecutionOutcomes::new(),
+            control_execution_outcome_cache: None,
+        }
+    }
+}
+
+impl RunnerProjectedTransitionValueContexts {
+    fn reset(&mut self) {
+        self.immediate_opposing_control_ready = false;
+        self.execution_opponent_count = 0;
+        self.execution_opponents_ready = false;
+        self.execution_shape_inputs_ready = false;
+        self.execution_second_ball_inputs.clear();
+        self.execution_outcomes.clear();
+        self.control_execution_outcome_cache = None;
+        if let Some(context) = self.retained.as_mut() {
+            context.reset();
+        }
+        if let Some(context) = self.opposing.as_mut() {
+            context.reset();
+        }
+    }
+
+    fn prepare(
+        &mut self,
+        teammates: &[RunnerPlayer],
+        opponents: &[RunnerPlayer],
+        config: &RunnerRuntimeConfig,
+    ) {
+        self.reset();
+        self.execution_shape_inputs.refresh(teammates, opponents);
+        self.execution_shape_inputs_ready = true;
+        self.execution_second_ball_inputs
+            .prepare_projected_players(teammates, opponents, config);
+        if let Some(context) = self.retained.as_mut() {
+            context.refresh(teammates, opponents, config);
+        }
+        if let Some(context) = self.opposing.as_mut() {
+            context.refresh(opponents, teammates, config);
+        }
+    }
+
+    fn immediate_opposing_control(
+        &mut self,
+        controlling_players: &[RunnerPlayer],
+        defending_players: &[RunnerPlayer],
+        config: &RunnerRuntimeConfig,
+    ) -> &mut RunnerOpponentControlValueContext {
+        if !self.immediate_opposing_control_ready {
+            self.immediate_opposing_control
+                .get_or_insert_with(RunnerOpponentControlValueContext::new)
+                .refresh(controlling_players, defending_players, config);
+            self.immediate_opposing_control_ready = true;
+        }
+        self.immediate_opposing_control
+            .as_mut()
+            .expect("immediate opposing control context must be initialized")
+    }
+}
+
+fn runner_state_value_inputs_empty() -> RunnerStateValueInputs {
+    RunnerStateValueInputs {
+        shot_profiles: [PlayerShotProfile {
+            player_index: 0,
+            finishing: 0.0,
+            long_shot: 0.0,
+        }; RUNNER_TEAM_SIZE],
+        shot_profile_count: 0,
+        teammate_positions: [(0, 0.0, 0.0); RUNNER_TEAM_SIZE],
+        teammate_count: 0,
+        teammate_goalkeeper_indices: [0; RUNNER_TEAM_SIZE],
+        teammate_goalkeeper_count: 0,
+        opponent_positions: [(0.0, 0.0); RUNNER_TEAM_SIZE],
+        opponent_count: 0,
+    }
+}
+
+fn runner_state_value_inputs(
+    players: &[RunnerPlayer],
+    controller_idx: usize,
+    opponents: &[RunnerPlayer],
+) -> RunnerStateValueInputs {
+    assert!(
+        players.len() <= RUNNER_TEAM_SIZE && opponents.len() <= RUNNER_TEAM_SIZE,
+        "match runner state value expects eleven-player teams"
+    );
+    let mut inputs = runner_state_value_inputs_empty();
+
+    for (index, player) in players.iter().enumerate() {
+        inputs.shot_profiles[inputs.shot_profile_count] = PlayerShotProfile {
+            player_index: index,
+            finishing: player.finishing / 100.0,
+            long_shot: player.long_shot / 100.0,
+        };
+        inputs.shot_profile_count += 1;
+        if index != controller_idx {
+            inputs.teammate_positions[inputs.teammate_count] = (index, player.pos.0, player.pos.1);
+            inputs.teammate_count += 1;
+        }
+        if player.position == "GK" {
+            inputs.teammate_goalkeeper_indices[inputs.teammate_goalkeeper_count] = index;
+            inputs.teammate_goalkeeper_count += 1;
+        }
+    }
+    for player in opponents {
+        if player.position != "GK" {
+            inputs.opponent_positions[inputs.opponent_count] = player.pos;
+            inputs.opponent_count += 1;
+        }
+    }
+    inputs
+}
+
+fn runner_projected_control_value_context(
+    controlling_players: &[RunnerPlayer],
+    defending_players: &[RunnerPlayer],
+    config: &RunnerRuntimeConfig,
+) -> RunnerProjectedControlValueContext {
+    let mut context = RunnerProjectedControlValueContext {
+        state_value_inputs: RunnerProjectedStateValueStaticInputs::empty(),
+        defending_gk_attributes: GkSaveAttributes {
+            gk_saving: 50.0,
+            gk_positioning: 50.0,
+            gk_reaction: 50.0,
+            gk_position_error_factor: 0.0,
+            gk_reaction_delay_factor: 0.0,
+            gk_save_base: 0.0,
+        },
+        defending_gk_index: None,
+        defending_contest_defenders:
+            [RUNNER_EMPTY_PROJECTED_CONTEST_DEFENDER_STATIC; RUNNER_TEAM_SIZE],
+        defending_contest_defender_count: 0,
+        projected_plan_scratch: RunnerProjectedTeamPlanScratch::new(),
+        projected_team_scratch: RunnerProjectedTeamProjectionScratch::new(),
+        projection_cache: RunnerProjectedControlProjectionCache::default(),
+    };
+    context.refresh(controlling_players, defending_players, config);
+    context
+}
+
+impl RunnerProjectedControlValueContext {
+    fn reset(&mut self) {
+        self.projection_cache.clear();
+    }
+
+    fn refresh(
+        &mut self,
+        controlling_players: &[RunnerPlayer],
+        defending_players: &[RunnerPlayer],
+        config: &RunnerRuntimeConfig,
+    ) {
+    assert!(
+        controlling_players.len() <= RUNNER_TEAM_SIZE
+            && defending_players.len() <= RUNNER_TEAM_SIZE,
+        "projected control value context expects eleven-player teams"
+    );
+        self.state_value_inputs.refresh(controlling_players);
+        self.defending_gk_attributes = opposing_goalkeeper_context(defending_players, config).0;
+        self.defending_gk_index = defending_players
+            .iter()
+            .position(|player| player.position == "GK");
+        self.defending_contest_defender_count = defending_players.len();
+        for (index, player) in defending_players.iter().enumerate() {
+            let action = if player.movement_intent == "press" {
+                "approach"
+            } else {
+                player.movement_intent.as_str()
+            };
+            let (engagement_weight, engagement_reach) =
+                shot_contest_engagement(action, config.tackle_range);
+            self.defending_contest_defenders[index] = RunnerProjectedContestDefenderStatic {
+                index,
+                speed: player.speed,
+                defence: player.defence,
+                intent: shot_contest_intent(player.movement_intent.as_str()),
+                engagement_weight,
+                engagement_reach,
+                is_goalkeeper: player.position == "GK",
+            };
+        }
+        self.reset();
+    }
 }
 
 fn runner_state_value(
     holder_idx: usize,
     holder: &RunnerPlayer,
     holder_home: bool,
+    control_state: PossessionControlState,
     teammates: &[RunnerPlayer],
     opponents: &[RunnerPlayer],
+    contest_defenders: &[ShotContestDefender],
     attacking_right: bool,
     tick: i32,
     shot_quality_cache: &ShotQualityCache,
     config: &RunnerRuntimeConfig,
 ) -> f64 {
+    let mut scratch = RunnerHeldDecisionScratch::new();
+    scratch.prepare(holder_idx, teammates, opponents, config);
+    runner_state_value_with_scratch(
+        holder_idx,
+        holder,
+        holder_home,
+        control_state,
+        teammates,
+        contest_defenders,
+        attacking_right,
+        tick,
+        shot_quality_cache,
+        config,
+        &scratch,
+    )
+}
+
+fn runner_state_value_with_scratch(
+    holder_idx: usize,
+    holder: &RunnerPlayer,
+    holder_home: bool,
+    control_state: PossessionControlState,
+    teammates: &[RunnerPlayer],
+    contest_defenders: &[ShotContestDefender],
+    attacking_right: bool,
+    tick: i32,
+    shot_quality_cache: &ShotQualityCache,
+    config: &RunnerRuntimeConfig,
+    scratch: &RunnerHeldDecisionScratch,
+) -> f64 {
     state_value(&StateValueInput {
         pos: holder.pos,
         player_index: holder_idx,
-        player_team_home: holder_home,
-        tick,
-        finishing: holder.finishing / 100.0,
-        long_shot: holder.long_shot / 100.0,
-        teammate_positions: &teammate_positions(teammates, holder_idx),
-        teammate_goalkeeper_indices: &teammate_goalkeeper_indices(teammates),
-        opponent_positions: &opponent_positions(opponents),
+        shot_profiles: &scratch.shot_profiles[..teammates.len()],
+        teammate_positions: &scratch.state_value_teammates[..scratch.state_value_teammate_count],
+        teammate_goalkeeper_indices: &scratch.teammate_goalkeeper_indices
+            [..scratch.teammate_goalkeeper_count],
+        opponent_positions: &scratch.opponent_xy[..scratch.opponent_count],
         pitch_length: config.pitch_length,
         pitch_width: config.pitch_width,
         attacking_right,
+        finishing: holder.finishing / 100.0,
+        long_shot: holder.long_shot / 100.0,
         shot_ideal_distance: config.shot_ideal_distance,
         shot_on_target_base: config.shot_on_target_base,
         gk_save_base: config.gk_save_base,
+        gk_attributes: Some(scratch.gk_attributes),
+        gk_pos: scratch.gk_pos,
+        contest_defenders: Some(contest_defenders),
+        tick,
+        team_home: holder_home,
         shot_quality_cache: Some(shot_quality_cache),
-    })
-}
-
-fn runner_position_value(
-    pos: (f64, f64),
-    teammates: &[RunnerPlayer],
-    excluded_teammate_idx: Option<usize>,
-    opponents: &[RunnerPlayer],
-    attacking_right: bool,
-    config: &RunnerRuntimeConfig,
-) -> f64 {
-    position_value(&PositionValueInput {
-        x: pos.0,
-        y: pos.1,
-        pitch_length: config.pitch_length,
-        pitch_width: config.pitch_width,
-        attacking_right,
-        opponent_positions: &opponent_positions(opponents),
-        teammate_positions: &teammates
-            .iter()
-            .enumerate()
-            .filter(|(idx, _)| Some(*idx) != excluded_teammate_idx)
-            .map(|(_, player)| player.pos)
-            .collect::<Vec<_>>(),
-        runner_formation_pos: None,
+        control_state: Some(control_state),
     })
 }
 
@@ -2640,24 +8594,42 @@ fn offside_line(
     attacking_right: bool,
     config: &RunnerRuntimeConfig,
 ) -> f64 {
-    let mut xs: Vec<f64> = opponents
-        .iter()
-        .filter(|player| player.position != "GK")
-        .map(|player| player.pos.0)
-        .collect();
-    if xs.is_empty() {
+    let ahead_of = |candidate: f64, current: f64| {
+        if attacking_right {
+            candidate
+                .partial_cmp(&current)
+                .is_some_and(|ordering| ordering == std::cmp::Ordering::Greater)
+        } else {
+            candidate
+                .partial_cmp(&current)
+                .is_some_and(|ordering| ordering == std::cmp::Ordering::Less)
+        }
+    };
+    let mut first_defender_x = None;
+    let mut second_defender_x = None;
+    for opponent in opponents.iter().filter(|player| player.position != "GK") {
+        let x = opponent.pos.0;
+        match first_defender_x {
+            None => first_defender_x = Some(x),
+            Some(first) if ahead_of(x, first) => {
+                second_defender_x = Some(first);
+                first_defender_x = Some(x);
+            }
+            _ => match second_defender_x {
+                None => second_defender_x = Some(x),
+                Some(second) if ahead_of(x, second) => second_defender_x = Some(x),
+                _ => {}
+            },
+        }
+    }
+    let Some(first_defender_x) = first_defender_x else {
         return if attacking_right {
             config.pitch_length
         } else {
             0.0
         };
-    }
-    if attacking_right {
-        xs.sort_by(|a, b| b.partial_cmp(a).unwrap_or(std::cmp::Ordering::Equal));
-    } else {
-        xs.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
-    }
-    xs.get(1).copied().unwrap_or(xs[0])
+    };
+    second_defender_x.unwrap_or(first_defender_x)
 }
 
 fn flag_offside_indices(
@@ -2667,24 +8639,25 @@ fn flag_offside_indices(
     pass_origin: (f64, f64),
     attacking_right: bool,
     config: &RunnerRuntimeConfig,
-) -> Vec<usize> {
+) -> [bool; RUNNER_TEAM_SIZE] {
+    assert!(
+        teammates.len() <= RUNNER_TEAM_SIZE,
+        "offside flags expect an eleven-player attacking team"
+    );
     let line = offside_line(opponents, attacking_right, config);
-    teammates
-        .iter()
-        .enumerate()
-        .filter(|(idx, player)| {
-            *idx != passer_idx
-                && player.position != "GK"
-                && crate::offside::is_offside_position(
-                    player.pos,
-                    attacking_right,
-                    line,
-                    config.pitch_length,
-                    Some(pass_origin.0),
-                )
-        })
-        .map(|(idx, _)| idx)
-        .collect()
+    let mut flags = [false; RUNNER_TEAM_SIZE];
+    for (index, player) in teammates.iter().enumerate() {
+        flags[index] = index != passer_idx
+            && player.position != "GK"
+            && crate::offside::is_offside_position(
+                player.pos,
+                attacking_right,
+                line,
+                config.pitch_length,
+                Some(pass_origin.0),
+            );
+    }
+    flags
 }
 
 fn record_pass_network(
@@ -2693,92 +8666,93 @@ fn record_pass_network(
     passer_idx: usize,
     receiver_idx: usize,
 ) {
-    let key = format!(
-        "{}:{}:{}",
-        if team_home { "home" } else { "away" },
-        passer_idx,
-        receiver_idx
-    );
-    *state.pass_network.entry(key).or_insert(0) += 1;
+    let team_index = if team_home { 0 } else { 1 };
+    state.pass_network[team_index][passer_idx][receiver_idx] += 1;
 }
 
-fn build_carry_candidates(
+fn build_carry_candidates_into(
     holder_idx: usize,
     holder: &RunnerPlayer,
     holder_home: bool,
     teammates: &[RunnerPlayer],
     opponents: &[RunnerPlayer],
+    contest_defenders: &[ShotContestDefender],
     current_state_value: f64,
     attacking_right: bool,
     tick: i32,
     shot_quality_cache: &ShotQualityCache,
+    plan_signals: TeamPlanSignals,
+    opponent_plan_signals: TeamPlanSignals,
     config: &RunnerRuntimeConfig,
-) -> Vec<RunnerEvaluatedAction> {
-    let current_pv = runner_position_value(
-        holder.pos,
-        teammates,
-        Some(holder_idx),
-        opponents,
-        attacking_right,
-        config,
+    actions: &mut Vec<RunnerEvaluatedAction>,
+    response_arena: &mut RunnerCarryDefenderResponseArena,
+    scratch: &mut RunnerHeldDecisionScratch,
+) {
+    assert!(
+        teammates.len() <= RUNNER_TEAM_SIZE && opponents.len() <= RUNNER_TEAM_SIZE,
+        "carry candidates expect eleven-player teams"
     );
-    let offsets = generate_carry_offsets(&CarryTargetGenerationInput {
+    let offset_count = generate_carry_offsets_into(
+        &CarryTargetGenerationInput {
+            carrier_pos: holder.pos,
+            speed: holder.speed.round() as i32,
+            dribbling: holder.dribbling,
+            attacking_right,
+            pitch_length: config.pitch_length,
+            pitch_width: config.pitch_width,
+            player_max_speed: config.player_max_speed,
+            player_min_speed: config.player_min_speed,
+            carrier_speed: config.carrier_speed,
+            nearest_opponent_distance: scratch.nearest_opponent_distance,
+        },
+        &mut scratch.carry_offsets,
+    );
+    let carry_value_context = carry_batch_value_context(&CarryBatchValueContextInput {
+        tick,
+        carrier_index: holder_idx,
+        carrier_team_home: holder_home,
         carrier_pos: holder.pos,
-        speed: holder.speed.round() as i32,
-        dribbling: holder.dribbling,
-        attacking_right,
+        finishing: holder.finishing / 100.0,
+        long_shot: holder.long_shot / 100.0,
+        teammates: &scratch.carry_support[..teammates.len()],
+        teammate_positions: &scratch.teammate_positions[..teammates.len()],
+        teammate_goalkeeper_indices: &scratch.teammate_goalkeeper_indices
+            [..scratch.teammate_goalkeeper_count],
+        shot_profiles: &scratch.shot_profiles[..teammates.len()],
+        opponents: &scratch.opponent_xy[..scratch.opponent_count],
         pitch_length: config.pitch_length,
         pitch_width: config.pitch_width,
-        player_max_speed: config.player_max_speed,
-        player_min_speed: config.player_min_speed,
-        carrier_speed: config.carrier_speed,
-        nearest_opponent_distance: opponents
-            .iter()
-            .filter(|player| player.position != "GK")
-            .map(|player| distance(holder.pos, player.pos))
-            .fold(f64::INFINITY, f64::min),
-    })
-    .offsets;
-    let carry_support: Vec<CarrySupportPlayer> = teammates
-        .iter()
-        .enumerate()
-        .map(|(idx, player)| CarrySupportPlayer {
-            index: idx,
-            pos: player.pos,
-            base: player.base_pos,
-            is_goalkeeper: player.position == "GK",
-        })
-        .collect();
-    let path_opponents: Vec<CarryPathOpponentInput> = opponents
-        .iter()
-        .map(|player| CarryPathOpponentInput {
-            pos: player.pos,
-            speed: player.speed,
-            defence: player.defence,
-            tackling: player.tackling,
-            is_goalkeeper: player.position == "GK",
-        })
-        .collect();
-    let opponent_xy = opponent_positions(opponents);
-    let mut seen = std::collections::HashSet::new();
-    let mut actions = Vec::new();
-    for (dx, dy) in offsets {
+        attacking_right,
+        shot_ideal_distance: config.shot_ideal_distance,
+        shot_on_target_base: config.shot_on_target_base,
+        gk_save_base: config.gk_save_base,
+        gk_attributes: Some(scratch.gk_attributes),
+        gk_pos: scratch.gk_pos,
+        contest_defenders: Some(contest_defenders),
+        shot_quality_cache: Some(shot_quality_cache),
+    });
+    let mut seen_count = 0;
+    for &(dx, dy) in &scratch.carry_offsets[..offset_count] {
         let target = pitch_clamp(
             (holder.pos.0 + dx, holder.pos.1 + dy),
             config.pitch_length,
             config.pitch_width,
         );
+        if distance(holder.pos, target) <= 1e-6 {
+            continue;
+        }
         let key = (
             (target.0 * 10.0).round() as i64,
             (target.1 * 10.0).round() as i64,
         );
-        if !seen.insert(key) {
+        if scratch.carry_seen[..seen_count].contains(&key) {
             continue;
         }
-        let path_target = (holder.pos.0 + dx, holder.pos.1 + dy);
-        let path = evaluate_carry_path(&CarryPathInput {
+        scratch.carry_seen[seen_count] = key;
+        seen_count += 1;
+        let path = crate::on_ball::evaluate_carry_path_metrics(&CarryPathInput {
             carrier_pos: holder.pos,
-            target: path_target,
+            target,
             dribbling: holder.dribbling,
             attacking_right,
             pitch_length: config.pitch_length,
@@ -2786,44 +8760,79 @@ fn build_carry_candidates(
             player_max_speed: config.player_max_speed,
             carrier_speed: config.carrier_speed,
             tackle_range: config.tackle_range,
-            opponents: &path_opponents,
+            opponents: &scratch.path_opponents[..opponents.len()],
         });
-        let target_pv = runner_position_value(
-            target,
-            teammates,
-            Some(holder_idx),
-            opponents,
-            attacking_right,
+        let segment_count = runner_action_timing(
+            RunnerHeldAction::Carry { target },
+            holder.pos,
+            plan_signals,
+            scratch.local_pressure,
+            0.0,
             config,
-        );
-        let value = evaluate_carry(&CarryInput {
-            tick,
-            carrier_index: holder_idx,
-            carrier_team_home: holder_home,
-            carrier_pos: holder.pos,
+        )
+        .map(|timing| timing.initial_ticks)
+        .unwrap_or(1);
+        let survival_input = CarrySurvivalInput {
+            holder_pos: holder.pos,
+            carry_target: target,
+            carrier_step_distance: config.carrier_speed,
+            attacker_dribbling: holder.dribbling,
+            defenders: &[],
+            tackle_range: config.tackle_range,
+            segment_count,
+        };
+        let (defender_response_index, defender_responses, defender_response_scratch) =
+            response_arena.next(segment_count.max(1) as usize, opponents.len());
+        runner_carry_defender_responses_into(
+            holder_idx,
+            holder,
+            teammates,
+            opponents,
             target,
-            finishing: holder.finishing / 100.0,
-            long_shot: holder.long_shot / 100.0,
-            consecutive_carries: holder.consecutive_carries,
-            possession_ticks: holder.possession_ticks,
-            target_pv,
-            current_pv,
-            current_state_value,
-            path_feasibility: path.feasibility,
-            teammates: &carry_support,
-            opponents: &opponent_xy,
-            pitch_length: config.pitch_length,
-            pitch_width: config.pitch_width,
             attacking_right,
-            carrier_speed: config.carrier_speed,
-            shot_ideal_distance: config.shot_ideal_distance,
-            shot_on_target_base: config.shot_on_target_base,
-            gk_save_base: config.gk_save_base,
-            shot_quality_cache: Some(shot_quality_cache),
-        });
+            opponent_plan_signals,
+            segment_count,
+            config,
+            defender_responses,
+            defender_response_scratch,
+        );
+        let defender_response_slices = defender_responses.slices();
+        let survival = carry_survival_transition_with_defender_response_slices(
+            &survival_input,
+            &defender_response_slices[..defender_responses.segment_count],
+        );
+        let value = evaluate_carry_with_context(
+            &CarryInput {
+                tick,
+                carrier_index: holder_idx,
+                carrier_team_home: holder_home,
+                carrier_pos: holder.pos,
+                target,
+                finishing: holder.finishing / 100.0,
+                long_shot: holder.long_shot / 100.0,
+                consecutive_carries: holder.consecutive_carries,
+                possession_ticks: holder.possession_ticks,
+                current_state_value,
+                path_feasibility: survival.retained_control_probability,
+                teammates: &scratch.carry_support[..teammates.len()],
+                opponents: &scratch.opponent_xy[..scratch.opponent_count],
+                pitch_length: config.pitch_length,
+                pitch_width: config.pitch_width,
+                attacking_right,
+                carrier_speed: config.carrier_speed,
+                shot_ideal_distance: config.shot_ideal_distance,
+                shot_on_target_base: config.shot_on_target_base,
+                gk_save_base: config.gk_save_base,
+                gk_attributes: Some(scratch.gk_attributes),
+                gk_pos: scratch.gk_pos,
+                contest_defenders: Some(contest_defenders),
+                shot_quality_cache: Some(shot_quality_cache),
+            },
+            &carry_value_context,
+        );
         let final_score = finalize_carry_score(&CarryFinalizeInput {
             evaluator_score: value.score,
-            feasibility: path.feasibility,
+            feasibility: survival.retained_control_probability,
             path_peak_threat: path.path_peak_threat,
             path_peak_final_third_control: path.path_peak_final_third_control,
             consecutive_carries: holder.consecutive_carries,
@@ -2831,7 +8840,9 @@ fn build_carry_candidates(
         actions.push(RunnerEvaluatedAction {
             action: RunnerHeldAction::Carry { target },
             score: final_score.score,
-            success_prob: path.feasibility,
+            success_prob: survival.retained_control_probability,
+            carry_survival: Some(survival),
+            carry_defender_response_index: Some(defender_response_index),
             receiver_pressure: 0.0,
             high_threat_space: 0.0,
             final_third_combination: 0.0,
@@ -2844,7 +8855,7 @@ fn build_carry_candidates(
             target_kind_space: false,
             progress_gain: value.progress_gain,
             xg: value.target_shot,
-            pressure: 1.0 - path.feasibility,
+            pressure: 1.0 - survival.retained_control_probability,
             lateral_change: (target.1 - holder.pos.1).abs() / config.pitch_width.max(1.0),
             carry_to_shoot_window: value.carry_to_shoot_window,
             wide_second_line_carry_window: value.wide_second_line_carry_window,
@@ -2860,6 +8871,11 @@ fn build_carry_candidates(
             no_clear_release: 0.0,
             raw_score: value.score,
             debug_final_score: final_score.score,
+            debug_temporal_discount: 1.0,
+            debug_option_return: 0.0,
+            debug_turnover_cost: 0.0,
+            debug_local_shaping: 0.0,
+            debug_option_duration_ticks: 1,
             debug_hold_ticks: 0,
             debug_possession_ticks: holder.possession_ticks,
             debug_best_pass_score: 0.0,
@@ -2868,6 +8884,7 @@ fn build_carry_candidates(
             debug_effective_current_value: current_state_value,
             debug_delta: value.after_value - current_state_value,
             debug_after_value: value.after_value,
+            debug_after_direct_xg: value.after_direct_xg,
             debug_effective_delta: value.effective_gain,
             debug_continuity: value.continuity,
             debug_risk_cost: value.risk_cost,
@@ -2885,28 +8902,82 @@ fn build_carry_candidates(
             } else {
                 0.0
             },
-            debug_path_peak_threat: path.path_peak_threat,
+            debug_path_peak_threat: path.path_peak_threat.max(survival.peak_contact_probability),
             debug_path_peak_proj: path.path_peak_proj,
             debug_path_peak_final_third_control: path.path_peak_final_third_control,
             debug_path_peak_control_factor: path.path_peak_control_factor,
             debug_path_conflict_cost: final_score.conflict_cost,
         });
     }
-    actions
 }
 
-fn build_pass_candidates(
+#[cfg(test)]
+fn build_carry_candidates(
     holder_idx: usize,
     holder: &RunnerPlayer,
     holder_home: bool,
     teammates: &[RunnerPlayer],
     opponents: &[RunnerPlayer],
+    contest_defenders: &[ShotContestDefender],
+    current_state_value: f64,
+    attacking_right: bool,
+    tick: i32,
+    shot_quality_cache: &ShotQualityCache,
+    plan_signals: TeamPlanSignals,
+    opponent_plan_signals: TeamPlanSignals,
+    config: &RunnerRuntimeConfig,
+) -> Vec<RunnerEvaluatedAction> {
+    let mut actions = Vec::with_capacity(RUNNER_MAX_CARRY_CANDIDATES);
+    let mut response_arena = RunnerCarryDefenderResponseArena::new();
+    let mut candidate_scratch = RunnerHeldDecisionScratch::new();
+    candidate_scratch.prepare(holder_idx, teammates, opponents, config);
+    build_carry_candidates_into(
+        holder_idx,
+        holder,
+        holder_home,
+        teammates,
+        opponents,
+        contest_defenders,
+        current_state_value,
+        attacking_right,
+        tick,
+        shot_quality_cache,
+        plan_signals,
+        opponent_plan_signals,
+        config,
+        &mut actions,
+        &mut response_arena,
+        &mut candidate_scratch,
+    );
+    assert_eq!(
+        response_arena.response_count,
+        actions.len(),
+        "every carry candidate must retain its defender response index"
+    );
+    actions
+}
+
+fn build_pass_candidates_into(
+    holder_idx: usize,
+    holder: &RunnerPlayer,
+    holder_home: bool,
+    teammates: &[RunnerPlayer],
+    opponents: &[RunnerPlayer],
+    contest_defenders: &[ShotContestDefender],
     current_state_value: f64,
     attacking_right: bool,
     tick: i32,
     shot_quality_cache: &ShotQualityCache,
     config: &RunnerRuntimeConfig,
-) -> Vec<RunnerEvaluatedAction> {
+    candidates: &mut [TeamPassCandidate],
+    workspace: &mut TeamPassWorkspace,
+    actions: &mut Vec<RunnerEvaluatedAction>,
+    scratch: &RunnerHeldDecisionScratch,
+) {
+    assert!(
+        teammates.len() <= RUNNER_TEAM_SIZE && opponents.len() <= RUNNER_TEAM_SIZE,
+        "pass candidates expect eleven-player teams"
+    );
     let vision = build_vision_context(&VisionContextInput {
         iq: holder.iq,
         facing_direction: holder.facing_direction,
@@ -2917,30 +8988,38 @@ fn build_pass_candidates(
         vision_iq_distance_bonus_factor: config.vision_iq_distance_bonus_factor,
         vision_max_distance: config.vision_max_distance,
     });
-    let players: Vec<PassTeamPlayer<'_>> = teammates
-        .iter()
-        .enumerate()
-        .map(|(idx, player)| PassTeamPlayer {
-            space: PassSpacePlayer {
-                index: idx,
-                pos: player.pos,
-                target_pos: player.target_pos,
-                tactical_anchor: player.tactical_anchor,
-                is_goalkeeper: player.position == "GK",
-                is_defender: is_defender_position(player.position.as_str()),
-                is_midfielder: is_midfielder_position(player.position.as_str()),
-                is_wide: is_wide_position(player.position.as_str()),
-            },
-            risk: PassRiskPlayer {
-                index: idx,
-                pos: player.pos,
-                speed: player.speed.round() as i32,
-                is_goalkeeper: player.position == "GK",
-            },
-            finishing: player.finishing / 100.0,
-            long_shot: player.long_shot / 100.0,
-            base: player.base_pos,
-            is_defender: is_defender_position(player.position.as_str()),
+    let mut players = [PassTeamPlayer {
+        space: PassSpacePlayer {
+            index: 0,
+            pos: (0.0, 0.0),
+            target_pos: (0.0, 0.0),
+            tactical_anchor: (0.0, 0.0),
+            is_goalkeeper: false,
+            is_defender: false,
+            is_midfielder: false,
+            is_wide: false,
+        },
+        risk: PassRiskPlayer {
+            index: 0,
+            pos: (0.0, 0.0),
+            speed: 0,
+            is_goalkeeper: false,
+        },
+        finishing: 0.0,
+        long_shot: 0.0,
+        base: (0.0, 0.0),
+        is_defender: false,
+        goal: None,
+    }; RUNNER_TEAM_SIZE];
+    for (idx, player) in teammates.iter().enumerate() {
+        let space = scratch.pass_space_players[idx];
+        players[idx] = PassTeamPlayer {
+            space,
+            risk: scratch.pass_risk_teammates[idx],
+            finishing: scratch.shot_profiles[idx].finishing,
+            long_shot: scratch.shot_profiles[idx].long_shot,
+            base: scratch.carry_support[idx].base,
+            is_defender: space.is_defender,
             goal: player
                 .goal_type
                 .as_deref()
@@ -2949,80 +9028,65 @@ fn build_pass_candidates(
                     target_pos: player.goal_target,
                     value: player.goal_value,
                 }),
-        })
-        .collect();
-    let risk_opponents: Vec<PassRiskPlayer> = opponents
-        .iter()
-        .enumerate()
-        .map(|(idx, player)| PassRiskPlayer {
-            index: idx,
-            pos: player.pos,
-            speed: player.speed.round() as i32,
-            is_goalkeeper: player.position == "GK",
-        })
-        .collect();
-    let risk_teammates: Vec<PassRiskPlayer> = teammates
-        .iter()
-        .enumerate()
-        .map(|(idx, player)| PassRiskPlayer {
-            index: idx,
-            pos: player.pos,
-            speed: player.speed.round() as i32,
-            is_goalkeeper: player.position == "GK",
-        })
-        .collect();
-    let opponent_xy = opponent_positions(opponents);
-    let teammate_indexed = all_teammate_positions(teammates);
-    let teammate_goalkeepers = teammate_goalkeeper_indices(teammates);
-    let teammate_xy = teammate_xy_positions(teammates, holder_idx);
-    let candidates = team_pass_candidates_batch(&TeamPassBatchInput {
-        tick,
-        passer_index: holder_idx,
-        passer_team_home: holder_home,
-        passer_pos: holder.pos,
-        passer_finishing: holder.finishing / 100.0,
-        passer_long_shot: holder.long_shot / 100.0,
-        passer_short_passing: holder.short_passing,
-        passer_long_passing: holder.long_passing,
-        passer_consecutive_carries: holder.consecutive_carries,
-        vision,
-        attacking_right,
-        pitch_length: config.pitch_length,
-        pitch_width: config.pitch_width,
-        offside_line: offside_line(opponents, attacking_right, config),
-        player_max_speed: config.player_max_speed,
-        player_min_speed: config.player_min_speed,
-        short_pass_base_success: config.short_pass_base_success,
-        long_pass_base_success: config.long_pass_base_success,
-        interception_reach: config.interception_reach,
-        shot_ideal_distance: config.shot_ideal_distance,
-        shot_on_target_base: config.shot_on_target_base,
-        gk_save_base: config.gk_save_base,
-        current_value: current_state_value,
-        players: &players,
-        opponent_positions: &opponent_xy,
-        teammate_positions_for_value: &teammate_indexed,
-        teammate_goalkeeper_indices_for_value: &teammate_goalkeepers,
-        teammate_xy_positions: &teammate_xy,
-        risk_opponents: &risk_opponents,
-        risk_teammates: &risk_teammates,
-        shot_quality_cache: Some(shot_quality_cache),
-    });
-    let pass_candidates: Vec<_> = candidates
-        .into_iter()
-        .filter(|candidate| candidate.score > 0.0)
-        .collect();
-    let actions: Vec<RunnerEvaluatedAction> = pass_candidates
-        .into_iter()
-        .map(|candidate| RunnerEvaluatedAction {
+        };
+    }
+    let candidate_count = team_pass_candidates_batch_into_with_workspace(
+        &TeamPassBatchInput {
+            tick,
+            passer_index: holder_idx,
+            passer_team_home: holder_home,
+            passer_pos: holder.pos,
+            passer_finishing: holder.finishing / 100.0,
+            passer_long_shot: holder.long_shot / 100.0,
+            passer_short_passing: holder.short_passing,
+            passer_long_passing: holder.long_passing,
+            passer_consecutive_carries: holder.consecutive_carries,
+            vision,
+            attacking_right,
+            pitch_length: config.pitch_length,
+            pitch_width: config.pitch_width,
+            offside_line: scratch.offside_line(attacking_right),
+            player_max_speed: config.player_max_speed,
+            player_min_speed: config.player_min_speed,
+            short_pass_base_success: config.short_pass_base_success,
+            long_pass_base_success: config.long_pass_base_success,
+            interception_reach: config.interception_reach,
+            shot_ideal_distance: config.shot_ideal_distance,
+            shot_on_target_base: config.shot_on_target_base,
+            gk_save_base: config.gk_save_base,
+            gk_attributes: Some(scratch.gk_attributes),
+            gk_pos: scratch.gk_pos,
+            contest_defenders: Some(contest_defenders),
+            current_value: current_state_value,
+            players: &players[..teammates.len()],
+            space_players: &scratch.pass_space_players[..teammates.len()],
+            opponent_positions: &scratch.opponent_xy[..scratch.opponent_count],
+            teammate_positions_for_value: &scratch.teammate_positions[..teammates.len()],
+            shot_profiles_for_value: &scratch.shot_profiles[..teammates.len()],
+            teammate_goalkeeper_indices_for_value: &scratch.teammate_goalkeeper_indices
+                [..scratch.teammate_goalkeeper_count],
+            teammate_xy_positions: &scratch.teammate_xy[..scratch.teammate_xy_count],
+            risk_opponents: &scratch.pass_risk_opponents[..opponents.len()],
+            risk_teammates: &scratch.pass_risk_teammates[..teammates.len()],
+            shot_quality_cache: Some(shot_quality_cache),
+        },
+        candidates,
+        workspace,
+    );
+    actions.reserve(candidate_count);
+    for candidate in &candidates[..candidate_count] {
+        actions.push(RunnerEvaluatedAction {
             action: RunnerHeldAction::Pass {
                 receiver_idx: candidate.receiver_index,
                 target: candidate.target,
                 is_long: candidate.is_long,
                 lane_risk: candidate.lane_risk,
+                retention_probability: candidate.success_prob,
             },
             score: candidate.score,
             success_prob: candidate.success_prob,
+            carry_survival: None,
+            carry_defender_response_index: None,
             receiver_pressure: candidate.receiver_pressure,
             high_threat_space: candidate.high_threat_space,
             final_third_combination: candidate.final_third_combination,
@@ -3051,6 +9115,11 @@ fn build_pass_candidates(
             no_clear_release: 0.0,
             raw_score: candidate.raw_score,
             debug_final_score: candidate.score,
+            debug_temporal_discount: 1.0,
+            debug_option_return: 0.0,
+            debug_turnover_cost: 0.0,
+            debug_local_shaping: 0.0,
+            debug_option_duration_ticks: 1,
             debug_hold_ticks: 0,
             debug_possession_ticks: 0,
             debug_best_pass_score: 0.0,
@@ -3059,6 +9128,7 @@ fn build_pass_candidates(
             debug_effective_current_value: candidate.effective_current_value,
             debug_delta: candidate.delta,
             debug_after_value: candidate.after_value,
+            debug_after_direct_xg: candidate.after_direct_xg,
             debug_effective_delta: candidate.effective_delta,
             debug_continuity: candidate.continuity,
             debug_risk_cost: candidate.risk_cost,
@@ -3077,51 +9147,2916 @@ fn build_pass_candidates(
             debug_path_peak_final_third_control: 0.0,
             debug_path_peak_control_factor: 0.0,
             debug_path_conflict_cost: 0.0,
-        })
-        .collect();
+        });
+    }
+}
+
+#[cfg(test)]
+fn build_pass_candidates(
+    holder_idx: usize,
+    holder: &RunnerPlayer,
+    holder_home: bool,
+    teammates: &[RunnerPlayer],
+    opponents: &[RunnerPlayer],
+    contest_defenders: &[ShotContestDefender],
+    current_state_value: f64,
+    attacking_right: bool,
+    tick: i32,
+    shot_quality_cache: &ShotQualityCache,
+    config: &RunnerRuntimeConfig,
+) -> Vec<RunnerEvaluatedAction> {
+    let mut actions = Vec::with_capacity(RUNNER_MAX_PASS_CANDIDATES);
+    let mut candidates = [EMPTY_TEAM_PASS_CANDIDATE; MAX_TEAM_PASS_CANDIDATES];
+    let mut workspace = TeamPassWorkspace::new();
+    let mut scratch = RunnerHeldDecisionScratch::new();
+    scratch.prepare(holder_idx, teammates, opponents, config);
+    build_pass_candidates_into(
+        holder_idx,
+        holder,
+        holder_home,
+        teammates,
+        opponents,
+        contest_defenders,
+        current_state_value,
+        attacking_right,
+        tick,
+        shot_quality_cache,
+        config,
+        &mut candidates,
+        &mut workspace,
+        &mut actions,
+        &scratch,
+    );
     actions
 }
 
 fn apply_runner_support_opportunity_cost(
     carry_actions: &mut [RunnerEvaluatedAction],
     pass_actions: &[RunnerEvaluatedAction],
+    scratch: &mut RunnerHeldDecisionScratch,
 ) {
+    assert!(
+        carry_actions.len() <= RUNNER_MAX_CARRY_CANDIDATES,
+        "carry action buffer exceeds generated candidate bound"
+    );
     if carry_actions.is_empty() || pass_actions.is_empty() {
         return;
     }
-    let pass_inputs: Vec<SupportOpportunityPassInput> = pass_actions
+    let mut pass_count = 0;
+    for action in pass_actions
         .iter()
         .filter(|action| matches!(action.action, RunnerHeldAction::Pass { .. }))
-        .map(|action| SupportOpportunityPassInput {
+    {
+        assert!(
+            pass_count < scratch.support_pass_inputs.len(),
+            "pass action buffer exceeds generated candidate bound"
+        );
+        scratch.support_pass_inputs[pass_count] = SupportOpportunityPassInput {
             score: action.score,
             receiver_goal_fit: action.receiver_goal_fit,
             second_line_arrival_value: action.second_line_arrival_value,
             second_line_cutback_value: action.second_line_cutback_value,
             layoff_support_value: action.layoff_support_value,
-        })
-        .collect();
-    if pass_inputs.is_empty() {
+        };
+        pass_count += 1;
+    }
+    if pass_count == 0 {
         return;
     }
-    let carry_inputs: Vec<SupportOpportunityCarryInput> = carry_actions
-        .iter()
-        .map(|action| SupportOpportunityCarryInput {
+    for (idx, action) in carry_actions.iter().enumerate() {
+        scratch.support_carry_inputs[idx] = SupportOpportunityCarryInput {
             score: action.score,
             future_shot_gain: action.future_shot_gain,
             carry_to_shoot_window: action.carry_to_shoot_window,
             effective_gain: action.debug_effective_delta,
-        })
-        .collect();
-    let output = apply_support_opportunity_cost(&SupportOpportunityInput {
-        passes: &pass_inputs,
-        carries: &carry_inputs,
-    });
+        };
+    }
+    let support_pressure = apply_support_opportunity_cost_into(
+        &SupportOpportunityInput {
+            passes: &scratch.support_pass_inputs[..pass_count],
+            carries: &scratch.support_carry_inputs[..carry_actions.len()],
+        },
+        &mut scratch.support_adjusted_scores[..carry_actions.len()],
+        &mut scratch.support_costs[..carry_actions.len()],
+    );
     for (idx, action) in carry_actions.iter_mut().enumerate() {
-        if let Some(score) = output.adjusted_scores.get(idx) {
-            action.score = *score;
+        action.score = scratch.support_adjusted_scores[idx];
+        let _ = scratch.support_costs[idx];
+        action.no_clear_release = support_pressure;
+    }
+}
+
+#[derive(Clone, Copy, Debug)]
+struct RunnerProjectedTransitionValues {
+    retained_control_probability: f64,
+    retained_control_value: f64,
+    opposing_control_probability: f64,
+    opposing_control_value: f64,
+}
+
+#[derive(Clone, Copy, Debug)]
+struct RunnerProjectedOutcomeBranch {
+    probability: f64,
+    controller_idx: Option<usize>,
+    pos: (f64, f64),
+    arrival_heading: f64,
+    ownership_continuity: f64,
+    contact_load: f64,
+}
+
+const MAX_PROJECTED_OUTCOME_BRANCHES: usize = 8;
+const RUNNER_EMPTY_PROJECTED_OUTCOME_BRANCH: RunnerProjectedOutcomeBranch =
+    RunnerProjectedOutcomeBranch {
+        probability: 0.0,
+        controller_idx: None,
+        pos: (0.0, 0.0),
+        arrival_heading: 0.0,
+        ownership_continuity: 0.0,
+        contact_load: 0.0,
+    };
+
+#[derive(Clone, Copy, Debug)]
+struct RunnerProjectedOutcomeBranches {
+    branches: [RunnerProjectedOutcomeBranch; MAX_PROJECTED_OUTCOME_BRANCHES],
+    len: usize,
+}
+
+impl RunnerProjectedOutcomeBranches {
+    fn new() -> Self {
+        Self {
+            branches: [RUNNER_EMPTY_PROJECTED_OUTCOME_BRANCH; MAX_PROJECTED_OUTCOME_BRANCHES],
+            len: 0,
         }
-        let _ = output.costs.get(idx);
-        action.no_clear_release = output.support_pressure;
+    }
+
+    fn clear(&mut self) {
+        self.len = 0;
+    }
+
+    fn push(&mut self, branch: RunnerProjectedOutcomeBranch) {
+        assert!(
+            self.len < self.branches.len(),
+            "projected execution exceeded its bounded outcome branch capacity"
+        );
+        self.branches[self.len] = branch;
+        self.len += 1;
+    }
+
+    fn iter(&self) -> impl Iterator<Item = &RunnerProjectedOutcomeBranch> {
+        self.branches[..self.len].iter()
+    }
+}
+
+#[derive(Clone, Copy, Debug)]
+struct RunnerProjectedExecutionOutcomes {
+    retained: RunnerProjectedOutcomeBranches,
+    opposing: RunnerProjectedOutcomeBranches,
+    unresolved_probability: f64,
+}
+
+impl RunnerProjectedExecutionOutcomes {
+    fn new() -> Self {
+        Self {
+            retained: RunnerProjectedOutcomeBranches::new(),
+            opposing: RunnerProjectedOutcomeBranches::new(),
+            unresolved_probability: 0.0,
+        }
+    }
+
+    fn clear(&mut self) {
+        self.retained.clear();
+        self.opposing.clear();
+        self.unresolved_probability = 0.0;
+    }
+}
+
+#[derive(Clone, Copy)]
+struct RunnerProjectedControlExecutionOutcomeCache {
+    holder_idx: usize,
+    origin_x_bits: u64,
+    origin_y_bits: u64,
+    opportunity_target_bits: Option<(u64, u64)>,
+    duration_ticks: i32,
+    outcomes: RunnerProjectedExecutionOutcomes,
+}
+
+impl RunnerProjectedControlExecutionOutcomeCache {
+    fn matches(
+        &self,
+        holder_idx: usize,
+        origin: (f64, f64),
+        opportunity_target: Option<(f64, f64)>,
+        duration_ticks: i32,
+    ) -> bool {
+        self.holder_idx == holder_idx
+            && self.origin_x_bits == origin.0.to_bits()
+            && self.origin_y_bits == origin.1.to_bits()
+            && self.opportunity_target_bits
+                == opportunity_target.map(|target| (target.0.to_bits(), target.1.to_bits()))
+            && self.duration_ticks == duration_ticks
+    }
+}
+
+#[derive(Clone, Copy)]
+struct RunnerProjectedTeamPositions {
+    positions: [(usize, f64, f64); RUNNER_TEAM_SIZE],
+    len: usize,
+}
+
+impl RunnerProjectedTeamPositions {
+    fn slice(&self) -> &[(usize, f64, f64)] {
+        &self.positions[..self.len]
+    }
+}
+
+fn runner_plan_signals_are_identical(left: TeamPlanSignals, right: TeamPlanSignals) -> bool {
+    left.forward_bias.to_bits() == right.forward_bias.to_bits()
+        && left.recycle_bias.to_bits() == right.recycle_bias.to_bits()
+        && left.switch_bias.to_bits() == right.switch_bias.to_bits()
+        && left.width_scale.to_bits() == right.width_scale.to_bits()
+        && left.depth_scale.to_bits() == right.depth_scale.to_bits()
+        && left.tempo.to_bits() == right.tempo.to_bits()
+        && left.risk_budget.to_bits() == right.risk_budget.to_bits()
+        && left.compactness.to_bits() == right.compactness.to_bits()
+        && left.press_intensity.to_bits() == right.press_intensity.to_bits()
+}
+
+#[cfg(test)]
+fn runner_projected_team_positions(
+    players: &[RunnerPlayer],
+    opponents: &[RunnerPlayer],
+    ball_pos: (f64, f64),
+    attacking_right: bool,
+    phase: &str,
+    plan_signals: TeamPlanSignals,
+    controlled_player: Option<(usize, (f64, f64))>,
+    duration_ticks: i32,
+    config: &RunnerRuntimeConfig,
+) -> RunnerProjectedTeamPositions {
+    let mut scratch = RunnerProjectedTeamProjectionScratch::new();
+    runner_projected_team_positions_into(
+        players,
+        opponents,
+        ball_pos,
+        attacking_right,
+        phase,
+        plan_signals,
+        controlled_player,
+        duration_ticks,
+        config,
+        &mut scratch,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn runner_projected_team_positions_into(
+    players: &[RunnerPlayer],
+    opponents: &[RunnerPlayer],
+    ball_pos: (f64, f64),
+    attacking_right: bool,
+    phase: &str,
+    plan_signals: TeamPlanSignals,
+    controlled_player: Option<(usize, (f64, f64))>,
+    duration_ticks: i32,
+    config: &RunnerRuntimeConfig,
+    scratch: &mut RunnerProjectedTeamProjectionScratch,
+) -> RunnerProjectedTeamPositions {
+    assert!(
+        players.len() <= RUNNER_TEAM_SIZE && opponents.len() <= RUNNER_TEAM_SIZE,
+        "projected team positions expect eleven-player teams"
+    );
+    for (index, player) in players.iter().enumerate() {
+        scratch.shape_players[index] = TeamShapePlayerInput {
+            index,
+            base_pos: player.base_pos,
+            is_goalkeeper: player.position == "GK",
+        };
+    }
+    for (index, opponent) in opponents.iter().enumerate() {
+        scratch.shape_opponents[index] = TeamShapeOpponentInput {
+            pos: opponent.pos,
+            is_goalkeeper: opponent.position == "GK",
+        };
+    }
+    let shape_players = scratch.shape_players;
+    let shape_opponents = scratch.shape_opponents;
+    runner_projected_team_positions_with_shape_inputs_into(
+        players,
+        opponents,
+        ball_pos,
+        attacking_right,
+        phase,
+        plan_signals,
+        controlled_player,
+        duration_ticks,
+        config,
+        &shape_players[..players.len()],
+        &shape_opponents[..opponents.len()],
+        scratch,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn runner_projected_execution_team_positions_into(
+    players: &[RunnerPlayer],
+    opponents: &[RunnerPlayer],
+    ball_pos: (f64, f64),
+    attacking_right: bool,
+    phase: &str,
+    plan_signals: TeamPlanSignals,
+    controlled_player: Option<(usize, (f64, f64))>,
+    duration_ticks: i32,
+    config: &RunnerRuntimeConfig,
+    shape_inputs: &RunnerProjectedExecutionShapeInputs,
+    players_are_teammates: bool,
+    scratch: &mut RunnerProjectedTeamProjectionScratch,
+) -> RunnerProjectedTeamPositions {
+    let (shape_players, shape_opponents) = if players_are_teammates {
+        (
+            &shape_inputs.teammates_as_players[..players.len()],
+            &shape_inputs.teammates_as_opponents[..opponents.len()],
+        )
+    } else {
+        (
+            &shape_inputs.opponents_as_players[..players.len()],
+            &shape_inputs.opponents_as_opponents[..opponents.len()],
+        )
+    };
+    runner_projected_team_positions_with_shape_inputs_into(
+        players,
+        opponents,
+        ball_pos,
+        attacking_right,
+        phase,
+        plan_signals,
+        controlled_player,
+        duration_ticks,
+        config,
+        shape_players,
+        shape_opponents,
+        scratch,
+    )
+}
+
+fn runner_projected_control_shape_inputs(
+    shape_inputs: &RunnerProjectedExecutionShapeInputs,
+    controlling_are_teammates: bool,
+    controlling_player_count: usize,
+    defending_player_count: usize,
+) -> (
+    &[TeamShapePlayerInput],
+    &[TeamShapeOpponentInput],
+    &[TeamShapePlayerInput],
+    &[TeamShapeOpponentInput],
+) {
+    if controlling_are_teammates {
+        (
+            &shape_inputs.teammates_as_players[..controlling_player_count],
+            &shape_inputs.teammates_as_opponents[..defending_player_count],
+            &shape_inputs.opponents_as_players[..defending_player_count],
+            &shape_inputs.opponents_as_opponents[..controlling_player_count],
+        )
+    } else {
+        (
+            &shape_inputs.opponents_as_players[..controlling_player_count],
+            &shape_inputs.opponents_as_opponents[..defending_player_count],
+            &shape_inputs.teammates_as_players[..defending_player_count],
+            &shape_inputs.teammates_as_opponents[..controlling_player_count],
+        )
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn runner_projected_team_positions_with_shape_inputs_into(
+    players: &[RunnerPlayer],
+    opponents: &[RunnerPlayer],
+    ball_pos: (f64, f64),
+    attacking_right: bool,
+    phase: &str,
+    plan_signals: TeamPlanSignals,
+    controlled_player: Option<(usize, (f64, f64))>,
+    duration_ticks: i32,
+    config: &RunnerRuntimeConfig,
+    shape_players: &[TeamShapePlayerInput],
+    shape_opponents: &[TeamShapeOpponentInput],
+    scratch: &mut RunnerProjectedTeamProjectionScratch,
+) -> RunnerProjectedTeamPositions {
+    assert!(
+        players.len() <= RUNNER_TEAM_SIZE && opponents.len() <= RUNNER_TEAM_SIZE,
+        "projected team positions expect eleven-player teams"
+    );
+    assert!(
+        shape_players.len() == players.len() && shape_opponents.len() == opponents.len(),
+        "projected team shape inputs must align with the active teams"
+    );
+    let RunnerProjectedTeamProjectionScratch {
+        shape_anchors,
+        projection_players,
+        projection_movement_targets,
+        projection_output,
+        ..
+    } = scratch;
+    let shape_len = team_shape_plan_into(
+        &TeamShapePlanInput {
+            ball_pos,
+            attacking_right,
+            phase,
+            plan_signals,
+            pitch_length: config.pitch_length,
+            pitch_width: config.pitch_width,
+            players: shape_players,
+            opponents: shape_opponents,
+        },
+        shape_anchors,
+    );
+    for (index, player) in players.iter().enumerate() {
+        let tactical_anchor = if index < shape_len && shape_anchors[index].index == index {
+            shape_anchors[index].tactical_anchor
+        } else {
+            player.tactical_anchor
+        };
+        let movement_target =
+            team_plan_movement_target(player.target_pos, tactical_anchor, plan_signals);
+        projection_movement_targets[index] = movement_target;
+        let desired_speed = player_move_speed(&PlayerMoveSpeedInput {
+            pos: player.pos,
+            target_pos: movement_target,
+            speed_ability: player.speed.round() as i32,
+            movement_intent: player.movement_intent.as_str(),
+            state: player.state.as_str(),
+            player_max_speed: config.player_max_speed,
+            player_min_speed: config.player_min_speed,
+        })
+        .speed;
+        projection_players[index] = TeamPlanProjectionPlayerInput {
+            index,
+            pos: player.pos,
+            velocity: player.velocity,
+            target_pos: player.target_pos,
+            tactical_anchor,
+            speed_ability: player.speed.round() as i32,
+            desired_speed,
+            acceleration_scale: if matches!(
+                player.movement_intent.as_str(),
+                "press" | "contest" | "attack_run"
+            ) {
+                1.15
+            } else {
+                1.0
+            },
+            is_mobile: player.state != "stunned",
+        };
+    }
+    let len = project_team_plan_formation_into_with_prepared_targets(
+        &TeamPlanFormationProjectionInput {
+            signals: plan_signals,
+            duration_ticks,
+            controlled_player_index: controlled_player.map(|(index, _)| index),
+            controlled_player_pos: controlled_player.map(|(_, pos)| pos),
+            pitch_length: config.pitch_length,
+            pitch_width: config.pitch_width,
+            player_max_speed: config.player_max_speed,
+            player_min_speed: config.player_min_speed,
+            players: &projection_players[..players.len()],
+        },
+        &projection_movement_targets[..players.len()],
+        projection_output,
+    );
+    let mut positions = [(0, 0.0, 0.0); RUNNER_TEAM_SIZE];
+    for index in 0..len {
+        let player = projection_output[index];
+        positions[index] = (player.index, player.pos.0, player.pos.1);
+    }
+    RunnerProjectedTeamPositions { positions, len }
+}
+
+#[cfg(test)]
+#[allow(clippy::too_many_arguments)]
+fn runner_successor_projected_team_positions(
+    preliminary: RunnerProjectedTeamPositions,
+    preliminary_signals: TeamPlanSignals,
+    successor_signals: TeamPlanSignals,
+    players: &[RunnerPlayer],
+    opponents: &[RunnerPlayer],
+    ball_pos: (f64, f64),
+    attacking_right: bool,
+    phase: &str,
+    controlled_player: Option<(usize, (f64, f64))>,
+    duration_ticks: i32,
+    config: &RunnerRuntimeConfig,
+    scratch: &mut RunnerProjectedTeamProjectionScratch,
+) -> RunnerProjectedTeamPositions {
+    if runner_plan_signals_are_identical(preliminary_signals, successor_signals) {
+        preliminary
+    } else {
+        runner_projected_team_positions_into(
+            players,
+            opponents,
+            ball_pos,
+            attacking_right,
+            phase,
+            successor_signals,
+            controlled_player,
+            duration_ticks,
+            config,
+            scratch,
+        )
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn runner_successor_projected_team_positions_with_shape_inputs(
+    preliminary: RunnerProjectedTeamPositions,
+    preliminary_signals: TeamPlanSignals,
+    successor_signals: TeamPlanSignals,
+    players: &[RunnerPlayer],
+    opponents: &[RunnerPlayer],
+    ball_pos: (f64, f64),
+    attacking_right: bool,
+    phase: &str,
+    controlled_player: Option<(usize, (f64, f64))>,
+    duration_ticks: i32,
+    config: &RunnerRuntimeConfig,
+    shape_players: &[TeamShapePlayerInput],
+    shape_opponents: &[TeamShapeOpponentInput],
+    scratch: &mut RunnerProjectedTeamProjectionScratch,
+) -> RunnerProjectedTeamPositions {
+    if runner_plan_signals_are_identical(preliminary_signals, successor_signals) {
+        preliminary
+    } else {
+        runner_projected_team_positions_with_shape_inputs_into(
+            players,
+            opponents,
+            ball_pos,
+            attacking_right,
+            phase,
+            successor_signals,
+            controlled_player,
+            duration_ticks,
+            config,
+            shape_players,
+            shape_opponents,
+            scratch,
+        )
+    }
+}
+
+fn runner_projected_receive_commitment_position(
+    player: &RunnerPlayer,
+    receive_target: (f64, f64),
+    duration_ticks: i32,
+    config: &RunnerRuntimeConfig,
+) -> (f64, f64) {
+    let mut pos = player.pos;
+    let mut velocity = player.velocity;
+    for _ in 0..duration_ticks.max(0) {
+        let movement = player_move_tick(&PlayerMoveTickInput {
+            pos,
+            target_pos: receive_target,
+            velocity,
+            speed_ability: player.speed.round() as i32,
+            movement_intent: "attack_run",
+            state: player.state.as_str(),
+            player_max_speed: config.player_max_speed,
+            player_min_speed: config.player_min_speed,
+            pitch_length: config.pitch_length,
+            pitch_width: config.pitch_width,
+        });
+        pos = movement.pos;
+        velocity = movement.velocity;
+    }
+    pos
+}
+
+fn move_runner_player_to_local_task(
+    player: &mut RunnerPlayer,
+    target: (f64, f64),
+    movement_intent: &str,
+    config: &RunnerRuntimeConfig,
+) {
+    let movement = player_move_tick(&PlayerMoveTickInput {
+        pos: player.pos,
+        target_pos: target,
+        velocity: player.velocity,
+        speed_ability: player.speed.round() as i32,
+        movement_intent,
+        state: player.state.as_str(),
+        player_max_speed: config.player_max_speed,
+        player_min_speed: config.player_min_speed,
+        pitch_length: config.pitch_length,
+        pitch_width: config.pitch_width,
+    });
+    player.target_pos = target;
+    update_runner_text(&mut player.movement_intent, movement_intent);
+    player.pos = movement.pos;
+    player.velocity = movement.velocity;
+    if let Some(facing) = movement.facing_direction {
+        player.facing_direction = facing;
+    }
+    player.distance_covered += movement.distance_covered;
+}
+
+fn runner_carry_segment_position(
+    origin: (f64, f64),
+    target: (f64, f64),
+    carrier_step_distance: f64,
+    segment: i32,
+) -> (f64, f64) {
+    crate::physics::move_toward(
+        origin,
+        target,
+        carrier_step_distance.max(0.0) * segment.max(0) as f64,
+    )
+}
+
+fn runner_carry_defender_responses(
+    holder_idx: usize,
+    holder: &RunnerPlayer,
+    attackers: &[RunnerPlayer],
+    opponents: &[RunnerPlayer],
+    carry_target: (f64, f64),
+    attacking_right: bool,
+    plan_signals: TeamPlanSignals,
+    segment_count: i32,
+    config: &RunnerRuntimeConfig,
+) -> RunnerCarryDefenderResponses {
+    let segment_count = segment_count.max(1) as usize;
+    let mut responses = RunnerCarryDefenderResponses::new(segment_count, opponents.len());
+    let mut scratch = RunnerCarryDefenderResponseScratch::new();
+    runner_carry_defender_responses_into(
+        holder_idx,
+        holder,
+        attackers,
+        opponents,
+        carry_target,
+        attacking_right,
+        plan_signals,
+        segment_count as i32,
+        config,
+        &mut responses,
+        &mut scratch,
+    );
+    responses
+}
+
+fn runner_carry_defender_responses_into(
+    holder_idx: usize,
+    holder: &RunnerPlayer,
+    attackers: &[RunnerPlayer],
+    opponents: &[RunnerPlayer],
+    carry_target: (f64, f64),
+    attacking_right: bool,
+    plan_signals: TeamPlanSignals,
+    segment_count: i32,
+    config: &RunnerRuntimeConfig,
+    responses: &mut RunnerCarryDefenderResponses,
+    scratch: &mut RunnerCarryDefenderResponseScratch,
+) {
+    let segment_count = segment_count.max(1) as usize;
+    assert!(
+        segment_count <= RUNNER_MAX_CARRY_RESPONSE_SEGMENTS,
+        "carry response segment count exceeds action timing bound"
+    );
+    assert!(
+        opponents.len() <= RUNNER_TEAM_SIZE,
+        "carry defender responses expect an eleven-player defense"
+    );
+    let RunnerCarryDefenderResponseScratch {
+        projected_defenders,
+        attacker_positions,
+        targets,
+        action_types,
+        team_defenders,
+        defender_team_context_indices,
+    } = scratch;
+    for (index, opponent) in opponents.iter().enumerate() {
+        projected_defenders[index] = RunnerProjectedDefender {
+            pos: opponent.pos,
+            target_pos: opponent.target_pos,
+            tactical_anchor: opponent.tactical_anchor,
+            base_pos: opponent.base_pos,
+            velocity: opponent.velocity,
+            speed: opponent.speed,
+            defence: opponent.defence,
+            tackling: opponent.tackling,
+            iq: opponent.iq,
+            state: if opponent.state == "pressing" {
+                "pressing"
+            } else if opponent.state == "stunned" {
+                "stunned"
+            } else {
+                "off_ball"
+            },
+            last_def_action: runner_static_defense_action(opponent.last_def_action.as_str()),
+            is_goalkeeper: opponent.position == "GK",
+        };
+    }
+    let projected_defenders = &mut projected_defenders[..opponents.len()];
+    let mut static_attacker_count = 0;
+    for (index, player) in attackers.iter().enumerate() {
+        if index == holder_idx || player.position == "GK" {
+            continue;
+        }
+        attacker_positions[static_attacker_count] = player.pos;
+        static_attacker_count += 1;
+    }
+
+    for segment in 0..segment_count {
+        let carrier_pos = runner_carry_segment_position(
+            holder.pos,
+            carry_target,
+            config.carrier_speed,
+            segment as i32,
+        );
+        attacker_positions[static_attacker_count] = carrier_pos;
+        let attacker_count = static_attacker_count + 1;
+        let mut team_defender_count = 0;
+        for (defender_idx, defender) in projected_defenders.iter().enumerate() {
+            if defender.is_goalkeeper {
+                continue;
+            }
+            team_defenders[team_defender_count] = DefenseTeammateInput {
+                pos: defender.pos,
+                target_pos: defender.target_pos,
+                anchor: defender.tactical_anchor,
+            };
+            defender_team_context_indices[defender_idx] = team_defender_count;
+            team_defender_count += 1;
+        }
+        let team_context = fixed_defense_team_context(
+            carrier_pos,
+            Some(carrier_pos),
+            holder.possession_ticks + segment as i32 + 1,
+            1.0,
+            !attacking_right,
+            config.pitch_length,
+            config.pitch_width,
+            config.press_radius,
+            &team_defenders[..team_defender_count],
+        );
+        for defender_idx in 0..projected_defenders.len() {
+            let defender = &projected_defenders[defender_idx];
+            if defender.is_goalkeeper {
+                targets[defender_idx] = defender.target_pos;
+                action_types[defender_idx] = "hold_position";
+                continue;
+            }
+            let choice = best_fixed_team_defense_candidate_with_team_context(
+                &DefenseChoiceInput {
+                    defender_pos: defender.pos,
+                    anchor: defender.tactical_anchor,
+                    base_ref: defender.base_pos,
+                    ball_pos: carrier_pos,
+                    ball_carrier_pos: Some(carrier_pos),
+                    ball_carrier_consecutive_carries: holder.consecutive_carries
+                        + segment as i32
+                        + 1,
+                    ball_carrier_possession_ticks: holder.possession_ticks + segment as i32 + 1,
+                    carrier_control_readiness: 1.0,
+                    attacking_right: !attacking_right,
+                    pitch_length: config.pitch_length,
+                    pitch_width: config.pitch_width,
+                    press_radius: config.press_radius,
+                    tackle_range: config.tackle_range,
+                    carrier_speed: config.carrier_speed,
+                    press_intensity: plan_signals.press_intensity,
+                    compactness: plan_signals.compactness,
+                    movement: runner_projected_defense_movement_input(
+                        defender,
+                        plan_signals,
+                        config,
+                    ),
+                    iq: defender.iq,
+                    attackers: &attacker_positions[..attacker_count],
+                    teammates: &[],
+                    random_samples: &[],
+                    score_noises: &[],
+                    roll_by_count: &[],
+                    fallback_index_by_count: &[],
+                },
+                Some((&team_context, defender_team_context_indices[defender_idx])),
+            );
+            let choice = choice.map(|candidate| (candidate.target, candidate.action_type));
+            let (target, action) =
+                choice.unwrap_or((defender.target_pos, defender.last_def_action));
+            targets[defender_idx] = target;
+            action_types[defender_idx] = action;
+        }
+        for (defender_idx, defender) in projected_defenders.iter_mut().enumerate() {
+            let target = targets[defender_idx];
+            let action = action_types[defender_idx];
+            let movement = crate::off_ball_defense::project_defense_action_motion(
+                defender.pos,
+                target,
+                defender.tactical_anchor,
+                action,
+                runner_projected_defense_movement_input(defender, plan_signals, config),
+            );
+            responses.segments[segment][defender_idx] = DefenderActionInput {
+                index: defender_idx,
+                pos: defender.pos,
+                new_pos: movement.pos,
+                action,
+                speed: defender.speed,
+                defence: defender.defence,
+                tackling: defender.tackling,
+                is_goalkeeper: defender.is_goalkeeper,
+            };
+            defender.pos = movement.pos;
+            defender.velocity = movement.velocity;
+            defender.target_pos = target;
+            defender.last_def_action = action;
+        }
+    }
+}
+
+fn runner_static_defense_action(action: &str) -> &'static str {
+    match action {
+        "tackle" => "tackle",
+        "approach" => "approach",
+        "mark_runner" => "mark_runner",
+        "block_lane" => "block_lane",
+        _ => "hold_position",
+    }
+}
+
+fn runner_player_state_code(state: &str) -> u8 {
+    match state {
+        "on_ball" => 1,
+        "stunned" => 2,
+        "pressing" => 3,
+        _ => 0,
+    }
+}
+
+fn projected_position(
+    positions: &[(usize, f64, f64)],
+    index: usize,
+    fallback: (f64, f64),
+) -> (f64, f64) {
+    if let Some((_, x, y)) = positions
+        .get(index)
+        .filter(|(player_index, _, _)| *player_index == index)
+    {
+        return (*x, *y);
+    }
+    positions
+        .iter()
+        .find(|(player_index, _, _)| *player_index == index)
+        .map(|(_, x, y)| (*x, *y))
+        .unwrap_or(fallback)
+}
+
+fn runner_projected_plan(
+    current: TeamPlanState,
+    players: &[RunnerPlayer],
+    opponents: &[RunnerPlayer],
+    projected_players: &[(usize, f64, f64)],
+    projected_opponents: &[(usize, f64, f64)],
+    ball_pos: (f64, f64),
+    attacking_right: bool,
+    phase: &str,
+    has_possession: bool,
+    scratch: &mut RunnerProjectedTeamPlanScratch,
+    config: &RunnerRuntimeConfig,
+) -> (TeamPlanState, TeamPlanSignals) {
+    assert!(
+        players.len() <= RUNNER_TEAM_SIZE && opponents.len() <= RUNNER_TEAM_SIZE,
+        "projected team plan expects eleven-player teams"
+    );
+    for (index, player) in players.iter().enumerate() {
+        scratch.players[index] = TeamPlanPlayerInput {
+            pos: projected_position(projected_players, index, player.pos),
+            is_goalkeeper: player.position == "GK",
+        };
+    }
+    for (index, player) in opponents.iter().enumerate() {
+        scratch.opponents[index] = TeamPlanOpponentInput {
+            pos: projected_position(projected_opponents, index, player.pos),
+            is_goalkeeper: player.position == "GK",
+        };
+    }
+    select_team_plan(&TeamPlanUpdateInput {
+        current,
+        ball_pos,
+        attacking_right,
+        has_possession,
+        phase,
+        pitch_length: config.pitch_length,
+        pitch_width: config.pitch_width,
+        players: &scratch.players[..players.len()],
+        opponents: &scratch.opponents[..opponents.len()],
+    })
+}
+
+fn runner_projected_controller_index(
+    players: &[RunnerPlayer],
+    projected_positions: &[(usize, f64, f64)],
+    ball_pos: (f64, f64),
+) -> Option<usize> {
+    runner_projected_nearest_player_index(
+        players,
+        projected_positions,
+        ball_pos,
+        |_, player| player.position != "GK" && player.state != "stunned",
+        None,
+    )
+}
+
+fn runner_projected_contacting_player_index(
+    players: &[RunnerPlayer],
+    projected_positions: &[(usize, f64, f64)],
+    excluded_idx: Option<usize>,
+    ball_pos: (f64, f64),
+    control_radius: f64,
+) -> Option<usize> {
+    runner_projected_nearest_player_index(
+        players,
+        projected_positions,
+        ball_pos,
+        |index, player| Some(index) != excluded_idx && player.state != "stunned",
+        Some(control_radius),
+    )
+}
+
+fn runner_projected_nearest_player_index(
+    players: &[RunnerPlayer],
+    projected_positions: &[(usize, f64, f64)],
+    ball_pos: (f64, f64),
+    mut includes: impl FnMut(usize, &RunnerPlayer) -> bool,
+    maximum_distance: Option<f64>,
+) -> Option<usize> {
+    let mut nearest = None;
+    for (index, player) in players.iter().enumerate() {
+        if !includes(index, player) {
+            continue;
+        }
+        let candidate_distance =
+            distance(projected_position(projected_positions, index, player.pos), ball_pos);
+        if maximum_distance.is_some_and(|maximum| !(candidate_distance <= maximum)) {
+            continue;
+        }
+        if nearest.is_none_or(|(_, nearest_distance)| {
+            candidate_distance
+                .partial_cmp(&nearest_distance)
+                .is_some_and(|ordering| ordering == std::cmp::Ordering::Less)
+        }) {
+            nearest = Some((index, candidate_distance));
+        }
+    }
+    nearest.map(|(index, _)| index)
+}
+
+fn runner_append_projected_second_ball_outcomes(
+    outcomes: &mut RunnerProjectedExecutionOutcomes,
+    probability: f64,
+    ball_pos: (f64, f64),
+    origin: (f64, f64),
+    teammates: &[RunnerPlayer],
+    opponents: &[RunnerPlayer],
+    projected_teammates: &[(usize, f64, f64)],
+    projected_opponents: &[(usize, f64, f64)],
+    second_ball_inputs: &RunnerSecondBallInputs,
+    config: &RunnerRuntimeConfig,
+) {
+    let probability = probability.clamp(0.0, 1.0);
+    if probability <= 1e-9 {
+        return;
+    }
+    let control = second_ball_inputs.estimate(ball_pos, config);
+    let heading = angle_between_points(ball_pos, origin);
+    if let Some(controller_idx) =
+        runner_projected_controller_index(teammates, projected_teammates, ball_pos)
+    {
+        outcomes.retained.push(RunnerProjectedOutcomeBranch {
+            probability: probability * control.attacking_control_probability,
+            controller_idx: Some(controller_idx),
+            pos: ball_pos,
+            arrival_heading: heading,
+            ownership_continuity: 1.0,
+            contact_load: 1.0,
+        });
+    }
+    if let Some(controller_idx) =
+        runner_projected_controller_index(opponents, projected_opponents, ball_pos)
+    {
+        outcomes.opposing.push(RunnerProjectedOutcomeBranch {
+            probability: probability * control.defending_control_probability,
+            controller_idx: Some(controller_idx),
+            pos: ball_pos,
+            arrival_heading: heading,
+            ownership_continuity: 0.0,
+            contact_load: 1.0,
+        });
+    }
+    outcomes.unresolved_probability += probability * control.unresolved_probability;
+}
+
+#[cfg(test)]
+fn runner_projected_pass_execution_outcomes(
+    action: &RunnerEvaluatedAction,
+    holder_idx: usize,
+    origin: (f64, f64),
+    target: (f64, f64),
+    teammates: &[RunnerPlayer],
+    opponents: &[RunnerPlayer],
+    attacking_right: bool,
+    team_phase: &str,
+    opponent_phase: &str,
+    team_plan_signals: TeamPlanSignals,
+    opponent_plan_signals: TeamPlanSignals,
+    duration_ticks: i32,
+    config: &RunnerRuntimeConfig,
+    scratch: &mut RunnerProjectedTeamProjectionScratch,
+) -> RunnerProjectedExecutionOutcomes {
+    let mut second_ball_inputs = RunnerSecondBallInputs::empty();
+    second_ball_inputs.prepare_projected_players(teammates, opponents, config);
+    let mut outcomes = RunnerProjectedExecutionOutcomes::new();
+    runner_projected_pass_execution_outcomes_into(
+        action,
+        holder_idx,
+        origin,
+        target,
+        teammates,
+        opponents,
+        attacking_right,
+        team_phase,
+        opponent_phase,
+        team_plan_signals,
+        opponent_plan_signals,
+        duration_ticks,
+        config,
+        scratch,
+        None,
+        &mut second_ball_inputs,
+        &mut outcomes,
+    );
+    outcomes
+}
+
+#[allow(clippy::too_many_arguments)]
+fn runner_projected_pass_execution_outcomes_into(
+    action: &RunnerEvaluatedAction,
+    holder_idx: usize,
+    origin: (f64, f64),
+    target: (f64, f64),
+    teammates: &[RunnerPlayer],
+    opponents: &[RunnerPlayer],
+    attacking_right: bool,
+    team_phase: &str,
+    opponent_phase: &str,
+    team_plan_signals: TeamPlanSignals,
+    opponent_plan_signals: TeamPlanSignals,
+    duration_ticks: i32,
+    config: &RunnerRuntimeConfig,
+    scratch: &mut RunnerProjectedTeamProjectionScratch,
+    shape_inputs: Option<&RunnerProjectedExecutionShapeInputs>,
+    second_ball_inputs: &mut RunnerSecondBallInputs,
+    outcomes: &mut RunnerProjectedExecutionOutcomes,
+) {
+    outcomes.clear();
+    let RunnerHeldAction::Pass {
+        receiver_idx,
+        retention_probability,
+        ..
+    } = action.action
+    else {
+        unreachable!();
+    };
+    let mut projected_teammates = if let Some(shape_inputs) = shape_inputs {
+        runner_projected_execution_team_positions_into(
+            teammates,
+            opponents,
+            target,
+            attacking_right,
+            team_phase,
+            team_plan_signals,
+            None,
+            duration_ticks,
+            config,
+            shape_inputs,
+            true,
+            scratch,
+        )
+    } else {
+        runner_projected_team_positions_into(
+            teammates,
+            opponents,
+            target,
+            attacking_right,
+            team_phase,
+            team_plan_signals,
+            None,
+            duration_ticks,
+            config,
+            scratch,
+        )
+    };
+    if let Some(receiver) = teammates.get(receiver_idx) {
+        let pos =
+            runner_projected_receive_commitment_position(receiver, target, duration_ticks, config);
+        if let Some(entry) = projected_teammates.positions[..projected_teammates.len]
+            .iter_mut()
+            .find(|(player_idx, _, _)| *player_idx == receiver_idx)
+        {
+            *entry = (receiver_idx, pos.0, pos.1);
+        }
+    }
+    let projected_opponents = if let Some(shape_inputs) = shape_inputs {
+        runner_projected_execution_team_positions_into(
+            opponents,
+            teammates,
+            target,
+            !attacking_right,
+            opponent_phase,
+            opponent_plan_signals,
+            None,
+            duration_ticks,
+            config,
+            shape_inputs,
+            false,
+            scratch,
+        )
+    } else {
+        runner_projected_team_positions_into(
+            opponents,
+            teammates,
+            target,
+            !attacking_right,
+            opponent_phase,
+            opponent_plan_signals,
+            None,
+            duration_ticks,
+            config,
+            scratch,
+        )
+    };
+    second_ball_inputs.refresh_projected_positions(
+        teammates,
+        opponents,
+        projected_teammates.slice(),
+        projected_opponents.slice(),
+    );
+    let receiver_idx = teammates.get(receiver_idx).and_then(|receiver| {
+        let receiver_pos =
+            projected_position(projected_teammates.slice(), receiver_idx, receiver.pos);
+        (receiver_idx != holder_idx
+            && receiver.state != "stunned"
+            && distance(receiver_pos, target) <= config.contest_radius)
+            .then_some(receiver_idx)
+    });
+    let opponent_idx = runner_projected_contacting_player_index(
+        opponents,
+        projected_opponents.slice(),
+        None,
+        target,
+        config.contest_radius,
+    );
+    let retained_probability = retention_probability.clamp(0.0, 1.0);
+    if let Some(receiver_idx) = receiver_idx {
+        let receiver = &teammates[receiver_idx];
+        let receiver_pos =
+            projected_position(projected_teammates.slice(), receiver_idx, receiver.pos);
+        let clean_receive = pass_receive_plan(&PassReceivePlanInput {
+            receiver_pos,
+            target_pos: target,
+            receiver_iq: receiver.iq,
+            receiver_offside_flagged: false,
+            pitch_length: config.pitch_length,
+            pitch_width: config.pitch_width,
+            first_touch_error_divisor: config.first_touch_error_divisor,
+            error_roll: 1.0,
+            loose_x_roll: 0.5,
+            loose_y_roll: 0.5,
+        });
+        let error_probability = clean_receive.first_touch_error_chance.clamp(0.0, 1.0);
+        outcomes.retained.push(RunnerProjectedOutcomeBranch {
+            probability: retained_probability * (1.0 - error_probability),
+            controller_idx: Some(receiver_idx),
+            pos: receiver_pos,
+            arrival_heading: angle_between_points(receiver_pos, origin),
+            ownership_continuity: 1.0,
+            contact_load: 0.0,
+        });
+        for (loose_x_roll, loose_y_roll) in [(0.25, 0.25), (0.25, 0.75), (0.75, 0.25), (0.75, 0.75)]
+        {
+            let error_receive = pass_receive_plan(&PassReceivePlanInput {
+                receiver_pos,
+                target_pos: target,
+                receiver_iq: receiver.iq,
+                receiver_offside_flagged: false,
+                pitch_length: config.pitch_length,
+                pitch_width: config.pitch_width,
+                first_touch_error_divisor: config.first_touch_error_divisor,
+                error_roll: 0.0,
+                loose_x_roll,
+                loose_y_roll,
+            });
+            runner_append_projected_second_ball_outcomes(
+                outcomes,
+                retained_probability * error_probability * 0.25,
+                error_receive.loose_pos,
+                origin,
+                teammates,
+                opponents,
+                projected_teammates.slice(),
+                projected_opponents.slice(),
+                second_ball_inputs,
+                config,
+            );
+        }
+    } else {
+        if let Some(controller_idx) = opponent_idx {
+            let controller = &opponents[controller_idx];
+            let controller_pos =
+                projected_position(projected_opponents.slice(), controller_idx, controller.pos);
+            outcomes.opposing.push(RunnerProjectedOutcomeBranch {
+                probability: retained_probability,
+                controller_idx: Some(controller_idx),
+                pos: controller_pos,
+                arrival_heading: angle_between_points(controller_pos, origin),
+                ownership_continuity: 0.0,
+                contact_load: 0.0,
+            });
+        } else {
+            runner_append_projected_second_ball_outcomes(
+                outcomes,
+                retained_probability,
+                target,
+                origin,
+                teammates,
+                opponents,
+                projected_teammates.slice(),
+                projected_opponents.slice(),
+                second_ball_inputs,
+                config,
+            );
+        }
+    }
+    let loss_probability = 1.0 - retained_probability;
+    let loss = pass_control_transition(&PassControlTransitionInput {
+        retained_possession: false,
+        receiver_index: receiver_idx,
+        opponent_index: opponent_idx,
+        opponent_control: if opponent_idx.is_some() { 1.0 } else { 0.0 },
+        loose_control: if opponent_idx.is_some() { 0.0 } else { 1.0 },
+    });
+    if loss.outcome_code == 1 {
+        if let Some(controller_idx) = loss.opponent_index {
+            let controller_pos =
+                projected_position(projected_opponents.slice(), controller_idx, target);
+            outcomes.opposing.push(RunnerProjectedOutcomeBranch {
+                probability: loss_probability,
+                controller_idx: Some(controller_idx),
+                pos: controller_pos,
+                arrival_heading: angle_between_points(controller_pos, origin),
+                ownership_continuity: 0.0,
+                contact_load: 0.0,
+            });
+        } else {
+            outcomes.unresolved_probability += loss_probability;
+        }
+    } else {
+        runner_append_projected_second_ball_outcomes(
+            outcomes,
+            loss_probability,
+            target,
+            origin,
+            teammates,
+            opponents,
+            projected_teammates.slice(),
+            projected_opponents.slice(),
+            second_ball_inputs,
+            config,
+        );
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn runner_projected_carry_execution_outcomes_into(
+    action: &RunnerEvaluatedAction,
+    response_arena: Option<&RunnerCarryDefenderResponseArena>,
+    holder_idx: usize,
+    origin: (f64, f64),
+    target: (f64, f64),
+    teammates: &[RunnerPlayer],
+    opponents: &[RunnerPlayer],
+    execution_opponents: &[ExecutionOpponent],
+    attacking_right: bool,
+    team_phase: &str,
+    opponent_phase: &str,
+    team_plan_signals: TeamPlanSignals,
+    opponent_plan_signals: TeamPlanSignals,
+    duration_ticks: i32,
+    config: &RunnerRuntimeConfig,
+    scratch: &mut RunnerProjectedTeamProjectionScratch,
+    shape_inputs: Option<&RunnerProjectedExecutionShapeInputs>,
+    second_ball_inputs: &mut RunnerSecondBallInputs,
+    outcomes: &mut RunnerProjectedExecutionOutcomes,
+) {
+    outcomes.clear();
+    let survival = action.carry_survival.unwrap_or(CarrySurvivalTransition {
+        retained_control_probability: action.success_prob.clamp(0.0, 1.0),
+        unconstrained_control_probability: action.success_prob.clamp(0.0, 1.0),
+        constrained_control_probability: 0.0,
+        opposing_control_probability: 1.0 - action.success_prob.clamp(0.0, 1.0),
+        unresolved_probability: 0.0,
+        unconstrained_control_position: target,
+        constrained_control_position: target,
+        opposing_control_position: target,
+        peak_contact_probability: 0.0,
+        peak_containment_probability: 0.0,
+        segment_count: duration_ticks.max(1),
+    });
+    let Some(holder) = teammates.get(holder_idx) else {
+        outcomes.unresolved_probability = 1.0;
+        return;
+    };
+    let stored_defender_responses = action
+        .carry_defender_response_index
+        .and_then(|index| response_arena.and_then(|arena| arena.get(index)));
+    let computed_defender_responses = if stored_defender_responses.is_none() {
+        Some(runner_carry_defender_responses(
+            holder_idx,
+            holder,
+            teammates,
+            opponents,
+            target,
+            attacking_right,
+            opponent_plan_signals,
+            survival.segment_count,
+            config,
+        ))
+    } else {
+        None
+    };
+    let defender_responses = stored_defender_responses
+        .or(computed_defender_responses.as_ref())
+        .expect("carry projection requires defender responses");
+    let mut carry_pos = holder.pos;
+    let mut carry_velocity = holder.velocity;
+    let mut technical_survival = 1.0;
+    let mut technical_error_position = (0.0, 0.0);
+    let mut technical_error_probability = 0.0;
+    for segment in 0..survival.segment_count.max(1) {
+        let response = defender_responses.segment(segment as usize);
+        let carry = carry_phase_plan(&CarryPhasePlanInput {
+            holder_pos: carry_pos,
+            target,
+            velocity: carry_velocity,
+            speed_ability: holder.speed.round() as i32,
+            dribbling: holder.dribbling,
+            consecutive_carries: holder.consecutive_carries + segment,
+            attacking_right,
+            pitch_length: config.pitch_length,
+            pitch_width: config.pitch_width,
+            player_max_speed: config.player_max_speed,
+            player_min_speed: config.player_min_speed,
+            carrier_speed: config.carrier_speed,
+            carry_error_divisor: config.carry_error_divisor,
+            opponents: execution_opponents,
+            defender_responses: response,
+            error_roll: 1.0,
+            loose_x_roll: 0.5,
+            loose_y_roll: 0.5,
+        });
+        let error_probability = carry.error_chance.clamp(0.0, 1.0);
+        let error_mass = technical_survival * error_probability;
+        technical_error_probability += error_mass;
+        technical_error_position.0 += error_mass * carry.loose_pos.0;
+        technical_error_position.1 += error_mass * carry.loose_pos.1;
+        technical_survival *= 1.0 - error_probability;
+        carry_pos = carry.new_pos;
+        carry_velocity = carry.velocity;
+    }
+    let projected_teammates = if let Some(shape_inputs) = shape_inputs {
+        runner_projected_execution_team_positions_into(
+            teammates,
+            opponents,
+            carry_pos,
+            attacking_right,
+            team_phase,
+            team_plan_signals,
+            Some((holder_idx, carry_pos)),
+            duration_ticks,
+            config,
+            shape_inputs,
+            true,
+            scratch,
+        )
+    } else {
+        runner_projected_team_positions_into(
+            teammates,
+            opponents,
+            carry_pos,
+            attacking_right,
+            team_phase,
+            team_plan_signals,
+            Some((holder_idx, carry_pos)),
+            duration_ticks,
+            config,
+            scratch,
+        )
+    };
+    let projected_opponents = if let Some(shape_inputs) = shape_inputs {
+        runner_projected_execution_team_positions_into(
+            opponents,
+            teammates,
+            carry_pos,
+            !attacking_right,
+            opponent_phase,
+            opponent_plan_signals,
+            None,
+            duration_ticks,
+            config,
+            shape_inputs,
+            false,
+            scratch,
+        )
+    } else {
+        runner_projected_team_positions_into(
+            opponents,
+            teammates,
+            carry_pos,
+            !attacking_right,
+            opponent_phase,
+            opponent_plan_signals,
+            None,
+            duration_ticks,
+            config,
+            scratch,
+        )
+    };
+    second_ball_inputs.refresh_projected_positions(
+        teammates,
+        opponents,
+        projected_teammates.slice(),
+        projected_opponents.slice(),
+    );
+    outcomes.retained.push(RunnerProjectedOutcomeBranch {
+        probability: technical_survival * survival.unconstrained_control_probability,
+        controller_idx: Some(holder_idx),
+        pos: survival.unconstrained_control_position,
+        arrival_heading: angle_between_points(survival.unconstrained_control_position, origin),
+        ownership_continuity: 1.0,
+        contact_load: 0.0,
+    });
+    outcomes.retained.push(RunnerProjectedOutcomeBranch {
+        probability: technical_survival * survival.constrained_control_probability,
+        controller_idx: Some(holder_idx),
+        pos: survival.constrained_control_position,
+        arrival_heading: angle_between_points(survival.constrained_control_position, origin),
+        ownership_continuity: 1.0,
+        contact_load: survival.peak_containment_probability,
+    });
+    if let Some(controller_idx) = runner_projected_controller_index(
+        opponents,
+        projected_opponents.slice(),
+        survival.opposing_control_position,
+    ) {
+        outcomes.opposing.push(RunnerProjectedOutcomeBranch {
+            probability: technical_survival * survival.opposing_control_probability,
+            controller_idx: Some(controller_idx),
+            pos: survival.opposing_control_position,
+            arrival_heading: angle_between_points(survival.opposing_control_position, origin),
+            ownership_continuity: 0.0,
+            contact_load: 0.0,
+        });
+    } else {
+        outcomes.unresolved_probability +=
+            technical_survival * survival.opposing_control_probability;
+    }
+    let physical_loose_probability = technical_survival * survival.unresolved_probability;
+    let loose_probability = technical_error_probability + physical_loose_probability;
+    let loose_pos = if loose_probability > 1e-9 {
+        let physical_loose_pos = survival.unconstrained_control_position;
+        (
+            (technical_error_position.0 + physical_loose_probability * physical_loose_pos.0)
+                / loose_probability,
+            (technical_error_position.1 + physical_loose_probability * physical_loose_pos.1)
+                / loose_probability,
+        )
+    } else {
+        carry_pos
+    };
+    runner_append_projected_second_ball_outcomes(
+        outcomes,
+        loose_probability,
+        loose_pos,
+        origin,
+        teammates,
+        opponents,
+        projected_teammates.slice(),
+        projected_opponents.slice(),
+        second_ball_inputs,
+        config,
+    );
+}
+
+#[allow(clippy::too_many_arguments)]
+fn runner_projected_control_execution_outcomes_into(
+    action: &RunnerEvaluatedAction,
+    holder_idx: usize,
+    origin: (f64, f64),
+    teammates: &[RunnerPlayer],
+    opponents: &[RunnerPlayer],
+    execution_opponents: &[ExecutionOpponent],
+    attacking_right: bool,
+    team_phase: &str,
+    opponent_phase: &str,
+    team_plan_signals: TeamPlanSignals,
+    opponent_plan_signals: TeamPlanSignals,
+    duration_ticks: i32,
+    config: &RunnerRuntimeConfig,
+    scratch: &mut RunnerProjectedTeamProjectionScratch,
+    shape_inputs: Option<&RunnerProjectedExecutionShapeInputs>,
+    second_ball_inputs: &mut RunnerSecondBallInputs,
+    outcomes: &mut RunnerProjectedExecutionOutcomes,
+) {
+    outcomes.clear();
+    let Some(holder) = teammates.get(holder_idx) else {
+        outcomes.unresolved_probability = 1.0;
+        return;
+    };
+    let opportunity_target = match action.action {
+        RunnerHeldAction::Hold { opportunity_target } => opportunity_target,
+        RunnerHeldAction::Reorient { .. } | RunnerHeldAction::Shoot { .. } => None,
+        _ => unreachable!(),
+    };
+    let control = hold_phase_plan(&HoldPhasePlanInput {
+        holder_pos: origin,
+        velocity: holder.velocity,
+        speed_ability: holder.speed.round() as i32,
+        dribbling: holder.dribbling,
+        attacking_right,
+        pitch_length: config.pitch_length,
+        pitch_width: config.pitch_width,
+        player_max_speed: config.player_max_speed,
+        player_min_speed: config.player_min_speed,
+        carry_error_divisor: config.carry_error_divisor,
+        opponents: execution_opponents,
+        opportunity_target,
+        error_roll: 1.0,
+        loose_x_roll: 0.5,
+        loose_y_roll: 0.5,
+    });
+    let projected_teammates = if let Some(shape_inputs) = shape_inputs {
+        runner_projected_execution_team_positions_into(
+            teammates,
+            opponents,
+            control.new_pos,
+            attacking_right,
+            team_phase,
+            team_plan_signals,
+            Some((holder_idx, control.new_pos)),
+            duration_ticks,
+            config,
+            shape_inputs,
+            true,
+            scratch,
+        )
+    } else {
+        runner_projected_team_positions_into(
+            teammates,
+            opponents,
+            control.new_pos,
+            attacking_right,
+            team_phase,
+            team_plan_signals,
+            Some((holder_idx, control.new_pos)),
+            duration_ticks,
+            config,
+            scratch,
+        )
+    };
+    let projected_opponents = if let Some(shape_inputs) = shape_inputs {
+        runner_projected_execution_team_positions_into(
+            opponents,
+            teammates,
+            control.new_pos,
+            !attacking_right,
+            opponent_phase,
+            opponent_plan_signals,
+            None,
+            duration_ticks,
+            config,
+            shape_inputs,
+            false,
+            scratch,
+        )
+    } else {
+        runner_projected_team_positions_into(
+            opponents,
+            teammates,
+            control.new_pos,
+            !attacking_right,
+            opponent_phase,
+            opponent_plan_signals,
+            None,
+            duration_ticks,
+            config,
+            scratch,
+        )
+    };
+    second_ball_inputs.refresh_projected_positions(
+        teammates,
+        opponents,
+        projected_teammates.slice(),
+        projected_opponents.slice(),
+    );
+    let error_probability = control.error_chance.clamp(0.0, 1.0);
+    outcomes.retained.push(RunnerProjectedOutcomeBranch {
+        probability: 1.0 - error_probability,
+        controller_idx: Some(holder_idx),
+        pos: control.new_pos,
+        arrival_heading: 0.0,
+        ownership_continuity: 1.0,
+        contact_load: control.pressure.clamp(0.0, 1.0),
+    });
+    runner_append_projected_second_ball_outcomes(
+        outcomes,
+        error_probability,
+        control.loose_pos,
+        origin,
+        teammates,
+        opponents,
+        projected_teammates.slice(),
+        projected_opponents.slice(),
+        second_ball_inputs,
+        config,
+    );
+}
+
+fn runner_apply_projected_control_arrival_heading(
+    outcomes: &mut RunnerProjectedExecutionOutcomes,
+    action: RunnerHeldAction,
+    target: (f64, f64),
+    current_control: PossessionControlState,
+) {
+    let arrival_heading = match action {
+        RunnerHeldAction::Reorient { .. } => outcomes
+            .retained
+            .branches
+            .first()
+            .map(|branch| angle_between_points(branch.pos, target))
+            .unwrap_or(current_control.facing_direction),
+        RunnerHeldAction::Hold { .. } => current_control.facing_direction,
+        _ => unreachable!(),
+    };
+    if let Some(branch) = outcomes.retained.branches.first_mut() {
+        branch.arrival_heading = arrival_heading;
+    }
+}
+
+fn runner_projected_execution_transition_values(
+    outcomes: &RunnerProjectedExecutionOutcomes,
+    origin: (f64, f64),
+    turn_target: Option<f64>,
+    holder_home: bool,
+    attacking_right: bool,
+    team_phase: &str,
+    opponent_phase: &str,
+    teammates: &[RunnerPlayer],
+    opponents: &[RunnerPlayer],
+    team_plan: TeamPlanState,
+    opponent_plan: TeamPlanState,
+    team_plan_signals: TeamPlanSignals,
+    opponent_plan_signals: TeamPlanSignals,
+    current_control: PossessionControlState,
+    duration_ticks: i32,
+    tick: i32,
+    shot_quality_cache: &ShotQualityCache,
+    shape_inputs: &RunnerProjectedExecutionShapeInputs,
+    retained: &mut Option<RunnerProjectedControlValueContext>,
+    opposing: &mut Option<RunnerProjectedControlValueContext>,
+    config: &RunnerRuntimeConfig,
+) -> RunnerProjectedTransitionValues {
+    let mut value_for_retained = |branch: RunnerProjectedOutcomeBranch| {
+        branch.controller_idx.map_or(0.0, |controller_idx| {
+            let value_context = retained.get_or_insert_with(|| {
+                runner_projected_control_value_context(teammates, opponents, config)
+            });
+            runner_projected_control_value_with_shape_inputs(
+                controller_idx,
+                branch.pos,
+                teammates,
+                opponents,
+                shape_inputs,
+                true,
+                holder_home,
+                attacking_right,
+                team_phase,
+                opponent_phase,
+                team_plan,
+                opponent_plan,
+                team_plan_signals,
+                opponent_plan_signals,
+                current_control,
+                branch.arrival_heading,
+                branch.ownership_continuity,
+                branch.contact_load,
+                duration_ticks,
+                distance(origin, branch.pos),
+                turn_target,
+                tick,
+                shot_quality_cache,
+                value_context,
+                config,
+            )
+        })
+    };
+    let mut value_for_opposing = |branch: RunnerProjectedOutcomeBranch| {
+        branch.controller_idx.map_or(0.0, |controller_idx| {
+            let value_context = opposing.get_or_insert_with(|| {
+                runner_projected_control_value_context(opponents, teammates, config)
+            });
+            runner_projected_control_value_with_shape_inputs(
+                controller_idx,
+                branch.pos,
+                opponents,
+                teammates,
+                shape_inputs,
+                false,
+                !holder_home,
+                !attacking_right,
+                opponent_phase,
+                team_phase,
+                opponent_plan,
+                team_plan,
+                opponent_plan_signals,
+                team_plan_signals,
+                PossessionControlState::default(),
+                branch.arrival_heading,
+                branch.ownership_continuity,
+                branch.contact_load,
+                duration_ticks,
+                distance(origin, branch.pos),
+                None,
+                tick,
+                shot_quality_cache,
+                value_context,
+                config,
+            )
+        })
+    };
+    let retained_control_probability = outcomes
+        .retained
+        .iter()
+        .map(|branch| branch.probability)
+        .sum::<f64>()
+        .clamp(0.0, 1.0);
+    let opposing_control_probability = outcomes
+        .opposing
+        .iter()
+        .map(|branch| branch.probability)
+        .sum::<f64>()
+        .clamp(0.0, 1.0 - retained_control_probability);
+    let retained_control_value = if retained_control_probability > 1e-9 {
+        outcomes
+            .retained
+            .iter()
+            .map(|branch| {
+                if branch.probability == 0.0 {
+                    0.0
+                } else {
+                    branch.probability * value_for_retained(*branch)
+                }
+            })
+            .sum::<f64>()
+            / retained_control_probability
+    } else {
+        0.0
+    };
+    let opposing_control_value = if opposing_control_probability > 1e-9 {
+        outcomes
+            .opposing
+            .iter()
+            .map(|branch| {
+                if branch.probability == 0.0 {
+                    0.0
+                } else {
+                    branch.probability * value_for_opposing(*branch)
+                }
+            })
+            .sum::<f64>()
+            / opposing_control_probability
+    } else {
+        0.0
+    };
+    RunnerProjectedTransitionValues {
+        retained_control_probability,
+        retained_control_value: retained_control_value.clamp(0.0, 1.0),
+        opposing_control_probability,
+        opposing_control_value: opposing_control_value.clamp(0.0, 1.0),
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn runner_cache_projected_control_positions_with_shape_inputs(
+    controller_idx: usize,
+    controller_pos: (f64, f64),
+    controlling_players: &[RunnerPlayer],
+    defending_players: &[RunnerPlayer],
+    shape_inputs: &RunnerProjectedExecutionShapeInputs,
+    controlling_are_teammates: bool,
+    controlling_home: bool,
+    attacking_right: bool,
+    controlling_phase: &str,
+    defending_phase: &str,
+    controlling_plan: TeamPlanState,
+    defending_plan: TeamPlanState,
+    controlling_signals: TeamPlanSignals,
+    defending_signals: TeamPlanSignals,
+    duration_ticks: i32,
+    tick: i32,
+    shot_quality_cache: &ShotQualityCache,
+    value_context: &mut RunnerProjectedControlValueContext,
+    config: &RunnerRuntimeConfig,
+) {
+    if value_context
+        .projection_cache
+        .get(controller_idx, controller_pos, duration_ticks)
+        .is_some()
+    {
+        return;
+    }
+
+    let RunnerProjectedControlValueContext {
+        state_value_inputs,
+        defending_gk_attributes,
+        defending_gk_index,
+        defending_contest_defenders,
+        defending_contest_defender_count,
+        projected_team_scratch,
+        projected_plan_scratch,
+        ..
+    } = value_context;
+    let (
+        controlling_shape_players,
+        controlling_shape_opponents,
+        defending_shape_players,
+        defending_shape_opponents,
+    ) = runner_projected_control_shape_inputs(
+        shape_inputs,
+        controlling_are_teammates,
+        controlling_players.len(),
+        defending_players.len(),
+    );
+    let preliminary_controlling = runner_projected_team_positions_with_shape_inputs_into(
+        controlling_players,
+        defending_players,
+        controller_pos,
+        attacking_right,
+        controlling_phase,
+        controlling_signals,
+        Some((controller_idx, controller_pos)),
+        duration_ticks,
+        config,
+        controlling_shape_players,
+        controlling_shape_opponents,
+        projected_team_scratch,
+    );
+    let preliminary_defending = runner_projected_team_positions_with_shape_inputs_into(
+        defending_players,
+        controlling_players,
+        controller_pos,
+        !attacking_right,
+        defending_phase,
+        defending_signals,
+        None,
+        duration_ticks,
+        config,
+        defending_shape_players,
+        defending_shape_opponents,
+        projected_team_scratch,
+    );
+    let (_, successor_controlling_signals) = runner_projected_plan(
+        controlling_plan,
+        controlling_players,
+        defending_players,
+        preliminary_controlling.slice(),
+        preliminary_defending.slice(),
+        controller_pos,
+        attacking_right,
+        controlling_phase,
+        true,
+        projected_plan_scratch,
+        config,
+    );
+    let (_, successor_defending_signals) = runner_projected_plan(
+        defending_plan,
+        defending_players,
+        controlling_players,
+        preliminary_defending.slice(),
+        preliminary_controlling.slice(),
+        controller_pos,
+        !attacking_right,
+        defending_phase,
+        false,
+        projected_plan_scratch,
+        config,
+    );
+    let controlling = runner_successor_projected_team_positions_with_shape_inputs(
+        preliminary_controlling,
+        controlling_signals,
+        successor_controlling_signals,
+        controlling_players,
+        defending_players,
+        controller_pos,
+        attacking_right,
+        controlling_phase,
+        Some((controller_idx, controller_pos)),
+        duration_ticks,
+        config,
+        controlling_shape_players,
+        controlling_shape_opponents,
+        projected_team_scratch,
+    );
+    let defending = runner_successor_projected_team_positions_with_shape_inputs(
+        preliminary_defending,
+        defending_signals,
+        successor_defending_signals,
+        defending_players,
+        controlling_players,
+        controller_pos,
+        !attacking_right,
+        defending_phase,
+        None,
+        duration_ticks,
+        config,
+        defending_shape_players,
+        defending_shape_opponents,
+        projected_team_scratch,
+    );
+    let projected_gk_pos = (*defending_gk_index).map(|index| {
+        projected_position(
+            defending.slice(),
+            index,
+            defending_players[index].pos,
+        )
+    });
+    let mut projected_defender_positions = [(0.0, 0.0); RUNNER_TEAM_SIZE];
+    let mut projected_contest_defenders =
+        [RUNNER_EMPTY_PROJECTED_SHOT_CONTEST_DEFENDER; RUNNER_TEAM_SIZE];
+    let mut projected_defender_count = 0;
+    for (index, player) in defending_players.iter().enumerate() {
+        let pos = projected_position(defending.slice(), index, player.pos);
+        if player.position != "GK" {
+            projected_defender_positions[projected_defender_count] = pos;
+            projected_defender_count += 1;
+        }
+        let defender = defending_contest_defenders[index];
+        projected_contest_defenders[index] = ShotContestDefender {
+            index: defender.index,
+            pos,
+            projected_pos: pos,
+            speed: defender.speed,
+            defence: defender.defence,
+            intent: defender.intent,
+            engagement_weight: defender.engagement_weight,
+            engagement_reach: defender.engagement_reach,
+            is_goalkeeper: defender.is_goalkeeper,
+        };
+    }
+    let mut projected_teammate_positions = [(0, 0.0, 0.0); RUNNER_TEAM_SIZE];
+    let mut projected_teammate_count = 0;
+    for &(index, x, y) in controlling.slice() {
+        if index != controller_idx {
+            projected_teammate_positions[projected_teammate_count] = (index, x, y);
+            projected_teammate_count += 1;
+        }
+    }
+    let controller = &controlling_players[controller_idx];
+    let possession_input = StateValueInput {
+        pos: controller_pos,
+        player_index: controller_idx,
+        shot_profiles: &state_value_inputs.shot_profiles[..state_value_inputs.shot_profile_count],
+        teammate_positions: &projected_teammate_positions[..projected_teammate_count],
+        teammate_goalkeeper_indices: &state_value_inputs.teammate_goalkeeper_indices
+            [..state_value_inputs.teammate_goalkeeper_count],
+        opponent_positions: &projected_defender_positions[..projected_defender_count],
+        pitch_length: config.pitch_length,
+        pitch_width: config.pitch_width,
+        attacking_right,
+        finishing: controller.finishing / 100.0,
+        long_shot: controller.long_shot / 100.0,
+        shot_ideal_distance: config.shot_ideal_distance,
+        shot_on_target_base: config.shot_on_target_base,
+        gk_save_base: config.gk_save_base,
+        gk_attributes: Some(*defending_gk_attributes),
+        gk_pos: projected_gk_pos,
+        contest_defenders: Some(
+            &projected_contest_defenders[..*defending_contest_defender_count],
+        ),
+        tick: tick + duration_ticks.max(0),
+        team_home: controlling_home,
+        shot_quality_cache: Some(shot_quality_cache),
+        control_state: None,
+    };
+    let possession_value_context = possession_value_context(&possession_input);
+    let bellman_geometry = possession_bellman_geometry(&possession_input, &possession_value_context);
+    value_context
+        .projection_cache
+        .insert(RunnerProjectedControlProjection {
+            controller_idx,
+            controller_pos,
+            duration_ticks,
+            controlling,
+            projected_gk_pos,
+            projected_defender_positions,
+            projected_defender_count,
+            projected_contest_defenders,
+            projected_teammate_positions,
+            projected_teammate_count,
+            possession_value_context,
+            bellman_geometry,
+        });
+}
+
+#[cfg(test)]
+#[allow(dead_code)]
+#[allow(clippy::too_many_arguments)]
+fn runner_cache_projected_control_positions(
+    controller_idx: usize,
+    controller_pos: (f64, f64),
+    controlling_players: &[RunnerPlayer],
+    defending_players: &[RunnerPlayer],
+    controlling_home: bool,
+    attacking_right: bool,
+    controlling_phase: &str,
+    defending_phase: &str,
+    controlling_plan: TeamPlanState,
+    defending_plan: TeamPlanState,
+    controlling_signals: TeamPlanSignals,
+    defending_signals: TeamPlanSignals,
+    duration_ticks: i32,
+    tick: i32,
+    shot_quality_cache: &ShotQualityCache,
+    value_context: &mut RunnerProjectedControlValueContext,
+    config: &RunnerRuntimeConfig,
+) {
+    let mut shape_inputs = RunnerProjectedExecutionShapeInputs::new();
+    shape_inputs.refresh(controlling_players, defending_players);
+    runner_cache_projected_control_positions_with_shape_inputs(
+        controller_idx,
+        controller_pos,
+        controlling_players,
+        defending_players,
+        &shape_inputs,
+        true,
+        controlling_home,
+        attacking_right,
+        controlling_phase,
+        defending_phase,
+        controlling_plan,
+        defending_plan,
+        controlling_signals,
+        defending_signals,
+        duration_ticks,
+        tick,
+        shot_quality_cache,
+        value_context,
+        config,
+    );
+}
+
+#[allow(clippy::too_many_arguments)]
+fn runner_projected_control_value_with_shape_inputs(
+    controller_idx: usize,
+    controller_pos: (f64, f64),
+    controlling_players: &[RunnerPlayer],
+    defending_players: &[RunnerPlayer],
+    shape_inputs: &RunnerProjectedExecutionShapeInputs,
+    controlling_are_teammates: bool,
+    controlling_home: bool,
+    attacking_right: bool,
+    controlling_phase: &str,
+    defending_phase: &str,
+    controlling_plan: TeamPlanState,
+    defending_plan: TeamPlanState,
+    controlling_signals: TeamPlanSignals,
+    defending_signals: TeamPlanSignals,
+    previous_control: PossessionControlState,
+    arrival_heading: f64,
+    ownership_continuity: f64,
+    contact_load: f64,
+    duration_ticks: i32,
+    movement_distance: f64,
+    turn_target: Option<f64>,
+    tick: i32,
+    shot_quality_cache: &ShotQualityCache,
+    value_context: &mut RunnerProjectedControlValueContext,
+    config: &RunnerRuntimeConfig,
+) -> f64 {
+    let Some(controller) = controlling_players.get(controller_idx) else {
+        return 0.0;
+    };
+    runner_cache_projected_control_positions_with_shape_inputs(
+        controller_idx,
+        controller_pos,
+        controlling_players,
+        defending_players,
+        shape_inputs,
+        controlling_are_teammates,
+        controlling_home,
+        attacking_right,
+        controlling_phase,
+        defending_phase,
+        controlling_plan,
+        defending_plan,
+        controlling_signals,
+        defending_signals,
+        duration_ticks,
+        tick,
+        shot_quality_cache,
+        value_context,
+        config,
+    );
+    let projection = value_context
+        .projection_cache
+        .get(controller_idx, controller_pos, duration_ticks)
+        .expect("projected control cache must be populated");
+    let projected_controlling = &projection.controlling;
+    let control_state = crate::transition_possession_control(&PossessionControlTransitionInput {
+        previous: previous_control,
+        observation: PossessionControlObservation {
+            controller_index: controller_idx,
+            controller_pos,
+            teammate_positions: projected_controlling.slice(),
+            teammate_goalkeeper_indices: &value_context.state_value_inputs
+                .teammate_goalkeeper_indices
+                [..value_context.state_value_inputs.teammate_goalkeeper_count],
+            opponent_positions: &projection.projected_defender_positions
+                [..projection.projected_defender_count],
+            pitch_length: config.pitch_length,
+            pitch_width: config.pitch_width,
+            attacking_right,
+        },
+        arrival_heading,
+        ownership_continuity,
+        contact_load,
+        settling_ticks: duration_ticks,
+        movement_distance,
+        turn_target,
+    });
+
+    let input = StateValueInput {
+        pos: controller_pos,
+        player_index: controller_idx,
+        shot_profiles: &value_context.state_value_inputs.shot_profiles
+            [..value_context.state_value_inputs.shot_profile_count],
+        teammate_positions: &projection.projected_teammate_positions
+            [..projection.projected_teammate_count],
+        teammate_goalkeeper_indices: &value_context.state_value_inputs.teammate_goalkeeper_indices
+            [..value_context.state_value_inputs.teammate_goalkeeper_count],
+        opponent_positions: &projection.projected_defender_positions
+            [..projection.projected_defender_count],
+        pitch_length: config.pitch_length,
+        pitch_width: config.pitch_width,
+        attacking_right,
+        finishing: controller.finishing / 100.0,
+        long_shot: controller.long_shot / 100.0,
+        shot_ideal_distance: config.shot_ideal_distance,
+        shot_on_target_base: config.shot_on_target_base,
+        gk_save_base: config.gk_save_base,
+        gk_attributes: Some(value_context.defending_gk_attributes),
+        gk_pos: projection.projected_gk_pos,
+        contest_defenders: Some(
+            &projection.projected_contest_defenders
+                [..value_context.defending_contest_defender_count],
+        ),
+        tick: tick + duration_ticks.max(0),
+        team_home: controlling_home,
+        shot_quality_cache: Some(shot_quality_cache),
+        control_state: Some(control_state),
+    };
+    possession_state_value_with_context_and_bellman_geometry(
+        &input,
+        &projection.possession_value_context,
+        &projection.bellman_geometry,
+    )
+    .value
+}
+
+#[cfg(test)]
+#[allow(clippy::too_many_arguments)]
+fn runner_projected_control_value(
+    controller_idx: usize,
+    controller_pos: (f64, f64),
+    controlling_players: &[RunnerPlayer],
+    defending_players: &[RunnerPlayer],
+    controlling_home: bool,
+    attacking_right: bool,
+    controlling_phase: &str,
+    defending_phase: &str,
+    controlling_plan: TeamPlanState,
+    defending_plan: TeamPlanState,
+    controlling_signals: TeamPlanSignals,
+    defending_signals: TeamPlanSignals,
+    previous_control: PossessionControlState,
+    arrival_heading: f64,
+    ownership_continuity: f64,
+    contact_load: f64,
+    duration_ticks: i32,
+    movement_distance: f64,
+    turn_target: Option<f64>,
+    tick: i32,
+    shot_quality_cache: &ShotQualityCache,
+    value_context: &mut RunnerProjectedControlValueContext,
+    config: &RunnerRuntimeConfig,
+) -> f64 {
+    let mut shape_inputs = RunnerProjectedExecutionShapeInputs::new();
+    shape_inputs.refresh(controlling_players, defending_players);
+    runner_projected_control_value_with_shape_inputs(
+        controller_idx,
+        controller_pos,
+        controlling_players,
+        defending_players,
+        &shape_inputs,
+        true,
+        controlling_home,
+        attacking_right,
+        controlling_phase,
+        defending_phase,
+        controlling_plan,
+        defending_plan,
+        controlling_signals,
+        defending_signals,
+        previous_control,
+        arrival_heading,
+        ownership_continuity,
+        contact_load,
+        duration_ticks,
+        movement_distance,
+        turn_target,
+        tick,
+        shot_quality_cache,
+        value_context,
+        config,
+    )
+}
+
+fn runner_projected_transition_values(
+    action: &RunnerEvaluatedAction,
+    response_arena: Option<&RunnerCarryDefenderResponseArena>,
+    holder_idx: usize,
+    origin: (f64, f64),
+    target: (f64, f64),
+    teammates: &[RunnerPlayer],
+    opponents: &[RunnerPlayer],
+    holder_home: bool,
+    attacking_right: bool,
+    team_phase: &str,
+    opponent_phase: &str,
+    team_plan: TeamPlanState,
+    opponent_plan: TeamPlanState,
+    team_plan_signals: TeamPlanSignals,
+    opponent_plan_signals: TeamPlanSignals,
+    current_control: PossessionControlState,
+    duration_ticks: i32,
+    tick: i32,
+    shot_quality_cache: &ShotQualityCache,
+    value_contexts: &mut RunnerProjectedTransitionValueContexts,
+    config: &RunnerRuntimeConfig,
+) -> Option<RunnerProjectedTransitionValues> {
+    if !value_contexts.execution_shape_inputs_ready {
+        value_contexts.execution_shape_inputs.refresh(teammates, opponents);
+        value_contexts.execution_shape_inputs_ready = true;
+    }
+    if !value_contexts.execution_opponents_ready {
+        value_contexts.execution_opponent_count =
+            execution_opponents_into(opponents, &mut value_contexts.execution_opponents);
+        value_contexts.execution_opponents_ready = true;
+    }
+    let RunnerProjectedTransitionValueContexts {
+        retained,
+        opposing,
+        execution_opponents,
+        execution_opponent_count,
+        execution_shape_inputs,
+        execution_team_scratch,
+        execution_second_ball_inputs,
+        execution_outcomes,
+        control_execution_outcome_cache,
+        ..
+    } = value_contexts;
+    match action.action {
+        RunnerHeldAction::Pass { .. } => runner_projected_pass_execution_outcomes_into(
+            action,
+            holder_idx,
+            origin,
+            target,
+            teammates,
+            opponents,
+            attacking_right,
+            team_phase,
+            opponent_phase,
+            team_plan_signals,
+            opponent_plan_signals,
+            duration_ticks,
+            config,
+            execution_team_scratch,
+            Some(execution_shape_inputs),
+            execution_second_ball_inputs,
+            execution_outcomes,
+        ),
+        RunnerHeldAction::Carry { .. } => runner_projected_carry_execution_outcomes_into(
+            action,
+            response_arena,
+            holder_idx,
+            origin,
+            target,
+            teammates,
+            opponents,
+            &execution_opponents[..*execution_opponent_count],
+            attacking_right,
+            team_phase,
+            opponent_phase,
+            team_plan_signals,
+            opponent_plan_signals,
+            duration_ticks,
+            config,
+            execution_team_scratch,
+            Some(execution_shape_inputs),
+            execution_second_ball_inputs,
+            execution_outcomes,
+        ),
+        RunnerHeldAction::Hold { .. } | RunnerHeldAction::Reorient { .. } => {
+            let opportunity_target = match action.action {
+                RunnerHeldAction::Hold { opportunity_target } => opportunity_target,
+                RunnerHeldAction::Reorient { .. } => None,
+                _ => unreachable!(),
+            };
+            let cached_outcomes = control_execution_outcome_cache.as_ref().and_then(|cache| {
+                cache
+                    .matches(holder_idx, origin, opportunity_target, duration_ticks)
+                    .then_some(cache.outcomes)
+            });
+            if let Some(cached_outcomes) = cached_outcomes {
+                *execution_outcomes = cached_outcomes;
+            } else {
+                runner_projected_control_execution_outcomes_into(
+                    action,
+                    holder_idx,
+                    origin,
+                    teammates,
+                    opponents,
+                    &execution_opponents[..*execution_opponent_count],
+                    attacking_right,
+                    team_phase,
+                    opponent_phase,
+                    team_plan_signals,
+                    opponent_plan_signals,
+                    duration_ticks,
+                    config,
+                    execution_team_scratch,
+                    Some(execution_shape_inputs),
+                    execution_second_ball_inputs,
+                    execution_outcomes,
+                );
+                *control_execution_outcome_cache =
+                    Some(RunnerProjectedControlExecutionOutcomeCache {
+                        holder_idx,
+                        origin_x_bits: origin.0.to_bits(),
+                        origin_y_bits: origin.1.to_bits(),
+                        opportunity_target_bits: opportunity_target
+                            .map(|target| (target.0.to_bits(), target.1.to_bits())),
+                        duration_ticks,
+                        outcomes: *execution_outcomes,
+                    });
+            }
+            runner_apply_projected_control_arrival_heading(
+                execution_outcomes,
+                action.action,
+                target,
+                current_control,
+            );
+        }
+        RunnerHeldAction::Clear { .. } | RunnerHeldAction::Shoot { .. } => return None,
+    }
+    Some(runner_projected_execution_transition_values(
+        execution_outcomes,
+        origin,
+        match action.action {
+            RunnerHeldAction::Reorient { target } => Some(angle_between_points(origin, target)),
+            _ => None,
+        },
+        holder_home,
+        attacking_right,
+        team_phase,
+        opponent_phase,
+        teammates,
+        opponents,
+        team_plan,
+        opponent_plan,
+        team_plan_signals,
+        opponent_plan_signals,
+        current_control,
+        duration_ticks,
+        tick,
+        shot_quality_cache,
+        execution_shape_inputs,
+        retained,
+        opposing,
+        config,
+    ))
+}
+
+#[cfg(test)]
+fn apply_temporal_option_values(
+    actions: &mut [RunnerEvaluatedAction],
+    response_arena: Option<&RunnerCarryDefenderResponseArena>,
+    holder_idx: usize,
+    origin: (f64, f64),
+    current_control: PossessionControlState,
+    teammates: &[RunnerPlayer],
+    opponents: &[RunnerPlayer],
+    holder_home: bool,
+    attacking_right: bool,
+    tick: i32,
+    shot_quality_cache: &ShotQualityCache,
+    team_phase: &str,
+    opponent_phase: &str,
+    team_plan: TeamPlanState,
+    opponent_plan: TeamPlanState,
+    team_plan_signals: TeamPlanSignals,
+    opponent_plan_signals: TeamPlanSignals,
+    config: &RunnerRuntimeConfig,
+) {
+    let mut value_contexts = RunnerProjectedTransitionValueContexts::default();
+    apply_temporal_option_values_with_contexts(
+        actions,
+        response_arena,
+        holder_idx,
+        origin,
+        current_control,
+        teammates,
+        opponents,
+        holder_home,
+        attacking_right,
+        tick,
+        shot_quality_cache,
+        team_phase,
+        opponent_phase,
+        team_plan,
+        opponent_plan,
+        team_plan_signals,
+        opponent_plan_signals,
+        &mut value_contexts,
+        config,
+    );
+}
+
+#[allow(clippy::too_many_arguments)]
+fn apply_temporal_option_values_with_contexts(
+    actions: &mut [RunnerEvaluatedAction],
+    response_arena: Option<&RunnerCarryDefenderResponseArena>,
+    holder_idx: usize,
+    origin: (f64, f64),
+    current_control: PossessionControlState,
+    teammates: &[RunnerPlayer],
+    opponents: &[RunnerPlayer],
+    holder_home: bool,
+    attacking_right: bool,
+    tick: i32,
+    shot_quality_cache: &ShotQualityCache,
+    team_phase: &str,
+    opponent_phase: &str,
+    team_plan: TeamPlanState,
+    opponent_plan: TeamPlanState,
+    team_plan_signals: TeamPlanSignals,
+    opponent_plan_signals: TeamPlanSignals,
+    value_contexts: &mut RunnerProjectedTransitionValueContexts,
+    config: &RunnerRuntimeConfig,
+) {
+    value_contexts.prepare(teammates, opponents, config);
+    for action in actions {
+        let target = match action.action {
+            RunnerHeldAction::Carry { target }
+            | RunnerHeldAction::Pass { target, .. }
+            | RunnerHeldAction::Clear { target }
+            | RunnerHeldAction::Shoot { target, .. }
+            | RunnerHeldAction::Reorient { target } => target,
+            RunnerHeldAction::Hold { opportunity_target } => opportunity_target.unwrap_or(origin),
+        };
+        let duration_ticks =
+            runner_option_duration_ticks(action, origin, team_plan_signals, config);
+        let projected_values = runner_projected_transition_values(
+            action,
+            response_arena,
+            holder_idx,
+            origin,
+            target,
+            teammates,
+            opponents,
+            holder_home,
+            attacking_right,
+            team_phase,
+            opponent_phase,
+            team_plan,
+            opponent_plan,
+            team_plan_signals,
+            opponent_plan_signals,
+            current_control,
+            duration_ticks,
+            tick,
+            shot_quality_cache,
+            value_contexts,
+            config,
+        );
+        if !matches!(action.action, RunnerHeldAction::Shoot { .. }) {
+            if let Some(values) = projected_values {
+                action.debug_after_value = values.retained_control_value;
+                action.success_prob = values.retained_control_probability;
+            }
+        }
+        let transition = match projected_values {
+            Some(values) => PossessionTransition {
+                goal_probability: 0.0,
+                retained_control_probability: values.retained_control_probability,
+                retained_control_value: values.retained_control_value,
+                opposing_control_probability: values.opposing_control_probability,
+                opposing_control_value: values.opposing_control_value,
+            },
+            None => runner_possession_transition_with_context(
+                action,
+                origin,
+                target,
+                teammates,
+                opponents,
+                holder_home,
+                attacking_right,
+                None,
+                tick,
+                shot_quality_cache,
+                Some(value_contexts.immediate_opposing_control(opponents, teammates, config)),
+                config,
+            ),
+        };
+        let value = temporal_option_value(&TemporalOptionValueInput {
+            current_control_value: action.debug_current_pv,
+            transition,
+            duration_ticks,
+            tempo: team_plan_signals.tempo,
+            risk_budget: team_plan_signals.risk_budget,
+        });
+        action.score = value.advantage;
+        action.debug_final_score = value.advantage;
+        action.debug_temporal_discount = value.temporal_discount;
+        action.debug_option_return = value.score;
+        action.debug_turnover_cost = value.turnover_cost;
+        action.debug_local_shaping = 0.0;
+        action.debug_option_duration_ticks = duration_ticks;
+    }
+}
+
+fn runner_opponent_control_value(
+    pos: (f64, f64),
+    controlling_players: &[RunnerPlayer],
+    defending_players: &[RunnerPlayer],
+    controlling_home: bool,
+    attacking_right: bool,
+    tick: i32,
+    shot_quality_cache: &ShotQualityCache,
+    config: &RunnerRuntimeConfig,
+) -> f64 {
+    let Some((controller_idx, controller)) = controlling_players
+        .iter()
+        .enumerate()
+        .filter(|(_, player)| player.position != "GK")
+        .min_by(|(_, left), (_, right)| {
+            distance(left.pos, pos)
+                .partial_cmp(&distance(right.pos, pos))
+                .unwrap_or(std::cmp::Ordering::Equal)
+        })
+    else {
+        return 0.0;
+    };
+    let inputs = runner_state_value_inputs(controlling_players, controller_idx, defending_players);
+    let (gk_attributes, gk_pos) = opposing_goalkeeper_context(defending_players, config);
+
+    state_value(&StateValueInput {
+        pos,
+        player_index: controller_idx,
+        shot_profiles: &inputs.shot_profiles[..inputs.shot_profile_count],
+        teammate_positions: &inputs.teammate_positions[..inputs.teammate_count],
+        teammate_goalkeeper_indices: &inputs.teammate_goalkeeper_indices
+            [..inputs.teammate_goalkeeper_count],
+        opponent_positions: &inputs.opponent_positions[..inputs.opponent_count],
+        pitch_length: config.pitch_length,
+        pitch_width: config.pitch_width,
+        attacking_right,
+        finishing: controller.finishing / 100.0,
+        long_shot: controller.long_shot / 100.0,
+        shot_ideal_distance: config.shot_ideal_distance,
+        shot_on_target_base: config.shot_on_target_base,
+        gk_save_base: config.gk_save_base,
+        gk_attributes: Some(gk_attributes),
+        gk_pos,
+        contest_defenders: None,
+        tick,
+        team_home: controlling_home,
+        shot_quality_cache: Some(shot_quality_cache),
+        control_state: None,
+    })
+}
+
+fn runner_second_ball_player_input(
+    player: &RunnerPlayer,
+    config: &RunnerRuntimeConfig,
+) -> SecondBallPlayerInput {
+    let desired_speed = player_move_speed(&PlayerMoveSpeedInput {
+        pos: player.pos,
+        target_pos: player.target_pos,
+        speed_ability: player.speed.round() as i32,
+        movement_intent: player.movement_intent.as_str(),
+        state: player.state.as_str(),
+        player_max_speed: config.player_max_speed,
+        player_min_speed: config.player_min_speed,
+    })
+    .speed;
+    let projected = crate::physics::advance_player_motion(&crate::physics::PlayerMotionInput {
+        pos: player.pos,
+        target: player.target_pos,
+        velocity: player.velocity,
+        speed_ability: player.speed.round() as i32,
+        desired_speed,
+        acceleration_scale: if matches!(
+            player.movement_intent.as_str(),
+            "press" | "contest" | "attack_run"
+        ) {
+            1.15
+        } else {
+            1.0
+        },
+        player_max_speed: config.player_max_speed,
+        player_min_speed: config.player_min_speed,
+        pitch_length: config.pitch_length,
+        pitch_width: config.pitch_width,
+    });
+    SecondBallPlayerInput {
+        pos: player.pos,
+        projected_pos: projected.pos,
+        speed: player_speed(
+            player.speed.round() as i32,
+            config.player_max_speed,
+            config.player_min_speed,
+        ),
+    }
+}
+
+#[cfg(test)]
+fn runner_second_ball_control(
+    attacking_players: &[RunnerPlayer],
+    defending_players: &[RunnerPlayer],
+    ball_pos: (f64, f64),
+    config: &RunnerRuntimeConfig,
+) -> SecondBallControlEstimate {
+    RunnerSecondBallInputs::from_players(attacking_players, defending_players, config)
+        .estimate(ball_pos, config)
+}
+
+fn runner_retained_control_value(action: RunnerHeldAction, after_value: f64) -> f64 {
+    match action {
+        RunnerHeldAction::Pass { .. }
+        | RunnerHeldAction::Carry { .. }
+        | RunnerHeldAction::Reorient { .. }
+        | RunnerHeldAction::Hold { .. } => after_value,
+        RunnerHeldAction::Shoot { .. } | RunnerHeldAction::Clear { .. } => 0.0,
+    }
+}
+
+#[cfg(test)]
+fn runner_possession_transition(
+    action: &RunnerEvaluatedAction,
+    origin: (f64, f64),
+    target: (f64, f64),
+    teammates: &[RunnerPlayer],
+    opponents: &[RunnerPlayer],
+    holder_home: bool,
+    attacking_right: bool,
+    projected_values: Option<RunnerProjectedTransitionValues>,
+    tick: i32,
+    shot_quality_cache: &ShotQualityCache,
+    config: &RunnerRuntimeConfig,
+) -> PossessionTransition {
+    runner_possession_transition_with_context(
+        action,
+        origin,
+        target,
+        teammates,
+        opponents,
+        holder_home,
+        attacking_right,
+        projected_values,
+        tick,
+        shot_quality_cache,
+        None,
+        config,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn runner_possession_transition_with_context(
+    action: &RunnerEvaluatedAction,
+    origin: (f64, f64),
+    target: (f64, f64),
+    teammates: &[RunnerPlayer],
+    opponents: &[RunnerPlayer],
+    holder_home: bool,
+    attacking_right: bool,
+    projected_values: Option<RunnerProjectedTransitionValues>,
+    tick: i32,
+    shot_quality_cache: &ShotQualityCache,
+    mut immediate_opposing_control: Option<&mut RunnerOpponentControlValueContext>,
+    config: &RunnerRuntimeConfig,
+) -> PossessionTransition {
+    let mut opposing_control_value = |pos| {
+        if let Some(context) = immediate_opposing_control.as_deref_mut() {
+            context.value(
+                pos,
+                !holder_home,
+                !attacking_right,
+                tick,
+                shot_quality_cache,
+                config,
+            )
+        } else {
+            runner_opponent_control_value(
+                pos,
+                opponents,
+                teammates,
+                !holder_home,
+                !attacking_right,
+                tick,
+                shot_quality_cache,
+                config,
+            )
+        }
+    };
+    match action.action {
+        RunnerHeldAction::Pass { .. } => {
+            let retained = action.success_prob.clamp(0.0, 1.0);
+            let loss_pos = (
+                origin.0 + (target.0 - origin.0) * 0.55,
+                origin.1 + (target.1 - origin.1) * 0.55,
+            );
+            PossessionTransition {
+                goal_probability: 0.0,
+                retained_control_probability: retained,
+                retained_control_value: projected_values
+                    .map(|values| values.retained_control_value)
+                    .unwrap_or_else(|| {
+                        runner_retained_control_value(action.action, action.debug_after_value)
+                    }),
+                opposing_control_probability: 1.0 - retained,
+                opposing_control_value: projected_values
+                    .map(|values| values.opposing_control_value)
+                    .unwrap_or_else(|| opposing_control_value(loss_pos)),
+            }
+        }
+        RunnerHeldAction::Carry { .. } => {
+            let survival = action.carry_survival.unwrap_or(CarrySurvivalTransition {
+                retained_control_probability: action.success_prob.clamp(0.0, 1.0),
+                unconstrained_control_probability: action.success_prob.clamp(0.0, 1.0),
+                constrained_control_probability: 0.0,
+                opposing_control_probability: 1.0 - action.success_prob.clamp(0.0, 1.0),
+                unresolved_probability: 0.0,
+                unconstrained_control_position: target,
+                constrained_control_position: target,
+                opposing_control_position: target,
+                peak_contact_probability: 0.0,
+                peak_containment_probability: 0.0,
+                segment_count: 1,
+            });
+            PossessionTransition {
+                goal_probability: 0.0,
+                retained_control_probability: survival.retained_control_probability,
+                retained_control_value: projected_values
+                    .map(|values| values.retained_control_value)
+                    .unwrap_or_else(|| {
+                        runner_retained_control_value(action.action, action.debug_after_value)
+                    }),
+                opposing_control_probability: survival.opposing_control_probability,
+                opposing_control_value: projected_values
+                    .map(|values| values.opposing_control_value)
+                    .unwrap_or_else(|| {
+                        opposing_control_value(survival.opposing_control_position)
+                    }),
+            }
+        }
+        RunnerHeldAction::Reorient { .. } | RunnerHeldAction::Hold { .. } => {
+            let retained = action.success_prob.clamp(0.0, 1.0);
+            PossessionTransition {
+                goal_probability: 0.0,
+                retained_control_probability: retained,
+                retained_control_value: projected_values
+                    .map(|values| values.retained_control_value)
+                    .unwrap_or_else(|| {
+                        runner_retained_control_value(action.action, action.debug_after_value)
+                    }),
+                opposing_control_probability: 1.0 - retained,
+                opposing_control_value: projected_values
+                    .map(|values| values.opposing_control_value)
+                    .unwrap_or_else(|| opposing_control_value(origin)),
+            }
+        }
+        RunnerHeldAction::Shoot {
+            xg,
+            on_target_prob,
+            body_release_probability,
+            release_probability,
+            block_probability,
+            block_point,
+            ..
+        } => {
+            let second_ball_inputs =
+                RunnerSecondBallInputs::from_players(teammates, opponents, config);
+            let unreleased_second_ball = second_ball_inputs.estimate(origin, config);
+            let second_ball = second_ball_inputs.estimate(block_point, config);
+            let retained_second_ball_value =
+                (action.debug_current_pv * 0.55 + action.xg * 0.45).clamp(0.015, 0.35);
+            let target_opposing_control_value = opposing_control_value(target);
+            crate::shot_possession_transition(&ShotPossessionTransitionInput {
+                execution_probability: body_release_probability,
+                release_probability,
+                block_probability,
+                conditional_on_target_probability: on_target_prob,
+                goal_probability: xg,
+                unreleased_second_ball,
+                blocked_second_ball: second_ball,
+                unreleased_retained_control_value: retained_second_ball_value,
+                unreleased_opposing_control_value: opposing_control_value(origin),
+                blocked_retained_control_value: retained_second_ball_value,
+                blocked_opposing_control_value: opposing_control_value(block_point),
+                saved_opposing_control_value: target_opposing_control_value,
+                off_target_opposing_control_value: target_opposing_control_value,
+            })
+        }
+        RunnerHeldAction::Clear { .. } => {
+            let retained = (0.14 + 0.22 * (1.0 - action.pressure)).clamp(0.0, 0.36);
+            let opposing = (0.46 + 0.24 * action.pressure).clamp(0.0, 1.0 - retained);
+            PossessionTransition {
+                goal_probability: 0.0,
+                retained_control_probability: retained,
+                retained_control_value: 0.06,
+                opposing_control_probability: opposing,
+                opposing_control_value: opposing_control_value(target),
+            }
+        }
+    }
+}
+
+fn runner_option_duration_ticks(
+    action: &RunnerEvaluatedAction,
+    origin: (f64, f64),
+    plan_signals: TeamPlanSignals,
+    config: &RunnerRuntimeConfig,
+) -> i32 {
+    match action.action {
+        RunnerHeldAction::Pass {
+            target, is_long, ..
+        } => {
+            let speed = if is_long {
+                config.ball_long_pass_speed
+            } else {
+                config.ball_pass_speed
+            };
+            (distance(origin, target) / speed.max(0.1)).ceil().max(1.0) as i32
+        }
+        RunnerHeldAction::Clear { target } => (distance(origin, target)
+            / config.ball_long_pass_speed.max(0.1))
+        .ceil()
+        .max(1.0) as i32,
+        RunnerHeldAction::Shoot { target, .. } => (distance(origin, target)
+            / config.ball_shot_speed.max(0.1))
+        .ceil()
+        .max(1.0) as i32,
+        RunnerHeldAction::Carry { .. } => action
+            .carry_survival
+            .map(|survival| survival.segment_count)
+            .unwrap_or_else(|| {
+                runner_action_timing(
+                    action.action,
+                    origin,
+                    plan_signals,
+                    (1.0 - action.success_prob).clamp(0.0, 1.0),
+                    action.opportunity_wait_value,
+                    config,
+                )
+                .map(|timing| timing.initial_ticks)
+                .unwrap_or(1)
+            }),
+        RunnerHeldAction::Reorient { .. } | RunnerHeldAction::Hold { .. } => runner_action_timing(
+            action.action,
+            origin,
+            plan_signals,
+            (1.0 - action.success_prob).clamp(0.0, 1.0),
+            action.opportunity_wait_value,
+            config,
+        )
+        .map(|timing| timing.initial_ticks)
+        .unwrap_or(1),
     }
 }
 
@@ -3131,15 +12066,39 @@ fn gk_fallback_pass_candidate(
     holder_home: bool,
     teammates: &[RunnerPlayer],
     opponents: &[RunnerPlayer],
+    contest_defenders: &[ShotContestDefender],
     current_state_value: f64,
     attacking_right: bool,
     tick: i32,
     shot_quality_cache: &ShotQualityCache,
     config: &RunnerRuntimeConfig,
+    scratch: &RunnerHeldDecisionScratch,
 ) -> Option<RunnerEvaluatedAction> {
-    let opponent_xy = opponent_positions(opponents);
-    let teammate_indexed = all_teammate_positions(teammates);
-    let teammate_goalkeepers = teammate_goalkeeper_indices(teammates);
+    assert!(
+        teammates.len() <= RUNNER_TEAM_SIZE && opponents.len() <= RUNNER_TEAM_SIZE,
+        "goalkeeper fallback expects eleven-player teams"
+    );
+    let passer_context = passer_pass_value_context(&PasserPassValueContextInput {
+        tick,
+        passer_index: holder_idx,
+        passer_team_home: holder_home,
+        passer_pos: holder.pos,
+        passer_finishing: holder.finishing / 100.0,
+        passer_long_shot: holder.long_shot / 100.0,
+        passer_consecutive_carries: holder.consecutive_carries,
+        opponent_positions: &scratch.opponent_xy[..scratch.opponent_count],
+        pitch_length: config.pitch_length,
+        pitch_width: config.pitch_width,
+        attacking_right,
+        shot_ideal_distance: config.shot_ideal_distance,
+        shot_on_target_base: config.shot_on_target_base,
+        gk_save_base: config.gk_save_base,
+        gk_attributes: Some(scratch.gk_attributes),
+        gk_pos: scratch.gk_pos,
+        contest_defenders: Some(contest_defenders),
+        current_value: current_state_value,
+        shot_quality_cache: Some(shot_quality_cache),
+    });
     let mut best: Option<(RunnerEvaluatedAction, f64)> = None;
 
     for (idx, teammate) in teammates.iter().enumerate() {
@@ -3166,7 +12125,8 @@ fn gk_fallback_pass_candidate(
         let dist_factor = (1.0 - (d - 10.0).max(0.0) / 72.0).max(0.30);
         let base_accuracy = base * (0.35 + 0.65 * passing) * dist_factor;
 
-        let value = expected_pass_value(&ExpectedPassInput {
+        let value = expected_pass_value_with_passer_context(
+            &ExpectedPassInput {
             tick,
             passer_index: holder_idx,
             passer_team_home: holder_home,
@@ -3184,9 +12144,11 @@ fn gk_fallback_pass_candidate(
             receiver_goal_target: teammate.goal_type.as_ref().map(|_| teammate.goal_target),
             receiver_goal_value: teammate.goal_value,
             target,
-            teammate_positions: &teammate_indexed,
-            teammate_goalkeeper_indices: &teammate_goalkeepers,
-            opponent_positions: &opponent_xy,
+            shot_profiles: &scratch.shot_profiles[..teammates.len()],
+            teammate_positions: &scratch.teammate_positions[..teammates.len()],
+            teammate_goalkeeper_indices: &scratch.teammate_goalkeeper_indices
+                [..scratch.teammate_goalkeeper_count],
+            opponent_positions: &scratch.opponent_xy[..scratch.opponent_count],
             pitch_length: config.pitch_length,
             pitch_width: config.pitch_width,
             attacking_right,
@@ -3194,12 +12156,17 @@ fn gk_fallback_pass_candidate(
             shot_ideal_distance: config.shot_ideal_distance,
             shot_on_target_base: config.shot_on_target_base,
             gk_save_base: config.gk_save_base,
+            gk_attributes: Some(scratch.gk_attributes),
+            gk_pos: scratch.gk_pos,
+            contest_defenders: Some(contest_defenders),
             current_value: current_state_value,
             base_accuracy,
             receiver_arrival: 1.0,
             continuity: 0.055,
             shot_quality_cache: Some(shot_quality_cache),
-        });
+            },
+            passer_context,
+        );
 
         let safety = value.success_prob * (1.0 - value.receiver_pressure) * (1.0 - value.lane_risk);
         let rank = value.score + value.after_value * 0.12 + safety * 0.040 - value.risk_cost * 0.20;
@@ -3209,9 +12176,12 @@ fn gk_fallback_pass_candidate(
                 target,
                 is_long,
                 lane_risk: value.lane_risk,
+                retention_probability: value.success_prob,
             },
             score: rank,
             success_prob: value.success_prob,
+            carry_survival: None,
+            carry_defender_response_index: None,
             receiver_pressure: value.receiver_pressure,
             high_threat_space: 0.0,
             final_third_combination: 0.0,
@@ -3240,6 +12210,11 @@ fn gk_fallback_pass_candidate(
             no_clear_release: 0.0,
             raw_score: value.score,
             debug_final_score: rank,
+            debug_temporal_discount: 1.0,
+            debug_option_return: 0.0,
+            debug_turnover_cost: 0.0,
+            debug_local_shaping: 0.0,
+            debug_option_duration_ticks: 1,
             debug_hold_ticks: 0,
             debug_possession_ticks: 0,
             debug_best_pass_score: 0.0,
@@ -3248,6 +12223,7 @@ fn gk_fallback_pass_candidate(
             debug_effective_current_value: current_state_value,
             debug_delta: value.after_value - current_state_value,
             debug_after_value: value.after_value,
+            debug_after_direct_xg: value.after_direct_xg,
             debug_effective_delta: value.effective_delta,
             debug_continuity: value.continuity,
             debug_risk_cost: value.risk_cost,
@@ -3285,6 +12261,7 @@ fn choose_gk_held_action(
     holder: &RunnerPlayer,
     teammates: &[RunnerPlayer],
     opponents: &[RunnerPlayer],
+    contest_defenders: &[ShotContestDefender],
     holder_home: bool,
     attacking_right: bool,
     current_state_value: f64,
@@ -3293,17 +12270,27 @@ fn choose_gk_held_action(
     tick: i32,
     rng: &mut RunnerRng,
 ) -> RunnerHeldAction {
-    let mut actions = build_pass_candidates(
+    let mut actions = std::mem::take(&mut state.held_action_buffer);
+    actions.clear();
+    if actions.capacity() < RUNNER_MAX_HELD_ACTIONS {
+        actions.reserve(RUNNER_MAX_HELD_ACTIONS - actions.capacity());
+    }
+    build_pass_candidates_into(
         holder_idx,
         holder,
         holder_home,
         teammates,
         opponents,
+        contest_defenders,
         current_state_value,
         attacking_right,
         tick,
         &state.shot_quality_cache,
         config,
+        &mut state.pass_candidate_buffer,
+        &mut state.pass_workspace,
+        &mut actions,
+        &state.held_decision_arena.scratch,
     );
     if actions.is_empty() {
         if let Some(fallback) = gk_fallback_pass_candidate(
@@ -3312,11 +12299,13 @@ fn choose_gk_held_action(
             holder_home,
             teammates,
             opponents,
+            contest_defenders,
             current_state_value,
             attacking_right,
             tick,
             &state.shot_quality_cache,
             config,
+            &state.held_decision_arena.scratch,
         ) {
             actions.push(fallback);
         }
@@ -3327,49 +12316,62 @@ fn choose_gk_held_action(
             .iter()
             .map(|action| action.score)
             .fold(0.0, f64::max);
-        state.trace_entries.push(json!({
-            "tick": tick,
-            "type": "event",
-            "event": "on_ball_candidate_counts",
-            "team": if holder_home { "home" } else { "away" },
-            "player_idx": holder_idx,
-            "player": holder.name,
-            "player_pos": [holder.pos.0, holder.pos.1],
-            "holder_state": {
-                "idx": holder_idx,
-                "pos": [holder.pos.0, holder.pos.1],
-                "target_pos": [holder.target_pos.0, holder.target_pos.1],
-                "tactical_anchor": [holder.tactical_anchor.0, holder.tactical_anchor.1],
-                "base_pos": [holder.base_pos.0, holder.base_pos.1],
-                "position": holder.position,
-                "speed": holder.speed,
-                "short_passing": holder.short_passing,
-                "long_passing": holder.long_passing,
-                "hold_ticks": holder.hold_ticks,
-                "possession_ticks": holder.possession_ticks,
-                "consecutive_carries": holder.consecutive_carries,
-                "facing_direction": holder.facing_direction,
-                "iq": holder.iq,
-            },
-            "carry_count": 0,
-            "pass_count": actions.len(),
-            "shot_count": 0,
-            "hold_count": 0,
-            "clear_count": 0,
-            "best_pass_score": best_pass_score,
-            "best_action_score": best_pass_score,
-            "current_state_value": current_state_value
-        }));
+        trace_entry!(
+            state,
+            json!({
+                "tick": tick,
+                "type": "event",
+                "event": "on_ball_candidate_counts",
+                "team": if holder_home { "home" } else { "away" },
+                "player_idx": holder_idx,
+                "player": holder.name,
+                "player_pos": [holder.pos.0, holder.pos.1],
+                "holder_state": {
+                    "idx": holder_idx,
+                    "pos": [holder.pos.0, holder.pos.1],
+                    "target_pos": [holder.target_pos.0, holder.target_pos.1],
+                    "tactical_anchor": [holder.tactical_anchor.0, holder.tactical_anchor.1],
+                    "base_pos": [holder.base_pos.0, holder.base_pos.1],
+                    "position": holder.position,
+                    "speed": holder.speed,
+                    "short_passing": holder.short_passing,
+                    "long_passing": holder.long_passing,
+                    "hold_ticks": holder.hold_ticks,
+                    "possession_ticks": holder.possession_ticks,
+                    "consecutive_carries": holder.consecutive_carries,
+                    "facing_direction": holder.facing_direction,
+                    "iq": holder.iq,
+                },
+                "carry_count": 0,
+                "pass_count": actions.len(),
+                "shot_count": 0,
+                "hold_count": 0,
+                "clear_count": 0,
+                "best_pass_score": best_pass_score,
+                "best_action_score": best_pass_score,
+                "current_state_value": current_state_value
+            })
+        );
     }
 
     if actions.is_empty() {
-        return RunnerHeldAction::Clear {
+        let action = RunnerHeldAction::Clear {
             target: clear_target(holder, attacking_right, config),
         };
+        state.held_action_buffer = actions;
+        return action;
     }
 
-    let scores: Vec<f64> = actions.iter().map(|action| action.score).collect();
-    let dry_selection = softmax_select_index(&scores, holder.iq, 0.0, 0);
+    assert!(
+        actions.len() <= RUNNER_MAX_PASS_CANDIDATES,
+        "goalkeeper pass action buffer exceeds candidate bound"
+    );
+    let mut scores = [0.0; RUNNER_MAX_PASS_CANDIDATES];
+    for (index, action) in actions.iter().enumerate() {
+        scores[index] = action.score;
+    }
+    let scores = &scores[..actions.len()];
+    let dry_selection = softmax_select_index(scores, holder.iq, 0.0, 0);
     let mut fallback_index = 0;
     let mut roll = 0.0;
     if let Some(selection) = dry_selection.as_ref() {
@@ -3379,7 +12381,7 @@ fn choose_gk_held_action(
             roll = rng.random();
         }
     }
-    let selection = softmax_select_index(&scores, holder.iq, roll, fallback_index);
+    let selection = softmax_select_index(scores, holder.iq, roll, fallback_index);
     let index = selection
         .as_ref()
         .map(|value| value.index)
@@ -3403,78 +12405,71 @@ fn choose_gk_held_action(
         holder_idx,
         holder.name.as_str(),
         holder.pos,
+        state.ball.control,
         &actions,
         index,
         config,
     );
-    actions[index].action
+    let action = actions[index].action;
+    state.held_action_buffer = actions;
+    action
 }
 
 fn build_shot_candidate(
     holder_idx: usize,
     holder: &RunnerPlayer,
     holder_home: bool,
+    control_state: PossessionControlState,
     teammates: &[RunnerPlayer],
     opponents: &[RunnerPlayer],
+    contest_defenders: &[ShotContestDefender],
     current_state_value: f64,
     attacking_right: bool,
     tick: i32,
     shot_quality_cache: &ShotQualityCache,
     config: &RunnerRuntimeConfig,
-) -> Option<RunnerEvaluatedAction> {
+) -> RunnerEvaluatedAction {
+    let mut scratch = RunnerHeldDecisionScratch::new();
+    scratch.prepare(holder_idx, teammates, opponents, config);
+    build_shot_candidate_with_scratch(
+        holder_idx,
+        holder,
+        holder_home,
+        control_state,
+        opponents,
+        contest_defenders,
+        current_state_value,
+        attacking_right,
+        tick,
+        shot_quality_cache,
+        config,
+        &scratch,
+    )
+}
+
+fn build_shot_candidate_with_scratch(
+    holder_idx: usize,
+    holder: &RunnerPlayer,
+    holder_home: bool,
+    control_state: PossessionControlState,
+    opponents: &[RunnerPlayer],
+    contest_defenders: &[ShotContestDefender],
+    current_state_value: f64,
+    attacking_right: bool,
+    tick: i32,
+    shot_quality_cache: &ShotQualityCache,
+    config: &RunnerRuntimeConfig,
+    scratch: &RunnerHeldDecisionScratch,
+) -> RunnerEvaluatedAction {
+    assert!(
+        opponents.len() <= RUNNER_TEAM_SIZE,
+        "shot candidate expects eleven-player opponents"
+    );
     let goal = if attacking_right {
         (config.pitch_length, config.pitch_width / 2.0)
     } else {
         (0.0, config.pitch_width / 2.0)
     };
-    let dist_to_goal = distance(holder.pos, goal);
-    let angle_factor = (angle_to_goal(holder.pos, goal, config.goal_width) / 0.2).min(1.0);
-    let mut pressure_factor = 1.0;
-    let mut lane_factor = 1.0;
-    let shot_dx = goal.0 - holder.pos.0;
-    let shot_dy = goal.1 - holder.pos.1;
-    let shot_len = (shot_dx * shot_dx + shot_dy * shot_dy).sqrt();
-    if shot_len > 1.0 {
-        let nx = shot_dx / shot_len;
-        let ny = shot_dy / shot_len;
-        for opponent in opponents.iter().filter(|player| player.position != "GK") {
-            let d = distance(holder.pos, opponent.pos);
-            if d < 8.0 {
-                pressure_factor *= (1.0 - (8.0 - d) * 0.035).max(0.72);
-            }
-            let ox = opponent.pos.0 - holder.pos.0;
-            let oy = opponent.pos.1 - holder.pos.1;
-            let proj = ox * nx + oy * ny;
-            if proj > 1.0 && proj < shot_len - 1.0 {
-                let perp = (ox * ny - oy * nx).abs();
-                if perp < 4.5 {
-                    lane_factor *= (1.0 - (4.5 - perp) * 0.05).max(0.65);
-                }
-            }
-        }
-    }
-    let shot_support: Vec<ShotSupportPlayer> = teammates
-        .iter()
-        .enumerate()
-        .map(|(idx, player)| ShotSupportPlayer {
-            index: idx,
-            pos: player.pos,
-            target: player.target_pos,
-            is_goalkeeper: player.position == "GK",
-        })
-        .collect();
-    let goalkeeper = opponents.iter().find(|player| player.position == "GK");
-    let goalkeeper_attributes = GkSaveAttributes {
-        gk_saving: goalkeeper.map(|player| player.gk_saving).unwrap_or(50.0),
-        gk_positioning: goalkeeper
-            .map(|player| player.gk_positioning)
-            .unwrap_or(50.0),
-        gk_reaction: goalkeeper.map(|player| player.gk_reaction).unwrap_or(50.0),
-        gk_position_error_factor: config.gk_position_error_factor,
-        gk_reaction_delay_factor: config.gk_reaction_delay_factor,
-        gk_save_base: config.gk_save_base,
-    };
-    let opponent_xy = opponent_positions(opponents);
     let shot = evaluate_shot(&ShotInput {
         tick,
         shooter_index: holder_idx,
@@ -3485,43 +12480,35 @@ fn build_shot_candidate(
         possession_ticks: holder.possession_ticks,
         consecutive_carries: holder.consecutive_carries,
         last_receive_origin: holder.last_receive_origin,
-        dist_to_goal,
-        angle_factor,
-        pressure_factor: pressure_factor.clamp(0.35, 1.0),
-        lane_factor,
-        dist_factor: if dist_to_goal <= config.shot_ideal_distance {
-            1.0
-        } else if dist_to_goal <= 30.0 {
-            (1.0 - (dist_to_goal - config.shot_ideal_distance) * 0.070).max(0.18)
-        } else {
-            0.45 * (-(dist_to_goal - 30.0) / 14.0).exp()
-        },
-        current_state_value,
-        teammates: &shot_support,
-        opponents: &opponent_xy,
+        opponents: &scratch.opponent_xy[..scratch.opponent_count],
         pitch_length: config.pitch_length,
         pitch_width: config.pitch_width,
         attacking_right,
         shot_on_target_base: config.shot_on_target_base,
         gk_save_base: config.gk_save_base,
-        gk_attributes: Some(goalkeeper_attributes),
-        gk_pos: goalkeeper.map(|player| player.pos),
+        gk_attributes: Some(scratch.gk_attributes),
+        gk_pos: scratch.gk_pos,
+        contest_defenders: Some(contest_defenders),
         shot_ideal_distance: config.shot_ideal_distance,
-        goal_reward_constant: 1.0,
         shot_quality_cache: Some(shot_quality_cache),
+        control_state: Some(control_state),
     });
-    if shot.score <= 0.0 {
-        return None;
-    }
-    Some(RunnerEvaluatedAction {
+    RunnerEvaluatedAction {
         action: RunnerHeldAction::Shoot {
             target: goal,
             xg: shot.xg,
             on_target_prob: shot.on_target_prob,
-            gk_attributes: goalkeeper_attributes,
+            gk_attributes: scratch.gk_attributes,
+            body_release_probability: shot.body_release_probability,
+            release_probability: shot.release_probability,
+            block_probability: shot.block_probability,
+            blocker_idx: shot.blocker_index,
+            block_point: shot.block_point,
         },
-        score: shot.score,
+        score: shot.terminal_value,
         success_prob: shot.on_target_prob,
+        carry_survival: None,
+        carry_defender_response_index: None,
         receiver_pressure: 0.0,
         high_threat_space: 0.0,
         final_third_combination: 0.0,
@@ -3534,7 +12521,7 @@ fn build_shot_candidate(
         target_kind_space: false,
         progress_gain: 0.0,
         xg: shot.xg,
-        pressure: 1.0 - shot.possession_loss_multiplier,
+        pressure: 1.0 - shot.on_target_prob,
         lateral_change: 0.0,
         carry_to_shoot_window: 0.0,
         wide_second_line_carry_window: 0.0,
@@ -3548,19 +12535,25 @@ fn build_shot_candidate(
         opportunity_wait: 0.0,
         opportunity_wait_value: 0.0,
         no_clear_release: 0.0,
-        raw_score: shot.score,
-        debug_final_score: shot.score,
+        raw_score: shot.terminal_value,
+        debug_final_score: shot.terminal_value,
+        debug_temporal_discount: 1.0,
+        debug_option_return: 0.0,
+        debug_turnover_cost: 0.0,
+        debug_local_shaping: 0.0,
+        debug_option_duration_ticks: 1,
         debug_hold_ticks: 0,
         debug_possession_ticks: 0,
         debug_best_pass_score: 0.0,
-        debug_shoot_score: shot.score,
+        debug_shoot_score: shot.terminal_value,
         debug_current_pv: current_state_value,
         debug_effective_current_value: current_state_value,
-        debug_delta: shot.xg - current_state_value,
-        debug_after_value: shot.xg,
+        debug_delta: -current_state_value,
+        debug_after_value: 0.0,
+        debug_after_direct_xg: 0.0,
         debug_effective_delta: 0.0,
         debug_continuity: 0.0,
-        debug_risk_cost: shot.risk_cost,
+        debug_risk_cost: 0.0,
         debug_base_accuracy: 0.0,
         debug_receiver_arrival: 0.0,
         debug_lane_risk: 0.0,
@@ -3576,7 +12569,7 @@ fn build_shot_candidate(
         debug_path_peak_final_third_control: 0.0,
         debug_path_peak_control_factor: 0.0,
         debug_path_conflict_cost: 0.0,
-    })
+    }
 }
 
 fn runner_opportunity_wait_value(
@@ -3644,19 +12637,13 @@ fn build_hold_candidate(
     holder: &RunnerPlayer,
     teammates: &[RunnerPlayer],
     opponents: &[RunnerPlayer],
+    current_state_value: f64,
     release_best: f64,
     shot_score: f64,
+    shot_xg: f64,
     attacking_right: bool,
     config: &RunnerRuntimeConfig,
 ) -> Option<RunnerEvaluatedAction> {
-    let current_pv = runner_position_value(
-        holder.pos,
-        teammates,
-        Some(holder_idx),
-        opponents,
-        attacking_right,
-        config,
-    );
     let pressure = opponents
         .iter()
         .filter(|player| player.position != "GK" && distance(holder.pos, player.pos) < 8.0)
@@ -3702,7 +12689,7 @@ fn build_hold_candidate(
         is_defender: is_defender_position(holder.position.as_str()),
         hold_ticks: holder.hold_ticks,
         possession_ticks: holder.possession_ticks,
-        current_pv,
+        current_pv: current_state_value,
         pressure,
         nearest_pressure,
         developing_runs,
@@ -3710,15 +12697,14 @@ fn build_hold_candidate(
         shoot_score: shot_score,
         opportunity_wait_value,
     });
-    if hold.score <= 0.0 {
-        return None;
-    }
     Some(RunnerEvaluatedAction {
         action: RunnerHeldAction::Hold {
             opportunity_target: None,
         },
         score: hold.score,
-        success_prob: 1.0,
+        success_prob: hold.pressure_factor,
+        carry_survival: None,
+        carry_defender_response_index: None,
         receiver_pressure: 0.0,
         high_threat_space: 0.0,
         final_third_combination: 0.0,
@@ -3731,7 +12717,7 @@ fn build_hold_candidate(
         target_kind_space: false,
         progress_gain: 0.0,
         xg: 0.0,
-        pressure: hold.pressure_factor,
+        pressure: 1.0 - hold.pressure_factor,
         lateral_change: 0.0,
         carry_to_shoot_window: 0.0,
         wide_second_line_carry_window: 0.0,
@@ -3747,14 +12733,20 @@ fn build_hold_candidate(
         no_clear_release: hold.no_clear_release,
         raw_score: hold.score,
         debug_final_score: hold.score,
+        debug_temporal_discount: 1.0,
+        debug_option_return: 0.0,
+        debug_turnover_cost: 0.0,
+        debug_local_shaping: 0.0,
+        debug_option_duration_ticks: 1,
         debug_hold_ticks: holder.hold_ticks,
         debug_possession_ticks: holder.possession_ticks,
         debug_best_pass_score: release_best,
         debug_shoot_score: shot_score,
-        debug_current_pv: current_pv,
-        debug_effective_current_value: current_pv,
+        debug_current_pv: current_state_value,
+        debug_effective_current_value: current_state_value,
         debug_delta: 0.0,
-        debug_after_value: current_pv,
+        debug_after_value: current_state_value,
+        debug_after_direct_xg: shot_xg,
         debug_effective_delta: 0.0,
         debug_continuity: 0.0,
         debug_risk_cost: 0.0,
@@ -3774,6 +12766,49 @@ fn build_hold_candidate(
         debug_path_peak_control_factor: 0.0,
         debug_path_conflict_cost: 0.0,
     })
+}
+
+fn build_reorient_candidate(
+    mut control_option: RunnerEvaluatedAction,
+    holder: &RunnerPlayer,
+    control_state: PossessionControlState,
+    attacking_right: bool,
+    config: &RunnerRuntimeConfig,
+) -> Option<RunnerEvaluatedAction> {
+    let goal = if attacking_right {
+        (config.pitch_length, config.pitch_width / 2.0)
+    } else {
+        (0.0, config.pitch_width / 2.0)
+    };
+    let target_heading = angle_between_points(holder.pos, goal);
+    if crate::angle_diff(control_state.facing_direction, target_heading).abs() <= 1e-6 {
+        return None;
+    }
+    control_option.action = RunnerHeldAction::Reorient { target: goal };
+    control_option.raw_score = 0.0;
+    control_option.debug_final_score = 0.0;
+    control_option.debug_option_return = 0.0;
+    control_option.debug_turnover_cost = 0.0;
+    control_option.debug_local_shaping = 0.0;
+    control_option.debug_option_duration_ticks = 1;
+    control_option.debug_hold_ticks = holder.hold_ticks;
+    control_option.debug_possession_ticks = holder.possession_ticks;
+    Some(control_option)
+}
+
+fn action_is_physically_executable(action: RunnerHeldAction, origin: (f64, f64)) -> bool {
+    match action {
+        RunnerHeldAction::Carry { target } => distance(origin, target) > 1e-6,
+        RunnerHeldAction::Shoot {
+            body_release_probability,
+            ..
+        } => body_release_probability > 1e-9,
+        _ => true,
+    }
+}
+
+fn retain_executable_held_actions(actions: &mut Vec<RunnerEvaluatedAction>, origin: (f64, f64)) {
+    actions.retain(|action| action_is_physically_executable(action.action, origin));
 }
 
 fn score_clear_candidate(
@@ -3802,6 +12837,7 @@ fn score_clear_candidate(
 fn build_clear_candidate(
     holder: &RunnerPlayer,
     opponents: &[RunnerPlayer],
+    current_state_value: f64,
     attacking_right: bool,
     config: &RunnerRuntimeConfig,
     rng: &mut RunnerRng,
@@ -3848,6 +12884,8 @@ fn build_clear_candidate(
         },
         score: clear.score,
         success_prob: 1.0,
+        carry_survival: None,
+        carry_defender_response_index: None,
         receiver_pressure: 0.0,
         high_threat_space: 0.0,
         final_third_combination: 0.0,
@@ -3876,14 +12914,20 @@ fn build_clear_candidate(
         no_clear_release: 0.0,
         raw_score: clear.score,
         debug_final_score: clear.score,
+        debug_temporal_discount: 1.0,
+        debug_option_return: 0.0,
+        debug_turnover_cost: 0.0,
+        debug_local_shaping: 0.0,
+        debug_option_duration_ticks: 1,
         debug_hold_ticks: 0,
         debug_possession_ticks: 0,
         debug_best_pass_score: 0.0,
         debug_shoot_score: 0.0,
-        debug_current_pv: 0.0,
-        debug_effective_current_value: 0.0,
+        debug_current_pv: current_state_value,
+        debug_effective_current_value: current_state_value,
         debug_delta: 0.0,
         debug_after_value: 0.0,
+        debug_after_direct_xg: 0.0,
         debug_effective_delta: 0.0,
         debug_continuity: 0.0,
         debug_risk_cost: 0.0,
@@ -3910,7 +12954,7 @@ fn runner_action_code(action: RunnerHeldAction) -> u8 {
         RunnerHeldAction::Carry { .. } => 0,
         RunnerHeldAction::Pass { .. } => 1,
         RunnerHeldAction::Shoot { .. } => 2,
-        RunnerHeldAction::Hold { .. } => 3,
+        RunnerHeldAction::Hold { .. } | RunnerHeldAction::Reorient { .. } => 3,
         RunnerHeldAction::Clear { .. } => 4,
     }
 }
@@ -3921,6 +12965,7 @@ fn runner_action_target(action: RunnerHeldAction, holder_pos: (f64, f64)) -> Opt
         RunnerHeldAction::Pass { target, .. } => Some(target),
         RunnerHeldAction::Clear { target } => Some(target),
         RunnerHeldAction::Shoot { target, .. } => Some(target),
+        RunnerHeldAction::Reorient { target } => Some(target),
         RunnerHeldAction::Hold { .. } => Some(holder_pos),
     }
 }
@@ -3930,8 +12975,100 @@ fn runner_action_name(action: RunnerHeldAction) -> &'static str {
         RunnerHeldAction::Carry { .. } => "carry",
         RunnerHeldAction::Pass { .. } => "pass",
         RunnerHeldAction::Shoot { .. } => "shoot",
+        RunnerHeldAction::Reorient { .. } => "reorient",
         RunnerHeldAction::Hold { .. } => "hold",
         RunnerHeldAction::Clear { .. } => "clear",
+    }
+}
+
+fn runner_action_timing(
+    action: RunnerHeldAction,
+    origin: (f64, f64),
+    plan_signals: TeamPlanSignals,
+    pressure: f64,
+    opportunity: f64,
+    config: &RunnerRuntimeConfig,
+) -> Option<ActionTimingPlan> {
+    let (kind, target) = match action {
+        RunnerHeldAction::Carry { target } => (TemporalActionKind::Carry, target),
+        RunnerHeldAction::Reorient { .. } | RunnerHeldAction::Hold { .. } => {
+            (TemporalActionKind::Hold, origin)
+        }
+        RunnerHeldAction::Pass { .. }
+        | RunnerHeldAction::Clear { .. }
+        | RunnerHeldAction::Shoot { .. } => return None,
+    };
+    Some(action_timing_plan(&ActionTimingInput {
+        kind,
+        target_distance: distance(origin, target),
+        nominal_step_distance: config.carrier_speed.max(0.1),
+        pressure,
+        tempo: plan_signals.tempo,
+        risk_budget: plan_signals.risk_budget,
+        opportunity,
+    }))
+}
+
+fn start_action_commitment(
+    state: &mut RunnerMatchState,
+    action: RunnerHeldAction,
+    origin: (f64, f64),
+    plan_signals: TeamPlanSignals,
+    pressure: f64,
+    opportunity: f64,
+    config: &RunnerRuntimeConfig,
+) {
+    state.action_commitment =
+        runner_action_timing(action, origin, plan_signals, pressure, opportunity, config).map(
+            |timing| RunnerActionCommitment {
+                action,
+                remaining_ticks: timing.initial_ticks,
+                completion_distance: timing.completion_distance,
+                requires_target_completion: timing.requires_target_completion,
+            },
+        );
+}
+
+fn continuing_held_action(
+    state: &mut RunnerMatchState,
+    holder_pos: (f64, f64),
+) -> Option<RunnerHeldAction> {
+    if let Some(commitment) = state.action_commitment {
+        let target = runner_action_target(commitment.action, holder_pos).unwrap_or(holder_pos);
+        if should_continue_action(
+            ActionTimingPlan {
+                initial_ticks: commitment.remaining_ticks,
+                completion_distance: commitment.completion_distance,
+                requires_target_completion: commitment.requires_target_completion,
+            },
+            commitment.remaining_ticks,
+            distance(holder_pos, target),
+        ) {
+            return Some(commitment.action);
+        }
+        state.action_commitment = None;
+    }
+    None
+}
+
+fn advance_action_commitment(state: &mut RunnerMatchState, holder_pos: (f64, f64)) {
+    let Some(mut commitment) = state.action_commitment else {
+        return;
+    };
+    commitment.remaining_ticks -= 1;
+    let target = runner_action_target(commitment.action, holder_pos).unwrap_or(holder_pos);
+    if should_continue_action(
+        ActionTimingPlan {
+            initial_ticks: commitment.remaining_ticks,
+            completion_distance: commitment.completion_distance,
+            requires_target_completion: commitment.requires_target_completion,
+        },
+        commitment.remaining_ticks,
+        distance(holder_pos, target),
+    ) {
+        state.action_commitment = Some(commitment);
+    } else {
+        state.action_commitment = None;
     }
 }
 
@@ -3946,6 +13083,7 @@ fn runner_action_source(action: RunnerHeldAction) -> &'static str {
             }
         }
         RunnerHeldAction::Shoot { .. } => "shot",
+        RunnerHeldAction::Reorient { .. } => "reorient",
         RunnerHeldAction::Hold { .. } => "hold",
         RunnerHeldAction::Clear { .. } => "clear",
     }
@@ -3956,12 +13094,18 @@ fn runner_action_components(action: &RunnerEvaluatedAction) -> serde_json::Value
         "current_value": action.debug_current_pv,
         "effective_current_value": action.debug_effective_current_value,
         "after_value": action.debug_after_value,
+        "after_direct_xg": action.debug_after_direct_xg,
         "delta": action.debug_delta,
         "effective_delta": action.debug_effective_delta,
         "success_prob": action.success_prob,
         "risk_cost": action.debug_risk_cost,
         "final_score": action.debug_final_score,
         "raw_score": action.raw_score,
+        "option_duration_ticks": action.debug_option_duration_ticks,
+        "temporal_discount": action.debug_temporal_discount,
+        "option_return": action.debug_option_return,
+        "turnover_cost": action.debug_turnover_cost,
+        "local_shaping": action.debug_local_shaping,
         "continuity": action.debug_continuity,
         "base_accuracy": action.debug_base_accuracy,
         "receiver_arrival": action.debug_receiver_arrival,
@@ -3996,6 +13140,19 @@ fn runner_action_components(action: &RunnerEvaluatedAction) -> serde_json::Value
         "path_peak_final_third_control": action.debug_path_peak_final_third_control,
         "path_peak_control_factor": action.debug_path_peak_control_factor,
         "path_conflict_cost": action.debug_path_conflict_cost,
+        "carry_containment": action.carry_survival.map(|survival| json!({
+            "unconstrained_probability": survival.unconstrained_control_probability,
+            "constrained_probability": survival.constrained_control_probability,
+            "unconstrained_position": [
+                survival.unconstrained_control_position.0,
+                survival.unconstrained_control_position.1
+            ],
+            "constrained_position": [
+                survival.constrained_control_position.0,
+                survival.constrained_control_position.1
+            ],
+            "peak_probability": survival.peak_containment_probability
+        })).unwrap_or(serde_json::Value::Null),
     })
 }
 
@@ -4018,6 +13175,9 @@ fn runner_action_candidate_payload(
                 details["opportunity_target"] = json!([opportunity_target.0, opportunity_target.1]);
             }
             details
+        }
+        (RunnerHeldAction::Reorient { target }, _) => {
+            json!({"facing_target": [target.0, target.1]})
         }
         (_, Some(pos)) => json!({"target": [pos.0, pos.1]}),
         _ => json!({}),
@@ -4046,6 +13206,7 @@ fn record_on_ball_decision_trace(
     player_idx: usize,
     player_name: &str,
     player_pos: (f64, f64),
+    control: PossessionControlState,
     actions: &[RunnerEvaluatedAction],
     chosen_index: usize,
     config: &RunnerRuntimeConfig,
@@ -4111,99 +13272,96 @@ fn record_on_ball_decision_trace(
         "chosen": chosen,
         "alternatives": alternatives,
         "pos": [player_pos.0, player_pos.1],
+        "control": {
+            "facing_direction": control.facing_direction,
+            "pressure_load": control.pressure_load,
+            "containment_load": control.containment_load,
+            "forward_control": control.forward_control,
+            "turn_readiness": control.turn_readiness,
+            "release_window": control.release_window,
+            "shape_readiness": control.shape_readiness,
+            "release_preparation": control.release_preparation,
+            "stagnation_load": control.stagnation_load,
+            "shot_release_readiness": crate::shot_release_readiness(control),
+            "continuation_control_readiness": crate::continuation_control_readiness(control),
+        },
         "goal": goal_trace,
     }));
 }
 
-fn runner_selection_candidate(action: &RunnerEvaluatedAction) -> OnBallSelectionCandidateInput {
-    OnBallSelectionCandidateInput {
-        score: action.score,
-        action_code: runner_action_code(action.action),
-        target_kind_space: action.target_kind_space,
-        success_prob: action.success_prob,
-        receiver_pressure: action.receiver_pressure,
-        high_threat_space: action.high_threat_space,
+fn runner_bellman_best_action_index(actions: &[RunnerEvaluatedAction]) -> Option<usize> {
+    let mut best_index = None;
+    let mut best_score = f64::NEG_INFINITY;
+    for (index, action) in actions.iter().enumerate() {
+        let score = if action.score.is_finite() {
+            action.score
+        } else {
+            f64::NEG_INFINITY
+        };
+        if best_index.is_none() || score > best_score {
+            best_index = Some(index);
+            best_score = score;
+        }
     }
-}
-
-fn apply_selection_scores_to_actions(
-    actions: &mut [RunnerEvaluatedAction],
-    selection: &OnBallSelectionOutput,
-) {
-    for (action, score) in actions.iter_mut().zip(selection.noisy_scores.iter()) {
-        action.score = *score;
-    }
+    best_index
 }
 
 fn apply_runner_generic_goal_continuity(
-    holder: &mut RunnerPlayer,
-    actions: &mut [RunnerEvaluatedAction],
+    holder: &RunnerPlayer,
+    goal_state: &mut RunnerHeldGoalState,
+    actions: &[RunnerEvaluatedAction],
     config: &RunnerRuntimeConfig,
     rng: &mut RunnerRng,
 ) {
     if actions.is_empty() {
         return;
     }
-    let candidates: Vec<OnBallGenericCandidateInput> = actions
-        .iter()
-        .map(|action| OnBallGenericCandidateInput {
-            score: action.score,
-            action_code: runner_action_code(action.action),
-            target: runner_action_target(action.action, holder.pos),
-            progress_gain: action.progress_gain,
-            xg: action.xg,
-            pressure: action.pressure,
-            receiver_pressure: action.receiver_pressure,
-            target_kind_space: action.target_kind_space,
-            lateral_change: action.lateral_change,
-        })
-        .collect();
-    let current_goal = holder.goal_type.as_deref().and_then(|goal_type| {
-        if matches!(
-            goal_type,
-            "create_shot"
-                | "progress_carry"
-                | "protect_ball"
-                | "recycle"
-                | "switch_play"
-                | "through_ball"
-                | "clear_danger"
-        ) {
-            Some(OnBallGenericGoalInput {
-                goal_type: Some(goal_type),
-                target_pos: holder.goal_target,
-                value: holder.goal_value,
-                action_code: holder.goal_action_code,
-            })
-        } else {
-            None
-        }
+    let current_goal_type = goal_state
+        .goal_type()
+        .and_then(runner_goal_text_static)
+        .filter(|goal_type| {
+            matches!(
+                *goal_type,
+                "create_shot"
+                    | "progress_carry"
+                    | "protect_ball"
+                    | "recycle"
+                    | "switch_play"
+                    | "through_ball"
+                    | "clear_danger"
+            )
+        });
+    let current_goal = current_goal_type.map(|goal_type| OnBallGenericGoalInput {
+        goal_type: Some(goal_type),
+        target_pos: goal_state.goal_target,
+        value: goal_state.goal_value,
+        action_code: goal_state.goal_action_code,
     });
 
     let mut best_index = 0usize;
-    let mut best_score = candidates[0].score;
-    for (idx, candidate) in candidates.iter().enumerate().skip(1) {
-        if candidate.score > best_score {
+    let mut best_score = actions[0].score;
+    for (idx, action) in actions.iter().enumerate().skip(1) {
+        if action.score > best_score {
             best_index = idx;
-            best_score = candidate.score;
+            best_score = action.score;
         }
     }
-    let best_candidate = candidates[best_index];
-    let candidate_goal_type = match runner_action_code(actions[best_index].action) {
+    let best_action = &actions[best_index];
+    let candidate_goal_type = match runner_action_code(best_action.action) {
         2 => "create_shot",
         0 => {
-            if best_candidate.progress_gain > 0.015 {
+            if best_action.progress_gain > 0.015 {
                 "progress_carry"
             } else {
                 "protect_ball"
             }
         }
         1 => {
-            if best_candidate.progress_gain < -0.015 {
+            if best_action.progress_gain < -0.015 {
                 "recycle"
-            } else if best_candidate.target_kind_space {
+            } else if best_action.target_kind_space {
                 "through_ball"
-            } else if best_candidate.lateral_change.abs() > 0.28 {
+            } else if best_action.lateral_change.abs() > 0.28 {
                 "switch_play"
             } else {
                 "recycle"
@@ -4213,8 +13371,9 @@ fn apply_runner_generic_goal_continuity(
         4 => "clear_danger",
         _ => "protect_ball",
     };
-    let candidate_target = best_candidate.target.unwrap_or(holder.pos);
-    let candidate_value = best_candidate.score.max(0.0);
+    let candidate_target =
+        runner_action_target(best_action.action, holder.pos).unwrap_or(holder.pos);
+    let candidate_value = best_action.score.max(0.0);
     let current_storage = current_goal.map(|goal| GoalInput {
         goal_type: goal.goal_type.unwrap_or(""),
         value: goal.value,
@@ -4242,19 +13401,18 @@ fn apply_runner_generic_goal_continuity(
 
     let selected_is_candidate = selection.selected == "candidate";
     let selected_goal_type = if selected_is_candidate {
-        candidate_goal_type.to_string()
+        candidate_goal_type
     } else {
         current_goal
             .and_then(|goal| goal.goal_type)
             .unwrap_or(candidate_goal_type)
-            .to_string()
     };
     let selected_action_code = if selected_is_candidate {
-        runner_action_code(actions[best_index].action)
+        runner_action_code(best_action.action)
     } else {
         current_goal
             .map(|goal| goal.action_code)
-            .unwrap_or_else(|| runner_action_code(actions[best_index].action))
+            .unwrap_or_else(|| runner_action_code(best_action.action))
     };
     let selected_target = if selected_is_candidate {
         candidate_target
@@ -4271,79 +13429,11 @@ fn apply_runner_generic_goal_continuity(
             .unwrap_or(candidate_value)
     };
 
-    let continuity_bias = 0.035_f64.max(0.0) * 0.35;
-    for action in actions.iter_mut() {
-        if continuity_bias > 0.0 && runner_action_code(action.action) == selected_action_code {
-            let target_fit = runner_action_target(action.action, holder.pos)
-                .map(|target| (1.0 - distance(target, selected_target) / 18.0).max(0.0))
-                .unwrap_or(1.0);
-            action.score += continuity_bias * selected_value.max(0.0) * (0.35 + 0.65 * target_fit);
-        }
-    }
-    holder.goal_type = Some(selected_goal_type);
-    holder.goal_phase = Some("execute".to_string());
-    holder.goal_target = selected_target;
-    holder.goal_value = selected_value;
-    holder.goal_action_code = selected_action_code;
-}
-
-fn consume_runner_on_ball_selection_random(
-    rng: &mut RunnerRng,
-    actions_len: usize,
-    dry_selection: Option<&OnBallSelectionOutput>,
-) -> (f64, usize) {
-    let mut fallback_index = 0;
-    let mut roll = 0.0;
-    if let Some(selection) = dry_selection {
-        if selection.used_random_choice {
-            fallback_index = rng.randbelow(actions_len);
-        } else if selection.used_roll {
-            roll = rng.random();
-        }
-    }
-    (roll, fallback_index)
-}
-
-fn raw_softmax_selection(
-    scores: &[f64],
-    iq: f64,
-    roll: f64,
-    fallback_index: usize,
-) -> (usize, bool, bool) {
-    if scores.is_empty() {
-        return (0, false, false);
-    }
-    if scores.len() == 1 {
-        return (0, false, false);
-    }
-    let max_score = scores.iter().copied().fold(f64::NEG_INFINITY, f64::max);
-    if max_score < 0.001 {
-        return (fallback_index % scores.len(), false, true);
-    }
-    let selection = softmax_select_index(scores, iq, roll, 0);
-    let Some(selection) = selection else {
-        return (0, false, false);
-    };
-    (
-        selection.index.min(scores.len() - 1),
-        selection.total_weight >= 1e-10,
-        false,
-    )
-}
-
-fn consume_runner_raw_softmax_selection_random(
-    rng: &mut RunnerRng,
-    scores: &[f64],
-    iq: f64,
-) -> (f64, usize) {
-    let (_, dry_used_roll, dry_used_random_choice) = raw_softmax_selection(scores, iq, 0.0, 0);
-    if dry_used_random_choice {
-        return (0.0, rng.randbelow(scores.len()));
-    }
-    if dry_used_roll {
-        return (rng.random(), 0);
-    }
-    (0.0, 0)
+    goal_state.set_goal_type(selected_goal_type);
+    goal_state.set_goal_phase("execute");
+    goal_state.goal_target = selected_target;
+    goal_state.goal_value = selected_value;
+    goal_state.goal_action_code = selected_action_code;
 }
 
 fn is_runner_on_ball_specialized_goal(goal_type: &str) -> bool {
@@ -4371,9 +13461,9 @@ fn runner_centrality_y(y: f64, pitch_width: f64) -> f64 {
     1.0 - ((y - pitch_width / 2.0).abs() / (pitch_width / 2.0).max(1.0)).min(1.0)
 }
 
-fn apply_runner_specialized_selected_goal_bias(
+fn apply_runner_specialized_goal_context(
     actions: &mut [RunnerEvaluatedAction],
-    holder: &mut RunnerPlayer,
+    goal_state: &mut RunnerHeldGoalState,
     goal_type: &str,
     goal_phase: &str,
     goal_target: (f64, f64),
@@ -4381,43 +13471,13 @@ fn apply_runner_specialized_selected_goal_bias(
     goal_created_tick: i32,
     action_code: u8,
 ) {
-    holder.goal_type = Some(goal_type.to_string());
-    holder.goal_phase = Some(goal_phase.to_string());
-    holder.goal_target = goal_target;
-    holder.goal_value = goal_value.max(0.0);
-    holder.goal_created_tick = goal_created_tick;
-    holder.goal_action_code = action_code;
+    goal_state.set_goal_type(goal_type);
+    goal_state.set_goal_phase(goal_phase);
+    goal_state.goal_target = goal_target;
+    goal_state.goal_value = goal_value.max(0.0);
+    goal_state.goal_created_tick = goal_created_tick;
+    goal_state.goal_action_code = action_code;
 
-    let specialized: Vec<OnBallSpecializedBiasCandidateInput> = actions
-        .iter()
-        .map(|action| OnBallSpecializedBiasCandidateInput {
-            score: action.score,
-            action_code: runner_action_code(action.action),
-            target: runner_action_target(action.action, holder.pos),
-            carry_to_shoot_window: action.carry_to_shoot_window,
-            wide_second_line_carry_window: action.wide_second_line_carry_window,
-            future_shot_gain: action.future_shot_gain,
-            byline_carry_window: action.byline_carry_window,
-            xg: action.xg,
-            shot_readiness: action.shot_readiness,
-            open_medium_window: action.open_medium_window,
-            clean_second_line_shot: action.clean_second_line_shot,
-            space_manipulation: action.space_manipulation,
-            pressure_draw: action.pressure_draw,
-        })
-        .collect();
-    let bias = apply_specialized_on_ball_bias(&OnBallSpecializedBiasInput {
-        candidates: &specialized,
-        goal_type,
-        goal_phase,
-        goal_target,
-        goal_value,
-        bias: 0.035,
-        consecutive_carries: holder.consecutive_carries,
-    });
-    for (action, score) in actions.iter_mut().zip(bias.biased_scores.iter()) {
-        action.score = *score;
-    }
     if goal_type == "hold_for_opportunity" {
         for action in actions.iter_mut() {
             if let RunnerHeldAction::Hold { opportunity_target } = &mut action.action {
@@ -4427,10 +13487,13 @@ fn apply_runner_specialized_selected_goal_bias(
     }
 }
 
-fn apply_runner_specialized_goal_bias(
-    state: &mut RunnerMatchState,
+fn update_runner_specialized_goal_context(
+    arena: &mut RunnerSpecializedGoalArena,
+    trace_enabled: bool,
+    pending_on_ball_goal_event: &mut Option<serde_json::Value>,
     holder_idx: usize,
-    holder: &mut RunnerPlayer,
+    holder: &RunnerPlayer,
+    goal_state: &mut RunnerHeldGoalState,
     teammates: &[RunnerPlayer],
     opponents: &[RunnerPlayer],
     actions: &mut [RunnerEvaluatedAction],
@@ -4445,7 +13508,13 @@ fn apply_runner_specialized_goal_bias(
     let shot = actions
         .iter()
         .find(|action| matches!(action.action, RunnerHeldAction::Shoot { .. }));
-    let mut goals = Vec::new();
+    if shot.is_none()
+        && goal_state.goal_type() == Some("cut_inside_to_shoot")
+        && goal_state.goal_phase() == Some("finish")
+    {
+        goal_state.clear(holder.pos);
+    }
+    arena.clear();
     if let Some(goal_type) = config.runner_force_specialized_goal.as_deref() {
         let action_code = match goal_type {
             "through_ball_behind"
@@ -4465,85 +13534,163 @@ fn apply_runner_specialized_goal_bias(
             "cut_inside_to_shoot" => "drive",
             _ => "release",
         };
-        goals.push(RunnerSpecializedGoal {
-            goal_type: match goal_type {
-                "cut_inside_to_shoot" => "cut_inside_to_shoot",
-                "wide_byline_attack" => "wide_byline_attack",
-                "through_ball_behind" => "through_ball_behind",
-                "release_pressure_with_layoff" => "release_pressure_with_layoff",
-                "release_to_arriving_support" => "release_to_arriving_support",
-                "hold_for_opportunity" => "hold_for_opportunity",
-                _ => "cut_inside_to_shoot",
-            },
-            phase,
-            target,
-            value: 1.0,
-            created_tick: tick,
-            action_code,
-        });
+        arena.push_goal(RunnerSpecializedGoal {
+                goal_type: match goal_type {
+                    "cut_inside_to_shoot" => "cut_inside_to_shoot",
+                    "wide_byline_attack" => "wide_byline_attack",
+                    "through_ball_behind" => "through_ball_behind",
+                    "release_pressure_with_layoff" => "release_pressure_with_layoff",
+                    "release_to_arriving_support" => "release_to_arriving_support",
+                    "hold_for_opportunity" => "hold_for_opportunity",
+                    _ => "cut_inside_to_shoot",
+                },
+                phase,
+                target,
+                value: 1.0,
+                created_tick: tick,
+                action_code,
+            });
     }
-    let carry_refs: Vec<(&RunnerEvaluatedAction, (f64, f64))> = actions
-        .iter()
-        .filter(|action| matches!(action.action, RunnerHeldAction::Carry { .. }))
-        .filter_map(|action| {
-            runner_action_target(action.action, holder.pos).map(|target| (action, target))
-        })
-        .collect();
-    if carry_refs.is_empty() && config.runner_force_specialized_goal.is_none() {
+    for (action_index, action) in actions.iter().enumerate() {
+        match action.action {
+            RunnerHeldAction::Carry { target } => {
+                assert!(
+                    arena.carry_count < RUNNER_MAX_CARRY_CANDIDATES,
+                    "carry action buffer exceeds generated candidate bound"
+                );
+                let carry_slot = arena.carry_count;
+                arena.carry_action_indices[carry_slot] = action_index;
+                arena.byline_carries[carry_slot] = BylineCarryInput {
+                    score: action.score,
+                    target,
+                    byline_carry_window: action.byline_carry_window,
+                };
+                arena.hold_carries[carry_slot] = HoldSupportCarryInput {
+                    carry_to_shoot_window: action.carry_to_shoot_window,
+                    wide_second_line_carry_window: action.wide_second_line_carry_window,
+                    future_shot_gain: action.future_shot_gain,
+                };
+                arena.carry_count += 1;
+            }
+            RunnerHeldAction::Pass { target, .. } => {
+                assert!(
+                    arena.pass_count < RUNNER_MAX_PASS_CANDIDATES,
+                    "pass action buffer exceeds generated candidate bound"
+                );
+                let pass_slot = arena.pass_count;
+                arena.pass_action_indices[pass_slot] = action_index;
+                arena.overlap_passes[pass_slot] = OverlapPassInput {
+                    score: action.score,
+                    target,
+                    receiver_pressure: action.receiver_pressure,
+                };
+                arena.layoff_passes[pass_slot] = LayoffPassInput {
+                    score: action.score,
+                    target,
+                    receiver_pressure: action.receiver_pressure,
+                };
+                arena.arriving_passes[pass_slot] = ArrivingSupportPassInput {
+                    score: action.score,
+                    target,
+                    receiver_goal_fit: action.receiver_goal_fit,
+                    second_line_arrival_value: action.second_line_arrival_value,
+                    second_line_cutback_value: action.second_line_cutback_value,
+                    layoff_support_value: action.layoff_support_value,
+                };
+                arena.hold_passes[pass_slot] = HoldSupportPassInput {
+                    score: action.score,
+                    target,
+                    layoff_support_value: action.layoff_support_value,
+                    short_combination_value: action.short_combination_value,
+                    second_line_cutback_value: action.second_line_cutback_value,
+                    layoff_retention_value: action.layoff_retention_value,
+                    receiver_goal_fit: action.receiver_goal_fit,
+                    second_line_arrival_value: action.second_line_arrival_value,
+                };
+                arena.pass_count += 1;
+            }
+            RunnerHeldAction::Hold { .. } => {
+                assert!(
+                    arena.hold_count < RUNNER_MAX_HELD_ACTIONS,
+                    "hold action buffer exceeds generated candidate bound"
+                );
+                let hold_slot = arena.hold_count;
+                arena.hold_candidates[hold_slot] = HoldSupportHoldInput {
+                    opportunity_wait: action.opportunity_wait,
+                    opportunity_wait_value: action.opportunity_wait_value,
+                    no_clear_release: action.no_clear_release,
+                };
+                arena.hold_count += 1;
+            }
+            _ => {}
+        }
+    }
+    if arena.carry_count == 0 && config.runner_force_specialized_goal.is_none() {
         return false;
     }
-    let current_cut_goal_age = if holder.goal_type.as_deref() == Some("cut_inside_to_shoot") {
-        (tick - holder.goal_created_tick).max(0)
+    let current_cut_goal_age = if goal_state.goal_type() == Some("cut_inside_to_shoot") {
+        (tick - goal_state.goal_created_tick).max(0)
     } else {
         0
     };
     let mut current_cut_release = false;
-    let mut cut_candidate_trace = serde_json::Value::Null;
-    let mut best_carry: Option<&RunnerEvaluatedAction> = None;
-    for action in actions
-        .iter()
-        .filter(|action| matches!(action.action, RunnerHeldAction::Carry { .. }))
-    {
-        if best_carry
-            .map(|current| action.score > current.score)
+    let mut cut_candidate_trace = None;
+    let current_shot = shot.map(|action| action.xg).unwrap_or(0.0);
+    let current_shot_readiness = shot
+        .map(|action| {
+            action
+                .shot_readiness
+                .max(action.open_medium_window)
+                .max(action.clean_second_line_shot)
+        })
+        .unwrap_or(0.0);
+    let mut best_carry_slot: Option<usize> = None;
+    for carry_slot in 0..arena.carry_count {
+        let action = &actions[arena.carry_action_indices[carry_slot]];
+        if best_carry_slot
+            .map(|current_slot| {
+                action.score > actions[arena.carry_action_indices[current_slot]].score
+            })
             .unwrap_or(true)
         {
-            best_carry = Some(action);
+            best_carry_slot = Some(carry_slot);
         }
     }
-    if let Some(best_carry) = best_carry {
+    if let Some(best_carry_slot) = best_carry_slot {
+        let best_carry = &actions[arena.carry_action_indices[best_carry_slot]];
+        let best_carry_target = arena.byline_carries[best_carry_slot].target;
         let cut = evaluate_cut_inside_goal(&CutInsideGoalInput {
             player_pos: holder.pos,
             attacking_right,
             pitch_length: config.pitch_length,
             pitch_width: config.pitch_width,
-            best_carry_target: runner_action_target(best_carry.action, holder.pos),
+            best_carry_target: Some(best_carry_target),
             future_shot_gain: best_carry.future_shot_gain,
             carry_to_shoot_window: best_carry.carry_to_shoot_window,
             wide_second_line_carry_window: best_carry.wide_second_line_carry_window,
-            current_shot: shot.map(|action| action.xg).unwrap_or(0.0),
+            current_shot,
             current_readiness: shot.map(|action| action.shot_readiness).unwrap_or(0.0),
             consecutive_carries: holder.consecutive_carries,
             goal_age_ticks: current_cut_goal_age,
         });
-        cut_candidate_trace = json!({
-            "target": runner_action_target(best_carry.action, holder.pos)
-                .map(|target| json!([target.0, target.1]))
-                .unwrap_or(serde_json::Value::Null),
-            "score": best_carry.score,
-            "raw_score": best_carry.raw_score,
-            "debug_final_score": best_carry.debug_final_score,
-            "future_shot_gain": best_carry.future_shot_gain,
-            "carry_to_shoot_window": best_carry.carry_to_shoot_window,
-            "wide_second_line_carry_window": best_carry.wide_second_line_carry_window,
-            "current_shot": shot.map(|action| action.xg).unwrap_or(0.0),
-            "current_readiness": shot.map(|action| action.shot_readiness).unwrap_or(0.0),
-            "has_goal": cut.has_goal,
-            "value": cut.value,
-            "phase_code": cut.phase_code,
-        });
+        if trace_enabled {
+            cut_candidate_trace = Some(json!({
+                "target": [best_carry_target.0, best_carry_target.1],
+                "score": best_carry.score,
+                "raw_score": best_carry.raw_score,
+                "debug_final_score": best_carry.debug_final_score,
+                "future_shot_gain": best_carry.future_shot_gain,
+                "carry_to_shoot_window": best_carry.carry_to_shoot_window,
+                "wide_second_line_carry_window": best_carry.wide_second_line_carry_window,
+                "current_shot": current_shot,
+                "current_readiness": shot.map(|action| action.shot_readiness).unwrap_or(0.0),
+                "has_goal": cut.has_goal,
+                "value": cut.value,
+                "phase_code": cut.phase_code,
+            }));
+        }
         current_cut_release = cut.has_goal
-            && holder.goal_type.as_deref() == Some("cut_inside_to_shoot")
+            && goal_state.goal_type() == Some("cut_inside_to_shoot")
             && cut.phase_code == 1;
         if cut.has_goal {
             let phase = match cut.phase_code {
@@ -4551,58 +13698,50 @@ fn apply_runner_specialized_goal_bias(
                 1 => "release",
                 _ => "drive",
             };
-            goals.push(RunnerSpecializedGoal {
-                goal_type: "cut_inside_to_shoot",
-                phase,
-                target: cut.target_pos,
-                value: cut.value,
-                created_tick: if holder.goal_type.as_deref() == Some("cut_inside_to_shoot") {
-                    holder.goal_created_tick
-                } else {
-                    tick
-                },
-                action_code: if phase == "finish" { 2 } else { 0 },
-            });
+            arena.push_goal(RunnerSpecializedGoal {
+                    goal_type: "cut_inside_to_shoot",
+                    phase,
+                    target: cut.target_pos,
+                    value: cut.value,
+                    created_tick: if goal_state.goal_type() == Some("cut_inside_to_shoot") {
+                        goal_state.goal_created_tick
+                    } else {
+                        tick
+                    },
+                    action_code: if phase == "finish" { 2 } else { 0 },
+                });
         }
     }
     let immediate_best_score = actions
         .iter()
         .map(|action| action.score)
         .fold(0.0, f64::max);
-    let byline_teammates: Vec<BylineSupportTeammateInput> = teammates
-        .iter()
-        .enumerate()
-        .map(|(idx, teammate)| BylineSupportTeammateInput {
+    for (idx, teammate) in teammates.iter().enumerate() {
+        arena.byline_teammates[idx] = BylineSupportTeammateInput {
             index: idx,
             pos: teammate.pos,
             target: teammate.target_pos,
             anchor: teammate.tactical_anchor,
             is_goalkeeper: teammate.position == "GK",
-        })
-        .collect();
-    let byline_carries: Vec<BylineCarryInput> = carry_refs
-        .iter()
-        .map(|(action, target)| BylineCarryInput {
-            score: action.score,
-            target: *target,
-            byline_carry_window: action.byline_carry_window,
-        })
-        .collect();
+        };
+    }
     let byline_selection = select_best_byline_carry(&BylineCarrySelectionInput {
         player_index: holder_idx,
         player_pos: holder.pos,
         attacking_right,
         pitch_length: config.pitch_length,
         pitch_width: config.pitch_width,
-        teammates: &byline_teammates,
-        carries: &byline_carries,
+        teammates: &arena.byline_teammates[..teammates.len()],
+        carries: &arena.byline_carries[..arena.carry_count],
     });
     if !current_cut_release {
         if let Some(index) = byline_selection.index {
-            if let Some((carry, target)) = carry_refs.get(index) {
+            if index < arena.carry_count {
+                let carry = &actions[arena.carry_action_indices[index]];
+                let target = arena.byline_carries[index].target;
                 let byline = evaluate_drive_byline_goal(&DriveBylineGoalInput {
                     player_pos: holder.pos,
-                    carry_target: *target,
+                    carry_target: target,
                     attacking_right,
                     pitch_length: config.pitch_length,
                     pitch_width: config.pitch_width,
@@ -4614,40 +13753,24 @@ fn apply_runner_specialized_goal_bias(
                     delivery_support: byline_selection.delivery_support,
                 });
                 if byline.has_goal {
-                    goals.push(RunnerSpecializedGoal {
-                        goal_type: "wide_byline_attack",
-                        phase: "drive",
-                        target: byline.target_pos,
-                        value: byline.value,
-                        created_tick: tick,
-                        action_code: 0,
-                    });
+                    arena.push_goal(RunnerSpecializedGoal {
+                            goal_type: "wide_byline_attack",
+                            phase: "drive",
+                            target: byline.target_pos,
+                            value: byline.value,
+                            created_tick: tick,
+                            action_code: 0,
+                        });
                 }
             }
         }
     }
-
-    let pass_refs: Vec<(&RunnerEvaluatedAction, (f64, f64))> = actions
-        .iter()
-        .filter(|action| matches!(action.action, RunnerHeldAction::Pass { .. }))
-        .filter_map(|action| {
-            runner_action_target(action.action, holder.pos).map(|target| (action, target))
-        })
-        .collect();
-    let overlap_passes: Vec<OverlapPassInput> = pass_refs
-        .iter()
-        .map(|(action, target)| OverlapPassInput {
-            score: action.score,
-            target: *target,
-            receiver_pressure: action.receiver_pressure,
-        })
-        .collect();
     let best_overlap = select_best_overlap(&OverlapSelectionInput {
         player_pos: holder.pos,
         attacking_right,
         pitch_length: config.pitch_length,
         pitch_width: config.pitch_width,
-        passes: &overlap_passes,
+        passes: &arena.overlap_passes[..arena.pass_count],
     });
     if best_overlap.index.is_some() {
         let wide_hold = evaluate_wide_hold_overlap_goal(&WideHoldOverlapGoalInput {
@@ -4660,25 +13783,27 @@ fn apply_runner_specialized_goal_bias(
             immediate_best_score,
         });
         if wide_hold.has_goal {
-            goals.push(RunnerSpecializedGoal {
-                goal_type: "wide_hold_for_overlap",
-                phase: "wait",
-                target: wide_hold.target_pos,
-                value: wide_hold.value,
-                created_tick: tick,
-                action_code: 3,
-            });
+            arena.push_goal(RunnerSpecializedGoal {
+                    goal_type: "wide_hold_for_overlap",
+                    phase: "wait",
+                    target: wide_hold.target_pos,
+                    value: wide_hold.value,
+                    created_tick: tick,
+                    action_code: 3,
+                });
         }
     }
 
     let mut best_through_ball: Option<RunnerSpecializedGoal> = None;
     let mut best_byline_delivery: Option<RunnerSpecializedGoal> = None;
-    for (pass, target) in &pass_refs {
+    for pass_slot in 0..arena.pass_count {
+        let pass = &actions[arena.pass_action_indices[pass_slot]];
+        let target = arena.overlap_passes[pass_slot].target;
         let target_progress = runner_progress_x(target.0, config.pitch_length, attacking_right);
         let centrality = runner_centrality_y(target.1, config.pitch_width);
         let through = evaluate_through_ball_goal(&ThroughBallGoalInput {
             player_pos: holder.pos,
-            pass_target: *target,
+            pass_target: target,
             attacking_right,
             pitch_length: config.pitch_length,
             pitch_width: config.pitch_width,
@@ -4709,7 +13834,7 @@ fn apply_runner_specialized_goal_bias(
         }
         let delivery = evaluate_byline_delivery_goal(&BylineDeliveryGoalInput {
             player_pos: holder.pos,
-            delivery_target: *target,
+            delivery_target: target,
             attacking_right,
             pitch_length: config.pitch_length,
             pitch_width: config.pitch_width,
@@ -4739,32 +13864,25 @@ fn apply_runner_specialized_goal_bias(
         }
     }
     if let Some(goal) = best_through_ball {
-        goals.push(goal);
+        arena.push_goal(goal);
     }
     if let Some(goal) = best_byline_delivery {
-        goals.push(goal);
+        arena.push_goal(goal);
     }
 
-    let opponent_positions: Vec<(f64, f64)> = opponents
-        .iter()
-        .filter(|opponent| opponent.position != "GK")
-        .map(|opponent| opponent.pos)
-        .collect();
-    let layoff_passes: Vec<LayoffPassInput> = pass_refs
-        .iter()
-        .map(|(action, target)| LayoffPassInput {
-            score: action.score,
-            target: *target,
-            receiver_pressure: action.receiver_pressure,
-        })
-        .collect();
+    for opponent in opponents {
+        if opponent.position != "GK" {
+            arena.opponent_positions[arena.opponent_count] = opponent.pos;
+            arena.opponent_count += 1;
+        }
+    }
     let best_layoff = select_best_layoff(&LayoffSelectionInput {
         player_pos: holder.pos,
         attacking_right,
         pitch_length: config.pitch_length,
         pitch_width: config.pitch_width,
-        passes: &layoff_passes,
-        opponents: &opponent_positions,
+        passes: &arena.layoff_passes[..arena.pass_count],
+        opponents: &arena.opponent_positions[..arena.opponent_count],
     });
     if best_layoff.index.is_some() {
         let layoff = evaluate_layoff_goal(&LayoffGoalInput {
@@ -4778,32 +13896,21 @@ fn apply_runner_specialized_goal_bias(
             immediate_best_score,
         });
         if layoff.has_goal {
-            goals.push(RunnerSpecializedGoal {
-                goal_type: "release_pressure_with_layoff",
-                phase: "release",
-                target: layoff.target_pos,
-                value: layoff.value,
-                created_tick: tick,
-                action_code: 1,
-            });
+            arena.push_goal(RunnerSpecializedGoal {
+                    goal_type: "release_pressure_with_layoff",
+                    phase: "release",
+                    target: layoff.target_pos,
+                    value: layoff.value,
+                    created_tick: tick,
+                    action_code: 1,
+                });
         }
     }
 
-    let arriving_passes: Vec<ArrivingSupportPassInput> = pass_refs
-        .iter()
-        .map(|(action, target)| ArrivingSupportPassInput {
-            score: action.score,
-            target: *target,
-            receiver_goal_fit: action.receiver_goal_fit,
-            second_line_arrival_value: action.second_line_arrival_value,
-            second_line_cutback_value: action.second_line_cutback_value,
-            layoff_support_value: action.layoff_support_value,
-        })
-        .collect();
     let best_arriving_support = select_best_arriving_support(&ArrivingSupportSelectionInput {
         player_pos: holder.pos,
-        passes: &arriving_passes,
-        opponents: &opponent_positions,
+        passes: &arena.arriving_passes[..arena.pass_count],
+        opponents: &arena.opponent_positions[..arena.opponent_count],
     });
     if best_arriving_support.index.is_some() {
         let release = evaluate_release_support_goal(&ReleaseSupportGoalInput {
@@ -4814,76 +13921,35 @@ fn apply_runner_specialized_goal_bias(
             pitch_width: config.pitch_width,
             support_value: best_arriving_support.support_value,
             receiver_goal_fit: best_arriving_support.receiver_goal_fit,
-            current_shot: shot.map(|action| action.xg).unwrap_or(0.0),
-            shot_readiness: shot
-                .map(|action| {
-                    action
-                        .shot_readiness
-                        .max(action.open_medium_window)
-                        .max(action.clean_second_line_shot)
-                })
-                .unwrap_or(0.0),
+            current_shot,
+            shot_readiness: current_shot_readiness,
             consecutive_carries: holder.consecutive_carries,
             attracted_pressure: best_arriving_support.attracted_pressure,
         });
         if release.has_goal {
-            goals.push(RunnerSpecializedGoal {
-                goal_type: "release_to_arriving_support",
-                phase: "release",
-                target: release.target_pos,
-                value: release.value,
-                created_tick: tick,
-                action_code: 1,
-            });
+            arena.push_goal(RunnerSpecializedGoal {
+                    goal_type: "release_to_arriving_support",
+                    phase: "release",
+                    target: release.target_pos,
+                    value: release.value,
+                    created_tick: tick,
+                    action_code: 1,
+                });
         }
     }
-    let hold_passes: Vec<HoldSupportPassInput> = actions
-        .iter()
-        .filter(|action| matches!(action.action, RunnerHeldAction::Pass { .. }))
-        .filter_map(|action| {
-            runner_action_target(action.action, holder.pos).map(|target| HoldSupportPassInput {
-                score: action.score,
-                target,
-                layoff_support_value: action.layoff_support_value,
-                short_combination_value: action.short_combination_value,
-                second_line_cutback_value: action.second_line_cutback_value,
-                layoff_retention_value: action.layoff_retention_value,
-                receiver_goal_fit: action.receiver_goal_fit,
-                second_line_arrival_value: action.second_line_arrival_value,
-            })
-        })
-        .collect();
-    let hold_carries: Vec<HoldSupportCarryInput> = actions
-        .iter()
-        .filter(|action| matches!(action.action, RunnerHeldAction::Carry { .. }))
-        .map(|action| HoldSupportCarryInput {
-            carry_to_shoot_window: action.carry_to_shoot_window,
-            wide_second_line_carry_window: action.wide_second_line_carry_window,
-            future_shot_gain: action.future_shot_gain,
-        })
-        .collect();
-    let hold_candidates: Vec<HoldSupportHoldInput> = actions
-        .iter()
-        .filter(|action| matches!(action.action, RunnerHeldAction::Hold { .. }))
-        .map(|action| HoldSupportHoldInput {
-            opportunity_wait: action.opportunity_wait,
-            opportunity_wait_value: action.opportunity_wait_value,
-            no_clear_release: action.no_clear_release,
-        })
-        .collect();
     let hold_support = select_hold_support(&HoldSupportSelectionInput {
         player_pos: holder.pos,
         attacking_right,
         pitch_length: config.pitch_length,
         pitch_width: config.pitch_width,
-        passes: &hold_passes,
-        carries: &hold_carries,
-        holds: &hold_candidates,
-        current_opportunity_goal: holder.goal_type.as_deref() == Some("hold_for_opportunity"),
+        passes: &arena.hold_passes[..arena.pass_count],
+        carries: &arena.hold_carries[..arena.carry_count],
+        holds: &arena.hold_candidates[..arena.hold_count],
+        current_opportunity_goal: goal_state.goal_type() == Some("hold_for_opportunity"),
     });
     if hold_support.has_support {
-        let current_hold_goal_age = if holder.goal_type.as_deref() == Some("hold_for_opportunity") {
-            (tick - holder.goal_created_tick).max(0)
+        let current_hold_goal_age = if goal_state.goal_type() == Some("hold_for_opportunity") {
+            (tick - goal_state.goal_created_tick).max(0)
         } else {
             0
         };
@@ -4895,34 +13961,24 @@ fn apply_runner_specialized_goal_bias(
             pitch_width: config.pitch_width,
             support_value: hold_support.support_value,
             hold_value: hold_support.hold_support,
-            current_shot: shot.map(|action| action.xg).unwrap_or(0.0),
-            shot_readiness: shot
-                .map(|action| {
-                    action
-                        .shot_readiness
-                        .max(action.open_medium_window)
-                        .max(action.clean_second_line_shot)
-                })
-                .unwrap_or(0.0),
-            immediate_best_score: actions
-                .iter()
-                .map(|action| action.score)
-                .fold(0.0, f64::max),
+            current_shot,
+            shot_readiness: current_shot_readiness,
+            immediate_best_score,
             goal_age_ticks: current_hold_goal_age,
         });
         if hold_goal.has_goal {
-            goals.push(RunnerSpecializedGoal {
-                goal_type: "hold_for_opportunity",
-                phase: "scan",
-                target: hold_goal.target_pos,
-                value: hold_goal.value,
-                created_tick: if holder.goal_type.as_deref() == Some("hold_for_opportunity") {
-                    holder.goal_created_tick
-                } else {
-                    tick
-                },
-                action_code: 3,
-            });
+            arena.push_goal(RunnerSpecializedGoal {
+                    goal_type: "hold_for_opportunity",
+                    phase: "scan",
+                    target: hold_goal.target_pos,
+                    value: hold_goal.value,
+                    created_tick: if goal_state.goal_type() == Some("hold_for_opportunity") {
+                        goal_state.goal_created_tick
+                    } else {
+                        tick
+                    },
+                    action_code: 3,
+                });
         }
     }
     let context = GoalSwitchCostInput {
@@ -4932,47 +13988,40 @@ fn apply_runner_specialized_goal_bias(
         pressure_interrupt: 0.0,
         iq: holder.iq,
     };
-    let goal_trace_candidates: Vec<serde_json::Value> = goals
-        .iter()
-        .map(|goal| {
-            json!({
-                "goal_type": goal.goal_type,
-                "phase": goal.phase,
-                "target": [goal.target.0, goal.target.1],
-                "value": goal.value,
-                "action_code": goal.action_code
-            })
-        })
-        .collect();
-    let candidate_values: Vec<f64> = goals.iter().map(|goal| goal.value).collect();
-    let candidate_gaussians = runner_goal_gaussians(
+    for (index, goal) in arena.goals[..arena.goal_count].iter().enumerate() {
+        arena.candidate_values[index] = goal.value;
+    }
+    runner_goal_gaussians_into(
         rng,
-        candidate_values.len(),
         &context,
         config.goal_noise_scale,
+        &mut arena.candidate_gaussians[..arena.goal_count],
     );
     let candidate_choice = select_goal_candidate_with_gaussians(
-        &candidate_values,
-        &candidate_gaussians,
+        &arena.candidate_values[..arena.goal_count],
+        &arena.candidate_gaussians[..arena.goal_count],
         &context,
         config.goal_noise_scale,
     );
     let Some(goal) = candidate_choice
         .as_ref()
-        .and_then(|choice| goals.get(choice.index))
-        .cloned()
+        .and_then(|choice| arena.goals[..arena.goal_count].get(choice.index))
+        .copied()
     else {
-        let Some(current_goal_type) = holder.goal_type.clone() else {
+        let Some(current_goal_type) = goal_state.goal_type.clone() else {
             return false;
         };
         if !is_runner_on_ball_specialized_goal(current_goal_type.as_str()) {
-            clear_player_goal(holder);
+            goal_state.clear(holder.pos);
             return false;
         }
-        let current_phase = holder.goal_phase.clone().unwrap_or_default();
-        let current_target = holder.goal_target;
-        let current_value = holder.goal_value;
-        let current_action_code = holder.goal_action_code;
+        let current_phase = goal_state
+            .goal_phase
+            .clone()
+            .unwrap_or(RunnerGoalText::Static(""));
+        let current_target = goal_state.goal_target;
+        let current_value = goal_state.goal_value;
+        let current_action_code = goal_state.goal_action_code;
         let current_storage = GoalInput {
             goal_type: current_goal_type.as_str(),
             value: current_value,
@@ -4985,36 +14034,50 @@ fn apply_runner_specialized_goal_bias(
             config.goal_noise_scale,
             rng,
         );
-        apply_runner_specialized_selected_goal_bias(
+        apply_runner_specialized_goal_context(
             actions,
-            holder,
+            goal_state,
             current_goal_type.as_str(),
             current_phase.as_str(),
             current_target,
             current_value,
-            holder.goal_created_tick,
+            goal_state.goal_created_tick,
             current_action_code,
         );
-        state.pending_on_ball_goal_event = Some(json!({
-            "type": "event",
-            "event": "on_ball_goal",
-            "goal_type": current_goal_type,
-            "phase": current_phase,
-            "target": [round_one(current_target.0), round_one(current_target.1)],
-            "value": round_two(current_value),
-            "action_code": current_action_code,
-            "switched": selection.switched,
-            "reason": selection.reason,
-            "candidate_count": goal_trace_candidates.len(),
-            "candidates": goal_trace_candidates,
-            "cut_candidate": cut_candidate_trace
-        }));
+        if trace_enabled {
+            let goal_trace_candidates: Vec<serde_json::Value> = arena.goals[..arena.goal_count]
+                .iter()
+                .map(|goal| {
+                    json!({
+                        "goal_type": goal.goal_type,
+                        "phase": goal.phase,
+                        "target": [goal.target.0, goal.target.1],
+                        "value": goal.value,
+                        "action_code": goal.action_code
+                    })
+                })
+                .collect();
+            *pending_on_ball_goal_event = Some(json!({
+                "type": "event",
+                "event": "on_ball_goal",
+                "goal_type": current_goal_type.as_str(),
+                "phase": current_phase.as_str(),
+                "target": [round_one(current_target.0), round_one(current_target.1)],
+                "value": round_two(current_value),
+                "action_code": current_action_code,
+                "switched": selection.switched,
+                "reason": selection.reason,
+                "candidate_count": goal_trace_candidates.len(),
+                "candidates": goal_trace_candidates,
+                "cut_candidate": cut_candidate_trace.unwrap_or(serde_json::Value::Null)
+            }));
+        }
         return true;
     };
-    let current_storage = holder.goal_type.as_deref().map(|goal_type| GoalInput {
+    let current_storage = goal_state.goal_type().map(|goal_type| GoalInput {
         goal_type,
-        value: holder.goal_value,
-        phase: holder.goal_phase.as_deref(),
+        value: goal_state.goal_value,
+        phase: goal_state.goal_phase(),
     });
     let candidate_goal = GoalInput {
         goal_type: goal.goal_type,
@@ -5030,44 +14093,44 @@ fn apply_runner_specialized_goal_bias(
     );
     let selected_is_candidate = selection.selected == "candidate";
     let selected_goal_type = if selected_is_candidate {
-        goal.goal_type.to_string()
+        RunnerGoalText::Static(goal.goal_type)
     } else {
-        holder
+        goal_state
             .goal_type
             .clone()
-            .unwrap_or_else(|| goal.goal_type.to_string())
+            .unwrap_or(RunnerGoalText::Static(goal.goal_type))
     };
     let selected_phase = if selected_is_candidate {
-        goal.phase.to_string()
+        RunnerGoalText::Static(goal.phase)
     } else {
-        holder
+        goal_state
             .goal_phase
             .clone()
-            .unwrap_or_else(|| goal.phase.to_string())
+            .unwrap_or(RunnerGoalText::Static(goal.phase))
     };
     let selected_target = if selected_is_candidate {
         goal.target
     } else {
-        holder.goal_target
+        goal_state.goal_target
     };
     let selected_value = if selected_is_candidate {
         goal.value
     } else {
-        holder.goal_value
+        goal_state.goal_value
     };
     let selected_action_code = if selected_is_candidate {
         goal.action_code
     } else {
-        holder.goal_action_code
+        goal_state.goal_action_code
     };
     let selected_created_tick = if selected_is_candidate {
         goal.created_tick
     } else {
-        holder.goal_created_tick
+        goal_state.goal_created_tick
     };
-    apply_runner_specialized_selected_goal_bias(
+    apply_runner_specialized_goal_context(
         actions,
-        holder,
+        goal_state,
         selected_goal_type.as_str(),
         selected_phase.as_str(),
         selected_target,
@@ -5075,33 +14138,49 @@ fn apply_runner_specialized_goal_bias(
         selected_created_tick,
         selected_action_code,
     );
-    state.pending_on_ball_goal_event = Some(json!({
-        "type": "event",
-        "event": "on_ball_goal",
-        "goal_type": selected_goal_type,
-        "phase": selected_phase,
-        "target": [round_one(selected_target.0), round_one(selected_target.1)],
-        "value": round_two(selected_value),
-        "action_code": selected_action_code,
-        "switched": selection.switched,
-        "reason": selection.reason,
-        "candidate_count": goal_trace_candidates.len(),
-        "candidates": goal_trace_candidates,
-        "cut_candidate": cut_candidate_trace,
-        "candidate_choice": candidate_choice.as_ref().map(|choice| json!({
-            "index": choice.index,
-            "candidate_noise": choice.candidate_noise,
-            "noisy_value": choice.noisy_value
-        }))
-    }));
+    if trace_enabled {
+        let goal_trace_candidates: Vec<serde_json::Value> = arena.goals[..arena.goal_count]
+            .iter()
+            .map(|goal| {
+                json!({
+                    "goal_type": goal.goal_type,
+                    "phase": goal.phase,
+                    "target": [goal.target.0, goal.target.1],
+                    "value": goal.value,
+                    "action_code": goal.action_code
+                })
+            })
+            .collect();
+        *pending_on_ball_goal_event = Some(json!({
+            "type": "event",
+            "event": "on_ball_goal",
+            "goal_type": selected_goal_type.as_str(),
+            "phase": selected_phase.as_str(),
+            "target": [round_one(selected_target.0), round_one(selected_target.1)],
+            "value": round_two(selected_value),
+            "action_code": selected_action_code,
+            "switched": selection.switched,
+            "reason": selection.reason,
+            "candidate_count": goal_trace_candidates.len(),
+            "candidates": goal_trace_candidates,
+            "cut_candidate": cut_candidate_trace.unwrap_or(serde_json::Value::Null),
+            "candidate_choice": candidate_choice.as_ref().map(|choice| json!({
+                "index": choice.index,
+                "candidate_noise": choice.candidate_noise,
+                "noisy_value": choice.noisy_value
+            }))
+        }));
+    }
     true
 }
 
 fn choose_default_held_action(
     holder_idx: usize,
-    holder: &mut RunnerPlayer,
+    holder: &RunnerPlayer,
+    goal_state: &mut RunnerHeldGoalState,
     teammates: &[RunnerPlayer],
     opponents: &[RunnerPlayer],
+    contest_defenders: &[ShotContestDefender],
     holder_home: bool,
     config: &RunnerRuntimeConfig,
     home_attacking_right: bool,
@@ -5110,23 +14189,59 @@ fn choose_default_held_action(
     rng: &mut RunnerRng,
 ) -> RunnerHeldAction {
     let attacking_right = attacking_right_for(holder_home, home_attacking_right);
-    let current_state_value = runner_state_value(
+    state
+        .held_decision_arena
+        .prepare(holder_idx, teammates, opponents, config);
+    let current_state_value = runner_state_value_with_scratch(
         holder_idx,
         holder,
         holder_home,
+        state.ball.control,
         teammates,
-        opponents,
+        contest_defenders,
         attacking_right,
         tick,
         &state.shot_quality_cache,
         config,
+        &state.held_decision_arena.scratch,
     );
+    let team_plan_signals = if holder_home {
+        state.home_plan_signals
+    } else {
+        state.away_plan_signals
+    };
+    let team_plan = if holder_home {
+        state.home_plan
+    } else {
+        state.away_plan
+    };
+    let opponent_plan_signals = if holder_home {
+        state.away_plan_signals
+    } else {
+        state.home_plan_signals
+    };
+    let opponent_plan = if holder_home {
+        state.away_plan
+    } else {
+        state.home_plan
+    };
+    let team_phase = if holder_home {
+        phase_name(state.home_phase_code)
+    } else {
+        phase_name(state.away_phase_code)
+    };
+    let opponent_phase = if holder_home {
+        phase_name(state.away_phase_code)
+    } else {
+        phase_name(state.home_phase_code)
+    };
     if holder.position == "GK" {
         return choose_gk_held_action(
             holder_idx,
             holder,
             teammates,
             opponents,
+            contest_defenders,
             holder_home,
             attacking_right,
             current_state_value,
@@ -5136,46 +14251,74 @@ fn choose_default_held_action(
             rng,
         );
     }
-    let mut actions = build_carry_candidates(
+    state.carry_defender_response_arena.clear();
+    let mut actions = std::mem::take(&mut state.held_action_buffer);
+    actions.clear();
+    if actions.capacity() < RUNNER_MAX_HELD_ACTIONS {
+        actions.reserve(RUNNER_MAX_HELD_ACTIONS - actions.capacity());
+    }
+    build_carry_candidates_into(
         holder_idx,
         holder,
         holder_home,
         teammates,
         opponents,
+        contest_defenders,
         current_state_value,
         attacking_right,
         tick,
         &state.shot_quality_cache,
+        team_plan_signals,
+        opponent_plan_signals,
         config,
+        &mut actions,
+        &mut state.carry_defender_response_arena,
+        &mut state.held_decision_arena.scratch,
     );
-    let pass_actions = build_pass_candidates(
+    let carry_count = actions.len();
+    build_pass_candidates_into(
         holder_idx,
         holder,
         holder_home,
         teammates,
         opponents,
+        contest_defenders,
         current_state_value,
         attacking_right,
         tick,
         &state.shot_quality_cache,
         config,
+        &mut state.pass_candidate_buffer,
+        &mut state.pass_workspace,
+        &mut actions,
+        &state.held_decision_arena.scratch,
     );
-    apply_runner_support_opportunity_cost(&mut actions, &pass_actions);
-    actions.extend(pass_actions);
-    let shot = build_shot_candidate(
+    {
+        let (carry_actions, pass_actions) = actions.split_at_mut(carry_count);
+        apply_runner_support_opportunity_cost(
+            carry_actions,
+            pass_actions,
+            &mut state.held_decision_arena.scratch,
+        );
+    }
+    let shot = build_shot_candidate_with_scratch(
         holder_idx,
         holder,
         holder_home,
-        teammates,
+        state.ball.control,
         opponents,
+        contest_defenders,
         current_state_value,
         attacking_right,
         tick,
         &state.shot_quality_cache,
         config,
+        &state.held_decision_arena.scratch,
     );
-    let shot_score = shot.as_ref().map(|action| action.score).unwrap_or(0.0);
-    if let Some(shot) = shot {
+    let shot_is_executable = action_is_physically_executable(shot.action, holder.pos);
+    let shot_score = shot.score;
+    let shot_xg = shot.xg;
+    if shot_is_executable {
         actions.push(shot);
     }
     let clear_score = score_clear_candidate(holder, opponents, attacking_right, config);
@@ -5188,16 +14331,35 @@ fn choose_default_held_action(
         holder,
         teammates,
         opponents,
+        current_state_value,
         release_best,
         shot_score,
+        shot_xg,
         attacking_right,
         config,
     ) {
+        if let Some(reorient) = build_reorient_candidate(
+            hold.clone(),
+            holder,
+            state.ball.control,
+            attacking_right,
+            config,
+        ) {
+            actions.push(reorient);
+        }
         actions.push(hold);
     }
-    if let Some(clear) = build_clear_candidate(holder, opponents, attacking_right, config, rng) {
+    if let Some(clear) = build_clear_candidate(
+        holder,
+        opponents,
+        current_state_value,
+        attacking_right,
+        config,
+        rng,
+    ) {
         actions.push(clear);
     }
+    retain_executable_held_actions(&mut actions, holder.pos);
     if config.trace_detail == "full" {
         let best_score = |items: &[RunnerEvaluatedAction]| -> f64 {
             items.iter().map(|action| action.score).fold(0.0, f64::max)
@@ -5209,83 +14371,98 @@ fn choose_default_held_action(
                 .map(|action| action.score)
                 .fold(0.0, f64::max)
         };
-        state.trace_entries.push(json!({
-            "tick": tick,
-            "type": "event",
-            "event": "on_ball_candidate_counts",
-            "team": if holder_home { "home" } else { "away" },
-            "player_idx": holder_idx,
-            "player": holder.name,
-            "player_pos": [holder.pos.0, holder.pos.1],
-            "holder_state": {
-                "idx": holder_idx,
-                "pos": [holder.pos.0, holder.pos.1],
-                "target_pos": [holder.target_pos.0, holder.target_pos.1],
-                "tactical_anchor": [holder.tactical_anchor.0, holder.tactical_anchor.1],
-                "base_pos": [holder.base_pos.0, holder.base_pos.1],
-                "position": holder.position,
-                "speed": holder.speed,
-                "finishing": holder.finishing,
-                "long_shot": holder.long_shot,
-                "short_passing": holder.short_passing,
-                "long_passing": holder.long_passing,
-                "hold_ticks": holder.hold_ticks,
-                "possession_ticks": holder.possession_ticks,
-                "consecutive_carries": holder.consecutive_carries,
-                "facing_direction": holder.facing_direction,
-                "iq": holder.iq,
-            },
-            "opponents_state": opponents
-                .iter()
-                .enumerate()
-                .map(|(idx, opponent)| json!({
-                    "idx": idx,
-                    "pos": [opponent.pos.0, opponent.pos.1],
-                    "target_pos": [opponent.target_pos.0, opponent.target_pos.1],
-                    "tactical_anchor": [opponent.tactical_anchor.0, opponent.tactical_anchor.1],
-                    "base_pos": [opponent.base_pos.0, opponent.base_pos.1],
-                    "position": opponent.position,
-                    "speed": opponent.speed,
-                }))
-                .collect::<Vec<_>>(),
-            "teammate_goals": teammates
-                .iter()
-                .enumerate()
-                .filter(|(idx, _)| *idx != holder_idx)
-                .map(|(idx, teammate)| json!({
-                    "idx": idx,
-                    "pos": [teammate.pos.0, teammate.pos.1],
-                    "target_pos": [teammate.target_pos.0, teammate.target_pos.1],
-                    "tactical_anchor": [teammate.tactical_anchor.0, teammate.tactical_anchor.1],
-                    "base_pos": [teammate.base_pos.0, teammate.base_pos.1],
-                    "position": teammate.position,
-                    "speed": teammate.speed,
-                    "finishing": teammate.finishing,
-                    "long_shot": teammate.long_shot,
-                    "goal_type": teammate.goal_type,
-                    "goal_target": [teammate.goal_target.0, teammate.goal_target.1],
-                    "goal_value": teammate.goal_value,
-                }))
-                .collect::<Vec<_>>(),
-            "carry_count": actions.iter().filter(|action| matches!(action.action, RunnerHeldAction::Carry { .. })).count(),
-            "pass_count": actions.iter().filter(|action| matches!(action.action, RunnerHeldAction::Pass { .. })).count(),
-            "shot_count": actions.iter().filter(|action| matches!(action.action, RunnerHeldAction::Shoot { .. })).count(),
-            "hold_count": actions.iter().filter(|action| matches!(action.action, RunnerHeldAction::Hold { .. })).count(),
-            "clear_count": actions.iter().filter(|action| matches!(action.action, RunnerHeldAction::Clear { .. })).count(),
-            "best_pass_score": best_score_for(1),
-            "best_action_score": best_score(&actions),
-            "current_state_value": current_state_value
-        }));
+        trace_entry!(
+            state,
+            json!({
+                "tick": tick,
+                "type": "event",
+                "event": "on_ball_candidate_counts",
+                "team": if holder_home { "home" } else { "away" },
+                "player_idx": holder_idx,
+                "player": holder.name,
+                "player_pos": [holder.pos.0, holder.pos.1],
+                "holder_state": {
+                    "idx": holder_idx,
+                    "pos": [holder.pos.0, holder.pos.1],
+                    "target_pos": [holder.target_pos.0, holder.target_pos.1],
+                    "tactical_anchor": [holder.tactical_anchor.0, holder.tactical_anchor.1],
+                    "base_pos": [holder.base_pos.0, holder.base_pos.1],
+                    "position": holder.position,
+                    "speed": holder.speed,
+                    "finishing": holder.finishing,
+                    "long_shot": holder.long_shot,
+                    "short_passing": holder.short_passing,
+                    "long_passing": holder.long_passing,
+                    "hold_ticks": holder.hold_ticks,
+                    "possession_ticks": holder.possession_ticks,
+                    "consecutive_carries": holder.consecutive_carries,
+                    "facing_direction": holder.facing_direction,
+                    "iq": holder.iq,
+                },
+                "opponents_state": opponents
+                    .iter()
+                    .enumerate()
+                    .map(|(idx, opponent)| json!({
+                        "idx": idx,
+                        "pos": [opponent.pos.0, opponent.pos.1],
+                        "target_pos": [opponent.target_pos.0, opponent.target_pos.1],
+                        "tactical_anchor": [opponent.tactical_anchor.0, opponent.tactical_anchor.1],
+                        "base_pos": [opponent.base_pos.0, opponent.base_pos.1],
+                        "position": opponent.position,
+                        "speed": opponent.speed,
+                    }))
+                    .collect::<Vec<_>>(),
+                "teammate_goals": teammates
+                    .iter()
+                    .enumerate()
+                    .filter(|(idx, _)| *idx != holder_idx)
+                    .map(|(idx, teammate)| json!({
+                        "idx": idx,
+                        "pos": [teammate.pos.0, teammate.pos.1],
+                        "target_pos": [teammate.target_pos.0, teammate.target_pos.1],
+                        "tactical_anchor": [teammate.tactical_anchor.0, teammate.tactical_anchor.1],
+                        "base_pos": [teammate.base_pos.0, teammate.base_pos.1],
+                        "position": teammate.position,
+                        "speed": teammate.speed,
+                        "finishing": teammate.finishing,
+                        "long_shot": teammate.long_shot,
+                        "goal_type": teammate.goal_type,
+                        "goal_target": [teammate.goal_target.0, teammate.goal_target.1],
+                        "goal_value": teammate.goal_value,
+                    }))
+                    .collect::<Vec<_>>(),
+                "carry_count": actions.iter().filter(|action| matches!(action.action, RunnerHeldAction::Carry { .. })).count(),
+                "pass_count": actions.iter().filter(|action| matches!(action.action, RunnerHeldAction::Pass { .. })).count(),
+                "shot_count": actions.iter().filter(|action| matches!(action.action, RunnerHeldAction::Shoot { .. })).count(),
+                "reorient_count": actions.iter().filter(|action| matches!(action.action, RunnerHeldAction::Reorient { .. })).count(),
+                "hold_count": actions.iter().filter(|action| matches!(action.action, RunnerHeldAction::Hold { .. })).count(),
+                "clear_count": actions.iter().filter(|action| matches!(action.action, RunnerHeldAction::Clear { .. })).count(),
+                "best_pass_score": best_score_for(1),
+                "best_action_score": best_score(&actions),
+                "current_state_value": current_state_value,
+                "team_plan": {
+                    "forward_bias": team_plan_signals.forward_bias,
+                    "recycle_bias": team_plan_signals.recycle_bias,
+                    "switch_bias": team_plan_signals.switch_bias,
+                    "tempo": team_plan_signals.tempo,
+                    "risk_budget": team_plan_signals.risk_budget
+                }
+            })
+        );
     }
     if actions.is_empty() {
+        state.held_action_buffer = actions;
         return RunnerHeldAction::Hold {
             opportunity_target: None,
         };
     }
-    let used_specialized_goal = apply_runner_specialized_goal_bias(
-        state,
+    let has_specialized_goal = update_runner_specialized_goal_context(
+        &mut state.specialized_goal_arena,
+        state.trace_enabled,
+        &mut state.pending_on_ball_goal_event,
         holder_idx,
         holder,
+        goal_state,
         teammates,
         opponents,
         &mut actions,
@@ -5294,89 +14471,31 @@ fn choose_default_held_action(
         tick,
         rng,
     );
-    let selection_candidates: Vec<OnBallSelectionCandidateInput> =
-        actions.iter().map(runner_selection_candidate).collect();
-    let noises = iq_score_noises(rng, actions.len(), holder.iq, config);
-    let current_hold_goal = holder.goal_type.as_deref() == Some("hold_for_opportunity");
-    let pre_generic_dry_selection = select_on_ball_candidate(&OnBallSelectionInput {
-        candidates: &selection_candidates,
-        current_goal_hold_for_opportunity: current_hold_goal,
-        iq: holder.iq,
-        score_noises: &noises,
-        roll: 0.0,
-        fallback_index: 0,
-    });
-    if !used_specialized_goal {
-        let (pre_roll, pre_fallback_index) = consume_runner_on_ball_selection_random(
-            rng,
-            actions.len(),
-            pre_generic_dry_selection.as_ref(),
-        );
-        let pre_selection = select_on_ball_candidate(&OnBallSelectionInput {
-            candidates: &selection_candidates,
-            current_goal_hold_for_opportunity: current_hold_goal,
-            iq: holder.iq,
-            score_noises: &noises,
-            roll: pre_roll,
-            fallback_index: pre_fallback_index,
-        });
-        if let Some(selection) = pre_selection.as_ref() {
-            apply_selection_scores_to_actions(&mut actions, selection);
-        }
-        apply_runner_generic_goal_continuity(holder, &mut actions, config, rng);
+    apply_temporal_option_values_with_contexts(
+        &mut actions,
+        Some(&state.carry_defender_response_arena),
+        holder_idx,
+        holder.pos,
+        state.ball.control,
+        teammates,
+        opponents,
+        holder_home,
+        attacking_right,
+        tick,
+        &state.shot_quality_cache,
+        team_phase,
+        opponent_phase,
+        team_plan,
+        opponent_plan,
+        team_plan_signals,
+        opponent_plan_signals,
+        &mut state.held_decision_arena.temporal_value_contexts,
+        config,
+    );
+    if !has_specialized_goal {
+        apply_runner_generic_goal_continuity(holder, goal_state, &actions, config, rng);
     }
-    let (selected_index, trace_actions) = if used_specialized_goal {
-        let final_selection_candidates: Vec<OnBallSelectionCandidateInput> =
-            actions.iter().map(runner_selection_candidate).collect();
-        let final_current_hold_goal = holder.goal_type.as_deref() == Some("hold_for_opportunity");
-        let dry_selection = select_on_ball_candidate(&OnBallSelectionInput {
-            candidates: &final_selection_candidates,
-            current_goal_hold_for_opportunity: final_current_hold_goal,
-            iq: holder.iq,
-            score_noises: &noises,
-            roll: 0.0,
-            fallback_index: 0,
-        });
-        let (roll, fallback_index) =
-            consume_runner_on_ball_selection_random(rng, actions.len(), dry_selection.as_ref());
-        let selection = select_on_ball_candidate(&OnBallSelectionInput {
-            candidates: &final_selection_candidates,
-            current_goal_hold_for_opportunity: final_current_hold_goal,
-            iq: holder.iq,
-            score_noises: &noises,
-            roll,
-            fallback_index,
-        });
-        let selected_index = selection
-            .as_ref()
-            .map(|value| value.index)
-            .unwrap_or_else(|| {
-                actions
-                    .iter()
-                    .enumerate()
-                    .max_by(|(_, a), (_, b)| {
-                        a.score
-                            .partial_cmp(&b.score)
-                            .unwrap_or(std::cmp::Ordering::Equal)
-                    })
-                    .map(|(idx, _)| idx)
-                    .unwrap_or(0)
-            });
-        let mut trace_actions = actions.clone();
-        if let Some(selection) = selection.as_ref() {
-            for (action, score) in trace_actions.iter_mut().zip(selection.noisy_scores.iter()) {
-                action.score = *score;
-            }
-        }
-        (selected_index, trace_actions)
-    } else {
-        let scores: Vec<f64> = actions.iter().map(|action| action.score).collect();
-        let (roll, fallback_index) =
-            consume_runner_raw_softmax_selection_random(rng, &scores, holder.iq);
-        let selected_index = raw_softmax_selection(&scores, holder.iq, roll, fallback_index).0;
-        (selected_index, actions.clone())
-    };
-    let index = selected_index.min(actions.len() - 1);
+    let index = runner_bellman_best_action_index(&actions).unwrap_or(0);
     record_on_ball_decision_trace(
         state,
         tick,
@@ -5384,33 +14503,87 @@ fn choose_default_held_action(
         holder_idx,
         holder.name.as_str(),
         holder.pos,
-        &trace_actions,
+        state.ball.control,
+        &actions,
         index,
         config,
     );
-    actions[index].action
+    let selected_action = actions[index].action;
+    state.held_action_buffer = actions;
+    selected_action
 }
 
-fn team_shape_players(players: &[RunnerPlayer]) -> Vec<TeamShapePlayerInput> {
-    players
-        .iter()
-        .enumerate()
-        .map(|(idx, player)| TeamShapePlayerInput {
-            index: idx,
-            base_pos: player.base_pos,
-            is_goalkeeper: player.position == "GK",
-        })
-        .collect()
-}
-
-fn team_shape_opponents(players: &[RunnerPlayer]) -> Vec<TeamShapeOpponentInput> {
-    players
-        .iter()
-        .map(|player| TeamShapeOpponentInput {
+fn update_team_plans(
+    state: &mut RunnerMatchState,
+    home: &[RunnerPlayer],
+    away: &[RunnerPlayer],
+    home_attacking_right: bool,
+    config: &RunnerRuntimeConfig,
+) {
+    assert!(
+        home.len() <= RUNNER_TEAM_SIZE && away.len() <= RUNNER_TEAM_SIZE,
+        "team plan updates expect eleven-player teams"
+    );
+    let ball_pos = state.ball.position;
+    let ball_state = state.ball.state;
+    let holder_team_home = state.ball.holder_team_home;
+    let home_current = state.home_plan;
+    let away_current = state.away_plan;
+    let home_phase = phase_name(state.home_phase_code);
+    let away_phase = phase_name(state.away_phase_code);
+    let RunnerTeamPlanArena {
+        home_players,
+        away_players,
+        home_opponents,
+        away_opponents,
+    } = &mut state.team_plan_arena;
+    for (index, player) in home.iter().enumerate() {
+        home_players[index] = TeamPlanPlayerInput {
             pos: player.pos,
             is_goalkeeper: player.position == "GK",
-        })
-        .collect()
+        };
+        away_opponents[index] = TeamPlanOpponentInput {
+            pos: player.pos,
+            is_goalkeeper: player.position == "GK",
+        };
+    }
+    for (index, player) in away.iter().enumerate() {
+        away_players[index] = TeamPlanPlayerInput {
+            pos: player.pos,
+            is_goalkeeper: player.position == "GK",
+        };
+        home_opponents[index] = TeamPlanOpponentInput {
+            pos: player.pos,
+            is_goalkeeper: player.position == "GK",
+        };
+    }
+    let (home_plan, home_signals) = select_team_plan(&TeamPlanUpdateInput {
+        current: home_current,
+        ball_pos,
+        attacking_right: home_attacking_right,
+        has_possession: ball_state == RunnerBallState::Held && holder_team_home == Some(true),
+        phase: home_phase,
+        pitch_length: config.pitch_length,
+        pitch_width: config.pitch_width,
+        players: &home_players[..home.len()],
+        opponents: &home_opponents[..away.len()],
+    });
+    let (away_plan, away_signals) = select_team_plan(&TeamPlanUpdateInput {
+        current: away_current,
+        ball_pos,
+        attacking_right: !home_attacking_right,
+        has_possession: ball_state == RunnerBallState::Held && holder_team_home == Some(false),
+        phase: away_phase,
+        pitch_length: config.pitch_length,
+        pitch_width: config.pitch_width,
+        players: &away_players[..away.len()],
+        opponents: &away_opponents[..home.len()],
+    });
+    let _ = home_players;
+    state.away_plan = away_plan;
+    state.away_plan_signals = away_signals;
+    state.home_plan = home_plan;
+    state.home_plan_signals = home_signals;
 }
 
 fn apply_team_shape_targets(
@@ -5419,22 +14592,43 @@ fn apply_team_shape_targets(
     ball_pos: (f64, f64),
     attacking_right: bool,
     phase: &str,
+    plan_signals: TeamPlanSignals,
     intent: &str,
     holder_idx: Option<usize>,
     config: &RunnerRuntimeConfig,
+    arena: &mut RunnerTeamShapeArena,
 ) {
-    let shape_players = team_shape_players(players);
-    let shape_opponents = team_shape_opponents(opponents);
-    let shape = team_shape_plan(&TeamShapePlanInput {
-        ball_pos,
-        attacking_right,
-        phase,
-        pitch_length: config.pitch_length,
-        pitch_width: config.pitch_width,
-        players: &shape_players,
-        opponents: &shape_opponents,
-    });
-    for anchor in shape.anchors {
+    assert!(
+        players.len() <= RUNNER_TEAM_SIZE && opponents.len() <= RUNNER_TEAM_SIZE,
+        "team shape updates expect eleven-player teams"
+    );
+    for (index, player) in players.iter().enumerate() {
+        arena.players[index] = TeamShapePlayerInput {
+            index,
+            base_pos: player.base_pos,
+            is_goalkeeper: player.position == "GK",
+        };
+    }
+    for (index, opponent) in opponents.iter().enumerate() {
+        arena.opponents[index] = TeamShapeOpponentInput {
+            pos: opponent.pos,
+            is_goalkeeper: opponent.position == "GK",
+        };
+    }
+    let shape_len = team_shape_plan_into(
+        &TeamShapePlanInput {
+            ball_pos,
+            attacking_right,
+            phase,
+            plan_signals,
+            pitch_length: config.pitch_length,
+            pitch_width: config.pitch_width,
+            players: &arena.players[..players.len()],
+            opponents: &arena.opponents[..opponents.len()],
+        },
+        &mut arena.anchors,
+    );
+    for anchor in &arena.anchors[..shape_len] {
         if let Some(player) = players.get_mut(anchor.index) {
             player.tactical_anchor = anchor.tactical_anchor;
             if holder_idx == Some(anchor.index) {
@@ -5444,7 +14638,7 @@ fn apply_team_shape_targets(
                 apply_goalkeeper_coverage_target(player, ball_pos, attacking_right, config);
             } else if player.target_pos == (0.0, 0.0) {
                 player.target_pos = anchor.tactical_anchor;
-                player.movement_intent = intent.to_string();
+                update_runner_text(&mut player.movement_intent, intent);
             }
         }
     }
@@ -5465,7 +14659,7 @@ fn apply_goalkeeper_coverage_target(
     .target;
     goalkeeper.tactical_anchor = target;
     goalkeeper.target_pos = target;
-    goalkeeper.movement_intent = "recover_shape".to_string();
+    update_runner_text(&mut goalkeeper.movement_intent, "recover_shape");
 }
 
 fn runner_attack_teammates(players: &[RunnerPlayer]) -> Vec<OffBallTeammateInput> {
@@ -5493,8 +14687,45 @@ fn runner_defense_teammates(
         .map(|(_, player)| DefenseTeammateInput {
             pos: player.pos,
             target_pos: player.target_pos,
+            anchor: player.tactical_anchor,
         })
         .collect()
+}
+
+fn runner_defense_movement_input<'a>(
+    defender: &'a RunnerPlayer,
+    plan_signals: TeamPlanSignals,
+    config: &RunnerRuntimeConfig,
+) -> crate::off_ball_defense::DefenseMovementInput<'a> {
+    crate::off_ball_defense::DefenseMovementInput {
+        velocity: defender.velocity,
+        speed_ability: defender.speed.round() as i32,
+        defence: defender.defence,
+        state: defender.state.as_str(),
+        plan_signals,
+        player_max_speed: config.player_max_speed,
+        player_min_speed: config.player_min_speed,
+        pitch_length: config.pitch_length,
+        pitch_width: config.pitch_width,
+    }
+}
+
+fn runner_projected_defense_movement_input<'a>(
+    defender: &'a RunnerProjectedDefender,
+    plan_signals: TeamPlanSignals,
+    config: &RunnerRuntimeConfig,
+) -> crate::off_ball_defense::DefenseMovementInput<'a> {
+    crate::off_ball_defense::DefenseMovementInput {
+        velocity: defender.velocity,
+        speed_ability: defender.speed.round() as i32,
+        defence: defender.defence,
+        state: defender.state,
+        plan_signals,
+        player_max_speed: config.player_max_speed,
+        player_min_speed: config.player_min_speed,
+        pitch_length: config.pitch_length,
+        pitch_width: config.pitch_width,
+    }
 }
 
 fn is_defender_position(position: &str) -> bool {
@@ -5515,6 +14746,39 @@ fn is_attacker_position(position: &str) -> bool {
     )
 }
 
+fn update_runner_movement_target(
+    player: &mut RunnerPlayer,
+    requested_target: (f64, f64),
+    requested_intent: Option<&str>,
+) {
+    let movement_target = player_set_movement_target_ref(&PlayerSetMovementTargetInput {
+        current_target: player.target_pos,
+        requested_target,
+        current_intent: player.movement_intent.as_str(),
+        requested_intent,
+    });
+    player.target_pos = movement_target.target_pos;
+    if let Some(requested_intent) = requested_intent {
+        update_runner_text(&mut player.movement_intent, requested_intent);
+    }
+}
+
+fn update_runner_text(text: &mut String, requested_value: &str) {
+    if text != requested_value {
+        text.clear();
+        text.push_str(requested_value);
+    }
+}
+
+fn update_runner_optional_text(text: &mut Option<String>, requested_value: Option<&str>) {
+    match (text.as_mut(), requested_value) {
+        (Some(text), Some(requested_value)) => update_runner_text(text, requested_value),
+        (None, Some(requested_value)) => *text = Some(requested_value.to_string()),
+        (Some(_), None) => *text = None,
+        (None, None) => {}
+    }
+}
+
 fn is_wide_position(position: &str) -> bool {
     matches!(
         position,
@@ -5524,7 +14788,7 @@ fn is_wide_position(position: &str) -> bool {
 
 fn apply_player_goal_switch_with_details(
     player: &mut RunnerPlayer,
-    candidate_type: String,
+    candidate_type: &str,
     candidate_phase: &'static str,
     candidate_target: (f64, f64),
     candidate_value: f64,
@@ -5546,7 +14810,7 @@ fn apply_player_goal_switch_with_details(
         }),
     });
     let candidate = GoalInput {
-        goal_type: candidate_type.as_str(),
+        goal_type: candidate_type,
         value: candidate_value,
         phase: Some(candidate_phase),
     };
@@ -5565,8 +14829,8 @@ fn apply_player_goal_switch_with_details(
         rng,
     );
     if selection.selected == "candidate" {
-        player.goal_type = Some(candidate_type);
-        player.goal_phase = Some(candidate_phase.to_string());
+        update_runner_optional_text(&mut player.goal_type, Some(candidate_type));
+        update_runner_optional_text(&mut player.goal_phase, Some(candidate_phase));
         player.goal_target = candidate_target;
         player.goal_value = candidate_value.max(0.0);
         player.goal_action_code = 3;
@@ -5619,8 +14883,8 @@ fn apply_arrival_goal_switch_with_details(
         rng,
     );
     if selection.selected == "candidate" {
-        player.goal_type = Some(candidate_type.to_string());
-        player.goal_phase = None;
+        update_runner_optional_text(&mut player.goal_type, Some(candidate_type));
+        update_runner_optional_text(&mut player.goal_phase, None);
         player.goal_target = candidate_target;
         player.goal_value = candidate_value.max(0.0);
         player.goal_action_code = 3;
@@ -5675,19 +14939,23 @@ fn off_ball_attack_movement_intent(
     }
 }
 
+fn off_ball_attack_goal_type(goal_type: &str) -> Option<&'static str> {
+    match goal_type {
+        "arc_arrival_for_cutback" => Some("arc_arrival_for_cutback"),
+        "attack_far_post" => Some("attack_far_post"),
+        "support_second_line" => Some("support_second_line"),
+        "drop_between_lines" => Some("drop_between_lines"),
+        "support_carrier" => Some("support_carrier"),
+        "hold_width" => Some("hold_width"),
+        "run_behind" => Some("run_behind"),
+        "attack_box" => Some("attack_box"),
+        "recycle_support" => Some("recycle_support"),
+        _ => None,
+    }
+}
+
 fn is_off_ball_attack_goal_type(goal_type: &str) -> bool {
-    matches!(
-        goal_type,
-        "arc_arrival_for_cutback"
-            | "attack_far_post"
-            | "support_second_line"
-            | "drop_between_lines"
-            | "support_carrier"
-            | "hold_width"
-            | "run_behind"
-            | "attack_box"
-            | "recycle_support"
-    )
+    off_ball_attack_goal_type(goal_type).is_some()
 }
 
 fn attenuate_arrival_goal_for_teammate_occupancy(
@@ -5747,24 +15015,58 @@ fn apply_off_ball_attack_choices(
     attacking_right: bool,
     holder_idx: Option<usize>,
     active_indices: Option<&[bool]>,
+    opponent_context: Option<RunnerOffBallAttackOpponentContext>,
+    prepared_team_context: Option<&mut RunnerOffBallAttackTeamContext>,
     config: &RunnerRuntimeConfig,
     rng: &mut RunnerRng,
 ) -> (i32, Option<RunnerGoalSummary>) {
     let mut selected_count = 0;
     let mut best_goal: Option<RunnerGoalSummary> = None;
-    let opponent_xy = opponent_positions(opponents);
-    let opponent_speeds: Vec<f64> = opponents
-        .iter()
-        .filter(|player| player.position != "GK")
-        .map(|player| {
-            player_speed(
-                player.speed.round() as i32,
-                config.player_max_speed,
-                config.player_min_speed,
-            )
-        })
-        .collect();
-    let offside = offside_line(opponents, attacking_right, config);
+    let plan_signals = if team_home {
+        state.home_plan_signals
+    } else {
+        state.away_plan_signals
+    };
+    let team_structure_weight =
+        (0.20 + 0.60 * plan_signals.recycle_bias + 0.20 * (1.0 - plan_signals.risk_budget))
+            .clamp(0.0, 1.0);
+    assert!(
+        players.len() <= RUNNER_TEAM_SIZE && opponents.len() <= RUNNER_TEAM_SIZE,
+        "off-ball attack expects eleven-player teams"
+    );
+    let use_fixed_buffers = config.trace_detail == "off";
+    let RunnerOffBallAttackArena {
+        team_context: arena_team_context,
+        candidates: fixed_candidates,
+        noises: fixed_noises,
+        scored: fixed_scored,
+        selection_scores: fixed_selection_scores,
+        anchor_samples,
+        support_samples,
+        arrival_goals: fixed_arrival_goals,
+        arrival_values: fixed_arrival_values,
+        arrival_gaussians: fixed_arrival_gaussians,
+    } = &mut state.off_ball_attack_arena;
+    let opponent_context =
+        opponent_context.unwrap_or_else(|| runner_off_ball_attack_opponent_context(
+            opponents,
+            attacking_right,
+            config,
+        ));
+    let opponent_xy = &opponent_context.positions[..opponent_context.count];
+    let opponent_speeds = &opponent_context.speeds[..opponent_context.count];
+    let offside = opponent_context.offside_line;
+    let team_context = if use_fixed_buffers {
+        match prepared_team_context {
+            Some(team_context) => team_context,
+            None => {
+                arena_team_context.refresh(players);
+                arena_team_context
+            }
+        }
+    } else {
+        arena_team_context
+    };
     for idx in 0..players.len() {
         if holder_idx == Some(idx) {
             continue;
@@ -5779,14 +15081,7 @@ fn apply_off_ball_attack_choices(
         if players[idx].position == "GK" {
             let anchor = players[idx].tactical_anchor;
             if let Some(player) = players.get_mut(idx) {
-                let movement_target = player_set_movement_target(&PlayerSetMovementTargetInput {
-                    current_target: player.target_pos,
-                    requested_target: anchor,
-                    current_intent: player.movement_intent.as_str(),
-                    requested_intent: Some("recover_shape"),
-                });
-                player.target_pos = movement_target.target_pos;
-                player.movement_intent = movement_target.movement_intent;
+                update_runner_movement_target(player, anchor, Some("recover_shape"));
             }
             continue;
         }
@@ -5801,61 +15096,94 @@ fn apply_off_ball_attack_choices(
             players[idx].goal_value = 0.0;
             players[idx].goal_action_code = 0;
         }
-        let player = players[idx].clone();
-        push_rng_trace_for_player(
-            state,
+        let player_pos = players[idx].pos;
+        let player_anchor = players[idx].tactical_anchor;
+        let player_base_pos = players[idx].base_pos;
+        let player_speed_ability = players[idx].speed.round() as i32;
+        let player_iq = players[idx].iq;
+        let player_is_defender = is_defender_position(players[idx].position.as_str());
+        push_rng_trace_for_player_entries(
+            &mut state.trace_entries,
+            state.trace_enabled,
+            state.rng_trace_enabled,
             tick,
-            format!("before_attack:{idx}").as_str(),
-            player.name.as_str(),
+            "before_attack",
+            idx,
+            players[idx].name.as_str(),
             rng,
         );
-        let teammate_xy: Vec<(f64, f64)> = players
-            .iter()
-            .enumerate()
-            .filter(|(teammate_idx, _)| *teammate_idx != idx)
-            .map(|(_, teammate)| teammate.pos)
-            .collect();
-        let teammates = runner_attack_teammates(players);
-        let mut candidates = Vec::new();
+        let teammate_xy_vec = (!use_fixed_buffers).then(|| {
+            players
+                .iter()
+                .enumerate()
+                .filter(|(teammate_idx, _)| *teammate_idx != idx)
+                .map(|(_, teammate)| teammate.pos)
+                .collect::<Vec<_>>()
+        });
+        let teammate_xy = teammate_xy_vec
+            .as_deref()
+            .unwrap_or(&team_context.teammate_xy_all[..players.len()]);
+        let skip_teammate_index = use_fixed_buffers.then_some(idx);
+        let dynamic_teammates = (!use_fixed_buffers).then(|| runner_attack_teammates(players));
+        let teammates = dynamic_teammates
+            .as_deref()
+            .unwrap_or(&team_context.teammates[..players.len()]);
+        let mut fixed_candidate_count = 0;
+        let mut dynamic_candidates = Vec::new();
         let mut goal_trace_json: Option<serde_json::Value> = None;
-        let mut active_goal_type = players[idx].goal_type.clone();
+        let mut active_goal_type = players[idx]
+            .goal_type
+            .as_deref()
+            .and_then(off_ball_attack_goal_type);
         let mut active_goal_target = players[idx].goal_target;
         let mut active_goal_value = players[idx].goal_value;
-        let anchor_samples = random_attack_samples(rng, 8);
-        candidates.extend(crate::generate_off_ball_attack_anchor_candidates(
-            &OffBallRawGenerationInput {
-                anchor: player.tactical_anchor,
-                ball_pos,
-                attacking_right,
-                pitch_width: config.pitch_width,
-                pitch_length: config.pitch_length,
-                is_defender: is_defender_position(player.position.as_str()),
-                has_ball_carrier: holder_idx.is_some(),
-                anchor_samples: &anchor_samples,
-                support_samples: &[],
-            },
-        ));
+        for sample in anchor_samples.iter_mut() {
+            sample.angle_unit = rng.random();
+            sample.radius_unit = rng.random();
+        }
+        let anchor_input = OffBallRawGenerationInput {
+            anchor: player_anchor,
+            ball_pos,
+            attacking_right,
+            pitch_width: config.pitch_width,
+            pitch_length: config.pitch_length,
+            is_defender: player_is_defender,
+            has_ball_carrier: holder_idx.is_some(),
+            anchor_samples,
+            support_samples: &[],
+        };
+        if use_fixed_buffers {
+            fixed_candidate_count = generate_off_ball_attack_anchor_candidates_into(
+                &anchor_input,
+                fixed_candidates,
+            );
+        } else {
+            dynamic_candidates.extend(crate::generate_off_ball_attack_anchor_candidates(
+                &anchor_input,
+            ));
+        }
 
         if holder_idx.is_some() {
             let arc_goal = evaluate_arc_arrival_goal(&ArcArrivalGoalInput {
-                player_pos: player.pos,
-                anchor_pos: player.tactical_anchor,
+                player_pos,
+                anchor_pos: player_anchor,
                 ball_pos,
-                base_pos: player.base_pos,
+                base_pos: player_base_pos,
                 attacking_right,
                 pitch_length: config.pitch_length,
                 pitch_width: config.pitch_width,
             });
             let far_goal = evaluate_attack_far_post_goal(&AttackFarPostGoalInput {
-                player_pos: player.pos,
-                anchor_pos: player.tactical_anchor,
+                player_pos,
+                anchor_pos: player_anchor,
                 ball_pos,
                 attacking_right,
                 pitch_length: config.pitch_length,
                 pitch_width: config.pitch_width,
                 goal_width: config.goal_width,
             });
-            let mut arrival_goals = Vec::new();
+            let mut fixed_arrival_goal_count = 0;
+            let mut dynamic_arrival_goals = Vec::new();
             if arc_goal.has_goal {
                 if let Some(value) = attenuate_arrival_goal_for_teammate_occupancy(
                     players,
@@ -5864,7 +15192,17 @@ fn apply_off_ball_attack_choices(
                     arc_goal.target_pos,
                     arc_goal.value,
                 ) {
-                    arrival_goals.push(("arc_arrival_for_cutback", arc_goal.target_pos, value));
+                    if use_fixed_buffers {
+                        fixed_arrival_goals[fixed_arrival_goal_count] =
+                            ("arc_arrival_for_cutback", arc_goal.target_pos, value);
+                        fixed_arrival_goal_count += 1;
+                    } else {
+                        dynamic_arrival_goals.push((
+                            "arc_arrival_for_cutback",
+                            arc_goal.target_pos,
+                            value,
+                        ));
+                    }
                 }
             }
             if far_goal.has_goal {
@@ -5875,7 +15213,13 @@ fn apply_off_ball_attack_choices(
                     far_goal.target_pos,
                     far_goal.value,
                 ) {
-                    arrival_goals.push(("attack_far_post", far_goal.target_pos, value));
+                    if use_fixed_buffers {
+                        fixed_arrival_goals[fixed_arrival_goal_count] =
+                            ("attack_far_post", far_goal.target_pos, value);
+                        fixed_arrival_goal_count += 1;
+                    } else {
+                        dynamic_arrival_goals.push(("attack_far_post", far_goal.target_pos, value));
+                    }
                 }
             }
             let arrival_context = GoalSwitchCostInput {
@@ -5883,40 +15227,79 @@ fn apply_off_ball_attack_choices(
                 context_stability: 1.0,
                 role_discipline: 1.0,
                 pressure_interrupt: 0.0,
-                iq: player.iq,
+                iq: player_iq,
             };
-            let arrival_values: Vec<f64> = arrival_goals.iter().map(|goal| goal.2).collect();
-            let arrival_gaussians = runner_goal_gaussians(
-                rng,
-                arrival_values.len(),
-                &arrival_context,
-                config.goal_noise_scale,
-            );
-            let arrival_choice = select_goal_candidate_with_gaussians(
-                &arrival_values,
-                &arrival_gaussians,
-                &arrival_context,
-                config.goal_noise_scale,
-            );
-            if let Some((goal_type, target_pos, value)) = arrival_choice
-                .as_ref()
-                .and_then(|choice| arrival_goals.get(choice.index).copied())
-            {
+            let dynamic_arrival_values = (!use_fixed_buffers).then(|| {
+                dynamic_arrival_goals
+                    .iter()
+                    .map(|goal| goal.2)
+                    .collect::<Vec<_>>()
+            });
+            if use_fixed_buffers {
+                for (goal_index, goal) in fixed_arrival_goals[..fixed_arrival_goal_count]
+                    .iter()
+                    .enumerate()
+                {
+                    fixed_arrival_values[goal_index] = goal.2;
+                }
+                runner_goal_gaussians_into(
+                    rng,
+                    &arrival_context,
+                    config.goal_noise_scale,
+                    &mut fixed_arrival_gaussians[..fixed_arrival_goal_count],
+                );
+            }
+            let dynamic_arrival_gaussians = dynamic_arrival_values.as_ref().map(|values| {
+                runner_goal_gaussians(rng, values.len(), &arrival_context, config.goal_noise_scale)
+            });
+            let arrival_choice = if use_fixed_buffers {
+                select_goal_candidate_with_gaussians(
+                    &fixed_arrival_values[..fixed_arrival_goal_count],
+                    &fixed_arrival_gaussians[..fixed_arrival_goal_count],
+                    &arrival_context,
+                    config.goal_noise_scale,
+                )
+            } else {
+                select_goal_candidate_with_gaussians(
+                    dynamic_arrival_values
+                        .as_deref()
+                        .expect("dynamic arrival values"),
+                    dynamic_arrival_gaussians
+                        .as_deref()
+                        .expect("dynamic arrival gaussians"),
+                    &arrival_context,
+                    config.goal_noise_scale,
+                )
+            };
+            let selected_arrival_goal = arrival_choice.as_ref().and_then(|choice| {
+                if use_fixed_buffers {
+                    fixed_arrival_goals
+                        .get(choice.index)
+                        .copied()
+                        .filter(|_| choice.index < fixed_arrival_goal_count)
+                } else {
+                    dynamic_arrival_goals.get(choice.index).copied()
+                }
+            });
+            if let Some((goal_type, target_pos, value)) = selected_arrival_goal {
                 if let Some(target_player) = players.get_mut(idx) {
                     let switch_result = apply_arrival_goal_switch_with_details(
                         target_player,
                         goal_type,
                         target_pos,
                         value,
-                        player.iq,
+                        player_iq,
                         config,
                         rng,
                     );
-                    active_goal_type = target_player.goal_type.clone();
+                    active_goal_type = target_player
+                        .goal_type
+                        .as_deref()
+                        .and_then(off_ball_attack_goal_type);
                     active_goal_target = target_player.goal_target;
                     active_goal_value = target_player.goal_value;
                     if matches!(
-                        active_goal_type.as_deref(),
+                        active_goal_type,
                         Some("arc_arrival_for_cutback" | "attack_far_post")
                     ) {
                         if crate::offside::is_offside_position(
@@ -5926,7 +15309,7 @@ fn apply_off_ball_attack_choices(
                             config.pitch_length,
                             Some(ball_pos.0),
                         ) {
-                            let buffer = if active_goal_type.as_deref() == Some("attack_far_post") {
+                            let buffer = if active_goal_type == Some("attack_far_post") {
                                 2.2
                             } else {
                                 3.0
@@ -5946,71 +15329,107 @@ fn apply_off_ball_attack_choices(
                             );
                             target_player.goal_target = active_goal_target;
                         }
-                        candidates.push(crate::OffBallAttackCandidateInput {
+                        let goal_candidate = OffBallAttackCandidateInput {
                             pos: active_goal_target,
                             anchor_pos: active_goal_target,
-                        });
-                    }
-                    goal_trace_json = Some(json!({
-                        "goal": {
-                            "goal_type": active_goal_type.clone().unwrap_or_default(),
-                            "target_pos": [active_goal_target.0, active_goal_target.1],
-                            "value": active_goal_value
-                        },
-                        "switched": switch_result.switched,
-                        "switch_cost": switch_result.switch_cost,
-                        "value_advantage": switch_result.value_advantage,
-                        "reason": switch_result.reason,
-                        "candidate_choice": {
-                            "candidate_noise": arrival_choice.as_ref().map(|choice| choice.candidate_noise).unwrap_or(0.0),
-                            "noisy_value": arrival_choice.as_ref().map(|choice| choice.noisy_value).unwrap_or(value)
-                        },
-                        "candidate": {
-                            "goal_type": goal_type,
-                            "target_pos": [target_pos.0, target_pos.1],
-                            "value": value
+                        };
+                        if use_fixed_buffers {
+                            assert!(
+                                fixed_candidate_count < MAX_FIXED_OFF_BALL_ATTACK_CANDIDATES,
+                                "fixed off-ball candidate buffer is too small"
+                            );
+                            fixed_candidates[fixed_candidate_count] = goal_candidate;
+                            fixed_candidate_count += 1;
+                        } else {
+                            dynamic_candidates.push(goal_candidate);
                         }
-                    }));
+                    }
+                    if config.trace_detail == "full" {
+                        goal_trace_json = Some(json!({
+                            "goal": {
+                                "goal_type": active_goal_type.unwrap_or_default(),
+                                "target_pos": [active_goal_target.0, active_goal_target.1],
+                                "value": active_goal_value
+                            },
+                            "switched": switch_result.switched,
+                            "switch_cost": switch_result.switch_cost,
+                            "value_advantage": switch_result.value_advantage,
+                            "reason": switch_result.reason,
+                            "candidate_choice": {
+                                "candidate_noise": arrival_choice.as_ref().map(|choice| choice.candidate_noise).unwrap_or(0.0),
+                                "noisy_value": arrival_choice.as_ref().map(|choice| choice.noisy_value).unwrap_or(value)
+                            },
+                            "candidate": {
+                                "goal_type": goal_type,
+                                "target_pos": [target_pos.0, target_pos.1],
+                                "value": value
+                            }
+                        }));
+                    }
                 }
             }
 
-            let support_samples = random_attack_samples(rng, 5);
-            candidates.extend(crate::generate_off_ball_attack_support_candidates(
-                &OffBallRawGenerationInput {
-                    anchor: player.tactical_anchor,
-                    ball_pos,
-                    attacking_right,
-                    pitch_width: config.pitch_width,
-                    pitch_length: config.pitch_length,
-                    is_defender: is_defender_position(player.position.as_str()),
-                    has_ball_carrier: true,
-                    anchor_samples: &[],
-                    support_samples: &support_samples,
-                },
-            ));
+            for sample in support_samples.iter_mut() {
+                sample.angle_unit = rng.random();
+                sample.radius_unit = rng.random();
+            }
+            let support_input = OffBallRawGenerationInput {
+                anchor: player_anchor,
+                ball_pos,
+                attacking_right,
+                pitch_width: config.pitch_width,
+                pitch_length: config.pitch_length,
+                is_defender: player_is_defender,
+                has_ball_carrier: true,
+                anchor_samples: &[],
+                support_samples,
+            };
+            if use_fixed_buffers {
+                fixed_candidate_count += generate_off_ball_attack_support_candidates_into(
+                    &support_input,
+                    &mut fixed_candidates[fixed_candidate_count..],
+                );
+            } else {
+                dynamic_candidates.extend(crate::generate_off_ball_attack_support_candidates(
+                    &support_input,
+                ));
+            }
         }
 
-        let current_goal = active_goal_type
+        let candidates = if use_fixed_buffers {
+            &fixed_candidates[..fixed_candidate_count]
+        } else {
+            dynamic_candidates.as_slice()
+        };
+        let current_goal = active_goal_type.map(|goal_type| crate::OffBallAttackGoalInput {
+            goal_type,
+            target_pos: active_goal_target,
+            value: active_goal_value,
+        });
+        if use_fixed_buffers {
+            let noise_scale = crate::goal::iq_decision_noise(player_iq) * config.iq_noise_scale;
+            for noise in &mut fixed_noises[..candidates.len() + 1] {
+                *noise = rng.gauss(0.0, noise_scale);
+            }
+        }
+        let dynamic_noises = (!use_fixed_buffers)
+            .then(|| iq_score_noises(rng, candidates.len() + 1, player_iq, config));
+        let noises = dynamic_noises
             .as_deref()
-            .filter(|goal_type| is_off_ball_attack_goal_type(goal_type))
-            .map(|goal_type| crate::OffBallAttackGoalInput {
-                goal_type,
-                target_pos: active_goal_target,
-                value: active_goal_value,
-            });
-        let noises = iq_score_noises(rng, candidates.len() + 1, player.iq, config);
+            .unwrap_or(&fixed_noises[..candidates.len() + 1]);
         let mut stay_score = position_value(&PositionValueInput {
-            x: player.pos.0,
-            y: player.pos.1,
+            x: player_pos.0,
+            y: player_pos.1,
             pitch_length: config.pitch_length,
             pitch_width: config.pitch_width,
             attacking_right,
             opponent_positions: &opponent_xy,
             teammate_positions: &teammate_xy,
-            runner_formation_pos: Some(player.tactical_anchor),
+            skip_teammate_index,
+            runner_formation_pos: Some(player_anchor),
         });
         if crate::offside::is_offside_position(
-            player.pos,
+            player_pos,
             attacking_right,
             offside,
             config.pitch_length,
@@ -6019,36 +15438,48 @@ fn apply_off_ball_attack_choices(
             stay_score *= 0.15;
         }
         stay_score *= 0.18;
+        let batch_input = OffBallAttackBatchInput {
+            player_index: idx,
+            player_pos,
+            player_speed: player_speed_ability,
+            anchor: player_anchor,
+            ball_pos,
+            attacking_right,
+            offside_line: offside,
+            pitch_length: config.pitch_length,
+            pitch_width: config.pitch_width,
+            player_max_speed: config.player_max_speed,
+            player_min_speed: config.player_min_speed,
+            pass_to_space_ball_speed: config.pass_to_space_ball_speed,
+            receive_reachability_scale: config.receive_reachability_scale,
+            space_creation_radius: config.space_creation_radius,
+            team_structure_weight,
+            candidates,
+            opponent_positions: opponent_xy,
+            opponent_speeds,
+            teammate_positions: teammate_xy,
+            skip_teammate_index,
+            teammates,
+            current_goal,
+        };
+        let fixed_scored_count = if use_fixed_buffers {
+            score_off_ball_attack_candidates_into(&batch_input, fixed_scored)
+        } else {
+            0
+        };
+        let dynamic_scored =
+            (!use_fixed_buffers).then(|| crate::score_off_ball_attack_candidates(&batch_input));
+        let scored = dynamic_scored
+            .as_deref()
+            .unwrap_or(&fixed_scored[..fixed_scored_count]);
         let offball_debug_alternatives = if config.trace_detail == "full" {
-            let scored = crate::score_off_ball_attack_candidates(&crate::OffBallAttackBatchInput {
-                player_index: idx,
-                player_pos: player.pos,
-                player_speed: player.speed.round() as i32,
-                anchor: player.tactical_anchor,
-                ball_pos,
-                attacking_right,
-                offside_line: offside,
-                pitch_length: config.pitch_length,
-                pitch_width: config.pitch_width,
-                player_max_speed: config.player_max_speed,
-                player_min_speed: config.player_min_speed,
-                pass_to_space_ball_speed: config.pass_to_space_ball_speed,
-                receive_reachability_scale: config.receive_reachability_scale,
-                space_creation_radius: config.space_creation_radius,
-                candidates: &candidates,
-                opponent_positions: &opponent_xy,
-                opponent_speeds: &opponent_speeds,
-                teammate_positions: &teammate_xy,
-                teammates: &teammates,
-                current_goal,
-            });
             let mut ranked = Vec::with_capacity(scored.len() + 1);
             ranked.push((
                 stay_score * (1.0 + noises.first().copied().unwrap_or(0.0)),
                 json!({
                     "phase": "off_ball_attack",
                     "action_type": "move",
-                    "target": [player.pos.0, player.pos.1],
+                    "target": [player_pos.0, player_pos.1],
                     "value": {
                         "score": stay_score * (1.0 + noises.first().copied().unwrap_or(0.0)),
                         "base_score": stay_score,
@@ -6077,6 +15508,7 @@ fn apply_off_ball_attack_choices(
                                 "pass_feasibility": value.pass_feasibility,
                                 "space_bonus": value.space_bonus,
                                 "role_shape_factor": value.role_shape_factor,
+                                "team_structure_factor": value.team_structure_factor,
                                 "role_overlap_factor": value.role_overlap_factor,
                                 "role_overlap": value.role_overlap,
                                 "lane_factor": value.lane_factor,
@@ -6110,11 +15542,11 @@ fn apply_off_ball_attack_choices(
             None
         };
         let choice_roll = preview_next_random(rng);
-        if let Some(choice) = choose_off_ball_attack_target(&OffBallAttackChoiceInput {
+        let choice_input = OffBallAttackChoiceInput {
             player_index: idx,
-            player_pos: player.pos,
-            player_speed: player.speed.round() as i32,
-            anchor: player.tactical_anchor,
+            player_pos,
+            player_speed: player_speed_ability,
+            anchor: player_anchor,
             ball_pos,
             attacking_right,
             offside_line: offside,
@@ -6125,55 +15557,60 @@ fn apply_off_ball_attack_choices(
             pass_to_space_ball_speed: config.pass_to_space_ball_speed,
             receive_reachability_scale: config.receive_reachability_scale,
             space_creation_radius: config.space_creation_radius,
-            iq: player.iq,
+            team_structure_weight,
+            iq: player_iq,
             stay_score,
-            candidates: &candidates,
-            opponent_positions: &opponent_xy,
-            opponent_speeds: &opponent_speeds,
-            teammate_positions: &teammate_xy,
-            teammates: &teammates,
+            candidates,
+            opponent_positions: opponent_xy,
+            opponent_speeds,
+            teammate_positions: teammate_xy,
+            skip_teammate_index,
+            teammates,
             current_goal,
-            score_noises: &noises,
+            score_noises: noises,
             roll: choice_roll,
-        }) {
+        };
+        let choice = if use_fixed_buffers {
+            choose_off_ball_attack_target_from_scored(
+                &choice_input,
+                scored,
+                fixed_selection_scores,
+            )
+        } else {
+            choose_off_ball_attack_target(&choice_input)
+        };
+        if let Some(choice) = choice {
             if choice.used_roll {
                 advance_randoms(rng, 1);
             }
             if choice.components.kind == 2 {
                 if let Some(target_player) = players.get_mut(idx) {
-                    let movement_target =
-                        player_set_movement_target(&PlayerSetMovementTargetInput {
-                            current_target: target_player.target_pos,
-                            requested_target: player.tactical_anchor,
-                            current_intent: target_player.movement_intent.as_str(),
-                            requested_intent: Some("recover_shape"),
-                        });
-                    target_player.target_pos = movement_target.target_pos;
-                    target_player.movement_intent = movement_target.movement_intent;
+                    update_runner_movement_target(
+                        target_player,
+                        player_anchor,
+                        Some("recover_shape"),
+                    );
                 }
             } else if let Some(target_player) = players.get_mut(idx) {
                 let intent = off_ball_attack_movement_intent(
-                    player.pos,
-                    player.tactical_anchor,
+                    player_pos,
+                    player_anchor,
                     choice.target,
                     &choice.components,
                     current_goal,
                     attacking_right,
                 );
-                let movement_target = player_set_movement_target(&PlayerSetMovementTargetInput {
-                    current_target: target_player.target_pos,
-                    requested_target: choice.target,
-                    current_intent: target_player.movement_intent.as_str(),
-                    requested_intent: Some(intent),
-                });
-                target_player.target_pos = movement_target.target_pos;
-                target_player.movement_intent = movement_target.movement_intent;
+                update_runner_movement_target(target_player, choice.target, Some(intent));
                 let mut chosen_target = choice.target;
-                let mut summary = RunnerGoalSummary {
-                    goal_type: target_player.goal_type.clone().unwrap_or_default(),
-                    target: target_player.goal_target,
-                    value: target_player.goal_value,
-                };
+                let mut summary = target_player
+                    .goal_type
+                    .as_deref()
+                    .and_then(off_ball_attack_goal_type)
+                    .map(|goal_type| RunnerGoalSummary {
+                        goal_type,
+                        target: target_player.goal_target,
+                        value: target_player.goal_value,
+                    });
                 if !matches!(
                     target_player.goal_type.as_deref(),
                     Some("arc_arrival_for_cutback" | "attack_far_post")
@@ -6191,11 +15628,11 @@ fn apply_off_ball_attack_choices(
                     let previous_target = target_player.target_pos;
                     let switch_result = apply_player_goal_switch_with_details(
                         target_player,
-                        goal.goal_type.clone(),
+                        goal.goal_type,
                         "support",
                         goal.target_pos,
                         goal.value,
-                        player.iq,
+                        player_iq,
                         0.020,
                         0.0,
                         config,
@@ -6207,58 +15644,66 @@ fn apply_off_ball_attack_choices(
                             previous_target.0 * 0.55 + goal_target.0 * 0.45,
                             previous_target.1 * 0.55 + goal_target.1 * 0.45,
                         );
-                        let retained_target =
-                            player_set_movement_target(&PlayerSetMovementTargetInput {
-                                current_target: previous_target,
-                                requested_target: retained_request,
-                                current_intent: target_player.movement_intent.as_str(),
-                                requested_intent: Some(intent),
-                            });
-                        target_player.target_pos = retained_target.target_pos;
-                        target_player.movement_intent = retained_target.movement_intent;
+                        update_runner_movement_target(
+                            target_player,
+                            retained_request,
+                            Some(intent),
+                        );
                         chosen_target = target_player.target_pos;
                     }
                     if target_player.goal_type.is_some() {
                         target_player.goal_target = target_player.target_pos;
                     }
-                    summary = RunnerGoalSummary {
-                        goal_type: target_player.goal_type.clone().unwrap_or_default(),
-                        target: target_player.goal_target,
-                        value: target_player.goal_value,
-                    };
-                    goal_trace_json = Some(json!({
-                        "goal": {
-                            "goal_type": summary.goal_type.clone(),
-                            "target_pos": [summary.target.0, summary.target.1],
-                            "value": summary.value
-                        },
-                        "switched": switch_result.switched,
-                        "switch_cost": switch_result.switch_cost,
-                        "value_advantage": switch_result.value_advantage,
-                        "reason": switch_result.reason.clone(),
-                        "candidate": {
-                            "goal_type": goal.goal_type,
-                            "target_pos": [goal.target_pos.0, goal.target_pos.1],
-                            "value": goal.value
-                        }
-                    }));
+                    summary = target_player
+                        .goal_type
+                        .as_deref()
+                        .and_then(off_ball_attack_goal_type)
+                        .map(|goal_type| RunnerGoalSummary {
+                            goal_type,
+                            target: target_player.goal_target,
+                            value: target_player.goal_value,
+                        });
+                    if config.trace_detail == "full" {
+                        goal_trace_json = Some(json!({
+                            "goal": {
+                                "goal_type": summary.map(|summary| summary.goal_type).unwrap_or_default(),
+                                "target_pos": [target_player.goal_target.0, target_player.goal_target.1],
+                                "value": target_player.goal_value
+                            },
+                            "switched": switch_result.switched,
+                            "switch_cost": switch_result.switch_cost,
+                            "value_advantage": switch_result.value_advantage,
+                            "reason": switch_result.reason,
+                            "candidate": {
+                                "goal_type": goal.goal_type,
+                                "target_pos": [goal.target_pos.0, goal.target_pos.1],
+                                "value": goal.value
+                            }
+                        }));
+                    }
                 }
-                if !summary.goal_type.is_empty()
-                    && best_goal
+                if let Some(summary) = summary {
+                    if best_goal
                         .as_ref()
                         .map(|goal| summary.value > goal.value)
                         .unwrap_or(true)
-                {
-                    best_goal = Some(summary.clone());
+                    {
+                        best_goal = Some(summary);
+                    }
                 }
                 if config.trace_detail == "full" {
+                    let summary = summary.unwrap_or(RunnerGoalSummary {
+                        goal_type: "",
+                        target: target_player.goal_target,
+                        value: target_player.goal_value,
+                    });
                     state.trace_decisions.push(json!({
                         "tick": tick,
                         "team": if team_home { "home" } else { "away" },
                         "player_idx": idx,
                         "player": target_player.name.clone(),
                         "phase": "off_ball_attack",
-                        "pos": [player.pos.0, player.pos.1],
+                        "pos": [player_pos.0, player_pos.1],
                         "chosen": {
 	                            "phase": "off_ball_attack",
 	                            "action_type": "move",
@@ -6280,6 +15725,7 @@ fn apply_off_ball_attack_choices(
                                     "pass_feasibility": choice.components.pass_feasibility,
                                     "space_bonus": choice.components.space_bonus,
                                     "role_shape_factor": choice.components.role_shape_factor,
+                                    "team_structure_factor": choice.components.team_structure_factor,
                                     "role_overlap_factor": choice.components.role_overlap_factor,
                                     "role_overlap": choice.components.role_overlap,
                                     "lane_factor": choice.components.lane_factor,
@@ -6300,7 +15746,7 @@ fn apply_off_ball_attack_choices(
                         },
                         "goal": goal_trace_json.clone().unwrap_or_else(|| json!({
                             "goal": {
-                                "goal_type": summary.goal_type.clone(),
+                                "goal_type": summary.goal_type,
                                 "target_pos": [summary.target.0, summary.target.1],
                                 "value": summary.value
                             },
@@ -6315,15 +15761,310 @@ fn apply_off_ball_attack_choices(
                 selected_count += 1;
             }
         }
-        push_rng_trace_for_player(
-            state,
+        push_rng_trace_for_player_entries(
+            &mut state.trace_entries,
+            state.trace_enabled,
+            state.rng_trace_enabled,
             tick,
-            format!("after_attack:{idx}").as_str(),
-            player.name.as_str(),
+            "after_attack",
+            idx,
+            players[idx].name.as_str(),
             rng,
         );
     }
     (selected_count, best_goal)
+}
+
+fn defense_task_kind(action_type: &str) -> DefenseTaskKind {
+    match action_type {
+        "tackle" | "approach" => DefenseTaskKind::Press,
+        "mark_runner" => DefenseTaskKind::Mark,
+        "block_lane" => DefenseTaskKind::BlockLane,
+        _ => DefenseTaskKind::RecoverShape,
+    }
+}
+
+fn apply_off_ball_defense_choices_fixed(
+    defenders: &mut [RunnerPlayer],
+    attackers: &[RunnerPlayer],
+    ball_pos: (f64, f64),
+    attacking_right: bool,
+    carrier_pos: Option<(f64, f64)>,
+    carrier_consecutive_carries: i32,
+    carrier_possession_ticks: i32,
+    carrier_control_readiness: f64,
+    plan_signals: TeamPlanSignals,
+    active_indices: Option<&[bool]>,
+    config: &RunnerRuntimeConfig,
+    rng: &mut RunnerRng,
+    arena: &mut RunnerFixedDefenseArena,
+    include_phase1_inputs: bool,
+) -> (i32, Option<RunnerGoalSummary>, RunnerDefenderPhase1Inputs) {
+    let mut attacker_count = 0;
+    for attacker in attackers {
+        if attacker.position == "GK" {
+            continue;
+        }
+        assert!(
+            attacker_count < RUNNER_TEAM_SIZE,
+            "fixed defense attackers exceed team size"
+        );
+        arena.attacker_xy[attacker_count] = attacker.pos;
+        attacker_count += 1;
+    }
+    let mut team_defender_count = 0;
+    for (defender_idx, defender) in defenders.iter().enumerate() {
+        if defender.position == "GK" {
+            continue;
+        }
+        arena.team_defenders[team_defender_count] = DefenseTeammateInput {
+            pos: defender.pos,
+            target_pos: defender.target_pos,
+            anchor: defender.tactical_anchor,
+        };
+        arena.defender_team_context_indices[defender_idx] = team_defender_count;
+        team_defender_count += 1;
+    }
+    let team_context = fixed_defense_team_context(
+        ball_pos,
+        carrier_pos,
+        carrier_possession_ticks,
+        carrier_control_readiness,
+        attacking_right,
+        config.pitch_length,
+        config.pitch_width,
+        config.press_radius,
+        &arena.team_defenders[..team_defender_count],
+    );
+
+    let mut coordinated_count = 0;
+    let mut immediate_threat = 0.0_f64;
+
+    for idx in 0..defenders.len() {
+        if active_indices
+            .and_then(|indices| indices.get(idx))
+            .map(|active| !*active)
+            .unwrap_or(false)
+        {
+            continue;
+        }
+        if defenders[idx].position == "GK" {
+            if let Some(player) = defenders.get_mut(idx) {
+                apply_goalkeeper_coverage_target(player, ball_pos, attacking_right, config);
+            }
+            continue;
+        }
+        assert!(
+            coordinated_count < RUNNER_TEAM_SIZE,
+            "fixed defense coordinated players exceed team size"
+        );
+
+        let defender = &defenders[idx];
+        for sample in &mut arena.random_samples {
+            sample.angle_unit = rng.random();
+            sample.radius_unit = rng.random();
+        }
+        let empty_score_noises: [f64; 0] = [];
+        let empty_rolls: [f64; 0] = [];
+        let empty_fallback_indices: [usize; 0] = [];
+        let base_input = DefenseChoiceInput {
+            defender_pos: defender.pos,
+            anchor: defender.tactical_anchor,
+            base_ref: defender.base_pos,
+            ball_pos,
+            ball_carrier_pos: carrier_pos,
+            ball_carrier_consecutive_carries: carrier_consecutive_carries,
+            ball_carrier_possession_ticks: carrier_possession_ticks,
+            carrier_control_readiness,
+            attacking_right,
+            pitch_length: config.pitch_length,
+            pitch_width: config.pitch_width,
+            press_radius: config.press_radius,
+            tackle_range: config.tackle_range,
+            carrier_speed: config.carrier_speed,
+            press_intensity: plan_signals.press_intensity,
+            compactness: plan_signals.compactness,
+            movement: runner_defense_movement_input(defender, plan_signals, config),
+            iq: defender.iq,
+            attackers: &arena.attacker_xy[..attacker_count],
+            teammates: &[],
+            random_samples: &arena.random_samples,
+            score_noises: &empty_score_noises,
+            roll_by_count: &empty_rolls,
+            fallback_index_by_count: &empty_fallback_indices,
+        };
+        let Some(prepared_choice) = prepare_fixed_defense_choice_with_team_context(
+            &base_input,
+            Some((&team_context, arena.defender_team_context_indices[idx])),
+        ) else {
+            continue;
+        };
+        let candidate_count = prepared_choice.candidate_count;
+        if candidate_count == 0 {
+            continue;
+        }
+        assert!(
+            candidate_count <= MAX_FIXED_TEAM_DEFENSE_CANDIDATES,
+            "fixed defense candidate count exceeds buffer"
+        );
+        let noise_scale = crate::goal::iq_decision_noise(defender.iq) * config.iq_noise_scale;
+        for noise in &mut arena.score_noises[..candidate_count] {
+            *noise = rng.gauss(0.0, noise_scale);
+        }
+
+        let mut max_noisy_score = f64::NEG_INFINITY;
+        for candidate_index in 0..candidate_count {
+            let action_type = prepared_choice.candidate_action_types[candidate_index];
+            let projected_pos = prepared_choice.candidate_projected_positions[candidate_index];
+            let carrier_distance = carrier_pos
+                .map(|carrier| distance(projected_pos, carrier))
+                .unwrap_or(f64::INFINITY);
+            let action_weight = match action_type {
+                "tackle" => 1.0,
+                "approach" => 0.74,
+                "block_lane" => 0.38,
+                "mark_runner" => 0.20,
+                _ => 0.0,
+            };
+            let reach = 0.75 + 0.36 * config.tackle_range;
+            let local_value = prepared_choice.candidate_scores[candidate_index]
+                * (1.0 + arena.score_noises[candidate_index]);
+            max_noisy_score = max_noisy_score.max(local_value);
+            arena.candidate_sets[coordinated_count][candidate_index] = TeamDefenseCandidate {
+                target: prepared_choice.candidate_targets[candidate_index],
+                projected_pos,
+                local_value,
+                residual_threat: prepared_choice.candidate_residual_threats[candidate_index],
+                pressure_coverage: action_weight
+                    * (1.0
+                        - crate::smoothstep(reach * 0.65, config.press_radius, carrier_distance)),
+                task_kind: defense_task_kind(action_type),
+            };
+        }
+        if let Some((used_roll, used_random_choice)) =
+            fixed_defense_random_branch_from_noisy_max(candidate_count, max_noisy_score)
+        {
+            if used_random_choice {
+                let _ = rng.randbelow(candidate_count);
+            } else if used_roll {
+                let _ = rng.random();
+            }
+        }
+        immediate_threat = immediate_threat.max(
+            1.0 - (1.0 - prepared_choice.shot_danger.clamp(0.0, 1.0))
+                * (1.0 - prepared_choice.carrier_control_threat.clamp(0.0, 1.0)),
+        );
+        arena.prepared_choices[coordinated_count] = Some(prepared_choice);
+        arena.coordinated_indices[coordinated_count] = idx;
+        arena.coordinated_anchors[coordinated_count] = defender.tactical_anchor;
+        coordinated_count += 1;
+    }
+
+    let coordination_inputs: [TeamDefensePlayerInput<'_>; RUNNER_TEAM_SIZE] =
+        std::array::from_fn(|slot| {
+            let candidate_count = arena.prepared_choices[slot]
+                .map(|choice| choice.candidate_count)
+                .unwrap_or(0);
+            TeamDefensePlayerInput {
+                index: arena.coordinated_indices[slot],
+                anchor: arena.coordinated_anchors[slot],
+                candidates: &arena.candidate_sets[slot][..candidate_count],
+            }
+        });
+    let coordination_input = TeamDefenseAssignmentInput {
+        players: &coordination_inputs[..coordinated_count],
+        compactness: plan_signals.compactness,
+        immediate_threat,
+    };
+    let _coordination = coordinate_team_defense_into(
+        &coordination_input,
+        &mut arena.coordination_assignments[..coordinated_count],
+    );
+
+    let mut selected_count = 0;
+    let mut best_goal: Option<RunnerGoalSummary> = None;
+    for choice_slot in 0..coordinated_count {
+        let prepared_choice =
+            arena.prepared_choices[choice_slot].expect("coordinated fixed defense choice");
+        let assignment = arena.coordination_assignments[choice_slot];
+        let candidate_index = assignment.candidate_index;
+        if candidate_index >= prepared_choice.candidate_count {
+            continue;
+        }
+        let target = prepared_choice.candidate_targets[candidate_index];
+        let selected_action_type = prepared_choice.candidate_action_types[candidate_index];
+        let selected_score = assignment.local_value;
+        let pressure = prepared_choice.pressure_responsibility;
+        let threat = prepared_choice
+            .shot_danger
+            .max(prepared_choice.carrier_control_threat);
+        let candidate = build_defensive_goal(&DefensiveGoalBuildInput {
+            action_type: selected_action_type,
+            target_pos: target,
+            value: selected_score,
+            pressure,
+            threat,
+        });
+        let Some(target_defender) = defenders.get_mut(assignment.index) else {
+            continue;
+        };
+        let current_goal_type = target_defender.goal_type.as_deref();
+        let current_goal_is_defensive = current_goal_type
+            .map(|goal_type| goal_type.starts_with("defend_"))
+            .unwrap_or(false);
+        let current_goal_matches_candidate =
+            current_goal_is_defensive && current_goal_type == Some(candidate.goal_type);
+        if current_goal_matches_candidate {
+            target_defender.goal_target = candidate.target_pos;
+            target_defender.goal_value = candidate.value;
+        } else {
+            let defender_iq = target_defender.iq;
+            let _ = apply_player_goal_switch_with_details(
+                target_defender,
+                candidate.goal_type,
+                "defend",
+                candidate.target_pos,
+                candidate.value,
+                defender_iq,
+                0.022,
+                candidate.threat * 0.55,
+                config,
+                rng,
+            );
+        }
+        let requested_intent =
+            crate::off_ball_defense::defense_action_movement_intent(selected_action_type);
+        if matches!(selected_action_type, "tackle" | "approach") {
+            update_runner_text(&mut target_defender.state, "pressing");
+        } else if target_defender.state == "pressing"
+            && !matches!(
+                selected_action_type,
+                "tackle" | "mark_runner" | "block_lane"
+            )
+        {
+            update_runner_text(&mut target_defender.state, "off_ball");
+        }
+        target_defender.target_pos = target;
+        update_runner_text(&mut target_defender.movement_intent, requested_intent);
+        update_runner_text(&mut target_defender.last_def_action, selected_action_type);
+        let summary = RunnerGoalSummary {
+            goal_type: candidate.goal_type,
+            target,
+            value: candidate.value,
+        };
+        if best_goal
+            .as_ref()
+            .map(|goal| summary.value > goal.value)
+            .unwrap_or(true)
+        {
+            best_goal = Some(summary);
+        }
+        selected_count += 1;
+    }
+    let interaction_inputs = include_phase1_inputs
+        .then(|| defender_phase1_inputs(defenders, plan_signals, config))
+        .unwrap_or_else(RunnerDefenderPhase1Inputs::empty);
+    (selected_count, best_goal, interaction_inputs)
 }
 
 fn apply_off_ball_defense_choices(
@@ -6333,13 +16074,419 @@ fn apply_off_ball_defense_choices(
     attacking_right: bool,
     carrier_pos: Option<(f64, f64)>,
     carrier_consecutive_carries: i32,
+    carrier_possession_ticks: i32,
+    carrier_control_readiness: f64,
+    plan_signals: TeamPlanSignals,
+    active_indices: Option<&[bool]>,
+    config: &RunnerRuntimeConfig,
+    rng: &mut RunnerRng,
+    fixed_defense_arena: Option<&mut RunnerFixedDefenseArena>,
+    trace_decisions: &mut Vec<serde_json::Value>,
+    tick: i32,
+    defender_team_home: bool,
+    include_phase1_inputs: bool,
+) -> (i32, Option<RunnerGoalSummary>, RunnerDefenderPhase1Inputs) {
+    if config.trace_detail == "off" {
+        let mut fallback_arena;
+        let arena = match fixed_defense_arena {
+            Some(arena) => arena,
+            None => {
+                fallback_arena = RunnerFixedDefenseArena::new();
+                &mut fallback_arena
+            }
+        };
+        return apply_off_ball_defense_choices_fixed(
+            defenders,
+            attackers,
+            ball_pos,
+            attacking_right,
+            carrier_pos,
+            carrier_consecutive_carries,
+            carrier_possession_ticks,
+            carrier_control_readiness,
+            plan_signals,
+            active_indices,
+            config,
+            rng,
+            arena,
+            include_phase1_inputs,
+        );
+    }
+    let attacker_xy: Vec<(f64, f64)> = attackers
+        .iter()
+        .filter(|player| player.position != "GK")
+        .map(|player| player.pos)
+        .collect();
+    let mut coordinated_choices = Vec::new();
+
+    for idx in 0..defenders.len() {
+        if active_indices
+            .and_then(|indices| indices.get(idx))
+            .map(|active| !*active)
+            .unwrap_or(false)
+        {
+            continue;
+        }
+        if defenders[idx].position == "GK" {
+            if let Some(player) = defenders.get_mut(idx) {
+                apply_goalkeeper_coverage_target(player, ball_pos, attacking_right, config);
+            }
+            continue;
+        }
+        let defender = defenders[idx].clone();
+        let teammates = runner_defense_teammates(defenders, idx);
+        let random_samples = random_defense_samples(rng, RUNNER_DEFENSE_RANDOM_SAMPLE_COUNT);
+        let empty_score_noises: Vec<f64> = Vec::new();
+        let empty_rolls: Vec<f64> = Vec::new();
+        let empty_fallback_indices: Vec<usize> = Vec::new();
+        let base_input = DefenseChoiceInput {
+            defender_pos: defender.pos,
+            anchor: defender.tactical_anchor,
+            base_ref: defender.base_pos,
+            ball_pos,
+            ball_carrier_pos: carrier_pos,
+            ball_carrier_consecutive_carries: carrier_consecutive_carries,
+            ball_carrier_possession_ticks: carrier_possession_ticks,
+            carrier_control_readiness,
+            attacking_right,
+            pitch_length: config.pitch_length,
+            pitch_width: config.pitch_width,
+            press_radius: config.press_radius,
+            tackle_range: config.tackle_range,
+            carrier_speed: config.carrier_speed,
+            press_intensity: plan_signals.press_intensity,
+            compactness: plan_signals.compactness,
+            movement: runner_defense_movement_input(&defender, plan_signals, config),
+            iq: defender.iq,
+            attackers: &attacker_xy,
+            teammates: &teammates,
+            random_samples: &random_samples,
+            score_noises: &empty_score_noises,
+            roll_by_count: &empty_rolls,
+            fallback_index_by_count: &empty_fallback_indices,
+        };
+        let Some(prepared_choice) = prepare_defense_choice(&base_input) else {
+            continue;
+        };
+        let candidate_count = prepared_choice.candidate_count();
+        if candidate_count == 0 {
+            continue;
+        }
+        let score_noises = iq_score_noises(rng, candidate_count, defender.iq, config);
+        let random_branch =
+            prepared_defense_choice_random_branch(&prepared_choice, defender.iq, &score_noises);
+        let mut roll_by_count = vec![0.0; candidate_count + 1];
+        let mut fallback_index_by_count = vec![0; candidate_count + 1];
+        if let Some((used_roll, used_random_choice)) = random_branch {
+            if used_random_choice {
+                fallback_index_by_count[candidate_count] = rng.randbelow(candidate_count);
+            } else if used_roll {
+                roll_by_count[candidate_count] = rng.random();
+            }
+        }
+        if let Some(choice) = select_prepared_defense_action(
+            &prepared_choice,
+            defender.iq,
+            &score_noises,
+            &roll_by_count,
+            &fallback_index_by_count,
+        ) {
+            coordinated_choices.push(CoordinatedDefenseChoice {
+                index: idx,
+                defender,
+                random_samples,
+                score_noises,
+                roll: roll_by_count[candidate_count],
+                fallback_index: fallback_index_by_count[candidate_count],
+                choice,
+            });
+        }
+    }
+
+    let candidate_sets: Vec<Vec<TeamDefenseCandidate>> = coordinated_choices
+        .iter()
+        .map(|coordinated| {
+            coordinated
+                .choice
+                .candidate_targets
+                .iter()
+                .enumerate()
+                .map(|(candidate_index, target)| TeamDefenseCandidate {
+                    target: *target,
+                    projected_pos: coordinated
+                        .choice
+                        .candidate_projected_positions
+                        .get(candidate_index)
+                        .copied()
+                        .unwrap_or(coordinated.defender.tactical_anchor),
+                    local_value: coordinated
+                        .choice
+                        .candidate_scores
+                        .get(candidate_index)
+                        .copied()
+                        .unwrap_or(0.0)
+                        * (1.0
+                            + coordinated
+                                .score_noises
+                                .get(candidate_index)
+                                .copied()
+                                .unwrap_or(0.0)),
+                    residual_threat: coordinated
+                        .choice
+                        .candidate_residual_threats
+                        .get(candidate_index)
+                        .copied()
+                        .unwrap_or(1.0),
+                    pressure_coverage: {
+                        let action_type = coordinated
+                            .choice
+                            .candidate_action_types
+                            .get(candidate_index)
+                            .copied()
+                            .unwrap_or("hold_position");
+                        let projected_pos = coordinated
+                            .choice
+                            .candidate_projected_positions
+                            .get(candidate_index)
+                            .copied()
+                            .unwrap_or(coordinated.defender.tactical_anchor);
+                        let carrier_distance = carrier_pos
+                            .map(|carrier| distance(projected_pos, carrier))
+                            .unwrap_or(f64::INFINITY);
+                        let action_weight = match action_type {
+                            "tackle" => 1.0,
+                            "approach" => 0.74,
+                            "block_lane" => 0.38,
+                            "mark_runner" => 0.20,
+                            _ => 0.0,
+                        };
+                        let reach = 0.75 + 0.36 * config.tackle_range;
+                        action_weight
+                            * (1.0
+                                - crate::smoothstep(
+                                    reach * 0.65,
+                                    config.press_radius,
+                                    carrier_distance,
+                                ))
+                    },
+                    task_kind: defense_task_kind(
+                        coordinated
+                            .choice
+                            .candidate_action_types
+                            .get(candidate_index)
+                            .copied()
+                            .unwrap_or("hold_position"),
+                    ),
+                })
+                .collect()
+        })
+        .collect();
+    let coordination_inputs: Vec<TeamDefensePlayerInput<'_>> = coordinated_choices
+        .iter()
+        .zip(&candidate_sets)
+        .map(|(coordinated, candidates)| TeamDefensePlayerInput {
+            index: coordinated.index,
+            anchor: coordinated.defender.tactical_anchor,
+            candidates,
+        })
+        .collect();
+    let coordination_input = TeamDefenseAssignmentInput {
+        players: &coordination_inputs,
+        compactness: plan_signals.compactness,
+        immediate_threat: coordinated_choices
+            .iter()
+            .map(|choice| {
+                1.0 - (1.0 - choice.choice.shot_danger.clamp(0.0, 1.0))
+                    * (1.0 - choice.choice.carrier_control_threat.clamp(0.0, 1.0))
+            })
+            .fold(0.0, f64::max),
+    };
+    let mut coordination_assignments = [TeamDefenseAssignment {
+        index: 0,
+        candidate_index: 0,
+        local_value: 0.0,
+        residual_threat: 1.0,
+    }; RUNNER_TEAM_SIZE];
+    let coordination = coordinate_team_defense_into(
+        &coordination_input,
+        &mut coordination_assignments[..coordinated_choices.len()],
+    );
+
+    let mut selected_count = 0;
+    let mut best_goal: Option<RunnerGoalSummary> = None;
+    for (coordinated, assignment) in coordinated_choices
+        .iter()
+        .zip(&coordination_assignments[..coordinated_choices.len()])
+    {
+        let candidate_index = assignment.candidate_index;
+        let Some(target) = coordinated
+            .choice
+            .candidate_targets
+            .get(candidate_index)
+            .copied()
+        else {
+            continue;
+        };
+        let selected_action_type = coordinated
+            .choice
+            .candidate_action_types
+            .get(candidate_index)
+            .copied()
+            .unwrap_or("hold_position");
+        let selected_score = assignment.local_value;
+        let pressure = coordinated.choice.pressure_responsibility;
+        let threat = coordinated
+            .choice
+            .shot_danger
+            .max(coordinated.choice.carrier_control_threat);
+        let candidate = build_defensive_goal(&DefensiveGoalBuildInput {
+            action_type: selected_action_type,
+            target_pos: target,
+            value: selected_score,
+            pressure,
+            threat,
+        });
+        let Some(target_defender) = defenders.get_mut(coordinated.index) else {
+            continue;
+        };
+        let current_goal_type = target_defender.goal_type.as_deref();
+        let current_goal_is_defensive = current_goal_type
+            .map(|goal_type| goal_type.starts_with("defend_"))
+            .unwrap_or(false);
+        let current_goal_matches_candidate =
+            current_goal_is_defensive && current_goal_type == Some(candidate.goal_type);
+        let switch_result = if current_goal_matches_candidate {
+            let value_advantage = candidate.value - target_defender.goal_value;
+            target_defender.goal_target = candidate.target_pos;
+            target_defender.goal_value = candidate.value;
+            RunnerGoalSwitchResult {
+                switched: false,
+                switch_cost: 0.0,
+                value_advantage,
+                reason: "current_defensive_goal_updated",
+            }
+        } else {
+            apply_player_goal_switch_with_details(
+                target_defender,
+                candidate.goal_type,
+                "defend",
+                candidate.target_pos,
+                candidate.value,
+                coordinated.defender.iq,
+                0.022,
+                candidate.threat * 0.55,
+                config,
+                rng,
+            )
+        };
+        let requested_intent =
+            crate::off_ball_defense::defense_action_movement_intent(selected_action_type);
+        if matches!(selected_action_type, "tackle" | "approach") {
+            update_runner_text(&mut target_defender.state, "pressing");
+        } else if target_defender.state == "pressing"
+            && !matches!(
+                selected_action_type,
+                "tackle" | "mark_runner" | "block_lane"
+            )
+        {
+            update_runner_text(&mut target_defender.state, "off_ball");
+        }
+        target_defender.target_pos = target;
+        update_runner_text(&mut target_defender.movement_intent, requested_intent);
+        update_runner_text(&mut target_defender.last_def_action, selected_action_type);
+        let summary = RunnerGoalSummary {
+            goal_type: candidate.goal_type,
+            target,
+            value: candidate.value,
+        };
+        if matches!(config.trace_detail.as_str(), "top_candidates" | "full") {
+            trace_decisions.push(json!({
+                "tick": tick,
+                "team": if defender_team_home { "home" } else { "away" },
+                "player_idx": coordinated.index,
+                "player": coordinated.defender.name,
+                "phase": "off_ball_defense",
+                "pos": [coordinated.defender.pos.0, coordinated.defender.pos.1],
+                "rng": {
+                    "random_samples": coordinated.random_samples.iter().map(|sample| json!([sample.angle_unit, sample.radius_unit])).collect::<Vec<_>>(),
+                    "score_noises": coordinated.score_noises,
+                    "roll": coordinated.roll,
+                    "fallback_index": coordinated.fallback_index,
+                },
+                "chosen": {
+                    "phase": "off_ball_defense",
+                    "action_type": selected_action_type,
+                    "target": [target.0, target.1],
+                    "raw_target": [target.0, target.1],
+                    "value": {
+                        "score": selected_score,
+                        "candidate_count": coordinated.choice.candidate_count,
+                        "local_attackers_count": coordinated.choice.local_attackers_count,
+                        "dangerous_receivers_count": coordinated.choice.dangerous_receivers_count,
+                        "candidate_targets": coordinated.choice.candidate_targets.iter().map(|target| json!([target.0, target.1])).collect::<Vec<_>>(),
+                        "candidate_scores": coordinated.choice.candidate_scores,
+                        "candidate_projected_positions": coordinated.choice.candidate_projected_positions.iter().map(|target| json!([target.0, target.1])).collect::<Vec<_>>(),
+                        "candidate_action_types": coordinated.choice.candidate_action_types,
+                        "candidate_residual_threats": coordinated.choice.candidate_residual_threats,
+                        "assignment": {
+                            "candidate_index": candidate_index,
+                            "team_objective": coordination.objective,
+                            "formation_scale": coordination.formation_scale,
+                            "residual_threat": assignment.residual_threat,
+                        }
+                    }
+                },
+                "goal": {
+                    "goal": {
+                        "goal_type": summary.goal_type,
+                        "target_pos": [summary.target.0, summary.target.1],
+                        "value": summary.value,
+                    },
+                    "stored_goal": {
+                        "goal_type": target_defender.goal_type,
+                        "target_pos": [target_defender.goal_target.0, target_defender.goal_target.1],
+                        "value": target_defender.goal_value
+                    },
+                    "switched": switch_result.switched,
+                    "switch_cost": switch_result.switch_cost,
+                    "value_advantage": switch_result.value_advantage,
+                    "reason": switch_result.reason
+                }
+            }));
+        }
+        if best_goal
+            .as_ref()
+            .map(|goal| summary.value > goal.value)
+            .unwrap_or(true)
+        {
+            best_goal = Some(summary);
+        }
+        selected_count += 1;
+    }
+    let interaction_inputs = include_phase1_inputs
+        .then(|| defender_phase1_inputs(defenders, plan_signals, config))
+        .unwrap_or_else(RunnerDefenderPhase1Inputs::empty);
+    (selected_count, best_goal, interaction_inputs)
+}
+
+#[allow(dead_code)]
+fn apply_off_ball_defense_choices_individually(
+    defenders: &mut [RunnerPlayer],
+    attackers: &[RunnerPlayer],
+    ball_pos: (f64, f64),
+    attacking_right: bool,
+    carrier_pos: Option<(f64, f64)>,
+    carrier_consecutive_carries: i32,
+    carrier_possession_ticks: i32,
+    carrier_control_readiness: f64,
+    plan_signals: TeamPlanSignals,
     active_indices: Option<&[bool]>,
     config: &RunnerRuntimeConfig,
     rng: &mut RunnerRng,
     trace_decisions: &mut Vec<serde_json::Value>,
     tick: i32,
     defender_team_home: bool,
-) -> (i32, Option<RunnerGoalSummary>, Vec<DefenderActionInput>) {
+) -> (i32, Option<RunnerGoalSummary>, RunnerDefenderPhase1Inputs) {
     let mut selected_count = 0;
     let mut best_goal: Option<RunnerGoalSummary> = None;
     let attacker_xy: Vec<(f64, f64)> = attackers
@@ -6374,12 +16521,17 @@ fn apply_off_ball_defense_choices(
             ball_pos,
             ball_carrier_pos: carrier_pos,
             ball_carrier_consecutive_carries: carrier_consecutive_carries,
+            ball_carrier_possession_ticks: carrier_possession_ticks,
+            carrier_control_readiness,
             attacking_right,
             pitch_length: config.pitch_length,
             pitch_width: config.pitch_width,
             press_radius: config.press_radius,
             tackle_range: config.tackle_range,
             carrier_speed: config.carrier_speed,
+            press_intensity: plan_signals.press_intensity,
+            compactness: plan_signals.compactness,
+            movement: runner_defense_movement_input(&defender, plan_signals, config),
             iq: defender.iq,
             attackers: &attacker_xy,
             teammates: &teammates,
@@ -6401,12 +16553,17 @@ fn apply_off_ball_defense_choices(
             ball_pos,
             ball_carrier_pos: carrier_pos,
             ball_carrier_consecutive_carries: carrier_consecutive_carries,
+            ball_carrier_possession_ticks: carrier_possession_ticks,
+            carrier_control_readiness,
             attacking_right,
             pitch_length: config.pitch_length,
             pitch_width: config.pitch_width,
             press_radius: config.press_radius,
             tackle_range: config.tackle_range,
             carrier_speed: config.carrier_speed,
+            press_intensity: plan_signals.press_intensity,
+            compactness: plan_signals.compactness,
+            movement: runner_defense_movement_input(&defender, plan_signals, config),
             iq: defender.iq,
             attackers: &attacker_xy,
             teammates: &teammates,
@@ -6431,12 +16588,17 @@ fn apply_off_ball_defense_choices(
             ball_pos,
             ball_carrier_pos: carrier_pos,
             ball_carrier_consecutive_carries: carrier_consecutive_carries,
+            ball_carrier_possession_ticks: carrier_possession_ticks,
+            carrier_control_readiness,
             attacking_right,
             pitch_length: config.pitch_length,
             pitch_width: config.pitch_width,
             press_radius: config.press_radius,
             tackle_range: config.tackle_range,
             carrier_speed: config.carrier_speed,
+            press_intensity: plan_signals.press_intensity,
+            compactness: plan_signals.compactness,
+            movement: runner_defense_movement_input(&defender, plan_signals, config),
             iq: defender.iq,
             attackers: &attacker_xy,
             teammates: &teammates,
@@ -6447,60 +16609,34 @@ fn apply_off_ball_defense_choices(
         }) {
             if let Some(target_defender) = defenders.get_mut(idx) {
                 let pressure = choice.pressure_responsibility;
-                let threat = choice.shot_danger.max(choice.carrier_stale_threat);
-                let mut goal_options = Vec::new();
-                for option in &choice.goal_candidates {
-                    let goal = build_defensive_goal(&DefensiveGoalBuildInput {
-                        action_type: option.action_type,
-                        target_pos: option.target,
-                        value: option.value,
-                        pressure,
-                        threat,
-                    });
-                    if let Some(existing) = goal_options.iter_mut().find(
-                        |existing: &&mut crate::DefensiveGoalBuildOutput| {
-                            existing.goal_type == goal.goal_type
-                        },
-                    ) {
-                        if goal.value > existing.value {
-                            *existing = goal;
-                        }
-                    } else {
-                        goal_options.push(goal);
-                    }
-                }
+                let threat = choice.shot_danger.max(choice.carrier_control_threat);
+                let candidate = build_defensive_goal(&DefensiveGoalBuildInput {
+                    action_type: choice.action_type,
+                    target_pos: choice.target,
+                    value: choice.score,
+                    pressure,
+                    threat,
+                });
                 let current_goal_type = target_defender.goal_type.as_deref();
                 let current_goal_is_defensive = current_goal_type
                     .map(|goal_type| goal_type.starts_with("defend_"))
                     .unwrap_or(false);
-                let current_goal_option = current_goal_type.and_then(|goal_type| {
-                    goal_options
-                        .iter()
-                        .position(|goal| goal.goal_type == goal_type)
-                });
-                if let Some(current_index) = current_goal_option {
-                    let current = &goal_options[current_index];
-                    // Retargeting the same plan is not a new goal transition.
-                    target_defender.goal_target = current.target_pos;
-                    target_defender.goal_value = current.value;
-                } else if current_goal_is_defensive {
-                    // The prior plan no longer has a viable space in this state.
-                    target_defender.goal_value = 0.0;
-                }
-                let alternative_goal = goal_options
-                    .iter()
-                    .enumerate()
-                    .filter(|(index, _)| Some(*index) != current_goal_option)
-                    .max_by(|(_, left), (_, right)| {
-                        left.value
-                            .partial_cmp(&right.value)
-                            .unwrap_or(std::cmp::Ordering::Equal)
-                    })
-                    .map(|(_, goal)| goal);
-                let switch_result = if let Some(candidate) = alternative_goal {
+                let current_goal_matches_candidate =
+                    current_goal_is_defensive && current_goal_type == Some(candidate.goal_type);
+                let switch_result = if current_goal_matches_candidate {
+                    let value_advantage = candidate.value - target_defender.goal_value;
+                    target_defender.goal_target = candidate.target_pos;
+                    target_defender.goal_value = candidate.value;
+                    RunnerGoalSwitchResult {
+                        switched: false,
+                        switch_cost: 0.0,
+                        value_advantage,
+                        reason: "current_defensive_goal_updated",
+                    }
+                } else {
                     apply_player_goal_switch_with_details(
                         target_defender,
-                        candidate.goal_type.clone(),
+                        candidate.goal_type,
                         "defend",
                         candidate.target_pos,
                         candidate.value,
@@ -6510,49 +16646,31 @@ fn apply_off_ball_defense_choices(
                         config,
                         rng,
                     )
-                } else {
-                    RunnerGoalSwitchResult {
-                        switched: false,
-                        switch_cost: 0.0,
-                        value_advantage: 0.0,
-                        reason: "current_defensive_goal_retargeted".to_string(),
-                    }
                 };
-                let active_goal_type = target_defender.goal_type.as_deref().unwrap_or_default();
-                let active_option = goal_options
-                    .iter()
-                    .find(|goal| goal.goal_type == active_goal_type);
-                let active_action_type = active_option
-                    .map(|goal| goal.action_type.as_str())
-                    .unwrap_or(match active_goal_type {
-                        "defend_press" => "approach",
-                        "defend_mark_runner" => "mark_runner",
-                        "defend_cover_lane" | "defend_protect_box" => "block_lane",
-                        _ => "hold_position",
-                    });
-                let active_target = active_option
-                    .map(|goal| goal.target_pos)
-                    .unwrap_or(target_defender.goal_target);
-                let requested_intent = match active_action_type {
+                let selected_action_type = candidate.action_type;
+                let requested_intent = match selected_action_type {
                     "tackle" | "approach" => "press",
                     "mark_runner" => "mark",
                     "block_lane" => "block_lane",
                     _ => "defend_shape",
                 };
-                if matches!(active_action_type, "tackle" | "approach") {
-                    target_defender.state = "pressing".to_string();
+                if matches!(selected_action_type, "tackle" | "approach") {
+                    update_runner_text(&mut target_defender.state, "pressing");
                 } else if target_defender.state == "pressing"
-                    && !matches!(active_action_type, "tackle" | "mark_runner" | "block_lane")
+                    && !matches!(
+                        selected_action_type,
+                        "tackle" | "mark_runner" | "block_lane"
+                    )
                 {
-                    target_defender.state = "off_ball".to_string();
+                    update_runner_text(&mut target_defender.state, "off_ball");
                 }
-                target_defender.target_pos = active_target;
-                target_defender.movement_intent = requested_intent.to_string();
-                target_defender.last_def_action = active_action_type.to_string();
+                target_defender.target_pos = candidate.target_pos;
+                update_runner_text(&mut target_defender.movement_intent, requested_intent);
+                update_runner_text(&mut target_defender.last_def_action, candidate.action_type);
                 let summary = RunnerGoalSummary {
-                    goal_type: target_defender.goal_type.clone().unwrap_or_default(),
-                    target: target_defender.goal_target,
-                    value: target_defender.goal_value,
+                    goal_type: candidate.goal_type,
+                    target: candidate.target_pos,
+                    value: candidate.value,
                 };
                 if matches!(config.trace_detail.as_str(), "top_candidates" | "full") {
                     trace_decisions.push(json!({
@@ -6570,7 +16688,7 @@ fn apply_off_ball_defense_choices(
                         },
                         "chosen": {
                             "phase": "off_ball_defense",
-                            "action_type": active_action_type,
+                            "action_type": selected_action_type,
                             "target": [target_defender.target_pos.0, target_defender.target_pos.1],
                             "raw_target": [choice.target.0, choice.target.1],
                             "value": {
@@ -6581,6 +16699,10 @@ fn apply_off_ball_defense_choices(
                                 "raw_targets": choice.raw_targets.iter().map(|target| json!([target.0, target.1])).collect::<Vec<_>>(),
                                 "candidate_targets": choice.candidate_targets.iter().map(|target| json!([target.0, target.1])).collect::<Vec<_>>(),
                                 "candidate_scores": choice.candidate_scores,
+                                  "candidate_movement_targets": choice.candidate_movement_targets.iter().map(|target| json!([target.0, target.1])).collect::<Vec<_>>(),
+                                  "candidate_projected_positions": choice.candidate_projected_positions.iter().map(|target| json!([target.0, target.1])).collect::<Vec<_>>(),
+                                  "candidate_action_types": choice.candidate_action_types,
+                                  "candidate_residual_threats": choice.candidate_residual_threats,
                                 "used_roll": choice.used_roll,
                                 "used_random_choice": choice.used_random_choice,
                                 "debug_attackers": attacker_xy.iter().map(|target| json!([target.0, target.1])).collect::<Vec<_>>(),
@@ -6590,7 +16712,7 @@ fn apply_off_ball_defense_choices(
                                     "press_value": choice.press_value,
                                     "pressure_responsibility": choice.pressure_responsibility,
                                     "shot_danger": choice.shot_danger,
-                                    "carrier_stale_threat": choice.carrier_stale_threat,
+                                    "carrier_control_threat": choice.carrier_control_threat,
                                     "carrier_threat": choice.carrier_threat,
                                     "shot_lane_closure": choice.shot_lane_closure,
                                     "best_mark_value": choice.best_mark_value
@@ -6599,7 +16721,7 @@ fn apply_off_ball_defense_choices(
                         },
                         "goal": {
                             "goal": {
-                                "goal_type": summary.goal_type.clone(),
+                                "goal_type": summary.goal_type,
                                 "target_pos": [summary.target.0, summary.target.1],
                                 "value": summary.value,
                                 "confidence": summary.value,
@@ -6610,10 +16732,15 @@ fn apply_off_ball_defense_choices(
                                     "completion": "deny_space_or_recover_shape",
                                     "abort": "possession_or_threat_changed",
                                     "handoff": "defensive_space_value",
-                                    "action": active_action_type,
+                                    "action": selected_action_type,
                                     "pressure": pressure,
                                     "threat": threat
                                 }
+                            },
+                            "stored_goal": {
+                                "goal_type": target_defender.goal_type.clone(),
+                                "target_pos": [target_defender.goal_target.0, target_defender.goal_target.1],
+                                "value": target_defender.goal_value
                             },
                             "switched": switch_result.switched,
                             "switch_cost": switch_result.switch_cost,
@@ -6635,7 +16762,7 @@ fn apply_off_ball_defense_choices(
             }
         }
     }
-    let interaction_inputs = defender_phase1_inputs(defenders, config);
+    let interaction_inputs = defender_phase1_inputs(defenders, plan_signals, config);
     (selected_count, best_goal, interaction_inputs)
 }
 
@@ -6661,6 +16788,7 @@ fn update_held_tick_targets(
         state.ball.position,
         home_attacking_right,
         home_phase,
+        state.home_plan_signals,
         home_intent,
         if state.ball.holder_team_home == Some(true) {
             state.ball.holder_idx
@@ -6668,6 +16796,7 @@ fn update_held_tick_targets(
             None
         },
         config,
+        &mut state.team_shape_arena,
     );
     apply_team_shape_targets(
         away,
@@ -6675,6 +16804,7 @@ fn update_held_tick_targets(
         state.ball.position,
         !home_attacking_right,
         away_phase,
+        state.away_plan_signals,
         away_intent,
         if state.ball.holder_team_home == Some(false) {
             state.ball.holder_idx
@@ -6682,6 +16812,7 @@ fn update_held_tick_targets(
             None
         },
         config,
+        &mut state.team_shape_arena,
     );
     let mut attack_choices = 0;
     let mut attack_goal: Option<RunnerGoalSummary> = None;
@@ -6695,6 +16826,8 @@ fn update_held_tick_targets(
             state.ball.position,
             home_attacking_right,
             state.ball.holder_idx,
+            None,
+            None,
             None,
             config,
             rng,
@@ -6712,6 +16845,8 @@ fn update_held_tick_targets(
             !home_attacking_right,
             state.ball.holder_idx,
             None,
+            None,
+            None,
             config,
             rng,
         );
@@ -6719,15 +16854,18 @@ fn update_held_tick_targets(
         attack_goal = attack.1;
     }
     if let Some(goal) = attack_goal {
-        state.trace_entries.push(json!({
-            "type": "event",
-            "event": "off_ball_goal",
-            "tick": tick,
-            "side": "attack",
-            "goal_type": goal.goal_type,
-            "target": [round_one(goal.target.0), round_one(goal.target.1)],
-            "value": round_two(goal.value)
-        }));
+        trace_entry!(
+            state,
+            json!({
+                "type": "event",
+                "event": "off_ball_goal",
+                "tick": tick,
+                "side": "attack",
+                "goal_type": goal.goal_type,
+                "target": [round_one(goal.target.0), round_one(goal.target.1)],
+                "value": round_two(goal.value)
+            })
+        );
     }
     (attack_choices, 0)
 }
@@ -6740,7 +16878,7 @@ fn update_held_tick_defense_targets(
     home_attacking_right: bool,
     tick: i32,
     rng: &mut RunnerRng,
-) -> (i32, Vec<DefenderActionInput>) {
+) -> (i32, RunnerDefenderPhase1Inputs) {
     let carrier_pos = state.ball.holder_team_home.and_then(|holder_home| {
         state.ball.holder_idx.and_then(|idx| {
             if holder_home {
@@ -6763,6 +16901,20 @@ fn update_held_tick_defense_targets(
             })
         })
         .unwrap_or(0);
+    let carrier_possession_ticks = state
+        .ball
+        .holder_team_home
+        .and_then(|holder_home| {
+            state.ball.holder_idx.and_then(|idx| {
+                if holder_home {
+                    home.get(idx).map(|player| player.possession_ticks)
+                } else {
+                    away.get(idx).map(|player| player.possession_ticks)
+                }
+            })
+        })
+        .unwrap_or(0);
+    let carrier_control_readiness = crate::continuation_control_readiness(state.ball.control);
     let (defense_choices, defense_goal, defender_inputs) =
         if state.ball.holder_team_home == Some(true) {
             apply_off_ball_defense_choices(
@@ -6772,12 +16924,17 @@ fn update_held_tick_defense_targets(
                 !home_attacking_right,
                 carrier_pos,
                 carrier_consecutive_carries,
+                carrier_possession_ticks,
+                carrier_control_readiness,
+                state.away_plan_signals,
                 None,
                 config,
                 rng,
+                Some(&mut state.fixed_defense_arena),
                 &mut state.trace_decisions,
                 tick,
                 false,
+                true,
             )
         } else if state.ball.holder_team_home == Some(false) {
             apply_off_ball_defense_choices(
@@ -6787,26 +16944,34 @@ fn update_held_tick_defense_targets(
                 home_attacking_right,
                 carrier_pos,
                 carrier_consecutive_carries,
+                carrier_possession_ticks,
+                carrier_control_readiness,
+                state.home_plan_signals,
                 None,
                 config,
                 rng,
+                Some(&mut state.fixed_defense_arena),
                 &mut state.trace_decisions,
                 tick,
                 true,
+                true,
             )
         } else {
-            (0, None, Vec::new())
+            (0, None, RunnerDefenderPhase1Inputs::empty())
         };
     if let Some(goal) = defense_goal {
-        state.trace_entries.push(json!({
-            "type": "event",
-            "event": "off_ball_goal",
-            "tick": tick,
-            "side": "defense",
-            "goal_type": goal.goal_type,
-            "target": [round_one(goal.target.0), round_one(goal.target.1)],
-            "value": round_two(goal.value)
-        }));
+        trace_entry!(
+            state,
+            json!({
+                "type": "event",
+                "event": "off_ball_goal",
+                "tick": tick,
+                "side": "defense",
+                "goal_type": goal.goal_type,
+                "target": [round_one(goal.target.0), round_one(goal.target.1)],
+                "value": round_two(goal.value)
+            })
+        );
     }
     (defense_choices, defender_inputs)
 }
@@ -6816,9 +16981,15 @@ fn apply_held_tick_movement(
     away: &mut [RunnerPlayer],
     original_holder_home: bool,
     original_holder_idx: usize,
+    home_plan_signals: TeamPlanSignals,
+    away_plan_signals: TeamPlanSignals,
+    defender_phase1_inputs: &RunnerDefenderPhase1Inputs,
     config: &RunnerRuntimeConfig,
 ) {
-    for (team_home, players) in [(true, home), (false, away)] {
+    for (team_home, players, plan_signals) in [
+        (true, home, home_plan_signals),
+        (false, away, away_plan_signals),
+    ] {
         for (idx, player) in players.iter_mut().enumerate() {
             let is_holder = original_holder_home == team_home && original_holder_idx == idx;
             if is_holder {
@@ -6828,32 +16999,104 @@ fn apply_held_tick_movement(
                 tick_player_stun(player);
                 continue;
             }
-            let movement = player_move_tick(&PlayerMoveTickInput {
-                pos: player.pos,
-                target_pos: player.target_pos,
-                velocity: player.velocity,
-                speed_ability: player.speed.round() as i32,
-                movement_intent: player.movement_intent.as_str(),
-                state: player.state.as_str(),
-                player_max_speed: config.player_max_speed,
-                player_min_speed: config.player_min_speed,
-                pitch_length: config.pitch_length,
-                pitch_width: config.pitch_width,
-            });
-            player.pos = movement.pos;
-            player.velocity = movement.velocity;
-            if let Some(facing) = movement.facing_direction {
-                player.facing_direction = facing;
+            if team_home != original_holder_home {
+                apply_runner_defender_movement(
+                    player,
+                    idx,
+                    plan_signals,
+                    defender_phase1_inputs,
+                    config,
+                );
+            } else {
+                let movement_target = team_plan_movement_target(
+                    player.target_pos,
+                    player.tactical_anchor,
+                    plan_signals,
+                );
+                let movement = player_move_tick(&PlayerMoveTickInput {
+                    pos: player.pos,
+                    target_pos: movement_target,
+                    velocity: player.velocity,
+                    speed_ability: player.speed.round() as i32,
+                    movement_intent: player.movement_intent.as_str(),
+                    state: player.state.as_str(),
+                    player_max_speed: config.player_max_speed,
+                    player_min_speed: config.player_min_speed,
+                    pitch_length: config.pitch_length,
+                    pitch_width: config.pitch_width,
+                });
+                player.pos = movement.pos;
+                player.velocity = movement.velocity;
+                if let Some(facing) = movement.facing_direction {
+                    player.facing_direction = facing;
+                }
+                player.distance_covered += movement.distance_covered;
             }
-            player.distance_covered += movement.distance_covered;
         }
     }
 }
 
-fn move_runner_player(player: &mut RunnerPlayer, config: &RunnerRuntimeConfig) {
+fn apply_runner_defender_movement(
+    defender: &mut RunnerPlayer,
+    defender_index: usize,
+    plan_signals: TeamPlanSignals,
+    phase1_inputs: &RunnerDefenderPhase1Inputs,
+    config: &RunnerRuntimeConfig,
+) {
+    let action = if defender.last_def_action.is_empty() {
+        "hold_position"
+    } else {
+        defender.last_def_action.as_str()
+    };
+    let cached = phase1_inputs
+        .inputs
+        .get(defender_index)
+        .zip(phase1_inputs.snapshots.get(defender_index))
+        .filter(|(input, snapshot)| {
+            input.index == defender_index
+                && snapshot.pos == defender.pos
+                && snapshot.target_pos == defender.target_pos
+                && snapshot.tactical_anchor == defender.tactical_anchor
+                && snapshot.velocity == defender.velocity
+                && snapshot.speed_ability == defender.speed.round() as i32
+                && snapshot.state_code == runner_player_state_code(defender.state.as_str())
+                && snapshot.action == runner_static_defense_action(action)
+        });
+    if let Some((input, snapshot)) = cached {
+        defender.pos = input.new_pos;
+        defender.velocity = snapshot.next_velocity;
+        if let Some(facing) = snapshot.facing_direction {
+            defender.facing_direction = facing;
+        }
+        defender.distance_covered += snapshot.distance_covered;
+        return;
+    }
+
+    let movement = crate::off_ball_defense::project_defense_action_motion(
+        defender.pos,
+        defender.target_pos,
+        defender.tactical_anchor,
+        action,
+        runner_defense_movement_input(defender, plan_signals, config),
+    );
+    defender.pos = movement.pos;
+    defender.velocity = movement.velocity;
+    if let Some(facing) = movement.facing_direction {
+        defender.facing_direction = facing;
+    }
+    defender.distance_covered += movement.distance_covered;
+}
+
+fn move_runner_player(
+    player: &mut RunnerPlayer,
+    plan_signals: TeamPlanSignals,
+    config: &RunnerRuntimeConfig,
+) {
+    let movement_target =
+        team_plan_movement_target(player.target_pos, player.tactical_anchor, plan_signals);
     let movement = player_move_tick(&PlayerMoveTickInput {
         pos: player.pos,
-        target_pos: player.target_pos,
+        target_pos: movement_target,
         velocity: player.velocity,
         speed_ability: player.speed.round() as i32,
         movement_intent: player.movement_intent.as_str(),
@@ -6876,7 +17119,9 @@ fn move_contested_team(
     opponents: &[RunnerPlayer],
     ball_pos: (f64, f64),
     attacking_right: bool,
+    plan_signals: TeamPlanSignals,
     config: &RunnerRuntimeConfig,
+    shape_arena: &mut RunnerTeamShapeArena,
 ) {
     apply_team_shape_targets(
         players,
@@ -6884,94 +17129,140 @@ fn move_contested_team(
         ball_pos,
         attacking_right,
         "contesting",
+        plan_signals,
         "recover_shape",
         None,
         config,
+        shape_arena,
     );
-    let target_inputs = contested_target_players(players);
-    let target_outputs = select_contested_targets(&ContestedTargetsInput {
-        ball_pos,
-        pitch_length: config.pitch_length,
-        pitch_width: config.pitch_width,
-        player_max_speed: config.player_max_speed,
-        player_min_speed: config.player_min_speed,
-        contested_race_radius: config.contested_race_radius,
-        players: &target_inputs,
-    });
-    for output in target_outputs {
+    let mut target_inputs = [ContestedTargetPlayerInput {
+        index: 0,
+        pos: (0.0, 0.0),
+        tactical_anchor: (0.0, 0.0),
+        is_goalkeeper: false,
+        is_stunned: false,
+        speed: 0,
+        iq: 0.0,
+    }; RUNNER_TEAM_SIZE];
+    let target_input_count = contested_target_players_into(players, &mut target_inputs);
+    let mut target_outputs = [crate::ContestedTargetOutput {
+        index: 0,
+        target: (0.0, 0.0),
+        intent_code: 0,
+    }; RUNNER_TEAM_SIZE];
+    let target_output_count = select_contested_targets_into(
+        &ContestedTargetsInput {
+            ball_pos,
+            pitch_length: config.pitch_length,
+            pitch_width: config.pitch_width,
+            player_max_speed: config.player_max_speed,
+            player_min_speed: config.player_min_speed,
+            contested_race_radius: config.contested_race_radius,
+            players: &target_inputs[..target_input_count],
+        },
+        &mut target_outputs,
+    );
+    for output in &target_outputs[..target_output_count] {
         if let Some(player) = players.get_mut(output.index) {
             if player.state == "stunned" {
                 continue;
             }
             player.target_pos = output.target;
-            player.movement_intent = if output.intent_code == 1 {
-                "contest".to_string()
+            let requested_intent = if output.intent_code == 1 {
+                "contest"
             } else {
-                "recover_shape".to_string()
+                "recover_shape"
             };
+            update_runner_text(&mut player.movement_intent, requested_intent);
         }
     }
     for player in players.iter_mut() {
         if player.state == "stunned" {
             continue;
         }
-        move_runner_player(player, config);
+        move_runner_player(player, plan_signals, config);
     }
 }
 
 fn defender_phase1_inputs(
     defenders: &[RunnerPlayer],
+    plan_signals: TeamPlanSignals,
     config: &RunnerRuntimeConfig,
-) -> Vec<DefenderActionInput> {
-    defenders
-        .iter()
-        .enumerate()
-        .map(|(idx, defender)| {
-            let desired_speed = player_move_speed(&PlayerMoveSpeedInput {
-                pos: defender.pos,
-                target_pos: defender.target_pos,
-                speed_ability: defender.speed.round() as i32,
-                movement_intent: defender.movement_intent.as_str(),
-                state: defender.state.as_str(),
-                player_max_speed: config.player_max_speed,
-                player_min_speed: config.player_min_speed,
-            })
-            .speed;
-            let movement =
-                crate::physics::advance_player_motion(&crate::physics::PlayerMotionInput {
-                    pos: defender.pos,
-                    target: defender.target_pos,
-                    velocity: defender.velocity,
-                    speed_ability: defender.speed.round() as i32,
-                    desired_speed,
-                    acceleration_scale: if matches!(
-                        defender.movement_intent.as_str(),
-                        "press" | "contest" | "attack_run"
-                    ) {
-                        1.15
-                    } else {
-                        1.0
-                    },
-                    player_max_speed: config.player_max_speed,
-                    player_min_speed: config.player_min_speed,
-                    pitch_length: config.pitch_length,
-                    pitch_width: config.pitch_width,
-                });
-            DefenderActionInput {
-                index: idx,
-                pos: defender.pos,
-                new_pos: movement.pos,
-                action: if defender.last_def_action.is_empty() {
-                    "hold_position".to_string()
-                } else {
-                    defender.last_def_action.clone()
-                },
-                speed: defender.speed,
-                defence: defender.defence,
-                is_goalkeeper: defender.position == "GK",
-            }
-        })
-        .collect()
+) -> RunnerDefenderPhase1Inputs {
+    assert!(
+        defenders.len() <= RUNNER_TEAM_SIZE,
+        "defender phase inputs expect eleven-player teams"
+    );
+    let mut inputs = [RUNNER_EMPTY_DEFENDER_ACTION; RUNNER_TEAM_SIZE];
+    let mut snapshots = [RUNNER_EMPTY_DEFENDER_MOTION_SNAPSHOT; RUNNER_TEAM_SIZE];
+    for (idx, defender) in defenders.iter().enumerate() {
+        let action = if defender.last_def_action.is_empty() {
+            "hold_position"
+        } else {
+            defender.last_def_action.as_str()
+        };
+        let movement = crate::off_ball_defense::project_defense_action_motion(
+            defender.pos,
+            defender.target_pos,
+            defender.tactical_anchor,
+            action,
+            runner_defense_movement_input(defender, plan_signals, config),
+        );
+        inputs[idx] = DefenderActionInput {
+            index: idx,
+            pos: defender.pos,
+            new_pos: movement.pos,
+            action: runner_static_defense_action(action),
+            speed: defender.speed,
+            defence: defender.defence,
+            tackling: defender.tackling,
+            is_goalkeeper: defender.position == "GK",
+        };
+        snapshots[idx] = RunnerDefenderMotionSnapshot {
+            pos: defender.pos,
+            target_pos: defender.target_pos,
+            tactical_anchor: defender.tactical_anchor,
+            velocity: defender.velocity,
+            speed_ability: defender.speed.round() as i32,
+            state_code: runner_player_state_code(defender.state.as_str()),
+            action: runner_static_defense_action(action),
+            next_velocity: movement.velocity,
+            distance_covered: movement.distance_covered,
+            facing_direction: movement.facing_direction,
+        };
+    }
+    RunnerDefenderPhase1Inputs {
+        inputs,
+        snapshots,
+        count: defenders.len(),
+    }
+}
+
+fn shot_contest_defenders_into(
+    inputs: &[DefenderActionInput],
+    tackle_range: f64,
+    output: &mut [ShotContestDefender; RUNNER_TEAM_SIZE],
+) -> usize {
+    assert!(
+        inputs.len() <= RUNNER_TEAM_SIZE,
+        "shot contest defenders expect eleven-player teams"
+    );
+    for (index, defender) in inputs.iter().enumerate() {
+        let (engagement_weight, engagement_reach) =
+            shot_contest_engagement(defender.action, tackle_range);
+        output[index] = ShotContestDefender {
+            index: defender.index,
+            pos: defender.pos,
+            projected_pos: defender.new_pos,
+            speed: defender.speed,
+            defence: defender.defence,
+            intent: shot_contest_intent(defender.action),
+            engagement_weight,
+            engagement_reach,
+            is_goalkeeper: defender.is_goalkeeper,
+        };
+    }
+    inputs.len()
 }
 
 fn track_runner_pressures(
@@ -6984,15 +17275,22 @@ fn track_runner_pressures(
     interception_detected: bool,
     config: &RunnerRuntimeConfig,
 ) {
-    let pressures = track_defensive_pressures(&DefensivePressureInput {
-        holder_pos,
-        holder_action,
-        defenders: defender_actions,
-        press_radius: config.press_radius,
-        duel_detected,
-        interception_detected,
-    });
-    for pressure in pressures {
+    let mut pressures = [crate::DefensivePressureOutput {
+        defender_index: 0,
+        successful: false,
+    }; RUNNER_TEAM_SIZE];
+    let pressure_count = track_defensive_pressures_into(
+        &DefensivePressureInput {
+            holder_pos,
+            holder_action,
+            defenders: defender_actions,
+            press_radius: config.press_radius,
+            duel_detected,
+            interception_detected,
+        },
+        &mut pressures,
+    );
+    for pressure in &pressures[..pressure_count] {
         if let Some(defender) = defenders.get_mut(pressure.defender_index) {
             if tick - defender.last_pressure_tick < 3 {
                 continue;
@@ -7006,6 +17304,13 @@ fn track_runner_pressures(
     }
 }
 
+fn runner_player_name(players: &[RunnerPlayer], idx: usize) -> &str {
+    players
+        .get(idx)
+        .map(|player| player.name.as_str())
+        .unwrap_or("")
+}
+
 fn resolve_runner_duel(
     state: &mut RunnerMatchState,
     tick: i32,
@@ -7015,27 +17320,28 @@ fn resolve_runner_duel(
     defender_idx: usize,
     home: &mut [RunnerPlayer],
     away: &mut [RunnerPlayer],
+    home_attacking_right: bool,
     config: &RunnerRuntimeConfig,
     rng: &mut RunnerRng,
 ) -> RunnerDuelResult {
     push_rng_trace(state, tick, "before_duel_resolve", rng);
-    let (holder_name, holder_pos, holder_dribbling) = if holder_home {
+    let (holder_pos, holder_dribbling) = if holder_home {
         home.get(holder_idx)
-            .map(|player| (player.name.clone(), player.pos, player.dribbling))
-            .unwrap_or_else(|| (String::new(), state.ball.position, 50.0))
+            .map(|player| (player.pos, player.dribbling))
+            .unwrap_or((state.ball.position, 50.0))
     } else {
         away.get(holder_idx)
-            .map(|player| (player.name.clone(), player.pos, player.dribbling))
-            .unwrap_or_else(|| (String::new(), state.ball.position, 50.0))
+            .map(|player| (player.pos, player.dribbling))
+            .unwrap_or((state.ball.position, 50.0))
     };
-    let (defender_name, defender_tackling) = if holder_home {
+    let defender_tackling = if holder_home {
         away.get(defender_idx)
-            .map(|player| (player.name.clone(), player.tackling))
-            .unwrap_or_else(|| (String::new(), 50.0))
+            .map(|player| player.tackling)
+            .unwrap_or(50.0)
     } else {
         home.get(defender_idx)
-            .map(|player| (player.name.clone(), player.tackling))
-            .unwrap_or_else(|| (String::new(), 50.0))
+            .map(|player| player.tackling)
+            .unwrap_or(50.0)
     };
     let attacker_uniform = rng.uniform(-12.0, 12.0);
     let defender_uniform = rng.uniform(-12.0, 12.0);
@@ -7096,18 +17402,29 @@ fn resolve_runner_duel(
                 }
             }
             state.ball.position = holder_pos;
-            state.trace_entries.push(json!({
-                "tick": tick,
-                "type": "event",
-                "event": "duel",
-                "outcome": "attacker_wins",
-                "winner": holder_name,
-                "loser": defender_name,
-                "rng": {
-                    "attacker_uniform": attacker_uniform,
-                    "defender_uniform": defender_uniform
-                }
-            }));
+            trace_entry!(
+                state,
+                json!({
+                    "tick": tick,
+                    "type": "event",
+                    "event": "duel",
+                    "outcome": "attacker_wins",
+                    "winner": if holder_home {
+                        runner_player_name(home, holder_idx)
+                    } else {
+                        runner_player_name(away, holder_idx)
+                    },
+                    "loser": if holder_home {
+                        runner_player_name(away, defender_idx)
+                    } else {
+                        runner_player_name(home, defender_idx)
+                    },
+                    "rng": {
+                        "attacker_uniform": attacker_uniform,
+                        "defender_uniform": defender_uniform
+                    }
+                })
+            );
             record_match_event(
                 state,
                 config,
@@ -7124,7 +17441,7 @@ fn resolve_runner_duel(
                     xg: 0.0,
                     origin: Some(holder_pos),
                     target: Some(holder_pos),
-                    tags: vec!["take_on"],
+                    tags: EventTags::one("take_on"),
                     score_before: None,
                 },
             );
@@ -7157,7 +17474,17 @@ fn resolve_runner_duel(
                     .get(defender_idx)
                     .map(|player| player.pos)
                     .unwrap_or(holder_pos);
-                give_ball_to_player(state, home, away, defender_idx, false, defender_pos, None);
+                give_ball_to_player(
+                    state,
+                    home,
+                    away,
+                    defender_idx,
+                    false,
+                    defender_pos,
+                    None,
+                    home_attacking_right,
+                    config,
+                );
             } else {
                 if let Some(defender) = home.get_mut(defender_idx) {
                     defender.tackles_attempted += 1;
@@ -7173,19 +17500,40 @@ fn resolve_runner_duel(
                     .get(defender_idx)
                     .map(|player| player.pos)
                     .unwrap_or(holder_pos);
-                give_ball_to_player(state, home, away, defender_idx, true, defender_pos, None);
+                give_ball_to_player(
+                    state,
+                    home,
+                    away,
+                    defender_idx,
+                    true,
+                    defender_pos,
+                    None,
+                    home_attacking_right,
+                    config,
+                );
             }
-            state.trace_entries.push(json!({
-                "tick": tick,
-                "type": "event",
-                "event": "tackle",
-                "tackler": defender_name,
-                "dispossessed": holder_name,
-                "rng": {
-                    "attacker_uniform": attacker_uniform,
-                    "defender_uniform": defender_uniform
-                }
-            }));
+            trace_entry!(
+                state,
+                json!({
+                    "tick": tick,
+                    "type": "event",
+                    "event": "tackle",
+                    "tackler": if holder_home {
+                        runner_player_name(away, defender_idx)
+                    } else {
+                        runner_player_name(home, defender_idx)
+                    },
+                    "dispossessed": if holder_home {
+                        runner_player_name(home, holder_idx)
+                    } else {
+                        runner_player_name(away, holder_idx)
+                    },
+                    "rng": {
+                        "attacker_uniform": attacker_uniform,
+                        "defender_uniform": defender_uniform
+                    }
+                })
+            );
             record_match_event(
                 state,
                 config,
@@ -7202,7 +17550,7 @@ fn resolve_runner_duel(
                     xg: 0.0,
                     origin: Some(holder_pos),
                     target: Some(holder_pos),
-                    tags: vec!["possession_won"],
+                    tags: EventTags::one("possession_won"),
                     score_before: None,
                 },
             );
@@ -7226,7 +17574,7 @@ fn resolve_runner_duel(
                 if let Some(holder) = home.get_mut(holder_idx) {
                     holder.dribbles_attempted += 1;
                     holder.consecutive_carries = 0;
-                    holder.state = "off_ball".to_string();
+                    update_runner_text(&mut holder.state, "off_ball");
                 }
             } else {
                 if let Some(defender) = home.get_mut(defender_idx) {
@@ -7235,22 +17583,33 @@ fn resolve_runner_duel(
                 if let Some(holder) = away.get_mut(holder_idx) {
                     holder.dribbles_attempted += 1;
                     holder.consecutive_carries = 0;
-                    holder.state = "off_ball".to_string();
+                    update_runner_text(&mut holder.state, "off_ball");
                 }
             }
             set_contested_and_clear_goals(state, home, away, duel.loose_pos, (0.0, 0.0));
-            state.trace_entries.push(json!({
-                "tick": tick,
-                "type": "event",
-                "event": "duel",
-                "outcome": "loose_ball",
-                "holder": holder_name,
-                "defender": defender_name,
-                "rng": {
-                    "attacker_uniform": attacker_uniform,
-                    "defender_uniform": defender_uniform
-                }
-            }));
+            trace_entry!(
+                state,
+                json!({
+                    "tick": tick,
+                    "type": "event",
+                    "event": "duel",
+                    "outcome": "loose_ball",
+                    "holder": if holder_home {
+                        runner_player_name(home, holder_idx)
+                    } else {
+                        runner_player_name(away, holder_idx)
+                    },
+                    "defender": if holder_home {
+                        runner_player_name(away, defender_idx)
+                    } else {
+                        runner_player_name(home, defender_idx)
+                    },
+                    "rng": {
+                        "attacker_uniform": attacker_uniform,
+                        "defender_uniform": defender_uniform
+                    }
+                })
+            );
             record_match_event(
                 state,
                 config,
@@ -7267,7 +17626,7 @@ fn resolve_runner_duel(
                     xg: 0.0,
                     origin: Some(holder_pos),
                     target: Some(duel.loose_pos),
-                    tags: vec!["second_ball"],
+                    tags: EventTags::one("second_ball"),
                     score_before: None,
                 },
             );
@@ -7339,19 +17698,15 @@ fn apply_restart_shape(
             &mut *away
         };
         if let Some(player) = team.get_mut(output.index) {
-            player.state = "off_ball".to_string();
+            update_runner_text(&mut player.state, "off_ball");
             if force {
                 player.target_pos = output.target;
-                player.movement_intent = "recover_shape".to_string();
+                if player.movement_intent != "recover_shape" {
+                    player.movement_intent.clear();
+                    player.movement_intent.push_str("recover_shape");
+                }
             } else {
-                let movement_target = player_set_movement_target(&PlayerSetMovementTargetInput {
-                    current_target: player.target_pos,
-                    requested_target: output.target,
-                    current_intent: player.movement_intent.as_str(),
-                    requested_intent: Some("recover_shape"),
-                });
-                player.target_pos = movement_target.target_pos;
-                player.movement_intent = movement_target.movement_intent;
+                update_runner_movement_target(player, output.target, Some("recover_shape"));
             }
             if output.snap {
                 player.pos = output.target;
@@ -7456,20 +17811,26 @@ fn restart_dead_ball(
                 restart_team_home,
                 restart.ball_pos,
                 None,
+                home_attacking_right,
+                config,
             );
+            queue_restart_cut_frame(state, tick, half, home, away, config);
             state.dead_reason = None;
             state.restart_team_home = None;
             state.restart_ticks_remaining = 0;
             state.last_passer_team_home = None;
             state.last_passer_idx = -1;
-            state.trace_entries.push(json!({
-                "tick": tick,
-                "type": "event",
-                "event": "restart",
-                "reason": reason,
-                "team": if restart_team_home { "home" } else { "away" },
-                "receiver_idx": receiver_idx
-            }));
+            trace_entry!(
+                state,
+                json!({
+                    "tick": tick,
+                    "type": "event",
+                    "event": "restart",
+                    "reason": reason,
+                    "team": if restart_team_home { "home" } else { "away" },
+                    "receiver_idx": receiver_idx
+                })
+            );
             record_match_event(
                 state,
                 config,
@@ -7486,7 +17847,7 @@ fn restart_dead_ball(
                     xg: 0.0,
                     origin: Some(restart.ball_pos),
                     target: Some(restart.ball_pos),
-                    tags: vec!["set_piece"],
+                    tags: EventTags::one("set_piece"),
                     score_before: None,
                 },
             );
@@ -7516,6 +17877,13 @@ fn handle_out_of_bounds_flight(
     config: &RunnerRuntimeConfig,
     home_attacking_right: bool,
 ) {
+    let boundary_crossing = crate::segment_pitch_boundary_crossing(
+        flight.origin,
+        flight.target,
+        config.pitch_length,
+        config.pitch_width,
+    )
+    .expect("an out-of-bounds flight must cross a pitch boundary");
     let (total_xg, logged_xg_sum) = if flight.kind == RunnerFlightKind::Shot {
         let shooter = if flight.passer_team_home {
             home.get(flight.passer_idx)
@@ -7529,10 +17897,11 @@ fn handle_out_of_bounds_flight(
         (0.0, 0.0)
     };
     let plan = out_of_bounds_plan(&OutOfBoundsPlanInput {
-        out_x: flight.target.0,
+        boundary: boundary_crossing.kind,
+        boundary_point: boundary_crossing.point,
         pitch_length: config.pitch_length,
         pitch_width: config.pitch_width,
-        passer_team_home: flight.passer_team_home,
+        possession_team_home: flight.passer_team_home,
         flight_type_code: flight_type_code(flight.kind),
         origin: flight.origin,
         attacking_right: attacking_right_for(flight.passer_team_home, home_attacking_right),
@@ -7593,7 +17962,7 @@ fn handle_out_of_bounds_flight(
         let mut tags = if flight.kind == RunnerFlightKind::Pass {
             pass_event_tags(&flight, flight.target, config, home_attacking_right)
         } else {
-            vec!["long", "space"]
+            EventTags::from_slice(&["long", "space"])
         };
         tags.push(if plan.reason == "goal_kick" {
             "goal_kick"
@@ -7628,16 +17997,28 @@ fn handle_out_of_bounds_flight(
         plan.reason.as_str(),
         plan.restart_team_home,
         plan.restart_ticks,
-        flight.target,
+        boundary_crossing.point,
     );
-    state.trace_entries.push(json!({
-        "tick": tick,
-        "type": "event",
-        "event": "out_of_bounds",
-        "reason": plan.reason,
-        "restart_team": if plan.restart_team_home { "home" } else { "away" },
-        "restart_ticks": plan.restart_ticks
-    }));
+    trace_entry!(
+        state,
+        json!({
+            "tick": tick,
+            "type": "event",
+            "event": "out_of_bounds",
+            "source": "flight",
+            "boundary": match boundary_crossing.kind {
+                crate::PitchBoundaryKind::GoalLine => "goal_line",
+                crate::PitchBoundaryKind::TouchLine => "touch_line",
+            },
+            "crossing": [
+                round_one(boundary_crossing.point.0),
+                round_one(boundary_crossing.point.1)
+            ],
+            "reason": plan.reason,
+            "restart_team": if plan.restart_team_home { "home" } else { "away" },
+            "restart_ticks": plan.restart_ticks
+        })
+    );
 }
 
 fn move_flight_players(
@@ -7659,9 +18040,11 @@ fn move_flight_players(
             target_pos,
             home_attacking_right,
             phase_name(state.home_phase_code),
+            state.home_plan_signals,
             "recover_shape",
             None,
             config,
+            &mut state.team_shape_arena,
         );
         apply_team_shape_targets(
             away,
@@ -7669,13 +18052,31 @@ fn move_flight_players(
             target_pos,
             !home_attacking_right,
             phase_name(state.away_phase_code),
+            state.away_plan_signals,
             "defend_shape",
             None,
             config,
+            &mut state.team_shape_arena,
         );
+        let home_attack_opponents =
+            runner_off_ball_attack_opponent_context(away, home_attacking_right, config);
+        let mut home_attack_team_context = RunnerOffBallAttackTeamContext::new();
+        if config.trace_detail == "off" {
+            home_attack_team_context.refresh(home);
+        }
         for idx in 0..home.len() {
             if home[idx].state == "stunned" {
                 tick_player_stun(&mut home[idx]);
+                if config.trace_detail == "off" {
+                    home_attack_team_context.update_player(idx, &home[idx]);
+                }
+                continue;
+            }
+            if flight.intended_receiver_idx == Some(idx) {
+                move_runner_player_to_local_task(&mut home[idx], target_pos, "attack_run", config);
+                if config.trace_detail == "off" {
+                    home_attack_team_context.update_player(idx, &home[idx]);
+                }
                 continue;
             }
             if home[idx].position == "GK" {
@@ -7685,27 +18086,27 @@ fn move_flight_players(
                     home_attacking_right,
                     config,
                 );
-                move_runner_player(&mut home[idx], config);
+                move_runner_player(&mut home[idx], state.home_plan_signals, config);
+                if config.trace_detail == "off" {
+                    home_attack_team_context.update_player(idx, &home[idx]);
+                }
                 continue;
             }
             let dist_to_target = distance(home[idx].pos, target_pos);
             if idx != flight.passer_idx && dist_to_target < race_radius * 1.35 {
-                let opponents = away.to_vec();
-                let active = {
-                    let mut indices = vec![false; home.len()];
-                    indices[idx] = true;
-                    indices
-                };
+                let active = runner_single_active_indices(idx, home.len());
                 let _ = apply_off_ball_attack_choices(
                     home,
-                    &opponents,
+                    away,
                     state,
                     tick,
                     true,
                     target_pos,
                     home_attacking_right,
                     None,
-                    Some(&active),
+                    Some(&active[..home.len()]),
+                    Some(home_attack_opponents),
+                    (config.trace_detail == "off").then_some(&mut home_attack_team_context),
                     config,
                     rng,
                 );
@@ -7718,20 +18119,24 @@ fn move_flight_players(
                     config.pitch_length,
                     config.pitch_width,
                 );
-                let movement_target = player_set_movement_target(&PlayerSetMovementTargetInput {
-                    current_target: home[idx].target_pos,
-                    requested_target: support_target,
-                    current_intent: home[idx].movement_intent.as_str(),
-                    requested_intent: Some("recover_shape"),
-                });
-                home[idx].target_pos = movement_target.target_pos;
-                home[idx].movement_intent = movement_target.movement_intent;
+                update_runner_movement_target(
+                    &mut home[idx],
+                    support_target,
+                    Some("recover_shape"),
+                );
             }
-            move_runner_player(&mut home[idx], config);
+            move_runner_player(&mut home[idx], state.home_plan_signals, config);
+            if config.trace_detail == "off" {
+                home_attack_team_context.update_player(idx, &home[idx]);
+            }
         }
         for idx in 0..away.len() {
             if away[idx].state == "stunned" {
                 tick_player_stun(&mut away[idx]);
+                continue;
+            }
+            if flight.intended_receiver_idx == Some(idx) {
+                move_runner_player_to_local_task(&mut away[idx], target_pos, "attack_run", config);
                 continue;
             }
             if away[idx].position == "GK" {
@@ -7741,28 +18146,28 @@ fn move_flight_players(
                     !home_attacking_right,
                     config,
                 );
-                move_runner_player(&mut away[idx], config);
+                move_runner_player(&mut away[idx], state.away_plan_signals, config);
                 continue;
             }
             if distance(away[idx].pos, target_pos) < race_radius * 1.25 {
-                let attackers = home.to_vec();
-                let active = {
-                    let mut indices = vec![false; away.len()];
-                    indices[idx] = true;
-                    indices
-                };
+                let active = runner_single_active_indices(idx, away.len());
                 let (_, _, _) = apply_off_ball_defense_choices(
                     away,
-                    &attackers,
+                    home,
                     target_pos,
                     !home_attacking_right,
                     None,
                     0,
-                    Some(&active),
+                    0,
+                    0.0,
+                    state.away_plan_signals,
+                    Some(&active[..away.len()]),
                     config,
                     rng,
+                    Some(&mut state.fixed_defense_arena),
                     &mut state.trace_decisions,
                     tick,
+                    false,
                     false,
                 );
             } else {
@@ -7774,16 +18179,9 @@ fn move_flight_players(
                     config.pitch_length,
                     config.pitch_width,
                 );
-                let movement_target = player_set_movement_target(&PlayerSetMovementTargetInput {
-                    current_target: away[idx].target_pos,
-                    requested_target: support_target,
-                    current_intent: away[idx].movement_intent.as_str(),
-                    requested_intent: Some("defend_shape"),
-                });
-                away[idx].target_pos = movement_target.target_pos;
-                away[idx].movement_intent = movement_target.movement_intent;
+                update_runner_movement_target(&mut away[idx], support_target, Some("defend_shape"));
             }
-            move_runner_player(&mut away[idx], config);
+            move_runner_player(&mut away[idx], state.away_plan_signals, config);
         }
     } else {
         apply_team_shape_targets(
@@ -7792,9 +18190,11 @@ fn move_flight_players(
             target_pos,
             !home_attacking_right,
             phase_name(state.away_phase_code),
+            state.away_plan_signals,
             "recover_shape",
             None,
             config,
+            &mut state.team_shape_arena,
         );
         apply_team_shape_targets(
             home,
@@ -7802,13 +18202,31 @@ fn move_flight_players(
             target_pos,
             home_attacking_right,
             phase_name(state.home_phase_code),
+            state.home_plan_signals,
             "defend_shape",
             None,
             config,
+            &mut state.team_shape_arena,
         );
+        let away_attack_opponents =
+            runner_off_ball_attack_opponent_context(home, !home_attacking_right, config);
+        let mut away_attack_team_context = RunnerOffBallAttackTeamContext::new();
+        if config.trace_detail == "off" {
+            away_attack_team_context.refresh(away);
+        }
         for idx in 0..away.len() {
             if away[idx].state == "stunned" {
                 tick_player_stun(&mut away[idx]);
+                if config.trace_detail == "off" {
+                    away_attack_team_context.update_player(idx, &away[idx]);
+                }
+                continue;
+            }
+            if flight.intended_receiver_idx == Some(idx) {
+                move_runner_player_to_local_task(&mut away[idx], target_pos, "attack_run", config);
+                if config.trace_detail == "off" {
+                    away_attack_team_context.update_player(idx, &away[idx]);
+                }
                 continue;
             }
             if away[idx].position == "GK" {
@@ -7818,27 +18236,27 @@ fn move_flight_players(
                     !home_attacking_right,
                     config,
                 );
-                move_runner_player(&mut away[idx], config);
+                move_runner_player(&mut away[idx], state.away_plan_signals, config);
+                if config.trace_detail == "off" {
+                    away_attack_team_context.update_player(idx, &away[idx]);
+                }
                 continue;
             }
             let dist_to_target = distance(away[idx].pos, target_pos);
             if idx != flight.passer_idx && dist_to_target < race_radius * 1.35 {
-                let opponents = home.to_vec();
-                let active = {
-                    let mut indices = vec![false; away.len()];
-                    indices[idx] = true;
-                    indices
-                };
+                let active = runner_single_active_indices(idx, away.len());
                 let _ = apply_off_ball_attack_choices(
                     away,
-                    &opponents,
+                    home,
                     state,
                     tick,
                     false,
                     target_pos,
                     !home_attacking_right,
                     None,
-                    Some(&active),
+                    Some(&active[..away.len()]),
+                    Some(away_attack_opponents),
+                    (config.trace_detail == "off").then_some(&mut away_attack_team_context),
                     config,
                     rng,
                 );
@@ -7851,20 +18269,24 @@ fn move_flight_players(
                     config.pitch_length,
                     config.pitch_width,
                 );
-                let movement_target = player_set_movement_target(&PlayerSetMovementTargetInput {
-                    current_target: away[idx].target_pos,
-                    requested_target: support_target,
-                    current_intent: away[idx].movement_intent.as_str(),
-                    requested_intent: Some("recover_shape"),
-                });
-                away[idx].target_pos = movement_target.target_pos;
-                away[idx].movement_intent = movement_target.movement_intent;
+                update_runner_movement_target(
+                    &mut away[idx],
+                    support_target,
+                    Some("recover_shape"),
+                );
             }
-            move_runner_player(&mut away[idx], config);
+            move_runner_player(&mut away[idx], state.away_plan_signals, config);
+            if config.trace_detail == "off" {
+                away_attack_team_context.update_player(idx, &away[idx]);
+            }
         }
         for idx in 0..home.len() {
             if home[idx].state == "stunned" {
                 tick_player_stun(&mut home[idx]);
+                continue;
+            }
+            if flight.intended_receiver_idx == Some(idx) {
+                move_runner_player_to_local_task(&mut home[idx], target_pos, "attack_run", config);
                 continue;
             }
             if home[idx].position == "GK" {
@@ -7874,29 +18296,29 @@ fn move_flight_players(
                     home_attacking_right,
                     config,
                 );
-                move_runner_player(&mut home[idx], config);
+                move_runner_player(&mut home[idx], state.home_plan_signals, config);
                 continue;
             }
             if distance(home[idx].pos, target_pos) < race_radius * 1.25 {
-                let attackers = away.to_vec();
-                let active = {
-                    let mut indices = vec![false; home.len()];
-                    indices[idx] = true;
-                    indices
-                };
+                let active = runner_single_active_indices(idx, home.len());
                 let (_, _, _) = apply_off_ball_defense_choices(
                     home,
-                    &attackers,
+                    away,
                     target_pos,
                     home_attacking_right,
                     None,
                     0,
-                    Some(&active),
+                    0,
+                    0.0,
+                    state.home_plan_signals,
+                    Some(&active[..home.len()]),
                     config,
                     rng,
+                    Some(&mut state.fixed_defense_arena),
                     &mut state.trace_decisions,
                     tick,
                     true,
+                    false,
                 );
             } else {
                 let support_target = pitch_clamp(
@@ -7907,16 +18329,9 @@ fn move_flight_players(
                     config.pitch_length,
                     config.pitch_width,
                 );
-                let movement_target = player_set_movement_target(&PlayerSetMovementTargetInput {
-                    current_target: home[idx].target_pos,
-                    requested_target: support_target,
-                    current_intent: home[idx].movement_intent.as_str(),
-                    requested_intent: Some("defend_shape"),
-                });
-                home[idx].target_pos = movement_target.target_pos;
-                home[idx].movement_intent = movement_target.movement_intent;
+                update_runner_movement_target(&mut home[idx], support_target, Some("defend_shape"));
             }
-            move_runner_player(&mut home[idx], config);
+            move_runner_player(&mut home[idx], state.home_plan_signals, config);
         }
     }
 }
@@ -7926,10 +18341,11 @@ fn apply_kickoff(
     home_attacking_right: bool,
     home: &mut [RunnerPlayer],
     away: &mut [RunnerPlayer],
-    pitch_length: f64,
-    pitch_width: f64,
+    config: &RunnerRuntimeConfig,
     state: Option<&mut RunnerMatchState>,
 ) -> (usize, &'static str, (f64, f64)) {
+    let pitch_length = config.pitch_length;
+    let pitch_width = config.pitch_width;
     let center = (pitch_length / 2.0, pitch_width / 2.0);
     let mut inputs = Vec::with_capacity(home.len() + away.len());
     for (idx, player) in home.iter().enumerate() {
@@ -7992,10 +18408,20 @@ fn apply_kickoff(
         player.tactical_anchor = center;
     }
     if let Some(state) = state {
-        give_ball_to_player(state, home, away, idx, team_home, center, None);
+        give_ball_to_player(
+            state,
+            home,
+            away,
+            idx,
+            team_home,
+            center,
+            None,
+            home_attacking_right,
+            config,
+        );
     } else if team_home {
         if let Some(player) = home.get_mut(idx) {
-            player.state = "on_ball".to_string();
+            update_runner_text(&mut player.state, "on_ball");
             player.hold_ticks = 0;
             player.possession_ticks = 0;
             player.consecutive_carries = 0;
@@ -8003,7 +18429,7 @@ fn apply_kickoff(
             clear_player_goal(player);
         }
     } else if let Some(player) = away.get_mut(idx) {
-        player.state = "on_ball".to_string();
+        update_runner_text(&mut player.state, "on_ball");
         player.hold_ticks = 0;
         player.possession_ticks = 0;
         player.consecutive_carries = 0;
@@ -8014,7 +18440,7 @@ fn apply_kickoff(
 }
 
 fn record_half_frames(
-    frames: &mut Vec<serde_json::Value>,
+    frames: &mut Vec<RunnerReplayEntry>,
     state: &mut RunnerMatchState,
     start_tick: i32,
     end_tick: i32,
@@ -8026,6 +18452,7 @@ fn record_half_frames(
     rng: &mut RunnerRng,
 ) {
     let interval = config.frame_interval.max(1);
+    let mut held_tick_arena = RunnerHeldTickArena::new();
     for tick in start_tick..end_tick {
         tick_match(
             state,
@@ -8035,15 +18462,18 @@ fn record_half_frames(
             away,
             config,
             home_attacking_right,
+            &mut held_tick_arena,
             rng,
         );
-        frames.append(&mut state.pending_replay_frames);
+        frames.extend(
+            state
+                .pending_replay_frames
+                .drain(..)
+                .map(RunnerReplayEntry::Frame),
+        );
         if (tick - start_tick) % interval == 0 {
-            let pending_ball_flight = state
-                .pending_ball_flight
-                .take()
-                .unwrap_or(serde_json::Value::Null);
-            frames.push(frame(
+            let pending_ball_flight = state.pending_ball_flight.take();
+            frames.push(RunnerReplayEntry::Frame(frame(
                 tick,
                 config.tick_duration,
                 half,
@@ -8060,7 +18490,7 @@ fn record_half_frames(
                 pending_ball_flight,
                 None,
                 None,
-            ));
+            )));
         }
         if tick % 10 == 0 {
             sample_player_positions(home);
@@ -8077,12 +18507,27 @@ fn possession_pct(home_ticks: i32, total_ticks: i32) -> f64 {
     }
 }
 
+fn match_clock_payload(clock: MatchClock) -> serde_json::Value {
+    let snapshot = clock.snapshot();
+    json!({
+        "match_seconds": round_one(snapshot.match_seconds),
+        "active_play_seconds": round_one(snapshot.active_play_seconds),
+        "dead_ball_seconds": round_one(snapshot.dead_ball_seconds),
+        "active_play_ratio": round_two(snapshot.active_play_ratio),
+        "match_ticks": snapshot.match_ticks,
+        "active_play_ticks": snapshot.active_play_ticks,
+        "dead_ball_ticks": snapshot.dead_ball_ticks,
+    })
+}
+
 fn choose_held_action(
     holder_idx: usize,
-    holder: &mut RunnerPlayer,
+    holder: &RunnerPlayer,
+    goal_state: &mut RunnerHeldGoalState,
     holder_home: bool,
     teammates: &[RunnerPlayer],
     opponents: &[RunnerPlayer],
+    contest_defenders: &[ShotContestDefender],
     config: &RunnerRuntimeConfig,
     home_attacking_right: bool,
     forced_action_override: Option<&str>,
@@ -8109,6 +18554,7 @@ fn choose_held_action(
                             .unwrap_or(teammates[receiver_idx].pos),
                         is_long: false,
                         lane_risk: 0.0,
+                        retention_probability: 1.0,
                     };
                 }
             }
@@ -8125,18 +18571,22 @@ fn choose_held_action(
                 }
             }
             "shot" => {
-                if let Some(shot) = build_shot_candidate(
+                return build_shot_candidate(
                     holder_idx,
                     holder,
                     holder_home,
+                    state.ball.control,
                     teammates,
                     opponents,
+                    contest_defenders,
                     runner_state_value(
                         holder_idx,
                         holder,
                         holder_home,
+                        state.ball.control,
                         teammates,
                         opponents,
+                        contest_defenders,
                         attacking_right,
                         tick,
                         &state.shot_quality_cache,
@@ -8146,9 +18596,8 @@ fn choose_held_action(
                     tick,
                     &state.shot_quality_cache,
                     config,
-                ) {
-                    return shot.action;
-                }
+                )
+                .action;
             }
             _ => {}
         }
@@ -8156,8 +18605,10 @@ fn choose_held_action(
     let selected = choose_default_held_action(
         holder_idx,
         holder,
+        goal_state,
         teammates,
         opponents,
+        contest_defenders,
         holder_home,
         config,
         home_attacking_right,
@@ -8168,6 +18619,135 @@ fn choose_held_action(
     selected
 }
 
+fn execute_runner_control_action(
+    state: &mut RunnerMatchState,
+    tick: i32,
+    holder_idx: usize,
+    holder_home: bool,
+    action_is_continuation: bool,
+    action_name: &'static str,
+    opportunity_target: Option<(f64, f64)>,
+    reorient_target: Option<(f64, f64)>,
+    home: &mut [RunnerPlayer],
+    away: &mut [RunnerPlayer],
+    opponents: &[ExecutionOpponent],
+    attacking_right: bool,
+    config: &RunnerRuntimeConfig,
+    rng: &mut RunnerRng,
+) {
+    let (hold, control_heading, hold_ticks) = {
+        let holder = if holder_home {
+            home.get_mut(holder_idx)
+        } else {
+            away.get_mut(holder_idx)
+        };
+        let Some(holder) = holder else { return };
+        holder.hold_ticks += 1;
+        if action_name == "hold" && !action_is_continuation {
+            holder.holds += 1;
+        }
+        holder.consecutive_carries = 0;
+        let hold_error_roll = rng.random();
+        let loose_rolls = preview_randoms::<2>(rng);
+        let hold = hold_phase_plan(&HoldPhasePlanInput {
+            holder_pos: holder.pos,
+            velocity: holder.velocity,
+            speed_ability: holder.speed.round() as i32,
+            dribbling: holder.dribbling,
+            attacking_right,
+            pitch_length: config.pitch_length,
+            pitch_width: config.pitch_width,
+            player_max_speed: config.player_max_speed,
+            player_min_speed: config.player_min_speed,
+            carry_error_divisor: config.carry_error_divisor,
+            opponents,
+            opportunity_target,
+            error_roll: hold_error_roll,
+            loose_x_roll: loose_rolls[0],
+            loose_y_roll: loose_rolls[1],
+        });
+        holder.distance_covered += hold.distance_covered;
+        holder.pos = hold.new_pos;
+        holder.velocity = hold.velocity;
+        let control_heading = hold.facing_direction.unwrap_or(holder.facing_direction);
+        holder.facing_direction = control_heading;
+        if hold.is_error {
+            holder.turnovers += 1;
+            update_runner_text(&mut holder.state, "off_ball");
+        }
+        (hold, control_heading, holder.hold_ticks)
+    };
+    if hold.is_error {
+        advance_randoms(rng, 2);
+        set_contested_and_clear_goals(state, home, away, hold.loose_pos, (0.0, 0.0));
+        trace_entry!(
+            state,
+            json!({
+                "tick": tick,
+                "type": "event",
+                "event": "error",
+                "error_type": if action_name == "reorient" { "control_reorient" } else { "shield" },
+                "player": if holder_home {
+                    runner_player_name(home, holder_idx)
+                } else {
+                    runner_player_name(away, holder_idx)
+                }
+            })
+        );
+        return;
+    }
+    state.ball.position = hold.new_pos;
+    trace_entry!(
+        state,
+        json!({
+            "tick": tick,
+            "type": "action",
+            "team": if holder_home { "home" } else { "away" },
+            "player": if holder_home {
+                runner_player_name(home, holder_idx)
+            } else {
+                runner_player_name(away, holder_idx)
+            },
+            "action": action_name,
+            "phase": if action_is_continuation { "continue" } else { "start" },
+            "hold_ticks": hold_ticks,
+            "pos": [round_one(hold.new_pos.0), round_one(hold.new_pos.1)],
+            "opportunity_target": opportunity_target.map(|target| json!([target.0, target.1])).unwrap_or(serde_json::Value::Null),
+            "facing_target": reorient_target.map(|target| json!([target.0, target.1])).unwrap_or(serde_json::Value::Null),
+            "pressure": hold.trace_pressure,
+            "nearest_def": hold.trace_nearest_dist.map(|value| json!(value)).unwrap_or(serde_json::Value::Null)
+        })
+    );
+    let (controlling_players, defending_players) = if holder_home {
+        (&*home, &*away)
+    } else {
+        (&*away, &*home)
+    };
+    state.ball.control = runner_live_control_transition(
+        state.ball.control,
+        holder_idx,
+        hold.new_pos,
+        controlling_players,
+        defending_players,
+        attacking_right,
+        control_heading,
+        1.0,
+        hold.pressure.clamp(0.0, 1.0),
+        1,
+        hold.distance_covered,
+        reorient_target.map(|target| angle_between_points(hold.new_pos, target)),
+        config.pitch_length,
+        config.pitch_width,
+    );
+    if let Some(holder) = if holder_home {
+        home.get_mut(holder_idx)
+    } else {
+        away.get_mut(holder_idx)
+    } {
+        holder.facing_direction = state.ball.control.facing_direction;
+    }
+}
+
 fn tick_match(
     state: &mut RunnerMatchState,
     tick: i32,
@@ -8176,16 +18756,23 @@ fn tick_match(
     away: &mut [RunnerPlayer],
     config: &RunnerRuntimeConfig,
     home_attacking_right: bool,
+    held_tick_arena: &mut RunnerHeldTickArena,
     rng: &mut RunnerRng,
 ) {
-    state.shot_quality_cache.borrow_mut().clear();
     let state_before = state.ball.state;
+    let clock_phase = if state_before == RunnerBallState::Dead {
+        MatchClockPhase::DeadBall
+    } else {
+        MatchClockPhase::ActivePlay
+    };
+    state.match_clock.advance(clock_phase, config.tick_duration);
     push_rng_trace(state, tick, "tick_start", rng);
     if matches!(
         state.ball.state,
         RunnerBallState::Held | RunnerBallState::Contested
     ) {
         update_team_phases(state, config);
+        update_team_plans(state, home, away, home_attacking_right, config);
     }
     let mut held_attack_choices = 0;
     let mut held_defense_choices = 0;
@@ -8215,93 +18802,139 @@ fn tick_match(
                 );
                 push_rng_trace(state, tick, "after_attack_targets", rng);
                 held_attack_choices = attack_choices;
-                let holder_snapshot = if holder_home {
-                    home.get(holder_idx).cloned()
-                } else {
-                    away.get(holder_idx).cloned()
+                let (defense_choices, defender_phase1_inputs) = {
+                    push_rng_trace(state, tick, "before_defense_targets", rng);
+                    update_held_tick_defense_targets(
+                        home,
+                        away,
+                        state,
+                        config,
+                        home_attacking_right,
+                        tick,
+                        rng,
+                    )
                 };
-                if let Some(holder_snapshot) = holder_snapshot {
-                    let teammates_snapshot = if holder_home {
-                        home.to_vec()
+                push_rng_trace(state, tick, "after_defense_targets", rng);
+                held_defense_choices = defense_choices;
+                let contest_defender_count = shot_contest_defenders_into(
+                    &defender_phase1_inputs,
+                    config.tackle_range,
+                    &mut held_tick_arena.contest_defenders,
+                );
+                let contest_defenders =
+                    &held_tick_arena.contest_defenders[..contest_defender_count];
+                let holder = if holder_home {
+                    home.get(holder_idx)
+                } else {
+                    away.get(holder_idx)
+                };
+                if let Some(holder) = holder {
+                    let (teammates, opponents_snapshot) = if holder_home {
+                        (&*home, &*away)
                     } else {
-                        away.to_vec()
+                        (&*away, &*home)
                     };
-                    let opponents_snapshot = if holder_home {
-                        away.to_vec()
-                    } else {
-                        home.to_vec()
-                    };
-                    let opponents = execution_opponents(&opponents_snapshot);
+                    let opponent_count =
+                        execution_opponents_into(
+                            opponents_snapshot,
+                            &mut held_tick_arena.execution_opponents,
+                        );
+                    let opponents = &held_tick_arena.execution_opponents[..opponent_count];
                     let attacking_right = attacking_right_for(holder_home, home_attacking_right);
-                    let forced_action_override = config
-                        .runner_forced_actions
-                        .get(state.held_action_cursor)
-                        .map(|value| value.as_str())
-                        .filter(|value| !value.is_empty() && *value != "-");
-                    state.held_action_cursor += 1;
-                    push_rng_trace(state, tick, "before_holder_choice", rng);
-                    let held_action = {
-                        let holder = if holder_home {
-                            home.get_mut(holder_idx)
-                        } else {
-                            away.get_mut(holder_idx)
-                        };
-                        let Some(holder) = holder else { return };
-                        choose_held_action(
+                    let holder_pos = holder.pos;
+                    let continuing_action = continuing_held_action(state, holder_pos);
+                    let action_is_continuation = continuing_action.is_some();
+                    let held_action = if let Some(action) = continuing_action {
+                        action
+                    } else {
+                        let forced_action_override = config
+                            .runner_forced_actions
+                            .get(state.held_action_cursor)
+                            .map(|value| value.as_str())
+                            .filter(|value| !value.is_empty() && *value != "-");
+                        let action_is_forced = forced_action_override.is_some()
+                            || config.runner_forced_action.is_some();
+                        state.held_action_cursor += 1;
+                        push_rng_trace(state, tick, "before_holder_choice", rng);
+                        let mut decision_goal_state = RunnerHeldGoalState::from_player(holder);
+                        let action = choose_held_action(
                             holder_idx,
                             holder,
+                            &mut decision_goal_state,
                             holder_home,
-                            &teammates_snapshot,
-                            &opponents_snapshot,
+                            teammates,
+                            opponents_snapshot,
+                            contest_defenders,
                             config,
                             home_attacking_right,
                             forced_action_override,
                             state,
                             tick,
                             rng,
-                        )
+                        );
+                        push_rng_trace(state, tick, "after_holder_choice", rng);
+                        if !action_is_forced {
+                            let plan_signals = if holder_home {
+                                state.home_plan_signals
+                            } else {
+                                state.away_plan_signals
+                            };
+                            let opportunity = match action {
+                                RunnerHeldAction::Hold { .. } => (plan_signals.recycle_bias
+                                    * (0.55 + 0.45 * plan_signals.switch_bias))
+                                    .clamp(0.0, 1.0),
+                                _ => 0.0,
+                            };
+                            start_action_commitment(
+                                state,
+                                action,
+                                holder_pos,
+                                plan_signals,
+                                state.held_decision_arena.scratch.local_pressure,
+                                opportunity,
+                                config,
+                            );
+                        }
+                        if holder_home {
+                            if let Some(live_holder) = home.get_mut(holder_idx) {
+                                decision_goal_state.apply_to_player(live_holder);
+                            }
+                        } else if let Some(live_holder) = away.get_mut(holder_idx) {
+                            decision_goal_state.apply_to_player(live_holder);
+                        }
+                        action
                     };
-                    push_rng_trace(state, tick, "after_holder_choice", rng);
-                    let (defense_choices, defender_phase1_inputs) = {
-                        push_rng_trace(state, tick, "before_defense_targets", rng);
-                        update_held_tick_defense_targets(
-                            home,
-                            away,
-                            state,
-                            config,
-                            home_attacking_right,
-                            tick,
-                            rng,
-                        )
-                    };
-                    push_rng_trace(state, tick, "after_defense_targets", rng);
-                    held_defense_choices = defense_choices;
                     let holder_action_type = runner_action_name(held_action);
                     let mut duel_defender_idx: Option<usize> = None;
                     let mut interception_defender_idx: Option<usize> = None;
-                    let mut interception_distance = 0.0;
                     match held_action {
                         RunnerHeldAction::Carry { target } => {
                             let duel = detect_duel(&DuelDetectionInput {
-                                holder_pos: holder_snapshot.pos,
+                                holder_pos,
                                 holder_action: "carry",
                                 carry_target: target,
+                                carrier_step_distance: config.carrier_speed,
                                 defenders: &defender_phase1_inputs,
                                 tackle_range: config.tackle_range,
                             });
-                            duel_defender_idx = duel.defender_index;
+                            if duel
+                                .defender_index
+                                .is_some_and(|_| rng.random() < duel.contact_probability)
+                            {
+                                duel_defender_idx = duel.defender_index;
+                            }
                         }
                         RunnerHeldAction::Pass { target, .. } => {
                             let interception = detect_interception(&InterceptionDetectionInput {
-                                pass_origin: holder_snapshot.pos,
+                                pass_origin: holder_pos,
                                 pass_target: target,
                                 defenders: &defender_phase1_inputs,
                                 interception_reach: config.interception_reach,
                             });
                             interception_defender_idx = interception.defender_index;
-                            interception_distance = interception.distance;
                         }
-                        RunnerHeldAction::Hold { .. }
+                        RunnerHeldAction::Reorient { .. }
+                        | RunnerHeldAction::Hold { .. }
                         | RunnerHeldAction::Clear { .. }
                         | RunnerHeldAction::Shoot { .. } => {}
                     }
@@ -8309,7 +18942,7 @@ fn tick_match(
                         track_runner_pressures(
                             tick,
                             away,
-                            holder_snapshot.pos,
+                            holder_pos,
                             holder_action_type,
                             &defender_phase1_inputs,
                             duel_defender_idx.is_some(),
@@ -8320,7 +18953,7 @@ fn tick_match(
                         track_runner_pressures(
                             tick,
                             home,
-                            holder_snapshot.pos,
+                            holder_pos,
                             holder_action_type,
                             &defender_phase1_inputs,
                             duel_defender_idx.is_some(),
@@ -8331,87 +18964,40 @@ fn tick_match(
                     'held_action_dispatch: {
                         match held_action {
                             RunnerHeldAction::Hold { opportunity_target } => {
-                                let holder = if holder_home {
-                                    home.get_mut(holder_idx)
-                                } else {
-                                    away.get_mut(holder_idx)
-                                };
-                                let Some(holder) = holder else { return };
-                                holder.hold_ticks += 1;
-                                holder.holds += 1;
-                                holder.consecutive_carries = 0;
-                                let hold_error_roll = rng.random();
-                                let hold = hold_phase_plan(&HoldPhasePlanInput {
-                                    holder_pos: holder.pos,
-                                    velocity: holder.velocity,
-                                    speed_ability: holder.speed.round() as i32,
-                                    dribbling: holder.dribbling,
-                                    attacking_right,
-                                    pitch_length: config.pitch_length,
-                                    pitch_width: config.pitch_width,
-                                    player_max_speed: config.player_max_speed,
-                                    player_min_speed: config.player_min_speed,
-                                    carry_error_divisor: config.carry_error_divisor,
-                                    opponents: &opponents,
+                                execute_runner_control_action(
+                                    state,
+                                    tick,
+                                    holder_idx,
+                                    holder_home,
+                                    action_is_continuation,
+                                    "hold",
                                     opportunity_target,
-                                    error_roll: hold_error_roll,
-                                    loose_x_roll: 0.5,
-                                    loose_y_roll: 0.5,
-                                });
-                                if hold.is_error {
-                                    holder.distance_covered += hold.distance_covered;
-                                    holder.pos = hold.new_pos;
-                                    holder.velocity = hold.velocity;
-                                    if let Some(facing) = hold.facing_direction {
-                                        holder.facing_direction = facing;
-                                    }
-                                    holder.turnovers += 1;
-                                    holder.state = "off_ball".to_string();
-                                    let player_name = holder.name.clone();
-                                    let loose_pos = pitch_clamp(
-                                        (
-                                            hold.new_pos.0 + rng.uniform(-2.0, 2.0),
-                                            hold.new_pos.1 + rng.uniform(-2.0, 2.0),
-                                        ),
-                                        config.pitch_length,
-                                        config.pitch_width,
-                                    );
-                                    let _ = holder;
-                                    set_contested_and_clear_goals(
-                                        state,
-                                        home,
-                                        away,
-                                        loose_pos,
-                                        (0.0, 0.0),
-                                    );
-                                    state.trace_entries.push(json!({
-                                        "tick": tick,
-                                        "type": "event",
-                                        "event": "error",
-                                        "error_type": "shield",
-                                        "player": player_name
-                                    }));
-                                    break 'held_action_dispatch;
-                                }
-                                holder.distance_covered += hold.distance_covered;
-                                holder.pos = hold.new_pos;
-                                holder.velocity = hold.velocity;
-                                if let Some(facing) = hold.facing_direction {
-                                    holder.facing_direction = facing;
-                                }
-                                state.ball.position = hold.new_pos;
-                                state.trace_entries.push(json!({
-                                "tick": tick,
-                                "type": "action",
-                                "team": if holder_home { "home" } else { "away" },
-                                "player": holder.name,
-                                "action": "hold",
-                                "hold_ticks": holder.hold_ticks,
-                                "pos": [round_one(holder.pos.0), round_one(holder.pos.1)],
-                                "opportunity_target": opportunity_target.map(|target| json!([target.0, target.1])).unwrap_or(serde_json::Value::Null),
-                                "pressure": hold.trace_pressure,
-                                "nearest_def": hold.trace_nearest_dist.map(|value| json!(value)).unwrap_or(serde_json::Value::Null)
-                            }));
+                                    None,
+                                    home,
+                                    away,
+                                    &opponents,
+                                    attacking_right,
+                                    config,
+                                    rng,
+                                );
+                            }
+                            RunnerHeldAction::Reorient { target } => {
+                                execute_runner_control_action(
+                                    state,
+                                    tick,
+                                    holder_idx,
+                                    holder_home,
+                                    action_is_continuation,
+                                    "reorient",
+                                    None,
+                                    Some(target),
+                                    home,
+                                    away,
+                                    &opponents,
+                                    attacking_right,
+                                    config,
+                                    rng,
+                                );
                             }
                             RunnerHeldAction::Carry { target } => 'carry_action: {
                                 if let Some(defender_idx) = duel_defender_idx {
@@ -8424,6 +19010,7 @@ fn tick_match(
                                         defender_idx,
                                         home,
                                         away,
+                                        home_attacking_right,
                                         config,
                                         rng,
                                     );
@@ -8438,7 +19025,9 @@ fn tick_match(
                                 };
                                 let Some(holder) = holder else { return };
                                 let holder_identity = event_player(Some(holder));
-                                holder.carries_attempted += 1;
+                                if !action_is_continuation {
+                                    holder.carries_attempted += 1;
+                                }
                                 holder.hold_ticks = 0;
                                 let old_pos = holder.pos;
                                 let carry_error_roll = rng.random();
@@ -8457,6 +19046,7 @@ fn tick_match(
                                     carrier_speed: config.carrier_speed,
                                     carry_error_divisor: config.carry_error_divisor,
                                     opponents: &opponents,
+                                    defender_responses: &defender_phase1_inputs,
                                     error_roll: carry_error_roll,
                                     loose_x_roll: 0.5,
                                     loose_y_roll: 0.5,
@@ -8470,7 +19060,7 @@ fn tick_match(
                                     holder.distance_covered += carry.distance_covered;
                                     holder.turnovers += 1;
                                     holder.consecutive_carries = 0;
-                                    holder.state = "off_ball".to_string();
+                                    update_runner_text(&mut holder.state, "off_ball");
                                     let player_name = holder.name.clone();
                                     let loose_pos = pitch_clamp(
                                         (
@@ -8488,13 +19078,90 @@ fn tick_match(
                                         loose_pos,
                                         (0.0, 0.0),
                                     );
-                                    state.trace_entries.push(json!({
-                                        "tick": tick,
-                                        "type": "event",
-                                        "event": "error",
-                                        "error_type": "carry",
-                                        "player": player_name
-                                    }));
+                                    trace_entry!(
+                                        state,
+                                        json!({
+                                            "tick": tick,
+                                            "type": "event",
+                                            "event": "error",
+                                            "error_type": "carry",
+                                            "player": player_name
+                                        })
+                                    );
+                                    break 'held_action_dispatch;
+                                }
+                                if let Some(boundary_crossing) = carry.boundary_crossing {
+                                    holder.pos = boundary_crossing.point;
+                                    holder.velocity = (0.0, 0.0);
+                                    holder.hold_ticks = 0;
+                                    holder.consecutive_carries = 0;
+                                    update_runner_text(&mut holder.state, "off_ball");
+                                    let player_name = holder.name.clone();
+                                    let boundary = boundary_crossing.kind;
+                                    let crossing = boundary_crossing.point;
+                                    let plan = out_of_bounds_plan(&OutOfBoundsPlanInput {
+                                        boundary,
+                                        boundary_point: crossing,
+                                        pitch_length: config.pitch_length,
+                                        pitch_width: config.pitch_width,
+                                        possession_team_home: holder_home,
+                                        flight_type_code: 0,
+                                        origin: old_pos,
+                                        attacking_right,
+                                        total_xg: 0.0,
+                                        logged_xg_sum: 0.0,
+                                        goal_kick_restart_ticks: config.goal_kick_restart_ticks,
+                                        throw_in_restart_ticks: config.throw_in_restart_ticks,
+                                    });
+                                    let holder_identity = event_player(Some(holder));
+                                    let _ = holder;
+                                    set_dead_ball_and_clear_goals(
+                                        state,
+                                        home,
+                                        away,
+                                        plan.reason.as_str(),
+                                        plan.restart_team_home,
+                                        plan.restart_ticks,
+                                        crossing,
+                                    );
+                                    trace_entry!(
+                                        state,
+                                        json!({
+                                            "tick": tick,
+                                            "type": "event",
+                                            "event": "out_of_bounds",
+                                            "source": "carry",
+                                            "player": player_name,
+                                            "boundary": match boundary {
+                                                crate::PitchBoundaryKind::GoalLine => "goal_line",
+                                                crate::PitchBoundaryKind::TouchLine => "touch_line",
+                                            },
+                                            "crossing": [round_one(crossing.0), round_one(crossing.1)],
+                                            "reason": plan.reason,
+                                            "restart_team": if plan.restart_team_home { "home" } else { "away" },
+                                            "restart_ticks": plan.restart_ticks
+                                        })
+                                    );
+                                    record_match_event(
+                                        state,
+                                        config,
+                                        MatchEventInput {
+                                            tick,
+                                            half,
+                                            possession_id: state.possession_id,
+                                            event_type: "carry",
+                                            team_home: holder_home,
+                                            player: holder_identity,
+                                            target_player: serde_json::Value::Null,
+                                            assist_player: serde_json::Value::Null,
+                                            outcome: "out_of_play",
+                                            xg: 0.0,
+                                            origin: Some(old_pos),
+                                            target: Some(crossing),
+                                            tags: EventTags::one(plan.reason.as_str()),
+                                            score_before: None,
+                                        },
+                                    );
                                     break 'held_action_dispatch;
                                 }
                                 holder.pos = carry.new_pos;
@@ -8503,8 +19170,10 @@ fn tick_match(
                                     holder.facing_direction = facing;
                                 }
                                 holder.distance_covered += carry.distance_covered;
-                                holder.carries_completed += 1;
-                                holder.consecutive_carries += 1;
+                                if !action_is_continuation {
+                                    holder.carries_completed += 1;
+                                    holder.consecutive_carries += 1;
+                                }
                                 let carry_stats = track_carry_stats(&CarryStatInput {
                                     old_pos,
                                     new_pos: carry.new_pos,
@@ -8512,12 +19181,15 @@ fn tick_match(
                                     pitch_length: config.pitch_length,
                                     pitch_width: config.pitch_width,
                                 });
-                                holder.progressive_carries += carry_stats.progressive_carries;
-                                holder.carries_into_final_third +=
-                                    carry_stats.carries_into_final_third;
-                                holder.carries_into_box += carry_stats.carries_into_box;
+                                if !action_is_continuation {
+                                    holder.progressive_carries += carry_stats.progressive_carries;
+                                    holder.carries_into_final_third +=
+                                        carry_stats.carries_into_final_third;
+                                    holder.carries_into_box += carry_stats.carries_into_box;
+                                }
                                 state.ball.position = carry.new_pos;
-                                let mut carry_tags = Vec::new();
+                                let control_heading = holder.facing_direction;
+                                let mut carry_tags = EventTags::empty();
                                 if carry_stats.progressive_carries > 0 {
                                     carry_tags.push("progressive");
                                 }
@@ -8527,36 +19199,69 @@ fn tick_match(
                                 if carry_stats.carries_into_box > 0 {
                                     carry_tags.push("into_box");
                                 }
-                                state.trace_entries.push(json!({
-                                    "tick": tick,
-                                    "type": "action",
-                                    "team": if holder_home { "home" } else { "away" },
-                                    "player": holder.name,
-                                    "action": "carry",
-                                    "from": [round_one(old_pos.0), round_one(old_pos.1)],
-                                    "target": [round_one(target.0), round_one(target.1)],
-                                    "pos": [round_one(holder.pos.0), round_one(holder.pos.1)],
-                                    "distance": round_one(carry.distance_covered)
-                                }));
-                                record_match_event(
+                                trace_entry!(
                                     state,
-                                    config,
-                                    MatchEventInput {
-                                        tick,
-                                        half,
-                                        possession_id: state.possession_id,
-                                        event_type: "carry",
-                                        team_home: holder_home,
-                                        player: holder_identity,
-                                        target_player: serde_json::Value::Null,
-                                        assist_player: serde_json::Value::Null,
-                                        outcome: "completed",
-                                        xg: 0.0,
-                                        origin: Some(old_pos),
-                                        target: Some(carry.new_pos),
-                                        tags: carry_tags,
-                                        score_before: None,
-                                    },
+                                    json!({
+                                        "tick": tick,
+                                        "type": "action",
+                                        "team": if holder_home { "home" } else { "away" },
+                                        "player": holder.name,
+                                        "action": "carry",
+                                        "phase": if action_is_continuation { "continue" } else { "start" },
+                                        "from": [round_one(old_pos.0), round_one(old_pos.1)],
+                                        "target": [round_one(target.0), round_one(target.1)],
+                                        "pos": [round_one(holder.pos.0), round_one(holder.pos.1)],
+                                        "distance": round_one(carry.distance_covered),
+                                        "containment_probability": round_two(carry.constrained_control_probability),
+                                        "containment_position": [
+                                            round_one(carry.constrained_control_position.0),
+                                            round_one(carry.constrained_control_position.1)
+                                        ]
+                                    })
+                                );
+                                if !action_is_continuation {
+                                    record_match_event(
+                                        state,
+                                        config,
+                                        MatchEventInput {
+                                            tick,
+                                            half,
+                                            possession_id: state.possession_id,
+                                            event_type: "carry",
+                                            team_home: holder_home,
+                                            player: holder_identity,
+                                            target_player: serde_json::Value::Null,
+                                            assist_player: serde_json::Value::Null,
+                                            outcome: "completed",
+                                            xg: 0.0,
+                                            origin: Some(old_pos),
+                                            target: Some(carry.new_pos),
+                                            tags: carry_tags,
+                                            score_before: None,
+                                        },
+                                    );
+                                }
+                                let _ = holder;
+                                let (controlling_players, defending_players) = if holder_home {
+                                    (&*home, &*away)
+                                } else {
+                                    (&*away, &*home)
+                                };
+                                state.ball.control = runner_live_control_transition(
+                                    state.ball.control,
+                                    holder_idx,
+                                    carry.new_pos,
+                                    controlling_players,
+                                    defending_players,
+                                    attacking_right,
+                                    control_heading,
+                                    1.0,
+                                    carry.contact_load,
+                                    1,
+                                    carry.distance_covered,
+                                    None,
+                                    config.pitch_length,
+                                    config.pitch_width,
                                 );
                             }
                             RunnerHeldAction::Pass {
@@ -8564,58 +19269,42 @@ fn tick_match(
                                 target,
                                 is_long,
                                 lane_risk,
+                                retention_probability,
                             } => {
-                                let interception_present = interception_defender_idx.is_some();
-                                let passer_name = holder_snapshot.name.clone();
-                                let passer_pos = holder_snapshot.pos;
-                                let passer_identity = event_player(Some(&holder_snapshot));
-                                let receiver_identity = if holder_home {
-                                    player_identity(home, receiver_idx)
+                                let passer = if holder_home {
+                                    home.get(holder_idx)
                                 } else {
-                                    player_identity(away, receiver_idx)
+                                    away.get(holder_idx)
                                 };
-                                let possession_id = state.possession_id;
+                                let Some(passer) = passer else {
+                                    break 'held_action_dispatch;
+                                };
+                                let passer_pos = passer.pos;
                                 let passing = if is_long {
-                                    holder_snapshot.long_passing
+                                    passer.long_passing
                                 } else {
-                                    holder_snapshot.short_passing
+                                    passer.short_passing
                                 };
-                                let interceptor_defence = interception_defender_idx
-                                    .and_then(|idx| {
-                                        if holder_home {
-                                            away.get(idx).map(|defender| defender.defence)
-                                        } else {
-                                            home.get(idx).map(|defender| defender.defence)
-                                        }
-                                    })
-                                    .unwrap_or(0.0);
                                 let intended_receiver_pos = if holder_home {
                                     home.get(receiver_idx).map(|receiver| receiver.pos)
                                 } else {
                                     away.get(receiver_idx).map(|receiver| receiver.pos)
                                 };
-                                let pass_randoms = preview_randoms::<5>(rng);
+                                let pass_randoms = preview_randoms::<3>(rng);
                                 let pass = pass_phase_plan(&PassPhasePlanInput {
                                     passer_pos,
                                     ideal_target: target,
                                     passing,
                                     is_long,
                                     lane_risk,
+                                    retention_probability,
+                                    retention_roll: pass_randoms[0],
                                     pitch_length: config.pitch_length,
                                     pitch_width: config.pitch_width,
                                     ball_pass_speed: config.ball_pass_speed,
                                     ball_long_pass_speed: config.ball_long_pass_speed,
-                                    pass_error_divisor: config.pass_error_divisor,
-                                    opponents: &opponents,
-                                    random_1: pass_randoms[0],
-                                    random_2: pass_randoms[1],
-                                    random_3: pass_randoms[2],
-                                    random_4: pass_randoms[3],
-                                    random_5: pass_randoms[4],
-                                    interception_present,
-                                    interceptor_defence,
-                                    interception_distance,
-                                    interception_reach: config.interception_reach,
+                                    random_1: pass_randoms[1],
+                                    random_2: pass_randoms[2],
                                     intended_receiver_pos,
                                 });
                                 advance_randoms(rng, pass.randoms_used);
@@ -8624,122 +19313,15 @@ fn tick_match(
                                         holder.passes_attempted += 1;
                                         holder.hold_ticks = 0;
                                         holder.consecutive_carries = 0;
-                                        holder.state = "off_ball".to_string();
+                                        update_runner_text(&mut holder.state, "off_ball");
                                         clear_player_goal(holder);
                                     }
                                 } else if let Some(holder) = away.get_mut(holder_idx) {
                                     holder.passes_attempted += 1;
                                     holder.hold_ticks = 0;
                                     holder.consecutive_carries = 0;
-                                    holder.state = "off_ball".to_string();
+                                    update_runner_text(&mut holder.state, "off_ball");
                                     clear_player_goal(holder);
-                                }
-                                if pass.outcome_code == 1 {
-                                    if holder_home {
-                                        if let Some(holder) = home.get_mut(holder_idx) {
-                                            holder.turnovers += 1;
-                                        }
-                                    } else if let Some(holder) = away.get_mut(holder_idx) {
-                                        holder.turnovers += 1;
-                                    }
-                                    set_contested_and_clear_goals(
-                                        state,
-                                        home,
-                                        away,
-                                        pass.stray_pos,
-                                        (0.0, 0.0),
-                                    );
-                                    state.trace_entries.push(json!({
-                                        "tick": tick,
-                                        "type": "event",
-                                        "event": "error",
-                                        "error_type": "pass_accuracy",
-                                        "player": passer_name
-                                    }));
-                                    record_match_event(
-                                        state,
-                                        config,
-                                        MatchEventInput {
-                                            tick,
-                                            half,
-                                            possession_id,
-                                            event_type: "pass",
-                                            team_home: holder_home,
-                                            player: passer_identity,
-                                            target_player: receiver_identity,
-                                            assist_player: serde_json::Value::Null,
-                                            outcome: "misplaced",
-                                            xg: 0.0,
-                                            origin: Some(passer_pos),
-                                            target: Some(pass.stray_pos),
-                                            tags: if is_long {
-                                                vec!["long"]
-                                            } else {
-                                                vec!["short"]
-                                            },
-                                            score_before: None,
-                                        },
-                                    );
-                                    break 'held_action_dispatch;
-                                }
-                                if pass.outcome_code == 2 {
-                                    let interceptor_idx = interception_defender_idx.unwrap_or(0);
-                                    let (interceptor_pos, interceptor_name) = if holder_home {
-                                        if let Some(interceptor) = away.get_mut(interceptor_idx) {
-                                            interceptor.interceptions += 1;
-                                            (interceptor.pos, interceptor.name.clone())
-                                        } else {
-                                            (pass.target, String::new())
-                                        }
-                                    } else if let Some(interceptor) = home.get_mut(interceptor_idx)
-                                    {
-                                        interceptor.interceptions += 1;
-                                        (interceptor.pos, interceptor.name.clone())
-                                    } else {
-                                        (pass.target, String::new())
-                                    };
-                                    give_ball_to_player(
-                                        state,
-                                        home,
-                                        away,
-                                        interceptor_idx,
-                                        !holder_home,
-                                        interceptor_pos,
-                                        None,
-                                    );
-                                    state.trace_entries.push(json!({
-                                        "tick": tick,
-                                        "type": "event",
-                                        "event": "interception",
-                                        "team": if holder_home { "away" } else { "home" },
-                                        "player": interceptor_name
-                                    }));
-                                    let interceptor_identity = if holder_home {
-                                        player_identity(away, interceptor_idx)
-                                    } else {
-                                        player_identity(home, interceptor_idx)
-                                    };
-                                    record_match_event(
-                                        state,
-                                        config,
-                                        MatchEventInput {
-                                            tick,
-                                            half,
-                                            possession_id,
-                                            event_type: "interception",
-                                            team_home: !holder_home,
-                                            player: interceptor_identity,
-                                            target_player: passer_identity,
-                                            assist_player: serde_json::Value::Null,
-                                            outcome: "won",
-                                            xg: 0.0,
-                                            origin: Some(passer_pos),
-                                            target: Some(interceptor_pos),
-                                            tags: vec!["pass_cut_out"],
-                                            score_before: None,
-                                        },
-                                    );
-                                    break 'held_action_dispatch;
                                 }
                                 state.ball.state = RunnerBallState::InFlight;
                                 state.ball.position = passer_pos;
@@ -8749,7 +19331,7 @@ fn tick_match(
                                 state.ball.contested_ticks = 0;
                                 state.last_passer_team_home = Some(holder_home);
                                 state.last_passer_idx = holder_idx as i32;
-                                let mut offside_indices = if holder_home {
+                                let mut offside_flags = if holder_home {
                                     flag_offside_indices(
                                         home,
                                         away,
@@ -8769,9 +19351,9 @@ fn tick_match(
                                     )
                                 };
                                 if config.runner_force_receiver_offside
-                                    && !offside_indices.contains(&receiver_idx)
+                                    && receiver_idx < RUNNER_TEAM_SIZE
                                 {
-                                    offside_indices.push(receiver_idx);
+                                    offside_flags[receiver_idx] = true;
                                 }
                                 state.ball.flight = Some(RunnerFlight {
                                     kind: RunnerFlightKind::Pass,
@@ -8782,7 +19364,7 @@ fn tick_match(
                                     passer_idx: holder_idx,
                                     passer_team_home: holder_home,
                                     intended_receiver_idx: Some(receiver_idx),
-                                    offside_indices,
+                                    offside_flags,
                                     last_passer_team_home: state.last_passer_team_home,
                                     last_passer_idx: state.last_passer_idx,
                                     on_target: false,
@@ -8791,21 +19373,34 @@ fn tick_match(
                                     gk_attributes: None,
                                     is_long,
                                     target_is_space: pass.target_kind_code == 1,
+                                    retention_probability: pass.retention_probability,
+                                    retention_roll: pass.retention_roll,
+                                    retained_possession: pass.retained_possession,
                                     possession_id: state.possession_id,
                                 });
                                 state.pending_ball_flight =
-                                    Some(replay_ball_flight(state.ball.flight.as_ref()));
-                                state.trace_entries.push(json!({
-                                "tick": tick,
-                                "type": "action",
-                                "team": if holder_home { "home" } else { "away" },
-                                "player": passer_name,
-                                "action": "pass",
-                                "target_player": receiver_idx,
-                                "target": [round_one(pass.target.0), round_one(pass.target.1)],
-                                "pass_type": if is_long { "long" } else { "short" },
-                                "target_kind": if pass.target_kind_code == 1 { "space" } else { "feet" }
-                            }));
+                                    replay_ball_flight(state.ball.flight.as_ref());
+                                trace_entry!(
+                                    state,
+                                    json!({
+                                        "tick": tick,
+                                        "type": "action",
+                                        "team": if holder_home { "home" } else { "away" },
+                                        "player": if holder_home {
+                                            runner_player_name(home, holder_idx)
+                                        } else {
+                                            runner_player_name(away, holder_idx)
+                                        },
+                                        "action": "pass",
+                                        "target_player": receiver_idx,
+                                        "target": [round_one(pass.target.0), round_one(pass.target.1)],
+                                        "pass_type": if is_long { "long" } else { "short" },
+                                        "target_kind": if pass.target_kind_code == 1 { "space" } else { "feet" },
+                                        "retention_probability": pass.retention_probability,
+                                        "retention_roll": pass.retention_roll,
+                                        "retained_possession": pass.retained_possession
+                                    })
+                                );
                             }
                             RunnerHeldAction::Clear { target } => {
                                 let holder = if holder_home {
@@ -8818,7 +19413,7 @@ fn tick_match(
                                 holder.passes_attempted += 1;
                                 holder.hold_ticks = 0;
                                 holder.consecutive_carries = 0;
-                                holder.state = "off_ball".to_string();
+                                update_runner_text(&mut holder.state, "off_ball");
                                 clear_player_goal(holder);
                                 let clear = clear_phase_plan(&ClearPhasePlanInput {
                                     clearer_pos: holder.pos,
@@ -8842,7 +19437,7 @@ fn tick_match(
                                     passer_idx: holder_idx,
                                     passer_team_home: holder_home,
                                     intended_receiver_idx: None,
-                                    offside_indices: Vec::new(),
+                                    offside_flags: [false; RUNNER_TEAM_SIZE],
                                     last_passer_team_home: state.last_passer_team_home,
                                     last_passer_idx: state.last_passer_idx,
                                     on_target: false,
@@ -8851,23 +19446,79 @@ fn tick_match(
                                     gk_attributes: None,
                                     is_long: true,
                                     target_is_space: true,
+                                    retention_probability: 0.0,
+                                    retention_roll: 1.0,
+                                    retained_possession: false,
                                     possession_id: state.possession_id,
                                 });
-                                state.trace_entries.push(json!({
-                                    "tick": tick,
-                                    "type": "action",
-                                    "team": if holder_home { "home" } else { "away" },
-                                    "player": holder.name,
-                                    "action": "clear",
-                                    "target": [round_one(clear.target.0), round_one(clear.target.1)]
-                                }));
+                                trace_entry!(
+                                    state,
+                                    json!({
+                                        "tick": tick,
+                                        "type": "action",
+                                        "team": if holder_home { "home" } else { "away" },
+                                        "player": holder.name,
+                                        "action": "clear",
+                                        "target": [round_one(clear.target.0), round_one(clear.target.1)]
+                                    })
+                                );
                             }
                             RunnerHeldAction::Shoot {
+                                target: _,
                                 xg,
                                 on_target_prob,
                                 gk_attributes,
+                                body_release_probability,
+                                release_probability,
+                                block_probability,
+                                blocker_idx,
+                                block_point,
                                 ..
                             } => {
+                                let (shooter_name, shot_origin) = if holder_home {
+                                    home.get(holder_idx)
+                                        .map(|holder| (holder.name.clone(), holder.pos))
+                                        .unwrap_or_else(|| (String::new(), state.ball.position))
+                                } else {
+                                    away.get(holder_idx)
+                                        .map(|holder| (holder.name.clone(), holder.pos))
+                                        .unwrap_or_else(|| (String::new(), state.ball.position))
+                                };
+                                let body_release_roll = rng.random();
+                                if body_release_roll >= body_release_probability {
+                                    trace_entry!(
+                                        state,
+                                        json!({
+                                            "tick": tick,
+                                            "type": "event",
+                                            "event": "shot_mishit",
+                                            "team": if holder_home { "home" } else { "away" },
+                                            "player": shooter_name,
+                                            "body_release_probability": round_two(body_release_probability),
+                                            "body_release_roll": round_two(body_release_roll),
+                                            "origin": [round_one(shot_origin.0), round_one(shot_origin.1)]
+                                        })
+                                    );
+                                    if let Some(holder) = if holder_home {
+                                        home.get_mut(holder_idx)
+                                    } else {
+                                        away.get_mut(holder_idx)
+                                    } {
+                                        holder.turnovers += 1;
+                                        holder.hold_ticks = 0;
+                                        holder.consecutive_carries = 0;
+                                        update_runner_text(&mut holder.state, "off_ball");
+                                        clear_player_goal(holder);
+                                    }
+                                    set_contested_and_clear_goals(
+                                        state,
+                                        home,
+                                        away,
+                                        shot_origin,
+                                        (0.0, 0.0),
+                                    );
+                                    break 'held_action_dispatch;
+                                }
                                 let shot_last_passer_team_home = state.last_passer_team_home;
                                 let shot_last_passer_idx = state.last_passer_idx;
                                 if state.last_passer_team_home == Some(holder_home)
@@ -8896,12 +19547,149 @@ fn tick_match(
                                 holder.xg += xg;
                                 holder.hold_ticks = 0;
                                 holder.consecutive_carries = 0;
-                                holder.state = "off_ball".to_string();
+                                update_runner_text(&mut holder.state, "off_ball");
                                 clear_player_goal(holder);
+                                let contest_roll = rng.random();
+                                let contest = resolve_shot_contest(
+                                    ShotContestEstimate {
+                                        body_release_probability: 1.0,
+                                        release_probability,
+                                        block_probability,
+                                        blocker_index: blocker_idx,
+                                        block_point,
+                                    },
+                                    contest_roll,
+                                );
+                                if contest.blocked {
+                                    let in_box = crate::physics::is_attacking_box_pos(
+                                        shot_origin,
+                                        attacking_right,
+                                        config.pitch_length,
+                                        config.pitch_width,
+                                    );
+                                    let shot_log = ShotLogEntryOutput {
+                                        x: round_one(shot_origin.0),
+                                        y: round_one(shot_origin.1),
+                                        xg,
+                                        in_box,
+                                        outcome: "blocked".to_string(),
+                                        target_x: Some(round_one(contest.block_point.0)),
+                                        target_y: Some(round_one(contest.block_point.1)),
+                                    };
+                                    let blocker_identity = contest
+                                        .blocker_index
+                                        .map(|idx| {
+                                            if holder_home {
+                                                player_identity(away, idx)
+                                            } else {
+                                                player_identity(home, idx)
+                                            }
+                                        })
+                                        .unwrap_or(serde_json::Value::Null);
+                                    if holder_home {
+                                        if let Some(blocker_idx) = contest.blocker_index {
+                                            if let Some(blocker) = away.get_mut(blocker_idx) {
+                                                blocker.blocks += 1;
+                                            }
+                                        }
+                                        if let Some(shooter) = home.get_mut(holder_idx) {
+                                            shooter.shot_log.push(shot_log_json(&shot_log));
+                                        }
+                                    } else {
+                                        if let Some(blocker_idx) = contest.blocker_index {
+                                            if let Some(blocker) = home.get_mut(blocker_idx) {
+                                                blocker.blocks += 1;
+                                            }
+                                        }
+                                        if let Some(shooter) = away.get_mut(holder_idx) {
+                                            shooter.shot_log.push(shot_log_json(&shot_log));
+                                        }
+                                    }
+                                    record_match_event(
+                                        state,
+                                        config,
+                                        MatchEventInput {
+                                            tick,
+                                            half,
+                                            possession_id: state.possession_id,
+                                            event_type: "shot",
+                                            team_home: holder_home,
+                                            player: if holder_home {
+                                                player_identity(home, holder_idx)
+                                            } else {
+                                                player_identity(away, holder_idx)
+                                            },
+                                            target_player: blocker_identity,
+                                            assist_player: serde_json::Value::Null,
+                                            outcome: "blocked",
+                                            xg,
+                                            origin: Some(shot_origin),
+                                            target: Some(contest.block_point),
+                                            tags: EventTags::from_slice(&[
+                                                if in_box { "in_box" } else { "outside_box" },
+                                                "blocked",
+                                            ]),
+                                            score_before: None,
+                                        },
+                                    );
+                                    set_contested_and_clear_goals(
+                                        state,
+                                        home,
+                                        away,
+                                        contest.block_point,
+                                        crate::physics::residual_ball_velocity(
+                                            shot_origin,
+                                            contest.block_point,
+                                            config.ball_shot_speed,
+                                            0.14,
+                                        ),
+                                    );
+                                    queue_replay_frame(
+                                        state,
+                                        tick,
+                                        half,
+                                        home,
+                                        away,
+                                        config,
+                                        Some(RunnerReplayBallFlight {
+                                            from: [
+                                                round_one(shot_origin.1),
+                                                round_one(shot_origin.0),
+                                            ],
+                                            to: [
+                                                round_one(contest.block_point.1),
+                                                round_one(contest.block_point.0),
+                                            ],
+                                            flight_type: "shot",
+                                            on_target: false,
+                                        }),
+                                        Some("BLOCKED"),
+                                        Some(450),
+                                        None,
+                                        None,
+                                    );
+                                    trace_entry!(
+                                        state,
+                                        json!({
+                                            "tick": tick,
+                                            "type": "event",
+                                            "event": "shot_blocked",
+                                            "team": if holder_home { "home" } else { "away" },
+                                            "player": shooter_name,
+                                            "blocker_idx": contest.blocker_index,
+                                            "block_probability": round_two(block_probability),
+                                            "release_probability": round_two(release_probability),
+                                            "contest_roll": round_two(contest_roll),
+                                            "origin": [round_one(shot_origin.0), round_one(shot_origin.1)],
+                                            "block_point": [round_one(contest.block_point.0), round_one(contest.block_point.1)],
+                                        })
+                                    );
+                                    break 'held_action_dispatch;
+                                }
                                 let shot_randoms = preview_randoms::<3>(rng);
                                 let shot = shot_phase_plan(&ShotPhasePlanInput {
-                                    shooter_name: holder.name.as_str(),
-                                    shooter_pos: holder.pos,
+                                    shooter_name: shooter_name.as_str(),
+                                    shooter_pos: shot_origin,
                                     explicit_xg: Some(xg),
                                     on_target_prob,
                                     goal_reward_constant: 1.0,
@@ -8919,21 +19707,21 @@ fn tick_match(
                                     holder.shots_on_target += 1;
                                 }
                                 state.ball.state = RunnerBallState::InFlight;
-                                state.ball.position = holder.pos;
+                                state.ball.position = shot_origin;
                                 state.ball.holder_idx = None;
                                 state.ball.holder_team_home = None;
                                 state.ball.loose_velocity = (0.0, 0.0);
                                 state.ball.contested_ticks = 0;
                                 state.ball.flight = Some(RunnerFlight {
                                     kind: RunnerFlightKind::Shot,
-                                    origin: holder.pos,
+                                    origin: shot_origin,
                                     target: shot.target,
                                     ticks_elapsed: 0,
                                     ticks_total: shot.ticks_needed,
                                     passer_idx: holder_idx,
                                     passer_team_home: holder_home,
                                     intended_receiver_idx: None,
-                                    offside_indices: Vec::new(),
+                                    offside_flags: [false; RUNNER_TEAM_SIZE],
                                     last_passer_team_home: shot_last_passer_team_home,
                                     last_passer_idx: shot_last_passer_idx,
                                     on_target: shot.on_target,
@@ -8942,23 +19730,53 @@ fn tick_match(
                                     gk_attributes: Some(gk_attributes),
                                     is_long: false,
                                     target_is_space: false,
+                                    retention_probability: 0.0,
+                                    retention_roll: 1.0,
+                                    retained_possession: false,
                                     possession_id: state.possession_id,
                                 });
                                 state.pending_ball_flight =
-                                    Some(replay_ball_flight(state.ball.flight.as_ref()));
-                                state.trace_entries.push(json!({
-                                    "tick": tick,
-                                    "type": "action",
-                                    "team": if holder_home { "home" } else { "away" },
-                                    "player": holder.name,
-                                    "action": "shot",
-                                    "xg": round_one(xg),
-                                    "target": [round_one(shot.target.0), round_one(shot.target.1)]
-                                }));
+                                    replay_ball_flight(state.ball.flight.as_ref());
+                                trace_entry!(
+                                    state,
+                                    json!({
+                                        "tick": tick,
+                                        "type": "action",
+                                        "team": if holder_home { "home" } else { "away" },
+                                        "player": shooter_name,
+                                        "action": "shot",
+                                        "xg": round_one(xg),
+                                        "release_probability": round_two(release_probability),
+                                        "block_probability": round_two(block_probability),
+                                        "contest_roll": round_two(contest_roll),
+                                        "target": [round_one(shot.target.0), round_one(shot.target.1)]
+                                    })
+                                );
                             }
                         }
                     }
-                    apply_held_tick_movement(home, away, holder_home, holder_idx, config);
+                    if state.ball.state == RunnerBallState::Held
+                        && state.ball.holder_idx == Some(holder_idx)
+                        && state.ball.holder_team_home == Some(holder_home)
+                    {
+                        let holder_pos = if holder_home {
+                            home.get(holder_idx).map(|holder| holder.pos)
+                        } else {
+                            away.get(holder_idx).map(|holder| holder.pos)
+                        }
+                        .unwrap_or(state.ball.position);
+                        advance_action_commitment(state, holder_pos);
+                    }
+                    apply_held_tick_movement(
+                        home,
+                        away,
+                        holder_home,
+                        holder_idx,
+                        state.home_plan_signals,
+                        state.away_plan_signals,
+                        &defender_phase1_inputs,
+                        config,
+                    );
                 }
             }
         }
@@ -8972,18 +19790,18 @@ fn tick_match(
                 });
                 flight.ticks_elapsed = flight_tick.ticks_elapsed;
                 state.ball.position = flight_tick.position;
+                move_flight_players(
+                    home,
+                    away,
+                    flight.clone(),
+                    state,
+                    tick,
+                    config,
+                    home_attacking_right,
+                    rng,
+                );
                 if !flight_tick.complete {
-                    state.ball.flight = Some(flight.clone());
-                    move_flight_players(
-                        home,
-                        away,
-                        flight,
-                        state,
-                        tick,
-                        config,
-                        home_attacking_right,
-                        rng,
-                    );
+                    state.ball.flight = Some(flight);
                 } else {
                     if is_out_of_bounds(flight.target, config) {
                         handle_out_of_bounds_flight(
@@ -8997,12 +19815,15 @@ fn tick_match(
                             home_attacking_right,
                         );
                         push_rng_trace(state, tick, "tick_end", rng);
-                        state.trace_entries.push(json!({
-                            "tick": tick,
-                            "type": "state",
-                            "ball_state": ball_state_name(state.ball.state),
-                            "holder_team": state.ball.holder_team_home.map(|home| if home { "home" } else { "away" })
-                        }));
+                        trace_entry!(
+                            state,
+                            json!({
+                                "tick": tick,
+                                "type": "state",
+                                "ball_state": ball_state_name(state.ball.state),
+                                "holder_team": state.ball.holder_team_home.map(|home| if home { "home" } else { "away" })
+                            })
+                        );
                         return;
                     }
                     match flight.kind {
@@ -9143,6 +19964,8 @@ fn tick_match(
                                         !flight.passer_team_home,
                                         gk_pos,
                                         None,
+                                        home_attacking_right,
+                                        config,
                                     );
                                     queue_replay_frame(
                                         state,
@@ -9267,14 +20090,17 @@ fn tick_match(
                                     );
                                     reset_players_to_current_formation_slots(home);
                                     reset_players_to_current_formation_slots(away);
-                                    state.trace_entries.push(json!({
-                                "tick": tick,
-                                "type": "event",
-                                "event": "goal",
-                                "team": if flight.passer_team_home { "home" } else { "away" },
-                                "scorer": shooter_name,
-                                "minute": goal_plan.minute
-                            }));
+                                    trace_entry!(
+                                        state,
+                                        json!({
+                                            "tick": tick,
+                                            "type": "event",
+                                            "event": "goal",
+                                            "team": if flight.passer_team_home { "home" } else { "away" },
+                                            "scorer": shooter_name,
+                                            "minute": goal_plan.minute
+                                        })
+                                    );
                                 }
                                 _ => {
                                     set_dead_ball_and_clear_goals(
@@ -9340,58 +20166,81 @@ fn tick_match(
                                     score_before: Some(score_before),
                                 },
                             );
-                            state.trace_entries.push(json!({
-                                "tick": tick,
-                                "type": "event",
-                                "event": "shot_arrival",
-                                "outcome": arrival.shot_log.outcome,
-                                "speed": round_one(flight.speed),
-                                "save_prob": arrival.save_prob,
-                                "save_roll": save_roll,
-                                "shot_origin": [flight.origin.0, flight.origin.1],
-                                "shot_target": [flight.target.0, flight.target.1],
-                                "gk_pos": [gk_pos.0, gk_pos.1]
-                            }));
+                            trace_entry!(
+                                state,
+                                json!({
+                                    "tick": tick,
+                                    "type": "event",
+                                    "event": "shot_arrival",
+                                    "outcome": arrival.shot_log.outcome,
+                                    "speed": round_one(flight.speed),
+                                    "save_prob": arrival.save_prob,
+                                    "save_roll": save_roll,
+                                    "shot_origin": [flight.origin.0, flight.origin.1],
+                                    "shot_target": [flight.target.0, flight.target.1],
+                                    "gk_pos": [gk_pos.0, gk_pos.1]
+                                })
+                            );
                         }
                         RunnerFlightKind::Pass => {
-                            let receivers = if flight.passer_team_home {
-                                arrival_players(
+                            let receiver_idx = if flight.passer_team_home {
+                                runner_intended_receiver_contacting_player_index(
                                     home,
                                     flight.passer_idx,
                                     flight.intended_receiver_idx,
+                                    flight.target,
+                                    config.contest_radius,
                                 )
                             } else {
-                                arrival_players(
+                                runner_intended_receiver_contacting_player_index(
                                     away,
                                     flight.passer_idx,
                                     flight.intended_receiver_idx,
+                                    flight.target,
+                                    config.contest_radius,
                                 )
                             };
-                            let opponents = if flight.passer_team_home {
-                                opponent_arrival_players(away)
+                            let opponent_idx = if flight.passer_team_home {
+                                runner_contacting_player_index(
+                                    away,
+                                    None,
+                                    flight.target,
+                                    config.contest_radius,
+                                )
                             } else {
-                                opponent_arrival_players(home)
+                                runner_contacting_player_index(
+                                    home,
+                                    None,
+                                    flight.target,
+                                    config.contest_radius,
+                                )
                             };
-                            let arrival = pass_arrival_plan(&PassArrivalPlanInput {
-                                target_pos: flight.target,
-                                flight_origin: flight.origin,
-                                flight_speed: flight.speed,
-                                flight_ticks_total: flight.ticks_total,
-                                contest_radius: config.contest_radius,
-                                player_max_speed: config.player_max_speed,
-                                player_min_speed: config.player_min_speed,
-                                target_occupation_weight: config.target_occupation_weight,
-                                receivers: &receivers,
-                                opponents: &opponents,
+                            let transition = pass_control_transition(&PassControlTransitionInput {
+                                retained_possession: flight.retained_possession
+                                    && receiver_idx.is_some(),
+                                receiver_index: receiver_idx,
+                                opponent_index: opponent_idx,
+                                opponent_control: if opponent_idx.is_some() { 1.0 } else { 0.0 },
+                                loose_control: if opponent_idx.is_some() { 0.0 } else { 1.0 },
                             });
+                            if transition.outcome_code != 0 {
+                                let team = if flight.passer_team_home {
+                                    &mut *home
+                                } else {
+                                    &mut *away
+                                };
+                                if let Some(passer) = team.get_mut(flight.passer_idx) {
+                                    passer.turnovers += 1;
+                                }
+                            }
                             let passer_identity = if flight.passer_team_home {
                                 player_identity(home, flight.passer_idx)
                             } else {
                                 player_identity(away, flight.passer_idx)
                             };
-                            match arrival.outcome_code {
+                            match transition.outcome_code {
                                 0 => {
-                                    let receiver_idx = arrival
+                                    let receiver_idx = transition
                                         .receiver_index
                                         .unwrap_or(flight.intended_receiver_idx.unwrap_or(0));
                                     let receiver_identity = if flight.passer_team_home {
@@ -9399,9 +20248,18 @@ fn tick_match(
                                     } else {
                                         player_identity(away, receiver_idx)
                                     };
-                                    let receiver_offside_flagged =
-                                        flight.offside_indices.contains(&receiver_idx);
-                                    let (receive_pos, loose_pos, receive_ok, receiver_name) = {
+                                    let receiver_offside_flagged = flight
+                                        .offside_flags
+                                        .get(receiver_idx)
+                                        .copied()
+                                        .unwrap_or(false);
+                                    let (
+                                        receive_pos,
+                                        loose_pos,
+                                        receive_ok,
+                                        first_touch_error,
+                                        receiver_name,
+                                    ) = {
                                         let team = if flight.passer_team_home {
                                             &mut *home
                                         } else {
@@ -9425,20 +20283,22 @@ fn tick_match(
                                                 });
                                             advance_randoms(rng, receive.randoms_used);
                                             let name = receiver.name.clone();
-                                            if receive.outcome_code == 0 {
-                                                receiver.distance_covered +=
-                                                    receive.distance_covered;
-                                                receiver.pos = receive.receive_pos;
-                                                receiver.target_pos = receive.receive_pos;
-                                            }
                                             (
-                                                receive.receive_pos,
+                                                receiver.pos,
                                                 receive.loose_pos,
-                                                receive.outcome_code == 0,
+                                                receive.outcome_code == 0
+                                                    && !receive.first_touch_error,
+                                                receive.first_touch_error,
                                                 name,
                                             )
                                         } else {
-                                            (flight.target, flight.target, false, String::new())
+                                            (
+                                                flight.target,
+                                                flight.target,
+                                                false,
+                                                false,
+                                                String::new(),
+                                            )
                                         }
                                     };
                                     if receiver_offside_flagged {
@@ -9459,13 +20319,16 @@ fn tick_match(
                                             2,
                                             receive_pos,
                                         );
-                                        state.trace_entries.push(json!({
-                                            "tick": tick,
-                                            "type": "event",
-                                            "event": "offside",
-                                            "player": receiver_name,
-                                            "team": if flight.passer_team_home { "home" } else { "away" }
-                                        }));
+                                        trace_entry!(
+                                            state,
+                                            json!({
+                                                "tick": tick,
+                                                "type": "event",
+                                                "event": "offside",
+                                                "player": receiver_name,
+                                                "team": if flight.passer_team_home { "home" } else { "away" }
+                                            })
+                                        );
                                         let mut tags = pass_event_tags(
                                             &flight,
                                             receive_pos,
@@ -9561,15 +20424,21 @@ fn tick_match(
                                             flight.passer_team_home,
                                             receive_pos,
                                             Some(flight.origin),
+                                            home_attacking_right,
+                                            config,
                                         );
-                                        state.trace_entries.push(json!({
-                                            "tick": tick,
-                                            "type": "action",
-                                            "team": if flight.passer_team_home { "home" } else { "away" },
-                                            "player": receiver_name,
-                                            "action": "receive",
-                                            "pos": [round_one(receive_pos.0), round_one(receive_pos.1)]
-                                        }));
+                                        trace_entry!(
+                                            state,
+                                            json!({
+                                                "tick": tick,
+                                                "type": "action",
+                                                "team": if flight.passer_team_home { "home" } else { "away" },
+                                                "player": receiver_name,
+                                                "action": "receive",
+                                                "pos": [round_one(receive_pos.0), round_one(receive_pos.1)],
+                                                "first_touch_error": first_touch_error
+                                            })
+                                        );
                                         record_match_event(
                                             state,
                                             config,
@@ -9601,14 +20470,22 @@ fn tick_match(
                                             home,
                                             away,
                                             loose_pos,
-                                            (0.0, 0.0),
+                                            crate::physics::residual_ball_velocity(
+                                                flight.target,
+                                                loose_pos,
+                                                flight.speed,
+                                                0.26,
+                                            ),
                                         );
-                                        state.trace_entries.push(json!({
-                                            "tick": tick,
-                                            "type": "event",
-                                            "event": "first_touch_error",
-                                            "player": receiver_name
-                                        }));
+                                        trace_entry!(
+                                            state,
+                                            json!({
+                                                "tick": tick,
+                                                "type": "event",
+                                                "event": "first_touch_error",
+                                                "player": receiver_name
+                                            })
+                                        );
                                         let mut tags = pass_event_tags(
                                             &flight,
                                             loose_pos,
@@ -9639,7 +20516,7 @@ fn tick_match(
                                     }
                                 }
                                 1 => {
-                                    let opponent_idx = arrival.opponent_index.unwrap_or(0);
+                                    let opponent_idx = transition.opponent_index.unwrap_or(0);
                                     let (winner_pos, winner_name) = {
                                         let team = if flight.passer_team_home {
                                             &mut *away
@@ -9666,14 +20543,21 @@ fn tick_match(
                                         !flight.passer_team_home,
                                         winner_pos,
                                         None,
+                                        home_attacking_right,
+                                        config,
                                     );
-                                    state.trace_entries.push(json!({
-                                        "tick": tick,
-                                        "type": "event",
-                                        "event": "interception",
-                                        "team": if flight.passer_team_home { "away" } else { "home" },
-                                        "player": winner_name
-                                    }));
+                                    trace_entry!(
+                                        state,
+                                        json!({
+                                            "tick": tick,
+                                            "type": "event",
+                                            "event": "interception",
+                                            "team": if flight.passer_team_home { "away" } else { "home" },
+                                            "player": winner_name,
+                                            "retention_probability": flight.retention_probability,
+                                            "retention_roll": flight.retention_roll
+                                        })
+                                    );
                                     let mut tags = pass_event_tags(
                                         &flight,
                                         winner_pos,
@@ -9708,14 +20592,24 @@ fn tick_match(
                                         home,
                                         away,
                                         flight.target,
-                                        arrival.loose_velocity,
+                                        crate::physics::residual_ball_velocity(
+                                            flight.origin,
+                                            flight.target,
+                                            flight.speed,
+                                            0.26,
+                                        ),
                                     );
-                                    state.trace_entries.push(json!({
-                                        "tick": tick,
-                                        "type": "event",
-                                        "event": "pass_loose",
-                                        "target": [round_one(flight.target.0), round_one(flight.target.1)]
-                                    }));
+                                    trace_entry!(
+                                        state,
+                                        json!({
+                                            "tick": tick,
+                                            "type": "event",
+                                            "event": "pass_loose",
+                                            "target": [round_one(flight.target.0), round_one(flight.target.1)],
+                                            "retention_probability": flight.retention_probability,
+                                            "retention_roll": flight.retention_roll
+                                        })
+                                    );
                                     let mut tags = pass_event_tags(
                                         &flight,
                                         flight.target,
@@ -9792,15 +20686,20 @@ fn tick_match(
                                 winner_home,
                                 winner_pos,
                                 None,
+                                home_attacking_right,
+                                config,
                             );
-                            state.trace_entries.push(json!({
-                                "tick": tick,
-                                "type": "event",
-                                "event": "clearance_arrival",
-                                "team": if winner_home { "home" } else { "away" },
-                                "player": winner_name,
-                                "passer_completed": arrival.passer_completed
-                            }));
+                            trace_entry!(
+                                state,
+                                json!({
+                                    "tick": tick,
+                                    "type": "event",
+                                    "event": "clearance_arrival",
+                                    "team": if winner_home { "home" } else { "away" },
+                                    "player": winner_name,
+                                    "passer_completed": arrival.passer_completed
+                                })
+                            );
                             record_match_event(
                                 state,
                                 config,
@@ -9821,7 +20720,7 @@ fn tick_match(
                                     xg: 0.0,
                                     origin: Some(flight.origin),
                                     target: Some(winner_pos),
-                                    tags: vec!["long", "second_ball"],
+                                    tags: EventTags::from_slice(&["long", "second_ball"]),
                                     score_before: None,
                                 },
                             );
@@ -9876,29 +20775,46 @@ fn tick_match(
                         .map(|player| player.pos)
                         .unwrap_or(state.ball.position)
                 };
-                give_ball_to_player(state, home, away, player_idx, winner_home, winner_pos, None);
-                state.trace_entries.push(json!({
-                    "tick": tick,
-                    "type": "event",
-                    "event": "contested_won",
-                    "team": if winner_home { "home" } else { "away" },
-                    "player_idx": player_idx,
-                    "distance": round_one(best_dist)
-                }));
+                give_ball_to_player(
+                    state,
+                    home,
+                    away,
+                    player_idx,
+                    winner_home,
+                    winner_pos,
+                    None,
+                    home_attacking_right,
+                    config,
+                );
+                trace_entry!(
+                    state,
+                    json!({
+                        "tick": tick,
+                        "type": "event",
+                        "event": "contested_won",
+                        "team": if winner_home { "home" } else { "away" },
+                        "player_idx": player_idx,
+                        "distance": round_one(best_dist)
+                    })
+                );
             } else {
                 move_contested_team(
                     home,
                     away,
                     state.ball.position,
                     home_attacking_right,
+                    state.home_plan_signals,
                     config,
+                    &mut state.team_shape_arena,
                 );
                 move_contested_team(
                     away,
                     home,
                     state.ball.position,
                     !home_attacking_right,
+                    state.away_plan_signals,
                     config,
+                    &mut state.team_shape_arena,
                 );
 
                 if state.ball.contested_ticks > 5 {
@@ -9920,6 +20836,8 @@ fn tick_match(
                             winner_home,
                             winner_pos,
                             None,
+                            home_attacking_right,
+                            config,
                         );
                     }
                 }
@@ -9976,32 +20894,39 @@ fn tick_match(
             if let Some(payload) = event.as_object_mut() {
                 payload.insert("tick".to_string(), json!(tick));
             }
-            state.trace_entries.push(event);
+            trace_entry!(state, event);
         }
         if held_attack_choices > 0 || held_defense_choices > 0 {
-            state.trace_entries.push(json!({
-                "tick": tick,
-                "type": "event",
-                "event": "off_ball_choice",
-                "attack_choices": held_attack_choices,
-                "defense_choices": held_defense_choices,
-                "attack_goal_choices": held_attack_choices,
-                "defense_goal_choices": held_defense_choices
-            }));
+            trace_entry!(
+                state,
+                json!({
+                    "tick": tick,
+                    "type": "event",
+                    "event": "off_ball_choice",
+                    "attack_choices": held_attack_choices,
+                    "defense_choices": held_defense_choices,
+                    "attack_goal_choices": held_attack_choices,
+                    "defense_goal_choices": held_defense_choices
+                })
+            );
         }
     }
-    state.trace_entries.push(json!({
-        "tick": tick,
-        "type": "state",
-        "ball_state": ball_state_name(state.ball.state),
-        "holder_team": state.ball.holder_team_home.map(|home| if home { "home" } else { "away" }),
-        "home_phase": phase_name(state.home_phase_code),
-        "away_phase": phase_name(state.away_phase_code),
-        "home_ticks_since_possession_change": state.home_ticks_since_possession_change,
-        "away_ticks_since_possession_change": state.away_ticks_since_possession_change,
-        "home_had_possession_last_tick": state.home_had_possession_last_tick,
-        "away_had_possession_last_tick": state.away_had_possession_last_tick
-    }));
+    trace_entry!(
+        state,
+        json!({
+            "tick": tick,
+            "type": "state",
+            "ball_state": ball_state_name(state.ball.state),
+            "match_clock": match_clock_payload(state.match_clock),
+            "holder_team": state.ball.holder_team_home.map(|home| if home { "home" } else { "away" }),
+            "home_phase": phase_name(state.home_phase_code),
+            "away_phase": phase_name(state.away_phase_code),
+            "home_ticks_since_possession_change": state.home_ticks_since_possession_change,
+            "away_ticks_since_possession_change": state.away_ticks_since_possession_change,
+            "home_had_possession_last_tick": state.home_had_possession_last_tick,
+            "away_had_possession_last_tick": state.away_had_possession_last_tick
+        })
+    );
 }
 
 pub fn run_match_v2(request: MatchV2RunRequest) -> MatchV2RunResponse {
@@ -10026,6 +20951,25 @@ pub fn run_match_v2(request: MatchV2RunRequest) -> MatchV2RunResponse {
         pitch_length,
         pitch_width,
     );
+    let total_ticks = config.total_ticks.max(0) as usize;
+    let position_sample_capacity = total_ticks.saturating_add(9) / 10;
+    for player in home_players.iter_mut().chain(away_players.iter_mut()) {
+        player.position_samples.reserve(position_sample_capacity);
+        player.shot_log.reserve(8);
+    }
+    let frame_interval = config.frame_interval.max(1);
+    let sampled_frame_count = |start_tick: i32, end_tick: i32| {
+        if end_tick <= start_tick {
+            0
+        } else {
+            ((end_tick - start_tick - 1) / frame_interval + 1) as usize
+        }
+    };
+    let replay_capacity = 3usize
+        .saturating_add(sampled_frame_count(0, config.half_ticks))
+        .saturating_add(sampled_frame_count(config.half_ticks, config.total_ticks))
+        .saturating_add(total_ticks / 10 + 16);
+    let event_capacity = (total_ticks / 3 + 32).min(1024);
     let trace_id = format!(
         "rust-match-v2:{}:{}:{}:{}",
         request.home_formation,
@@ -10033,69 +20977,100 @@ pub fn run_match_v2(request: MatchV2RunRequest) -> MatchV2RunResponse {
         request.home_cards.len(),
         request.away_cards.len()
     );
-    let mut replay = vec![replay_header(
+    let mut replay = Vec::with_capacity(replay_capacity);
+    replay.push(RunnerReplayEntry::Raw(replay_header(
         &home_players,
         &away_players,
         &request.home_formation,
         &request.away_formation,
         pitch_width,
         pitch_length,
-    )];
+    )));
     let (mut holder_idx, mut holder_team, mut ball_pos) = apply_kickoff(
         true,
         true,
         &mut home_players,
         &mut away_players,
-        pitch_length,
-        pitch_width,
+        &config,
         None,
     );
+    let rng_trace_enabled = request
+        .config
+        .get("rng_trace")
+        .and_then(|value| value.as_bool())
+        .unwrap_or_else(|| std::env::var("PSL_ENGINE_V2_RNG_TRACE").is_ok());
+    let trace_enabled = config.trace_detail != "off" || rng_trace_enabled;
     let mut state = RunnerMatchState {
         ball: RunnerBall {
             state: RunnerBallState::Held,
             position: ball_pos,
             holder_idx: Some(holder_idx),
             holder_team_home: Some(holder_team == "home"),
+            control: PossessionControlState::default(),
             flight: None,
             loose_velocity: (0.0, 0.0),
             contested_ticks: 0,
         },
         home_score: 0,
         away_score: 0,
-        goals: Vec::new(),
-        events: Vec::new(),
+        goals: Vec::with_capacity(8),
+        events: Vec::with_capacity(event_capacity),
         event_seq: 0,
         possession_id: 1,
         possession_team_home: Some(true),
         home_possession_ticks: 0,
         away_possession_ticks: 0,
         neutral_ticks: 0,
+        match_clock: MatchClock::default(),
+        action_commitment: None,
         dead_reason: None,
         restart_team_home: None,
         restart_ticks_remaining: 0,
         last_passer_team_home: None,
         last_passer_idx: -1,
-        pass_network: HashMap::new(),
+        pass_network: [[[0; RUNNER_TEAM_SIZE]; RUNNER_TEAM_SIZE]; 2],
         held_action_cursor: 0,
         pending_on_ball_goal_event: None,
         pending_ball_flight: None,
-        pending_replay_frames: Vec::new(),
+        pending_replay_frames: Vec::with_capacity(8),
         trace_entries: Vec::new(),
         trace_decisions: Vec::new(),
         shot_quality_cache: RefCell::new(HashMap::new()),
+        held_action_buffer: Vec::with_capacity(RUNNER_MAX_HELD_ACTIONS),
+        carry_defender_response_arena: RunnerCarryDefenderResponseArena::new(),
+        held_decision_arena: RunnerHeldDecisionArena::new(),
+        pass_candidate_buffer: vec![EMPTY_TEAM_PASS_CANDIDATE; MAX_TEAM_PASS_CANDIDATES],
+        pass_workspace: TeamPassWorkspace::new(),
+        specialized_goal_arena: RunnerSpecializedGoalArena::new(),
+        off_ball_attack_arena: RunnerOffBallAttackArena::new(),
+        team_plan_arena: RunnerTeamPlanArena::new(),
+        team_shape_arena: RunnerTeamShapeArena::new(),
+        fixed_defense_arena: RunnerFixedDefenseArena::new(),
         home_phase_code: 1,
         away_phase_code: 3,
         home_had_possession_last_tick: false,
         away_had_possession_last_tick: false,
         home_ticks_since_possession_change: 99,
         away_ticks_since_possession_change: 99,
-        rng_trace_enabled: request
-            .config
-            .get("rng_trace")
-            .and_then(|value| value.as_bool())
-            .unwrap_or_else(|| std::env::var("PSL_ENGINE_V2_RNG_TRACE").is_ok()),
+        home_plan: TeamPlanState::default(),
+        away_plan: TeamPlanState::default(),
+        home_plan_signals: TeamPlanSignals::default(),
+        away_plan_signals: TeamPlanSignals::default(),
+        trace_enabled,
+        rng_trace_enabled,
     };
-    replay.push(frame(
+    give_ball_to_player(
+        &mut state,
+        &mut home_players,
+        &mut away_players,
+        holder_idx,
+        holder_team == "home",
+        ball_pos,
+        None,
+        true,
+        &config,
+    );
+    replay.push(RunnerReplayEntry::Frame(frame(
         0,
         config.tick_duration,
         1,
@@ -10106,10 +21081,10 @@ pub fn run_match_v2(request: MatchV2RunRequest) -> MatchV2RunResponse {
         Some(holder_team),
         (0, 0),
         Some(true),
-        serde_json::Value::Null,
         None,
         None,
-    ));
+        None,
+    )));
     record_half_frames(
         &mut replay,
         &mut state,
@@ -10141,28 +21116,18 @@ pub fn run_match_v2(request: MatchV2RunRequest) -> MatchV2RunResponse {
         false,
         &mut home_players,
         &mut away_players,
-        pitch_length,
-        pitch_width,
+        &config,
         Some(&mut state),
     );
     holder_idx = kickoff.0;
     holder_team = kickoff.1;
     ball_pos = kickoff.2;
-    state.ball = RunnerBall {
-        state: RunnerBallState::Held,
-        position: ball_pos,
-        holder_idx: Some(holder_idx),
-        holder_team_home: Some(holder_team == "home"),
-        flight: None,
-        loose_velocity: (0.0, 0.0),
-        contested_ticks: 0,
-    };
     state.dead_reason = None;
     state.restart_team_home = None;
     state.restart_ticks_remaining = 0;
     state.last_passer_team_home = None;
     state.last_passer_idx = -1;
-    replay.push(frame(
+    replay.push(RunnerReplayEntry::Frame(frame(
         (config.half_ticks - 1).max(0),
         config.tick_duration,
         2,
@@ -10173,10 +21138,10 @@ pub fn run_match_v2(request: MatchV2RunRequest) -> MatchV2RunResponse {
         Some(holder_team),
         (state.home_score, state.away_score),
         Some(true),
-        serde_json::Value::Null,
         None,
         None,
-    ));
+        None,
+    )));
     record_half_frames(
         &mut replay,
         &mut state,
@@ -10195,6 +21160,7 @@ pub fn run_match_v2(request: MatchV2RunRequest) -> MatchV2RunResponse {
     let away_possession = round_one(100.0 - home_possession);
     let home_stats = team_stats(&home_players, home_possession, &state.events, true);
     let away_stats = team_stats(&away_players, away_possession, &state.events, false);
+    let match_clock = match_clock_payload(state.match_clock);
     MatchV2RunResponse {
         home_score: state.home_score,
         away_score: state.away_score,
@@ -10202,6 +21168,7 @@ pub fn run_match_v2(request: MatchV2RunRequest) -> MatchV2RunResponse {
         events: state.events,
         home_stats,
         away_stats,
+        match_clock: match_clock.clone(),
         home_player_stats: player_stat_skeleton(&home_players, true, &state.pass_network),
         away_player_stats: player_stat_skeleton(&away_players, false, &state.pass_network),
         home_ratings: team_ratings(&home_players, state.away_score),
@@ -10217,7 +21184,8 @@ pub fn run_match_v2(request: MatchV2RunRequest) -> MatchV2RunResponse {
             "trace_id": "rust-match-v2",
             "entries": state.trace_entries,
             "decisions": state.trace_decisions,
-            "total_entries": state.home_possession_ticks + state.away_possession_ticks + state.neutral_ticks
+            "total_entries": state.home_possession_ticks + state.away_possession_ticks + state.neutral_ticks,
+            "match_clock": match_clock,
         }),
         engine: "rust_match_v2".to_string(),
         contract_version: 2,

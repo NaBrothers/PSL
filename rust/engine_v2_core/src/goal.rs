@@ -14,14 +14,14 @@ pub struct GoalInput<'a> {
     pub phase: Option<&'a str>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Copy)]
 pub struct GoalSelectionOutput {
-    pub selected: String,
+    pub selected: &'static str,
     pub switched: bool,
     pub switch_cost: f64,
     pub value_advantage: f64,
     pub noisy_value_advantage: f64,
-    pub reason: String,
+    pub reason: &'static str,
 }
 
 #[derive(Debug, Clone)]
@@ -299,9 +299,9 @@ pub struct OffBallAttackGoalBuildInput {
     pub candidate_width: f64,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Copy, Debug)]
 pub struct OffBallAttackGoalBuildOutput {
-    pub goal_type: String,
+    pub goal_type: &'static str,
     pub target_pos: (f64, f64),
     pub value: f64,
     pub confidence: f64,
@@ -323,13 +323,13 @@ pub struct DefensiveGoalBuildInput<'a> {
     pub threat: f64,
 }
 
-#[derive(Clone, Debug)]
-pub struct DefensiveGoalBuildOutput {
-    pub goal_type: String,
+#[derive(Clone, Copy, Debug)]
+pub struct DefensiveGoalBuildOutput<'a> {
+    pub goal_type: &'static str,
     pub target_pos: (f64, f64),
     pub value: f64,
     pub confidence: f64,
-    pub action_type: String,
+    pub action_type: &'a str,
     pub pressure: f64,
     pub threat: f64,
 }
@@ -497,12 +497,12 @@ pub fn select_goal_deterministic(
 ) -> GoalSelectionOutput {
     if current_goal.is_none() {
         return GoalSelectionOutput {
-            selected: "candidate".to_string(),
+            selected: "candidate",
             switched: true,
             switch_cost: 0.0,
             value_advantage: candidate_goal.value,
             noisy_value_advantage: candidate_goal.value,
-            reason: "no_current_goal".to_string(),
+            reason: "no_current_goal",
         };
     }
     let current = current_goal.unwrap();
@@ -521,12 +521,12 @@ pub fn select_goal_deterministic(
         && candidate_phase != current_phase
     {
         return GoalSelectionOutput {
-            selected: "candidate".to_string(),
+            selected: "candidate",
             switched: false,
             switch_cost: 0.0,
             value_advantage: advantage,
             noisy_value_advantage: advantage,
-            reason: "current_goal_phase_updated".to_string(),
+            reason: "current_goal_phase_updated",
         };
     }
     if current.goal_type == "cut_inside_to_shoot"
@@ -535,12 +535,12 @@ pub fn select_goal_deterministic(
         && candidate_phase == Some("drive")
     {
         return GoalSelectionOutput {
-            selected: "candidate".to_string(),
+            selected: "candidate",
             switched: false,
             switch_cost: 0.0,
             value_advantage: advantage,
             noisy_value_advantage: advantage,
-            reason: "current_goal_drive_updated".to_string(),
+            reason: "current_goal_drive_updated",
         };
     }
     if current.goal_type == "hold_for_opportunity"
@@ -549,33 +549,33 @@ pub fn select_goal_deterministic(
         && candidate_phase == Some("scan")
     {
         return GoalSelectionOutput {
-            selected: "candidate".to_string(),
+            selected: "candidate",
             switched: false,
             switch_cost: 0.0,
             value_advantage: advantage,
             noisy_value_advantage: advantage,
-            reason: "current_goal_scan_updated".to_string(),
+            reason: "current_goal_scan_updated",
         };
     }
     let switch_cost = goal_switch_cost(context);
     let noisy_advantage = advantage;
     if noisy_advantage > switch_cost {
         GoalSelectionOutput {
-            selected: "candidate".to_string(),
+            selected: "candidate",
             switched: true,
             switch_cost,
             value_advantage: advantage,
             noisy_value_advantage: noisy_advantage,
-            reason: "candidate_clears_switch_cost".to_string(),
+            reason: "candidate_clears_switch_cost",
         }
     } else {
         GoalSelectionOutput {
-            selected: "current".to_string(),
+            selected: "current",
             switched: false,
             switch_cost,
             value_advantage: advantage,
             noisy_value_advantage: noisy_advantage,
-            reason: "current_goal_within_switch_cost".to_string(),
+            reason: "current_goal_within_switch_cost",
         }
     }
 }
@@ -725,7 +725,7 @@ pub fn apply_generic_on_ball_goal_continuity(
         switched: selection.switched,
         switch_cost: selection.switch_cost,
         value_advantage: selection.value_advantage,
-        reason: selection.reason,
+        reason: selection.reason.to_string(),
         biased_scores,
     })
 }
@@ -1319,7 +1319,7 @@ pub fn build_off_ball_attack_goal(
         "recycle_support"
     };
     OffBallAttackGoalBuildOutput {
-        goal_type: goal_type.to_string(),
+        goal_type,
         target_pos: input.target_pos,
         value: input.value.max(0.0),
         confidence: input.value.clamp(0.0, 1.0),
@@ -1333,7 +1333,9 @@ pub fn build_off_ball_attack_goal(
     }
 }
 
-pub fn build_defensive_goal(input: &DefensiveGoalBuildInput<'_>) -> DefensiveGoalBuildOutput {
+pub fn build_defensive_goal<'a>(
+    input: &DefensiveGoalBuildInput<'a>,
+) -> DefensiveGoalBuildOutput<'a> {
     let mut goal_type = match input.action_type {
         "approach" | "tackle" => "defend_press",
         "mark_runner" => "defend_mark_runner",
@@ -1345,11 +1347,11 @@ pub fn build_defensive_goal(input: &DefensiveGoalBuildInput<'_>) -> DefensiveGoa
         goal_type = "defend_protect_box";
     }
     DefensiveGoalBuildOutput {
-        goal_type: goal_type.to_string(),
+        goal_type,
         target_pos: input.target_pos,
         value: input.value.max(0.0),
         confidence: input.value.clamp(0.0, 1.0),
-        action_type: input.action_type.to_string(),
+        action_type: input.action_type,
         pressure: input.pressure,
         threat: input.threat,
     }

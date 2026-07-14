@@ -47,7 +47,7 @@ python3 bot/bot.py
 
 ## 5. 运行 Web
 
-Web 端是独立 FastAPI 服务，默认监听 `8888`，和 Bot 共享项目根目录的 `psl.db`。
+Web 端是独立 FastAPI 服务，默认监听 `8088`，和 Bot 共享项目根目录的 `psl.db`。
 
 首次运行先安装前端依赖并构建静态资源：
 
@@ -67,7 +67,7 @@ python3 -m server
 浏览器访问：
 
 ```
-http://127.0.0.1:8888
+http://127.0.0.1:8088
 ```
 
 生产环境建议同时启动两个进程：
@@ -81,7 +81,7 @@ python3 -m server
 
 ```
 PSL_DB_PATH=/path/to/psl.db
-PSL_WEB_PORT=8888
+PSL_WEB_PORT=8088
 PSL_JWT_SECRET=replace-with-a-long-random-secret
 PSL_RUST_PROFILE=debug
 ```

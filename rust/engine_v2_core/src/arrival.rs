@@ -119,7 +119,7 @@ fn pass_arrival_score(
     let committed_run = smoothstep(0.12, 0.82, target_bias);
     let movement_share = 0.24 + 0.52 * committed_run;
     let raw_dist = distance(player.pos, target);
-    let effective_dist = (raw_dist - speed * flight_ticks.max(1) as f64 * movement_share).max(0.0);
+    let effective_dist = (raw_dist - speed * flight_ticks.max(0) as f64 * movement_share).max(0.0);
     let occupation_weight = target_occupation_weight.max(0.0) * (1.0 - 0.55 * committed_run);
     let mut score = effective_dist + raw_dist * occupation_weight;
     if !team_side_is_passer {

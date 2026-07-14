@@ -8,8 +8,9 @@ use crate::execution::{
     ClearExecutionInput, ExecutionOpponent, HoldExecutionInput, PassExecutionInput,
     ShotExecutionInput,
 };
-use crate::interactions::{interception_chance, InterceptionResolveInput};
-use crate::interactions::{resolve_duel, DuelResolveInput};
+use crate::interactions::{resolve_duel, DefenderActionInput, DuelResolveInput};
+use crate::physics::PitchBoundaryKind;
+use crate::team_plan::TeamPlanSignals;
 
 #[derive(Clone, Debug)]
 pub struct GoalEventInput<'a> {
@@ -160,6 +161,11 @@ pub struct PlayerSetMovementTargetOutput {
     pub movement_intent: String,
 }
 
+#[derive(Clone, Copy, Debug)]
+pub struct PlayerSetMovementTargetRefOutput {
+    pub target_pos: (f64, f64),
+}
+
 #[derive(Clone, Debug)]
 pub struct PlayerTickStunInput<'a> {
     pub state: &'a str,
@@ -276,10 +282,11 @@ pub struct ShotArrivalPlanOutput {
 
 #[derive(Clone, Debug)]
 pub struct OutOfBoundsPlanInput {
-    pub out_x: f64,
+    pub boundary: PitchBoundaryKind,
+    pub boundary_point: (f64, f64),
     pub pitch_length: f64,
     pub pitch_width: f64,
-    pub passer_team_home: bool,
+    pub possession_team_home: bool,
     pub flight_type_code: u8,
     pub origin: (f64, f64),
     pub attacking_right: bool,
@@ -339,6 +346,7 @@ pub struct CarryPhasePlanInput<'a> {
     pub carrier_speed: f64,
     pub carry_error_divisor: f64,
     pub opponents: &'a [ExecutionOpponent],
+    pub defender_responses: &'a [DefenderActionInput],
     pub error_roll: f64,
     pub loose_x_roll: f64,
     pub loose_y_roll: f64,
@@ -349,45 +357,40 @@ pub struct CarryPhasePlanOutput {
     pub carry_speed: f64,
     pub carry_difficulty: f64,
     pub new_pos: (f64, f64),
+    pub boundary_crossing: Option<crate::physics::PitchBoundaryCrossing>,
     pub velocity: (f64, f64),
     pub facing_direction: Option<f64>,
     pub distance_covered: f64,
+    pub contact_load: f64,
     pub error_chance: f64,
     pub is_error: bool,
     pub loose_pos: (f64, f64),
+    pub constrained_control_probability: f64,
+    pub constrained_control_position: (f64, f64),
     pub randoms_used: usize,
 }
 
 #[derive(Clone, Debug)]
-pub struct PassPhasePlanInput<'a> {
+pub struct PassPhasePlanInput {
     pub passer_pos: (f64, f64),
     pub ideal_target: (f64, f64),
     pub passing: f64,
     pub is_long: bool,
     pub lane_risk: f64,
+    pub retention_probability: f64,
+    pub retention_roll: f64,
     pub pitch_length: f64,
     pub pitch_width: f64,
     pub ball_pass_speed: f64,
     pub ball_long_pass_speed: f64,
-    pub pass_error_divisor: f64,
-    pub opponents: &'a [ExecutionOpponent],
     pub random_1: f64,
     pub random_2: f64,
-    pub random_3: f64,
-    pub random_4: f64,
-    pub random_5: f64,
-    pub interception_present: bool,
-    pub interceptor_defence: f64,
-    pub interception_distance: f64,
-    pub interception_reach: f64,
     pub intended_receiver_pos: Option<(f64, f64)>,
 }
 
 #[derive(Clone, Debug)]
 pub struct PassPhasePlanOutput {
-    pub outcome_code: u8,
     pub target: (f64, f64),
-    pub stray_pos: (f64, f64),
     pub speed: f64,
     pub ticks_needed: i32,
     pub flight_type_code: u8,
@@ -395,6 +398,9 @@ pub struct PassPhasePlanOutput {
     pub target_kind_code: u8,
     pub flight_from_yx: (f64, f64),
     pub flight_to_yx: (f64, f64),
+    pub retention_probability: f64,
+    pub retention_roll: f64,
+    pub retained_possession: bool,
     pub randoms_used: usize,
 }
 
@@ -498,11 +504,12 @@ pub struct PassReceivePlanInput {
 #[derive(Clone, Debug)]
 pub struct PassReceivePlanOutput {
     pub outcome_code: u8,
-    pub receive_pos: (f64, f64),
+    pub contact_pos: (f64, f64),
     pub loose_pos: (f64, f64),
-    pub distance_covered: f64,
-    pub receive_kind_code: u8,
+    pub contact_offset: f64,
+    pub contact_kind_code: u8,
     pub first_touch_error_chance: f64,
+    pub first_touch_error: bool,
     pub randoms_used: usize,
 }
 
@@ -531,6 +538,22 @@ pub struct PassArrivalPlanOutput {
     pub opponent_score: f64,
     pub opponent_control: f64,
     pub loose_control: f64,
+}
+
+#[derive(Clone, Copy, Debug)]
+pub struct PassControlTransitionInput {
+    pub retained_possession: bool,
+    pub receiver_index: Option<usize>,
+    pub opponent_index: Option<usize>,
+    pub opponent_control: f64,
+    pub loose_control: f64,
+}
+
+#[derive(Clone, Copy, Debug)]
+pub struct PassControlTransitionOutput {
+    pub outcome_code: u8,
+    pub receiver_index: Option<usize>,
+    pub opponent_index: Option<usize>,
 }
 
 #[derive(Clone, Debug)]
@@ -610,6 +633,7 @@ pub fn carry_phase_plan(input: &CarryPhasePlanInput<'_>) -> CarryPhasePlanOutput
         carrier_speed: input.carrier_speed,
         carry_error_divisor: input.carry_error_divisor,
         opponents: input.opponents,
+        defender_responses: input.defender_responses,
         error_roll: input.error_roll,
         loose_x_roll: input.loose_x_roll,
         loose_y_roll: input.loose_y_roll,
@@ -618,12 +642,16 @@ pub fn carry_phase_plan(input: &CarryPhasePlanInput<'_>) -> CarryPhasePlanOutput
         carry_speed: carry.carry_speed,
         carry_difficulty: carry.carry_difficulty,
         new_pos: carry.new_pos,
+        boundary_crossing: carry.boundary_crossing,
         velocity: carry.velocity,
         facing_direction: carry.facing_direction,
         distance_covered: carry.distance_covered,
+        contact_load: carry.contact_load,
         error_chance: carry.error_chance,
         is_error: carry.is_error,
         loose_pos: carry.loose_pos,
+        constrained_control_probability: carry.constrained_control_probability,
+        constrained_control_position: carry.constrained_control_position,
         randoms_used: 1 + if carry.is_error { 2 } else { 0 },
     }
 }
@@ -666,27 +694,18 @@ pub fn pass_receive_plan(input: &PassReceivePlanInput) -> PassReceivePlanOutput 
         loose_x_roll: input.loose_x_roll,
         loose_y_roll: input.loose_y_roll,
     });
-    let receive_pos = pitch_clamp(input.target_pos, input.pitch_length, input.pitch_width);
-    let receive_kind_code = if crate::physics::distance(input.receiver_pos, input.target_pos) > 4.0
-    {
-        1
-    } else {
-        0
-    };
-    let outcome_code = if first_touch.is_error {
-        1
-    } else if input.receiver_offside_flagged {
-        2
-    } else {
-        0
-    };
+    let contact_pos = input.receiver_pos;
+    let contact_offset = crate::physics::distance(contact_pos, input.target_pos);
+    let contact_kind_code = if contact_offset > 4.0 { 1 } else { 0 };
+    let outcome_code = if input.receiver_offside_flagged { 2 } else { 0 };
     PassReceivePlanOutput {
         outcome_code,
-        receive_pos,
+        contact_pos,
         loose_pos: first_touch.loose_pos,
-        distance_covered: crate::physics::distance(input.receiver_pos, receive_pos),
-        receive_kind_code,
+        contact_offset,
+        contact_kind_code,
         first_touch_error_chance: first_touch.error_chance,
+        first_touch_error: first_touch.is_error,
         randoms_used: 1 + if first_touch.is_error { 2 } else { 0 },
     }
 }
@@ -718,6 +737,32 @@ pub fn pass_arrival_plan(input: &PassArrivalPlanInput<'_>) -> PassArrivalPlanOut
         opponent_score: arrival.opponent_score,
         opponent_control: arrival.opponent_control,
         loose_control: arrival.loose_control,
+    }
+}
+
+pub fn pass_control_transition(input: &PassControlTransitionInput) -> PassControlTransitionOutput {
+    if input.retained_possession {
+        if let Some(receiver_index) = input.receiver_index {
+            return PassControlTransitionOutput {
+                outcome_code: 0,
+                receiver_index: Some(receiver_index),
+                opponent_index: None,
+            };
+        }
+    }
+
+    if input.opponent_index.is_some() && input.opponent_control > input.loose_control {
+        PassControlTransitionOutput {
+            outcome_code: 1,
+            receiver_index: None,
+            opponent_index: input.opponent_index,
+        }
+    } else {
+        PassControlTransitionOutput {
+            outcome_code: 2,
+            receiver_index: None,
+            opponent_index: None,
+        }
     }
 }
 
@@ -791,51 +836,21 @@ pub fn pass_trace_payload(input: &PassTraceInput) -> PassTraceOutput {
     }
 }
 
-pub fn pass_phase_plan(input: &PassPhasePlanInput<'_>) -> PassPhasePlanOutput {
+pub fn pass_phase_plan(input: &PassPhasePlanInput) -> PassPhasePlanOutput {
     let pass = execute_pass(&PassExecutionInput {
         passer_pos: input.passer_pos,
         ideal_target: input.ideal_target,
         passing: input.passing,
         is_long: input.is_long,
         lane_risk: input.lane_risk,
+        retention_probability: input.retention_probability,
+        retention_roll: input.retention_roll,
         pitch_length: input.pitch_length,
         pitch_width: input.pitch_width,
         ball_pass_speed: input.ball_pass_speed,
         ball_long_pass_speed: input.ball_long_pass_speed,
-        pass_error_divisor: input.pass_error_divisor,
-        opponents: input.opponents,
         random_1: input.random_1,
         random_2: input.random_2,
-        random_3: input.random_3,
-        random_4: input.random_4,
-        random_5: input.random_5,
-    });
-
-    let interception_roll = match pass.randoms_used {
-        0 | 1 => input.random_2,
-        2 => input.random_3,
-        3 => input.random_4,
-        4 => input.random_5,
-        _ => input.random_5,
-    };
-    let interception_chance_value = if input.interception_present && !pass.is_error {
-        interception_chance(&InterceptionResolveInput {
-            defender_defence: input.interceptor_defence,
-            passer_ability: input.passing,
-            distance: input.interception_distance,
-            interception_reach: input.interception_reach,
-            random_value: interception_roll,
-        })
-    } else {
-        0.0
-    };
-    let intercepted = input.interception_present
-        && !pass.is_error
-        && interception_roll < interception_chance_value;
-    let outcome = pass_phase_outcome(&PassPhaseOutcomeInput {
-        pass_accuracy_error: pass.is_error,
-        interception_present: input.interception_present,
-        intercepted,
     });
     let trace = pass_trace_payload(&PassTraceInput {
         target: pass.target,
@@ -849,9 +864,7 @@ pub fn pass_phase_plan(input: &PassPhasePlanInput<'_>) -> PassPhasePlanOutput {
         on_target: false,
     });
     PassPhasePlanOutput {
-        outcome_code: outcome.outcome_code,
         target: pass.target,
-        stray_pos: pass.stray_pos,
         speed: pass.speed,
         ticks_needed: pass.ticks_needed,
         flight_type_code: pass.flight_type_code,
@@ -859,12 +872,10 @@ pub fn pass_phase_plan(input: &PassPhasePlanInput<'_>) -> PassPhasePlanOutput {
         target_kind_code: trace.target_kind_code,
         flight_from_yx: flight.from_yx,
         flight_to_yx: flight.to_yx,
-        randoms_used: pass.randoms_used
-            + if input.interception_present && !pass.is_error {
-                1
-            } else {
-                0
-            },
+        retention_probability: pass.retention_probability,
+        retention_roll: pass.retention_roll,
+        retained_possession: pass.retained_possession,
+        randoms_used: pass.randoms_used,
     }
 }
 
@@ -1078,9 +1089,11 @@ pub fn shot_arrival_plan(input: &ShotArrivalPlanInput<'_>) -> ShotArrivalPlanOut
 
 pub fn out_of_bounds_plan(input: &OutOfBoundsPlanInput) -> OutOfBoundsPlanOutput {
     let (reason, restart_team_home) = crate::physics::out_of_bounds_restart(
-        input.out_x,
+        input.boundary,
+        input.boundary_point,
         input.pitch_length,
-        input.passer_team_home,
+        input.possession_team_home,
+        input.attacking_right,
     );
     let restart_ticks = if reason == "goal_kick" {
         input.goal_kick_restart_ticks
@@ -1314,14 +1327,23 @@ pub fn player_move_tick(input: &PlayerMoveTickInput<'_>) -> PlayerMoveTickOutput
 pub fn player_set_movement_target(
     input: &PlayerSetMovementTargetInput<'_>,
 ) -> PlayerSetMovementTargetOutput {
-    let movement_intent = input
-        .requested_intent
-        .unwrap_or(input.current_intent)
-        .to_string();
+    let target = player_set_movement_target_ref(input);
+    PlayerSetMovementTargetOutput {
+        target_pos: target.target_pos,
+        movement_intent: input
+            .requested_intent
+            .unwrap_or(input.current_intent)
+            .to_string(),
+    }
+}
+
+pub fn player_set_movement_target_ref<'a>(
+    input: &PlayerSetMovementTargetInput<'a>,
+) -> PlayerSetMovementTargetRefOutput {
+    let movement_intent = input.requested_intent.unwrap_or(input.current_intent);
     if input.current_target == (0.0, 0.0) {
-        return PlayerSetMovementTargetOutput {
+        return PlayerSetMovementTargetRefOutput {
             target_pos: input.requested_target,
-            movement_intent,
         };
     }
     let jump = crate::physics::distance(input.current_target, input.requested_target);
@@ -1334,20 +1356,16 @@ pub fn player_set_movement_target(
     };
     if movement_intent == "attack_run" {
         blend = (blend + 0.54).min(0.92);
-    } else if matches!(movement_intent.as_str(), "press" | "contest") {
+    } else if matches!(movement_intent, "press" | "contest") {
         blend = (blend + 0.30).min(0.78);
-    } else if matches!(
-        movement_intent.as_str(),
-        "defend_shape" | "mark" | "block_lane"
-    ) {
+    } else if matches!(movement_intent, "defend_shape" | "mark" | "block_lane") {
         blend *= 0.85;
     }
-    PlayerSetMovementTargetOutput {
+    PlayerSetMovementTargetRefOutput {
         target_pos: (
             input.current_target.0 * (1.0 - blend) + input.requested_target.0 * blend,
             input.current_target.1 * (1.0 - blend) + input.requested_target.1 * blend,
         ),
-        movement_intent,
     }
 }
 
@@ -1670,6 +1688,7 @@ pub struct TeamShapePlanInput<'a> {
     pub ball_pos: (f64, f64),
     pub attacking_right: bool,
     pub phase: &'a str,
+    pub plan_signals: TeamPlanSignals,
     pub pitch_length: f64,
     pub pitch_width: f64,
     pub players: &'a [TeamShapePlayerInput],
@@ -2433,10 +2452,28 @@ pub fn pass_loose_control_strength(input: &PassLooseControlInput) -> PassLooseCo
 }
 
 pub fn team_shape_plan(input: &TeamShapePlanInput<'_>) -> TeamShapePlanOutput {
-    if input.players.is_empty() {
-        return TeamShapePlanOutput {
-            anchors: Vec::new(),
+    let mut anchors = vec![
+        TeamShapePlayerOutput {
+            index: 0,
+            tactical_anchor: (0.0, 0.0),
         };
+        input.players.len()
+    ];
+    let len = team_shape_plan_into(input, &mut anchors);
+    anchors.truncate(len);
+    TeamShapePlanOutput { anchors }
+}
+
+pub fn team_shape_plan_into(
+    input: &TeamShapePlanInput<'_>,
+    output: &mut [TeamShapePlayerOutput],
+) -> usize {
+    assert!(
+        output.len() >= input.players.len(),
+        "team shape output buffer is smaller than the player set"
+    );
+    if input.players.is_empty() {
+        return 0;
     }
     let ball_progress = if input.attacking_right {
         input.ball_pos.0 / input.pitch_length
@@ -2447,25 +2484,43 @@ pub fn team_shape_plan(input: &TeamShapePlanInput<'_>) -> TeamShapePlanOutput {
     let side_shift = input.ball_pos.1 - input.pitch_width / 2.0;
     let is_defending = matches!(input.phase, "defending" | "transition_def" | "contesting");
     let is_transition_def = input.phase == "transition_def";
+    let plan = input.plan_signals;
 
-    let mut def_xs: Vec<f64> = input
+    let ahead_of = |candidate: f64, current: f64| {
+        if input.attacking_right {
+            candidate
+                .partial_cmp(&current)
+                .is_some_and(|ordering| ordering == std::cmp::Ordering::Greater)
+        } else {
+            candidate
+                .partial_cmp(&current)
+                .is_some_and(|ordering| ordering == std::cmp::Ordering::Less)
+        }
+    };
+    let mut first_defender_x = None;
+    let mut second_defender_x = None;
+    for opponent in input
         .opponents
         .iter()
         .filter(|player| !player.is_goalkeeper)
-        .map(|player| player.pos.0)
-        .collect();
-    if input.attacking_right {
-        def_xs.sort_by(|a, b| b.partial_cmp(a).unwrap_or(std::cmp::Ordering::Equal));
-    } else {
-        def_xs.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+    {
+        let x = opponent.pos.0;
+        match first_defender_x {
+            None => first_defender_x = Some(x),
+            Some(first) if ahead_of(x, first) => {
+                second_defender_x = Some(first);
+                first_defender_x = Some(x);
+            }
+            _ => match second_defender_x {
+                None => second_defender_x = Some(x),
+                Some(second) if ahead_of(x, second) => second_defender_x = Some(x),
+                _ => {}
+            },
+        }
     }
-    let offside_line = if def_xs.len() >= 2 {
-        Some(def_xs[1])
-    } else {
-        def_xs.first().copied()
-    };
+    let offside_line = second_defender_x.or(first_defender_x);
 
-    let mut anchors = Vec::with_capacity(input.players.len());
+    let mut output_len = 0;
     for player in input.players {
         let base = player.base_pos;
         let base_progress = if input.attacking_right {
@@ -2493,10 +2548,12 @@ pub fn team_shape_plan(input: &TeamShapePlanInput<'_>) -> TeamShapePlanOutput {
             if is_transition_def {
                 block_center += 0.06;
             }
-            let line_offset = (base_progress - 0.50) * 0.72;
+            let line_offset = (base_progress - 0.50) * (0.72 * plan.depth_scale);
             (
                 (block_center + line_offset).clamp(0.05, 0.92),
-                input.pitch_width / 2.0 + base_width_offset * 0.92 + side_shift * 0.14,
+                input.pitch_width / 2.0
+                    + base_width_offset * (0.92 * plan.width_scale)
+                    + side_shift * (0.14 * (1.0 - 0.55 * plan.compactness)),
             )
         } else {
             let advance_pressure = (ball_progress - base_progress).max(0.0);
@@ -2578,7 +2635,8 @@ pub fn team_shape_plan(input: &TeamShapePlanInput<'_>) -> TeamShapePlanOutput {
                         + wide_arrival_cap,
                 );
             }
-            progress = progress.clamp(0.08, 0.94);
+            progress =
+                (base_progress + (progress - base_progress) * plan.depth_scale).clamp(0.08, 0.94);
             let mut width_expansion = 1.00
                 + (0.16 * same_side + 0.05 * (1.0 - same_side - weak_side)) * ball_progress
                 + (0.14 * same_side + 0.04 * (1.0 - same_side - weak_side)) * advanced_role
@@ -2615,7 +2673,7 @@ pub fn team_shape_plan(input: &TeamShapePlanInput<'_>) -> TeamShapePlanOutput {
                 + second_line_tuck
                 + arc_support_tuck
                 + wide_midfield_half_space_tuck
-                + side_shift * (0.12 + 0.08 * width_ratio);
+                + side_shift * (0.12 + 0.08 * width_ratio) * (1.0 - 0.45 * plan.switch_bias);
             let wide_midfield_half_space = crate::physics::smoothstep(0.66, 0.80, ball_progress)
                 * width_ratio
                 * (1.0 - advanced_role)
@@ -2626,7 +2684,10 @@ pub fn team_shape_plan(input: &TeamShapePlanInput<'_>) -> TeamShapePlanOutput {
                 y = y * (1.0 - 0.75 * wide_midfield_half_space)
                     + target_y * (0.75 * wide_midfield_half_space);
             }
-            (progress, y)
+            (
+                progress,
+                input.pitch_width / 2.0 + (y - input.pitch_width / 2.0) * plan.width_scale,
+            )
         };
 
         if !is_defending {
@@ -2653,12 +2714,13 @@ pub fn team_shape_plan(input: &TeamShapePlanInput<'_>) -> TeamShapePlanOutput {
         } else {
             (1.0 - progress) * input.pitch_length
         };
-        anchors.push(TeamShapePlayerOutput {
+        output[output_len] = TeamShapePlayerOutput {
             index: player.index,
             tactical_anchor: pitch_clamp((x, y), input.pitch_length, input.pitch_width),
-        });
+        };
+        output_len += 1;
     }
-    TeamShapePlanOutput { anchors }
+    output_len
 }
 
 pub fn team_phase_update(input: &TeamPhaseUpdateInput) -> TeamPhaseUpdateOutput {
@@ -2890,6 +2952,113 @@ pub fn track_carry_stats(input: &CarryStatInput) -> CarryStatOutput {
 mod tests {
     use super::*;
 
+    #[test]
+    fn retained_pass_control_is_not_reversed_by_arrival_geometry() {
+        let transition = pass_control_transition(&PassControlTransitionInput {
+            retained_possession: true,
+            receiver_index: Some(4),
+            opponent_index: Some(2),
+            opponent_control: 0.95,
+            loose_control: 0.02,
+        });
+
+        assert_eq!(transition.outcome_code, 0);
+        assert_eq!(transition.receiver_index, Some(4));
+        assert_eq!(transition.opponent_index, None);
+    }
+
+    #[test]
+    fn failed_pass_control_uses_arrival_only_for_failure_shape() {
+        let interception = pass_control_transition(&PassControlTransitionInput {
+            retained_possession: false,
+            receiver_index: Some(4),
+            opponent_index: Some(2),
+            opponent_control: 0.70,
+            loose_control: 0.20,
+        });
+        let loose = pass_control_transition(&PassControlTransitionInput {
+            retained_possession: false,
+            receiver_index: Some(4),
+            opponent_index: Some(2),
+            opponent_control: 0.20,
+            loose_control: 0.70,
+        });
+
+        assert_eq!(interception.outcome_code, 1);
+        assert_eq!(interception.opponent_index, Some(2));
+        assert_eq!(loose.outcome_code, 2);
+        assert_eq!(loose.receiver_index, None);
+        assert_eq!(loose.opponent_index, None);
+    }
+
+    #[test]
+    fn pass_receipt_preserves_the_player_contact_position() {
+        let receive = pass_receive_plan(&PassReceivePlanInput {
+            receiver_pos: (42.0, 30.0),
+            target_pos: (44.0, 31.5),
+            receiver_iq: 100.0,
+            receiver_offside_flagged: false,
+            pitch_length: 105.0,
+            pitch_width: 68.0,
+            first_touch_error_divisor: 700.0,
+            error_roll: 1.0,
+            loose_x_roll: 0.5,
+            loose_y_roll: 0.5,
+        });
+
+        assert_eq!(receive.contact_pos, (42.0, 30.0));
+        assert!(!receive.first_touch_error);
+        assert!(receive.contact_offset > 0.0);
+    }
+
+    #[test]
+    fn pass_phase_consumes_the_retention_roll_once() {
+        let retained = pass_phase_plan(&PassPhasePlanInput {
+            passer_pos: (20.0, 34.0),
+            ideal_target: (35.0, 40.0),
+            passing: 80.0,
+            is_long: false,
+            lane_risk: 0.25,
+            retention_probability: 0.60,
+            retention_roll: 0.59,
+            pitch_length: 105.0,
+            pitch_width: 68.0,
+            ball_pass_speed: 18.0,
+            ball_long_pass_speed: 22.0,
+            random_1: 0.25,
+            random_2: 0.75,
+            intended_receiver_pos: Some((35.0, 40.0)),
+        });
+        let lost = pass_phase_plan(&PassPhasePlanInput {
+            retention_roll: 0.61,
+            ..retained_input()
+        });
+
+        assert!(retained.retained_possession);
+        assert!(!lost.retained_possession);
+        assert_eq!(retained.randoms_used, 2);
+        assert_eq!(lost.randoms_used, 2);
+    }
+
+    fn retained_input() -> PassPhasePlanInput {
+        PassPhasePlanInput {
+            passer_pos: (20.0, 34.0),
+            ideal_target: (35.0, 40.0),
+            passing: 80.0,
+            is_long: false,
+            lane_risk: 0.25,
+            retention_probability: 0.60,
+            retention_roll: 0.59,
+            pitch_length: 105.0,
+            pitch_width: 68.0,
+            ball_pass_speed: 18.0,
+            ball_long_pass_speed: 22.0,
+            random_1: 0.25,
+            random_2: 0.75,
+            intended_receiver_pos: Some((35.0, 40.0)),
+        }
+    }
+
     fn gk_shape_player(index: usize) -> TeamShapePlayerInput {
         TeamShapePlayerInput {
             index,
@@ -2911,6 +3080,7 @@ mod tests {
                 ball_pos: (88.0, 60.0),
                 attacking_right: true,
                 phase,
+                plan_signals: TeamPlanSignals::default(),
                 pitch_length: 105.0,
                 pitch_width: 68.0,
                 players: &players,

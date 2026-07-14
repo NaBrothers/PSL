@@ -133,66 +133,88 @@ pub fn tick_contested_ball(input: &ContestedTickInput) -> ContestedTickOutput {
     }
 }
 
-pub fn select_contested_targets(input: &ContestedTargetsInput<'_>) -> Vec<ContestedTargetOutput> {
-    let mut outputs = Vec::new();
-    for player in input.players {
-        if player.is_stunned {
-            continue;
-        }
-        if player.is_goalkeeper {
-            outputs.push(ContestedTargetOutput {
-                index: player.index,
-                target: player.tactical_anchor,
-                intent_code: 0,
-            });
-            continue;
-        }
+fn contested_target_for_player(
+    input: &ContestedTargetsInput<'_>,
+    player: &ContestedTargetPlayerInput,
+) -> Option<ContestedTargetOutput> {
+    if player.is_stunned {
+        return None;
+    }
+    if player.is_goalkeeper {
+        return Some(ContestedTargetOutput {
+            index: player.index,
+            target: player.tactical_anchor,
+            intent_code: 0,
+        });
+    }
 
-        let dist_to_ball = distance(player.pos, input.ball_pos);
-        let speed = player_speed(player.speed, input.player_max_speed, input.player_min_speed);
-        let nearby_teammates = input
-            .players
-            .iter()
-            .filter(|teammate| {
-                teammate.index != player.index
-                    && !teammate.is_goalkeeper
-                    && distance(teammate.pos, input.ball_pos) < dist_to_ball + 1.5
-            })
-            .count();
-        let iq = player.iq / 100.0;
-        let race_reach =
-            input.contested_race_radius * (0.84 + 0.22 * speed / input.player_max_speed.max(0.1));
-        let mut first_ball_value = (1.0 - dist_to_ball / race_reach.max(1.0)).max(0.0);
-        first_ball_value = first_ball_value * first_ball_value * (3.0 - 2.0 * first_ball_value);
-        let contest_score =
-            first_ball_value * (1.08 + 0.34 * iq) / (1.0 + nearby_teammates as f64 * 0.35);
+    let dist_to_ball = distance(player.pos, input.ball_pos);
+    let speed = player_speed(player.speed, input.player_max_speed, input.player_min_speed);
+    let nearby_teammates = input
+        .players
+        .iter()
+        .filter(|teammate| {
+            teammate.index != player.index
+                && !teammate.is_goalkeeper
+                && distance(teammate.pos, input.ball_pos) < dist_to_ball + 1.5
+        })
+        .count();
+    let iq = player.iq / 100.0;
+    let race_reach =
+        input.contested_race_radius * (0.84 + 0.22 * speed / input.player_max_speed.max(0.1));
+    let mut first_ball_value = (1.0 - dist_to_ball / race_reach.max(1.0)).max(0.0);
+    first_ball_value = first_ball_value * first_ball_value * (3.0 - 2.0 * first_ball_value);
+    let contest_score =
+        first_ball_value * (1.08 + 0.34 * iq) / (1.0 + nearby_teammates as f64 * 0.35);
 
-        let support_pos = pitch_clamp(
-            (
-                player.tactical_anchor.0 * 0.88 + input.ball_pos.0 * 0.12,
-                player.tactical_anchor.1 * 0.90 + input.ball_pos.1 * 0.10,
-            ),
-            input.pitch_length,
-            input.pitch_width,
-        );
-        let support_dist = distance(player.pos, support_pos);
-        let support_score = 0.05
-            + (nearby_teammates as f64 * 0.08).min(0.24)
-            + (support_dist / 80.0).min(0.08)
-            + (1.0 - first_ball_value) * 0.08;
+    let support_pos = pitch_clamp(
+        (
+            player.tactical_anchor.0 * 0.88 + input.ball_pos.0 * 0.12,
+            player.tactical_anchor.1 * 0.90 + input.ball_pos.1 * 0.10,
+        ),
+        input.pitch_length,
+        input.pitch_width,
+    );
+    let support_dist = distance(player.pos, support_pos);
+    let support_score = 0.05
+        + (nearby_teammates as f64 * 0.08).min(0.24)
+        + (support_dist / 80.0).min(0.08)
+        + (1.0 - first_ball_value) * 0.08;
 
-        if contest_score > support_score {
-            outputs.push(ContestedTargetOutput {
-                index: player.index,
-                target: input.ball_pos,
-                intent_code: 1,
-            });
+    Some(ContestedTargetOutput {
+        index: player.index,
+        target: if contest_score > support_score {
+            input.ball_pos
         } else {
-            outputs.push(ContestedTargetOutput {
-                index: player.index,
-                target: support_pos,
-                intent_code: 0,
-            });
+            support_pos
+        },
+        intent_code: u8::from(contest_score > support_score),
+    })
+}
+
+pub fn select_contested_targets_into(
+    input: &ContestedTargetsInput<'_>,
+    output: &mut [ContestedTargetOutput],
+) -> usize {
+    assert!(
+        output.len() >= input.players.len(),
+        "contested target output buffer is too small"
+    );
+    let mut output_count = 0;
+    for player in input.players {
+        if let Some(target) = contested_target_for_player(input, player) {
+            output[output_count] = target;
+            output_count += 1;
+        }
+    }
+    output_count
+}
+
+pub fn select_contested_targets(input: &ContestedTargetsInput<'_>) -> Vec<ContestedTargetOutput> {
+    let mut outputs = Vec::with_capacity(input.players.len());
+    for player in input.players {
+        if let Some(target) = contested_target_for_player(input, player) {
+            outputs.push(target);
         }
     }
     outputs

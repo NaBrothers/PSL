@@ -11,9 +11,9 @@ export default defineConfig({
   },
   server: {
     proxy: {
-      '/api': 'http://localhost:8888',
-      '/replays': 'http://localhost:8888',
-      '/assets': 'http://localhost:8888',
+      '/api': 'http://localhost:8088',
+      '/replays': 'http://localhost:8088',
+      '/assets': 'http://localhost:8088',
     },
   },
 })

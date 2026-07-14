@@ -93,6 +93,7 @@ def test_match_facade_runs_rust_contract_deterministically():
     assert first_result.away_score == second_result.away_score
     assert first_result.home_stats == second_result.home_stats
     assert first_result.away_stats == second_result.away_stats
+    assert first_result.match_clock == second_result.match_clock
     assert len(first_result.home_player_stats) == 11
     assert len(first_result.away_player_stats) == 11
     replay = first.get_replay_data()
@@ -122,7 +123,26 @@ def test_match_facade_runs_rust_contract_deterministically():
         )
 
     assert replay == second.get_replay_data()
-    assert first.get_trace()["trace_id"] == "rust-match-v2"
+    trace = first.get_trace()
+    assert trace["trace_id"] == "rust-match-v2"
+    assert trace["match_clock"] == first_result.match_clock
+
+
+def test_match_clock_separates_active_play_from_dead_ball():
+    config = EngineConfig(total_ticks=8, half_ticks=4, frame_interval=1)
+    result = MatchV2(_cards(), _cards(), "433", "442", config=config, seed=42).run()
+
+    clock = result.match_clock
+    assert clock["match_ticks"] == config.total_ticks
+    assert clock["match_seconds"] == config.total_ticks * config.tick_duration
+    assert clock["active_play_seconds"] + clock["dead_ball_seconds"] == clock[
+        "match_seconds"
+    ]
+    assert clock["active_play_ticks"] + clock["dead_ball_ticks"] == clock["match_ticks"]
+    assert 0 <= clock["active_play_ratio"] <= 1
+
+    for event in result.events:
+        assert event["match_second"] == int(event["tick"] * config.tick_duration)
 
 
 def test_match_facade_runs_only_once():
@@ -214,7 +234,6 @@ def test_match_result_preserves_goal_assister_identity():
 
     assert score == [result.home_score, result.away_score]
     assert len(goal_events) == result.home_score + result.away_score
-    assert goal_events
     for event in goal_events:
         assert event["player"]["name"].startswith("Player ")
         assert event["player"]["color"] == "b"

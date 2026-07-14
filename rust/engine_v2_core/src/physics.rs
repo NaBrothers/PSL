@@ -55,9 +55,85 @@ pub struct PlayerMotionInput {
 #[derive(Clone, Copy, Debug)]
 pub struct PlayerMotionOutput {
     pub pos: (f64, f64),
+    pub unclamped_pos: (f64, f64),
     pub velocity: (f64, f64),
     pub distance_covered: f64,
     pub facing_direction: Option<f64>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PitchBoundaryKind {
+    GoalLine,
+    TouchLine,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct PitchBoundaryCrossing {
+    pub point: (f64, f64),
+    pub kind: PitchBoundaryKind,
+}
+
+pub fn segment_pitch_boundary_crossing(
+    origin: (f64, f64),
+    target: (f64, f64),
+    pitch_length: f64,
+    pitch_width: f64,
+) -> Option<PitchBoundaryCrossing> {
+    let dx = target.0 - origin.0;
+    let dy = target.1 - origin.1;
+    let mut crossings = Vec::with_capacity(2);
+    if dx > 1e-9 && target.0 > pitch_length {
+        let t = (pitch_length - origin.0) / dx;
+        crossings.push((
+            t,
+            PitchBoundaryCrossing {
+                point: (pitch_length, origin.1 + dy * t),
+                kind: PitchBoundaryKind::GoalLine,
+            },
+        ));
+    } else if dx < -1e-9 && target.0 < 0.0 {
+        let t = -origin.0 / dx;
+        crossings.push((
+            t,
+            PitchBoundaryCrossing {
+                point: (0.0, origin.1 + dy * t),
+                kind: PitchBoundaryKind::GoalLine,
+            },
+        ));
+    }
+    if dy > 1e-9 && target.1 > pitch_width {
+        let t = (pitch_width - origin.1) / dy;
+        crossings.push((
+            t,
+            PitchBoundaryCrossing {
+                point: (origin.0 + dx * t, pitch_width),
+                kind: PitchBoundaryKind::TouchLine,
+            },
+        ));
+    } else if dy < -1e-9 && target.1 < 0.0 {
+        let t = -origin.1 / dy;
+        crossings.push((
+            t,
+            PitchBoundaryCrossing {
+                point: (origin.0 + dx * t, 0.0),
+                kind: PitchBoundaryKind::TouchLine,
+            },
+        ));
+    }
+    crossings
+        .into_iter()
+        .filter(|(t, crossing)| {
+            *t >= 0.0
+                && *t <= 1.0
+                && crossing.point.0 >= -1e-9
+                && crossing.point.0 <= pitch_length + 1e-9
+                && crossing.point.1 >= -1e-9
+                && crossing.point.1 <= pitch_width + 1e-9
+        })
+        .min_by(|(left, _), (right, _)| {
+            left.partial_cmp(right).unwrap_or(std::cmp::Ordering::Equal)
+        })
+        .map(|(_, crossing)| crossing)
 }
 
 fn speed_ability_progress(speed_ability: i32) -> f64 {
@@ -159,27 +235,36 @@ pub fn advance_player_motion(input: &PlayerMotionInput) -> PlayerMotionOutput {
     );
     let along_target = displacement.0 * target_direction.0 + displacement.1 * target_direction.1;
     if target_distance > 1e-6 && along_target >= target_distance {
+        let pos = (
+            input.target.0.clamp(0.5, input.pitch_length - 0.5),
+            input.target.1.clamp(0.5, input.pitch_width - 0.5),
+        );
         return PlayerMotionOutput {
-            pos: input.target,
-            velocity: (0.0, 0.0),
-            distance_covered: target_distance,
-            facing_direction: if target_distance > 0.1 {
-                Some(angle_between_points(input.pos, input.target))
+            pos,
+            unclamped_pos: input.target,
+            velocity: if pos == input.target {
+                (0.0, 0.0)
+            } else {
+                (0.0, 0.0)
+            },
+            distance_covered: distance(input.pos, pos),
+            facing_direction: if distance(input.pos, pos) > 0.1 {
+                Some(angle_between_points(input.pos, pos))
             } else {
                 None
             },
         };
     }
 
-    let raw_pos = (input.pos.0 + displacement.0, input.pos.1 + displacement.1);
+    let unclamped_pos = (input.pos.0 + displacement.0, input.pos.1 + displacement.1);
     let pos = (
-        raw_pos.0.clamp(0.5, input.pitch_length - 0.5),
-        raw_pos.1.clamp(0.5, input.pitch_width - 0.5),
+        unclamped_pos.0.clamp(0.5, input.pitch_length - 0.5),
+        unclamped_pos.1.clamp(0.5, input.pitch_width - 0.5),
     );
-    if pos.0 != raw_pos.0 {
+    if pos.0 != unclamped_pos.0 {
         velocity.0 = 0.0;
     }
-    if pos.1 != raw_pos.1 {
+    if pos.1 != unclamped_pos.1 {
         velocity.1 = 0.0;
     }
     let distance_covered = distance(input.pos, pos);
@@ -190,6 +275,7 @@ pub fn advance_player_motion(input: &PlayerMotionInput) -> PlayerMotionOutput {
     };
     PlayerMotionOutput {
         pos,
+        unclamped_pos,
         velocity,
         distance_covered,
         facing_direction,
@@ -264,15 +350,21 @@ pub fn residual_ball_velocity(
 }
 
 pub fn out_of_bounds_restart(
-    x: f64,
+    boundary: PitchBoundaryKind,
+    boundary_point: (f64, f64),
     pitch_length: f64,
-    passer_team_home: bool,
+    possession_team_home: bool,
+    attacking_right: bool,
 ) -> (&'static str, bool) {
-    let restart_home = !passer_team_home;
-    if x < 0.0 || x > pitch_length {
+    let restart_home = !possession_team_home;
+    if boundary == PitchBoundaryKind::TouchLine {
+        return ("throw_in", restart_home);
+    }
+    let attacking_goal_x = if attacking_right { pitch_length } else { 0.0 };
+    if (boundary_point.0 - attacking_goal_x).abs() <= 1e-6 {
         ("goal_kick", restart_home)
     } else {
-        ("throw_in", restart_home)
+        ("corner", restart_home)
     }
 }
 
@@ -363,5 +455,43 @@ mod tests {
 
         assert_eq!(output.pos, (52.0, 34.0));
         assert_eq!(output.velocity, (0.0, 0.0));
+    }
+
+    #[test]
+    fn boundary_crossing_selects_the_first_line_on_a_diagonal_path() {
+        let crossing = segment_pitch_boundary_crossing((101.0, 65.0), (110.0, 72.0), 105.0, 68.0)
+            .expect("the path must leave the pitch");
+
+        assert_eq!(crossing.kind, PitchBoundaryKind::TouchLine);
+        assert_eq!(crossing.point.1, 68.0);
+        assert!(crossing.point.0 < 105.0);
+    }
+
+    #[test]
+    fn restart_rule_distinguishes_goal_kicks_corners_and_throw_ins() {
+        assert_eq!(
+            out_of_bounds_restart(
+                PitchBoundaryKind::GoalLine,
+                (105.0, 34.0),
+                105.0,
+                true,
+                true,
+            ),
+            ("goal_kick", false)
+        );
+        assert_eq!(
+            out_of_bounds_restart(PitchBoundaryKind::GoalLine, (0.0, 34.0), 105.0, true, true,),
+            ("corner", false)
+        );
+        assert_eq!(
+            out_of_bounds_restart(
+                PitchBoundaryKind::TouchLine,
+                (63.0, 68.0),
+                105.0,
+                true,
+                true,
+            ),
+            ("throw_in", false)
+        );
     }
 }

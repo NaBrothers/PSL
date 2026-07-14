@@ -1,4 +1,10 @@
-use crate::physics::{advance_player_motion, distance, player_speed, PlayerMotionInput};
+use crate::interactions::{
+    carry_containment_transition, CarryContainmentInput, DefenderActionInput,
+};
+use crate::physics::{
+    advance_player_motion, distance, player_speed, segment_pitch_boundary_crossing,
+    PitchBoundaryCrossing, PlayerMotionInput,
+};
 
 #[derive(Clone, Copy, Debug)]
 pub struct ExecutionOpponent {
@@ -22,6 +28,7 @@ pub struct CarryExecutionInput<'a> {
     pub carrier_speed: f64,
     pub carry_error_divisor: f64,
     pub opponents: &'a [ExecutionOpponent],
+    pub defender_responses: &'a [DefenderActionInput],
     pub error_roll: f64,
     pub loose_x_roll: f64,
     pub loose_y_roll: f64,
@@ -32,46 +39,47 @@ pub struct CarryExecutionOutput {
     pub carry_speed: f64,
     pub carry_difficulty: f64,
     pub new_pos: (f64, f64),
+    pub boundary_crossing: Option<PitchBoundaryCrossing>,
     pub velocity: (f64, f64),
     pub facing_direction: Option<f64>,
     pub distance_covered: f64,
+    pub contact_load: f64,
     pub error_chance: f64,
     pub is_error: bool,
     pub loose_pos: (f64, f64),
+    pub constrained_control_probability: f64,
+    pub constrained_control_position: (f64, f64),
 }
 
 #[derive(Clone, Copy, Debug)]
-pub struct PassExecutionInput<'a> {
+pub struct PassExecutionInput {
     pub passer_pos: (f64, f64),
     pub ideal_target: (f64, f64),
     pub passing: f64,
     pub is_long: bool,
     pub lane_risk: f64,
+    pub retention_probability: f64,
+    pub retention_roll: f64,
     pub pitch_length: f64,
     pub pitch_width: f64,
     pub ball_pass_speed: f64,
     pub ball_long_pass_speed: f64,
-    pub pass_error_divisor: f64,
-    pub opponents: &'a [ExecutionOpponent],
     pub random_1: f64,
     pub random_2: f64,
-    pub random_3: f64,
-    pub random_4: f64,
-    pub random_5: f64,
 }
 
 #[derive(Clone, Copy, Debug)]
 pub struct PassExecutionOutput {
     pub target: (f64, f64),
     pub error_radius: f64,
-    pub error_chance: f64,
-    pub is_error: bool,
     pub used_target_error: bool,
     pub randoms_used: usize,
-    pub stray_pos: (f64, f64),
     pub speed: f64,
     pub ticks_needed: i32,
     pub flight_type_code: u8,
+    pub retention_probability: f64,
+    pub retention_roll: f64,
+    pub retained_possession: bool,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -230,7 +238,34 @@ pub fn execute_carry(input: &CarryExecutionInput<'_>) -> CarryExecutionOutput {
         pitch_length: input.pitch_length,
         pitch_width: input.pitch_width,
     });
-    let new_pos = motion.pos;
+    let containment = carry_containment_transition(&CarryContainmentInput {
+        holder_pos: input.holder_pos,
+        carrier_end: motion.pos,
+        defenders: input.defender_responses,
+    });
+    let unconstrained_control_pos = motion.unclamped_pos;
+    let effective_control_pos = (
+        unconstrained_control_pos.0 * (1.0 - containment.constrained_control_probability)
+            + containment.constrained_control_position.0
+                * containment.constrained_control_probability,
+        unconstrained_control_pos.1 * (1.0 - containment.constrained_control_probability)
+            + containment.constrained_control_position.1
+                * containment.constrained_control_probability,
+    );
+    let boundary_crossing = segment_pitch_boundary_crossing(
+        input.holder_pos,
+        effective_control_pos,
+        input.pitch_length,
+        input.pitch_width,
+    );
+    let new_pos = pitch_clamp(effective_control_pos, input.pitch_length, input.pitch_width);
+    let nominal_distance = motion.distance_covered.max(1e-9);
+    let distance_covered = distance(input.holder_pos, new_pos);
+    let progress_ratio = (distance_covered / nominal_distance).clamp(0.0, 1.0);
+    let velocity = (
+        motion.velocity.0 * progress_ratio,
+        motion.velocity.1 * progress_ratio,
+    );
     let progress = if input.attacking_right {
         new_pos.0 / input.pitch_length
     } else {
@@ -256,29 +291,27 @@ pub fn execute_carry(input: &CarryExecutionInput<'_>) -> CarryExecutionOutput {
     );
 
     CarryExecutionOutput {
-        carry_speed: speed,
+        carry_speed: speed * progress_ratio,
         carry_difficulty: difficulty,
         new_pos,
-        velocity: motion.velocity,
+        boundary_crossing,
+        velocity,
         facing_direction: motion.facing_direction,
-        distance_covered: motion.distance_covered,
+        distance_covered,
+        contact_load: pressure,
         error_chance,
         is_error,
         loose_pos,
+        constrained_control_probability: containment.constrained_control_probability,
+        constrained_control_position: containment.constrained_control_position,
     }
 }
 
-pub fn execute_pass(input: &PassExecutionInput<'_>) -> PassExecutionOutput {
+pub fn execute_pass(input: &PassExecutionInput) -> PassExecutionOutput {
     let dist_to_target = distance(input.passer_pos, input.ideal_target);
-    let pressure = input
-        .opponents
-        .iter()
-        .filter(|opp| !opp.is_goalkeeper && distance(opp.pos, input.passer_pos) < 8.0)
-        .count() as f64;
     let ability_factor = (input.passing / 100.0).clamp(0.0, 1.0);
-    let error_radius = (1.0 - ability_factor) * (1.2 + dist_to_target / 12.0)
-        + pressure * 0.35
-        + input.lane_risk * 2.5;
+    let error_radius =
+        (1.0 - ability_factor) * (1.2 + dist_to_target / 12.0) + input.lane_risk * 2.5;
     let used_target_error = error_radius > 0.05;
     let target = if used_target_error {
         let angle = input.random_1 * std::f64::consts::TAU;
@@ -295,32 +328,6 @@ pub fn execute_pass(input: &PassExecutionInput<'_>) -> PassExecutionOutput {
         input.ideal_target
     };
 
-    let error_chance = (100.0 - input.passing) / input.pass_error_divisor;
-    let error_roll = if used_target_error {
-        input.random_3
-    } else {
-        input.random_1
-    };
-    let is_error = error_roll < error_chance;
-    let stray_x_roll = if used_target_error {
-        input.random_4
-    } else {
-        input.random_2
-    };
-    let stray_y_roll = if used_target_error {
-        input.random_5
-    } else {
-        input.random_3
-    };
-    let stray_pos = pitch_clamp(
-        (
-            input.ideal_target.0 + (-8.0 + 16.0 * stray_x_roll),
-            input.ideal_target.1 + (-8.0 + 16.0 * stray_y_roll),
-        ),
-        input.pitch_length,
-        input.pitch_width,
-    );
-    let randoms_used = (if used_target_error { 3 } else { 1 }) + if is_error { 2 } else { 0 };
     let speed = if input.is_long {
         input.ball_long_pass_speed
     } else {
@@ -332,14 +339,14 @@ pub fn execute_pass(input: &PassExecutionInput<'_>) -> PassExecutionOutput {
     PassExecutionOutput {
         target,
         error_radius,
-        error_chance,
-        is_error,
         used_target_error,
-        randoms_used,
-        stray_pos,
+        randoms_used: 2,
         speed,
         ticks_needed,
         flight_type_code: if input.is_long { 1 } else { 0 },
+        retention_probability: input.retention_probability.clamp(0.0, 1.0),
+        retention_roll: input.retention_roll,
+        retained_possession: input.retention_roll < input.retention_probability.clamp(0.0, 1.0),
     }
 }
 
@@ -526,9 +533,8 @@ pub fn execute_hold(input: &HoldExecutionInput<'_>) -> HoldExecutionOutput {
 mod tests {
     use super::*;
 
-    #[test]
-    fn carry_accelerates_from_rest_and_returns_the_new_velocity() {
-        let output = execute_carry(&CarryExecutionInput {
+    fn carry_input<'a>(defender_responses: &'a [DefenderActionInput]) -> CarryExecutionInput<'a> {
+        CarryExecutionInput {
             holder_pos: (20.0, 34.0),
             target: (80.0, 34.0),
             velocity: (0.0, 0.0),
@@ -543,13 +549,81 @@ mod tests {
             carrier_speed: 3.0,
             carry_error_divisor: 400.0,
             opponents: &[],
+            defender_responses,
             error_roll: 1.0,
             loose_x_roll: 0.5,
             loose_y_roll: 0.5,
-        });
+        }
+    }
+
+    #[test]
+    fn carry_accelerates_from_rest_and_returns_the_new_velocity() {
+        let output = execute_carry(&carry_input(&[]));
 
         assert!(output.velocity.0 > 0.0);
         assert!(output.distance_covered > 0.0);
         assert!(output.distance_covered < output.carry_speed);
+    }
+
+    #[test]
+    fn lane_blocking_reduces_carry_progress_without_creating_an_error() {
+        let block_lane = [DefenderActionInput {
+            index: 3,
+            pos: (21.4, 34.2),
+            new_pos: (22.2, 34.1),
+            action: "block_lane",
+            speed: 80.0,
+            defence: 80.0,
+            tackling: 80.0,
+            is_goalkeeper: false,
+        }];
+        let free = execute_carry(&carry_input(&[]));
+        let contained = execute_carry(&carry_input(&block_lane));
+
+        assert!(!contained.is_error);
+        assert!(contained.constrained_control_probability > 0.0);
+        assert!(contained.distance_covered < free.distance_covered);
+        assert!(contained.new_pos.0 < free.new_pos.0);
+    }
+
+    #[test]
+    fn unconstrained_carry_across_goal_line_reports_a_continuous_crossing() {
+        let mut input = carry_input(&[]);
+        input.holder_pos = (104.0, 34.0);
+        input.target = (116.0, 34.0);
+        input.velocity = (4.0, 0.0);
+
+        let output = execute_carry(&input);
+        let crossing = output
+            .boundary_crossing
+            .expect("an unimpeded path through the goal line must end play");
+
+        assert_eq!(crossing.kind, crate::physics::PitchBoundaryKind::GoalLine);
+        assert_eq!(crossing.point, (105.0, 34.0));
+        assert_eq!(output.new_pos.0, 104.5);
+    }
+
+    #[test]
+    fn containment_prevents_an_intended_crossing_from_becoming_a_dead_ball() {
+        let block_lane = [DefenderActionInput {
+            index: 3,
+            pos: (104.1, 34.0),
+            new_pos: (104.3, 34.0),
+            action: "block_lane",
+            speed: 90.0,
+            defence: 90.0,
+            tackling: 90.0,
+            is_goalkeeper: false,
+        }];
+        let mut input = carry_input(&block_lane);
+        input.holder_pos = (103.8, 34.0);
+        input.target = (116.0, 34.0);
+        input.velocity = (4.0, 0.0);
+
+        let output = execute_carry(&input);
+
+        assert!(output.constrained_control_probability > 0.0);
+        assert!(output.boundary_crossing.is_none());
+        assert!(output.new_pos.0 < 105.0);
     }
 }

@@ -283,7 +283,7 @@ fn on_ball_release_confidence_score(
             * (1.0 - smoothstep(0.28, 0.48, release_safety));
         multiplier *= 1.0 - 0.22 * unsafe_high_threat;
     }
-    candidate.score * multiplier
+    hold_score + advantage * multiplier
 }
 
 pub fn select_on_ball_candidate(input: &OnBallSelectionInput<'_>) -> Option<OnBallSelectionOutput> {
@@ -324,21 +324,8 @@ pub fn select_on_ball_candidate(input: &OnBallSelectionInput<'_>) -> Option<OnBa
         });
     }
 
-    let max_score = noisy_scores
-        .iter()
-        .copied()
-        .fold(f64::NEG_INFINITY, f64::max);
-    if max_score < 0.001 {
-        return Some(OnBallSelectionOutput {
-            index: input.fallback_index % noisy_scores.len(),
-            adjusted_scores,
-            noisy_scores,
-            used_roll: false,
-            used_random_choice: true,
-        });
-    }
-
-    let selection = softmax_select_index(&noisy_scores, input.iq, input.roll, 0)?;
+    let selection =
+        softmax_select_index_signed(&noisy_scores, input.iq, input.roll, input.fallback_index)?;
     Some(OnBallSelectionOutput {
         index: selection.index.min(noisy_scores.len() - 1),
         adjusted_scores,
@@ -351,6 +338,26 @@ pub fn select_on_ball_candidate(input: &OnBallSelectionInput<'_>) -> Option<OnBa
 pub fn apply_support_opportunity_cost(
     input: &SupportOpportunityInput<'_>,
 ) -> SupportOpportunityOutput {
+    let mut adjusted_scores = vec![0.0; input.carries.len()];
+    let mut costs = vec![0.0; input.carries.len()];
+    let support_pressure =
+        apply_support_opportunity_cost_into(input, &mut adjusted_scores, &mut costs);
+    SupportOpportunityOutput {
+        support_pressure,
+        adjusted_scores,
+        costs,
+    }
+}
+
+pub fn apply_support_opportunity_cost_into(
+    input: &SupportOpportunityInput<'_>,
+    adjusted_scores: &mut [f64],
+    costs: &mut [f64],
+) -> f64 {
+    assert!(
+        adjusted_scores.len() >= input.carries.len() && costs.len() >= input.carries.len(),
+        "support opportunity output buffers are too small"
+    );
     let mut support_pressure: f64 = 0.0;
     for pass in input.passes {
         let second_line_value = pass.second_line_arrival_value
@@ -368,26 +375,20 @@ pub fn apply_support_opportunity_cost(
         support_pressure = support_pressure.max(pass_quality * support_quality);
     }
 
-    let mut adjusted_scores = Vec::with_capacity(input.carries.len());
-    let mut costs = Vec::with_capacity(input.carries.len());
-    for carry in input.carries {
+    for (index, carry) in input.carries.iter().enumerate() {
         if support_pressure <= 0.0 {
-            adjusted_scores.push(carry.score);
-            costs.push(0.0);
+            adjusted_scores[index] = carry.score;
+            costs[index] = 0.0;
             continue;
         }
         let carry_payoff = smoothstep(0.10, 0.26, carry.future_shot_gain)
             .max(smoothstep(0.14, 0.34, carry.carry_to_shoot_window))
             .max(smoothstep(0.12, 0.28, carry.effective_gain));
         let cost = support_pressure * (1.0 - 0.68 * carry_payoff) * 0.075;
-        adjusted_scores.push((carry.score - cost).max(0.0));
-        costs.push(cost);
+        adjusted_scores[index] = (carry.score - cost).max(0.0);
+        costs[index] = cost;
     }
-    SupportOpportunityOutput {
-        support_pressure,
-        adjusted_scores,
-        costs,
-    }
+    support_pressure
 }
 
 pub fn select_best_overlap(input: &OverlapSelectionInput<'_>) -> OverlapSelectionOutput {
@@ -717,11 +718,10 @@ pub fn softmax_select_index(
     let temperature = ((0.0012 + score_spread * 0.10)
         * iq_temperature_factor(iq, 0.18, 0.62, 0.30))
     .clamp(0.0008, 0.018);
-    let weights: Vec<f64> = scores
+    let total_weight: f64 = scores
         .iter()
         .map(|score| ((score - max_score) / temperature).exp())
-        .collect();
-    let total_weight: f64 = weights.iter().sum();
+        .sum();
     if total_weight < 1e-10 {
         return Some(SoftmaxSelectionOutput {
             index: 0,
@@ -732,8 +732,63 @@ pub fn softmax_select_index(
 
     let threshold = roll.clamp(0.0, 1.0) * total_weight;
     let mut cumulative = 0.0;
-    for (idx, weight) in weights.iter().enumerate() {
-        cumulative += weight;
+    for (idx, score) in scores.iter().enumerate() {
+        cumulative += ((score - max_score) / temperature).exp();
+        if threshold <= cumulative {
+            return Some(SoftmaxSelectionOutput {
+                index: idx,
+                temperature,
+                total_weight,
+            });
+        }
+    }
+
+    Some(SoftmaxSelectionOutput {
+        index: scores.len() - 1,
+        temperature,
+        total_weight,
+    })
+}
+
+pub fn softmax_select_index_signed(
+    scores: &[f64],
+    iq: f64,
+    roll: f64,
+    fallback_index: usize,
+) -> Option<SoftmaxSelectionOutput> {
+    if scores.is_empty() {
+        return None;
+    }
+    if scores.len() == 1 {
+        return Some(SoftmaxSelectionOutput {
+            index: 0,
+            temperature: 0.0,
+            total_weight: 1.0,
+        });
+    }
+
+    let max_score = scores.iter().copied().fold(f64::NEG_INFINITY, f64::max);
+    let min_score = scores.iter().copied().fold(f64::INFINITY, f64::min);
+    let score_spread = (max_score - min_score).max(0.0);
+    let temperature = ((0.0012 + score_spread * 0.10)
+        * iq_temperature_factor(iq, 0.18, 0.62, 0.30))
+    .clamp(0.0008, 0.018);
+    let total_weight: f64 = scores
+        .iter()
+        .map(|score| ((score - max_score) / temperature).exp())
+        .sum();
+    if total_weight < 1e-10 {
+        return Some(SoftmaxSelectionOutput {
+            index: fallback_index % scores.len(),
+            temperature,
+            total_weight,
+        });
+    }
+
+    let threshold = roll.clamp(0.0, 1.0) * total_weight;
+    let mut cumulative = 0.0;
+    for (idx, score) in scores.iter().enumerate() {
+        cumulative += ((score - max_score) / temperature).exp();
         if threshold <= cumulative {
             return Some(SoftmaxSelectionOutput {
                 index: idx,
@@ -774,11 +829,11 @@ pub fn softmax_select_index_with_temperature(
             total_weight: 1.0,
         });
     }
-    let weights: Vec<f64> = scores
+    let weight_temperature = temperature.max(1e-9);
+    let total_weight: f64 = scores
         .iter()
-        .map(|score| ((score - max_score) / temperature.max(1e-9)).exp())
-        .collect();
-    let total_weight: f64 = weights.iter().sum();
+        .map(|score| ((score - max_score) / weight_temperature).exp())
+        .sum();
     if total_weight < 1e-10 {
         return Some(SoftmaxSelectionOutput {
             index: 0,
@@ -788,8 +843,8 @@ pub fn softmax_select_index_with_temperature(
     }
     let threshold = roll.clamp(0.0, 1.0) * total_weight;
     let mut cumulative = 0.0;
-    for (idx, weight) in weights.iter().enumerate() {
-        cumulative += weight;
+    for (idx, score) in scores.iter().enumerate() {
+        cumulative += ((score - max_score) / weight_temperature).exp();
         if threshold <= cumulative {
             return Some(SoftmaxSelectionOutput {
                 index: idx,
@@ -803,4 +858,109 @@ pub fn softmax_select_index_with_temperature(
         temperature,
         total_weight,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{
+        softmax_select_index, softmax_select_index_signed, softmax_select_index_with_temperature,
+        SoftmaxSelectionOutput,
+    };
+
+    fn reference_softmax(
+        scores: &[f64],
+        temperature: f64,
+        roll: f64,
+        fallback_index: usize,
+        fallback_when_all_small: bool,
+        fallback_on_underflow: bool,
+    ) -> SoftmaxSelectionOutput {
+        let max_score = scores.iter().copied().fold(f64::NEG_INFINITY, f64::max);
+        if fallback_when_all_small && max_score < 0.001 {
+            return SoftmaxSelectionOutput {
+                index: fallback_index % scores.len(),
+                temperature,
+                total_weight: 1.0,
+            };
+        }
+        let weights: Vec<f64> = scores
+            .iter()
+            .map(|score| ((score - max_score) / temperature.max(1e-9)).exp())
+            .collect();
+        let total_weight: f64 = weights.iter().sum();
+        if total_weight < 1e-10 {
+            return SoftmaxSelectionOutput {
+                index: if fallback_on_underflow {
+                    fallback_index % scores.len()
+                } else {
+                    0
+                },
+                temperature,
+                total_weight,
+            };
+        }
+        let threshold = roll.clamp(0.0, 1.0) * total_weight;
+        let mut cumulative = 0.0;
+        for (index, weight) in weights.iter().enumerate() {
+            cumulative += weight;
+            if threshold <= cumulative {
+                return SoftmaxSelectionOutput {
+                    index,
+                    temperature,
+                    total_weight,
+                };
+            }
+        }
+        SoftmaxSelectionOutput {
+            index: scores.len() - 1,
+            temperature,
+            total_weight,
+        }
+    }
+
+    fn assert_selection_matches(actual: SoftmaxSelectionOutput, expected: SoftmaxSelectionOutput) {
+        assert_eq!(actual.index, expected.index);
+        assert!((actual.temperature - expected.temperature).abs() <= 1e-15);
+        assert!((actual.total_weight - expected.total_weight).abs() <= 1e-12);
+    }
+
+    #[test]
+    fn signed_selection_keeps_the_least_damaging_option_when_all_advantages_are_negative() {
+        let selection = softmax_select_index_signed(&[-0.080, -0.012, -0.041], 0.8, 0.5, 0)
+            .expect("non-empty options should be selectable");
+
+        assert_eq!(selection.index, 1);
+        assert!(selection.total_weight > 1.0);
+    }
+
+    #[test]
+    fn allocation_free_softmaxes_match_weight_vector_reference() {
+        let scores = [0.17, 0.43, 0.24, 0.62, 0.41];
+        let roll = 0.731;
+        let iq = 0.78;
+
+        let standard = softmax_select_index(&scores, iq, roll, 3).expect("selection");
+        let max_score = scores.iter().copied().fold(f64::NEG_INFINITY, f64::max);
+        let min_score = scores.iter().copied().fold(f64::INFINITY, f64::min);
+        let standard_temperature = ((0.0012 + (max_score - min_score).max(0.0) * 0.10)
+            * crate::goal::iq_temperature_factor(iq, 0.18, 0.62, 0.30))
+        .clamp(0.0008, 0.018);
+        assert_selection_matches(
+            standard,
+            reference_softmax(&scores, standard_temperature, roll, 3, true, false),
+        );
+
+        let signed = softmax_select_index_signed(&scores, iq, roll, 3).expect("selection");
+        assert_selection_matches(
+            signed,
+            reference_softmax(&scores, standard_temperature, roll, 3, false, true),
+        );
+
+        let explicit =
+            softmax_select_index_with_temperature(&scores, 0.023, roll, 3).expect("selection");
+        assert_selection_matches(
+            explicit,
+            reference_softmax(&scores, 0.023, roll, 3, true, false),
+        );
+    }
 }
