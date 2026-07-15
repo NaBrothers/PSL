@@ -655,24 +655,7 @@ fn expected_pass_value_with_optional_receiver_pressure(
         + layoff_retention_value
         + pressure_release_value
         + stale_release_value;
-    let success_quality = smoothstep(0.10, 0.38, success_prob);
-    let mut risk_budget = high_threat_space
-        * (0.030
-            + 0.070 * smoothstep(0.05, 0.22, delta.max(0.0))
-            + 0.035 * smoothstep(0.02, 0.12, progress_gain.max(0.0)))
-        + final_third_combination * (0.020 + 0.050 * smoothstep(0.05, 0.20, delta.max(0.0)))
-        + wide_creation_space * (0.018 + 0.045 * smoothstep(0.04, 0.16, delta.max(0.0)))
-        + inside_arrival_space * (0.012 + 0.022 * success_prob)
-        + second_line_arrival_space * (0.010 + 0.020 * success_prob)
-        + receiver_goal_arrival_space * (0.014 + 0.026 * success_prob)
-        + second_line_cutback_space * (0.022 + 0.044 * success_prob)
-        + layoff_support_space * (0.024 + 0.048 * success_prob)
-        + short_combination_space * (0.014 + 0.030 * success_prob)
-        + layoff_retention_space * (0.025 + 0.035 * success_prob)
-        + pressure_release_space * (0.040 + 0.075 * success_prob)
-        + stale_release_space * (0.045 + 0.085 * success_prob);
-    risk_budget *= 0.20 + 0.80 * success_quality;
-    let risk_cost = ((1.0 - success_prob) * (0.07 + 0.24 * consequence) - risk_budget).max(0.0);
+    let risk_cost = (1.0 - success_prob) * (0.07 + 0.24 * consequence);
     let safe_retain_value = success_prob * (1.0 - lane_risk) * (1.0 - pressure);
     let negative_delta = (-delta).max(0.0);
     let effective_delta = delta + negative_delta * safe_retain_value * 0.72;
@@ -689,24 +672,8 @@ fn expected_pass_value_with_optional_receiver_pressure(
         * safe_retain_value
         * (0.030 + 0.055 * poor_current_shot);
     final_continuity += recycle_value + progression_value + rhythm_value + chance_creation_value;
-    let mut score = (success_prob * (effective_delta + final_continuity) - risk_cost).max(0.0);
-    let positive_delta_bonus = 1.0 + 0.45 * smoothstep(0.04, 0.16, delta);
-    score *= positive_delta_bonus;
-    let current_shot_window = smoothstep(0.065, 0.155, current_shot)
-        * smoothstep(0.68, 0.88, origin_progress)
-        * (1.0 - smoothstep(0.35, 0.78, attracted_pressure));
-    let pass_can_pay_for_window = high_threat_space
-        .max(final_third_combination)
-        .max(pressure_release_space * 0.70)
-        .max(stale_release_space * 0.55)
-        * success_quality;
-    let shoot_window_release_cost = current_shot_window
-        * (0.026
-            + 0.20 * current_shot
-            + 0.035 * smoothstep(0.0, 0.10, (-progress_gain).max(0.0))
-            + 0.025 * smoothstep(0.0, 0.22, (-delta).max(0.0)))
-        * (1.0 - 0.72 * smoothstep(0.18, 0.75, pass_can_pay_for_window));
-    score = (score - shoot_window_release_cost).max(0.0);
+    let immediate_progress = progress_gain.max(0.0);
+    let score = (success_prob * (0.018 + 0.18 * immediate_progress) - risk_cost).max(0.0);
 
     ExpectedPassOutput {
         score,
@@ -876,5 +843,102 @@ mod tests {
         assert!(clean_short > 0.80);
         assert!(contested_long < 0.55);
         assert!(clean_short > contested_long);
+    }
+
+    #[test]
+    fn local_pass_value_does_not_prepay_receiver_future_shooting() {
+        let teammate_positions = [
+            (1, 91.0, 39.0),
+            (2, 95.0, 34.0),
+            (3, 76.0, 22.0),
+        ];
+        let opponents = [(100.0, 34.0), (84.0, 22.0), (88.0, 54.0)];
+        let low_receiver_profiles = [
+            PlayerShotProfile {
+                player_index: 1,
+                finishing: 0.30,
+                long_shot: 0.30,
+            },
+            PlayerShotProfile {
+                player_index: 2,
+                finishing: 0.62,
+                long_shot: 0.62,
+            },
+            PlayerShotProfile {
+                player_index: 3,
+                finishing: 0.58,
+                long_shot: 0.58,
+            },
+        ];
+        let high_receiver_profiles = [
+            PlayerShotProfile {
+                player_index: 1,
+                finishing: 0.96,
+                long_shot: 0.96,
+            },
+            PlayerShotProfile {
+                player_index: 2,
+                finishing: 0.62,
+                long_shot: 0.62,
+            },
+            PlayerShotProfile {
+                player_index: 3,
+                finishing: 0.58,
+                long_shot: 0.58,
+            },
+        ];
+        let evaluate = |shot_profiles: &[PlayerShotProfile], receiver_finishing: f64| {
+            expected_pass_value(&ExpectedPassInput {
+                tick: 1,
+                passer_index: 0,
+                passer_team_home: true,
+                passer_pos: (84.0, 31.0),
+                passer_finishing: 0.78,
+                passer_long_shot: 0.74,
+                passer_consecutive_carries: 0,
+                receiver_index: 1,
+                receiver_team_home: true,
+                receiver_finishing,
+                receiver_long_shot: receiver_finishing,
+                receiver_anchor: (91.0, 39.0),
+                receiver_base: (84.0, 42.0),
+                receiver_goal_type: None,
+                receiver_goal_target: None,
+                receiver_goal_value: 0.0,
+                target: (91.0, 39.0),
+                shot_profiles,
+                teammate_positions: &teammate_positions,
+                teammate_goalkeeper_indices: &[],
+                opponent_positions: &opponents,
+                pitch_length: 105.0,
+                pitch_width: 68.0,
+                attacking_right: true,
+                interception_reach: 3.5,
+                shot_ideal_distance: 20.0,
+                shot_on_target_base: 0.52,
+                gk_save_base: 0.66,
+                gk_attributes: None,
+                gk_pos: Some((100.0, 34.0)),
+                contest_defenders: None,
+                current_value: 0.08,
+                base_accuracy: 0.91,
+                receiver_arrival: 0.86,
+                continuity: 0.055,
+                shot_quality_cache: None,
+            })
+        };
+
+        let low_receiver = evaluate(&low_receiver_profiles, 0.30);
+        let high_receiver = evaluate(&high_receiver_profiles, 0.96);
+
+        assert!(
+            high_receiver.after_value > low_receiver.after_value,
+            "the fixture must change the projected receipt state: low={low_receiver:?}, high={high_receiver:?}"
+        );
+        assert_eq!(
+            high_receiver.score.to_bits(),
+            low_receiver.score.to_bits(),
+            "candidate-local pass value must not prepay receiver-side continuation or terminal value; Temporal evaluates that state after the pass"
+        );
     }
 }

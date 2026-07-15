@@ -59,6 +59,7 @@ pub struct PassExecutionInput {
     pub is_long: bool,
     pub lane_risk: f64,
     pub retention_probability: f64,
+    pub technical_probability: f64,
     pub retention_roll: f64,
     pub pitch_length: f64,
     pub pitch_width: f64,
@@ -78,7 +79,9 @@ pub struct PassExecutionOutput {
     pub ticks_needed: i32,
     pub flight_type_code: u8,
     pub retention_probability: f64,
+    pub technical_probability: f64,
     pub retention_roll: f64,
+    pub technical_miss: bool,
     pub retained_possession: bool,
 }
 
@@ -310,8 +313,15 @@ pub fn execute_carry(input: &CarryExecutionInput<'_>) -> CarryExecutionOutput {
 pub fn execute_pass(input: &PassExecutionInput) -> PassExecutionOutput {
     let dist_to_target = distance(input.passer_pos, input.ideal_target);
     let ability_factor = (input.passing / 100.0).clamp(0.0, 1.0);
-    let error_radius =
-        (1.0 - ability_factor) * (1.2 + dist_to_target / 12.0) + input.lane_risk * 2.5;
+    let technical_probability = input.technical_probability.clamp(0.0, 1.0);
+    let technical_miss = input.retention_roll >= technical_probability;
+    let base_error_radius = (1.0 - ability_factor) * (1.2 + dist_to_target / 12.0);
+    let error_radius = base_error_radius
+        * if technical_miss {
+            3.0 + (dist_to_target / 45.0).min(0.8)
+        } else {
+            1.0
+        };
     let used_target_error = error_radius > 0.05;
     let target = if used_target_error {
         let angle = input.random_1 * std::f64::consts::TAU;
@@ -345,8 +355,10 @@ pub fn execute_pass(input: &PassExecutionInput) -> PassExecutionOutput {
         ticks_needed,
         flight_type_code: if input.is_long { 1 } else { 0 },
         retention_probability: input.retention_probability.clamp(0.0, 1.0),
+        technical_probability,
         retention_roll: input.retention_roll,
-        retained_possession: input.retention_roll < input.retention_probability.clamp(0.0, 1.0),
+        technical_miss,
+        retained_possession: true,
     }
 }
 

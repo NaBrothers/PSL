@@ -1,13 +1,17 @@
 use crate::goalkeeper::{compute_gk_save_probability_for_attributes, GkSaveAttributes};
-use crate::physics::{distance, player_speed, smoothstep};
+use crate::match_flow::{player_move_tick, PlayerMoveTickInput};
+use crate::physics::{distance, smoothstep};
 
 #[derive(Clone, Copy, Debug)]
 pub struct ArrivalPlayerInput {
     pub index: usize,
     pub pos: (f64, f64),
+    pub velocity: (f64, f64),
     pub target_pos: (f64, f64),
     pub current_goal_pos: Option<(f64, f64)>,
+    pub movement_intent: &'static str,
     pub speed: i32,
+    pub can_arrive: bool,
     pub is_passer: bool,
     pub is_intended: bool,
     pub is_passer_team: bool,
@@ -15,6 +19,7 @@ pub struct ArrivalPlayerInput {
 
 #[derive(Clone, Copy, Debug)]
 pub struct PassArrivalInput<'a> {
+    pub flight_origin: (f64, f64),
     pub target_pos: (f64, f64),
     pub flight_ticks_total: i32,
     pub passer_team_is_receiver_team: bool,
@@ -36,6 +41,8 @@ pub struct PassArrivalOutput {
     pub opponent_score: f64,
     pub opponent_control: f64,
     pub loose_control: f64,
+    pub contact_pos: (f64, f64),
+    pub contact_tick: i32,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -107,7 +114,9 @@ fn pass_arrival_score(
     player_min_speed_value: f64,
     target_occupation_weight: f64,
 ) -> f64 {
-    let speed = player_speed(player.speed, player_max_speed_value, player_min_speed_value);
+    if !player.can_arrive {
+        return f64::INFINITY;
+    }
     let mut target_bias = 0.0;
     if player.is_intended {
         target_bias += 0.75;
@@ -117,11 +126,41 @@ fn pass_arrival_score(
         target_bias += (1.0 - distance(goal_pos, target) / 16.0).max(0.0) * 0.65;
     }
     let committed_run = smoothstep(0.12, 0.82, target_bias);
-    let movement_share = 0.24 + 0.52 * committed_run;
+    let movement_target = if player.is_intended {
+        target
+    } else {
+        player.current_goal_pos.unwrap_or(player.target_pos)
+    };
+    let movement_intent = if player.is_intended {
+        "attack_run"
+    } else {
+        player.movement_intent
+    };
     let raw_dist = distance(player.pos, target);
-    let effective_dist = (raw_dist - speed * flight_ticks.max(0) as f64 * movement_share).max(0.0);
+    let mut projected_pos = player.pos;
+    let mut projected_velocity = player.velocity;
+    for _ in 0..flight_ticks.max(0) {
+        let movement = player_move_tick(&PlayerMoveTickInput {
+            pos: projected_pos,
+            velocity: projected_velocity,
+            speed_ability: player.speed,
+            target_pos: movement_target,
+            movement_intent,
+            state: "off_ball",
+            player_max_speed: player_max_speed_value,
+            player_min_speed: player_min_speed_value,
+            pitch_length: f64::MAX,
+            pitch_width: f64::MAX,
+        });
+        projected_pos = movement.pos;
+        projected_velocity = movement.velocity;
+    }
+    let effective_dist = distance(projected_pos, target);
     let occupation_weight = target_occupation_weight.max(0.0) * (1.0 - 0.55 * committed_run);
     let mut score = effective_dist + raw_dist * occupation_weight;
+    if player.is_intended {
+        score *= 0.58;
+    }
     if !team_side_is_passer {
         score += target_bias.max(0.0) * 0.18;
     }
@@ -176,6 +215,112 @@ fn best_arrival_player(
     (best_index, best_score)
 }
 
+fn projected_contact_distance(
+    player: ArrivalPlayerInput,
+    contact_pos: (f64, f64),
+    contact_tick: i32,
+    player_max_speed_value: f64,
+    player_min_speed_value: f64,
+) -> f64 {
+    if !player.can_arrive || player.is_passer {
+        return f64::INFINITY;
+    }
+
+    let movement_intent = if player.is_intended {
+        "attack_run"
+    } else {
+        "contest"
+    };
+    let mut projected_pos = player.pos;
+    let mut projected_velocity = player.velocity;
+    for _ in 0..contact_tick.max(0) {
+        let movement = player_move_tick(&PlayerMoveTickInput {
+            pos: projected_pos,
+            velocity: projected_velocity,
+            speed_ability: player.speed,
+            target_pos: contact_pos,
+            movement_intent,
+            state: "off_ball",
+            player_max_speed: player_max_speed_value,
+            player_min_speed: player_min_speed_value,
+            pitch_length: f64::MAX,
+            pitch_width: f64::MAX,
+        });
+        projected_pos = movement.pos;
+        projected_velocity = movement.velocity;
+    }
+    distance(projected_pos, contact_pos)
+}
+
+fn best_trajectory_contact_player(
+    players: &[ArrivalPlayerInput],
+    contact_pos: (f64, f64),
+    contact_tick: i32,
+    player_max_speed_value: f64,
+    player_min_speed_value: f64,
+    contest_radius: f64,
+) -> (Option<usize>, f64, f64) {
+    let mut best_index = None;
+    let mut best_distance = f64::INFINITY;
+    for player in players {
+        let contact_distance = projected_contact_distance(
+            *player,
+            contact_pos,
+            contact_tick,
+            player_max_speed_value,
+            player_min_speed_value,
+        );
+        if contact_distance < best_distance {
+            best_distance = contact_distance;
+            best_index = Some(player.index);
+        }
+    }
+    let control = (best_distance <= contest_radius)
+        .then(|| pass_control_strength(best_distance, contest_radius))
+        .unwrap_or(0.0);
+    (best_index, best_distance, control)
+}
+
+fn earliest_trajectory_contact(
+    input: &PassArrivalInput<'_>,
+) -> Option<PassArrivalOutput> {
+    let flight_ticks = input.flight_ticks_total.max(0);
+    if flight_ticks <= 1 || distance(input.flight_origin, input.target_pos) <= 1e-6 {
+        return None;
+    }
+
+    for contact_tick in 1..flight_ticks {
+        let progress = contact_tick as f64 / flight_ticks as f64;
+        let contact_pos = (
+            input.flight_origin.0 + (input.target_pos.0 - input.flight_origin.0) * progress,
+            input.flight_origin.1 + (input.target_pos.1 - input.flight_origin.1) * progress,
+        );
+        let (opponent_index, opponent_score, opponent_control) = best_trajectory_contact_player(
+            input.opponents,
+            contact_pos,
+            contact_tick,
+            input.player_max_speed,
+            input.player_min_speed,
+            input.contest_radius,
+        );
+        if opponent_control > 0.0 {
+            return Some(PassArrivalOutput {
+                winner_code: 1,
+                receiver_index: None,
+                receiver_score: f64::INFINITY,
+                receiver_control: 0.0,
+                opponent_index,
+                opponent_score,
+                opponent_control,
+                loose_control: pass_loose_control_strength(0.0, opponent_control),
+                contact_pos,
+                contact_tick,
+            });
+        }
+    }
+    None
+}
+
 fn pitch_clamp(pos: (f64, f64), pitch_length: f64, pitch_width: f64) -> (f64, f64) {
     (
         pos.0.clamp(0.5, pitch_length - 0.5),
@@ -202,6 +347,9 @@ pub fn resolve_first_touch(input: &FirstTouchInput) -> FirstTouchOutput {
 }
 
 pub fn resolve_pass_arrival(input: &PassArrivalInput<'_>) -> PassArrivalOutput {
+    if let Some(contact) = earliest_trajectory_contact(input) {
+        return contact;
+    }
     let (receiver_index, receiver_score) = best_arrival_player(
         input.receivers,
         input.target_pos,
@@ -239,6 +387,8 @@ pub fn resolve_pass_arrival(input: &PassArrivalInput<'_>) -> PassArrivalOutput {
         opponent_score,
         opponent_control,
         loose_control,
+        contact_pos: input.target_pos,
+        contact_tick: input.flight_ticks_total.max(0),
     }
 }
 
@@ -306,5 +456,109 @@ pub fn resolve_clearance_arrival(input: &ClearanceArrivalInput<'_>) -> Clearance
             home_distance,
             away_distance,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn arrival_player(
+        index: usize,
+        pos: (f64, f64),
+        is_passer: bool,
+        is_intended: bool,
+    ) -> ArrivalPlayerInput {
+        ArrivalPlayerInput {
+            index,
+            pos,
+            velocity: (0.0, 0.0),
+            target_pos: pos,
+            current_goal_pos: Some(pos),
+            movement_intent: "support",
+            speed: 80,
+            can_arrive: true,
+            is_passer,
+            is_intended,
+            is_passer_team: true,
+        }
+    }
+
+    #[test]
+    fn committed_receiver_can_control_a_ball_reached_during_flight() {
+        let target = (5.0, 0.0);
+        let receiver = arrival_player(1, (0.0, 0.0), false, true);
+        let passer = arrival_player(0, (-10.0, 0.0), true, false);
+        let arrival = resolve_pass_arrival(&PassArrivalInput {
+            flight_origin: passer.pos,
+            target_pos: target,
+            flight_ticks_total: 2,
+            passer_team_is_receiver_team: true,
+            contest_radius: 2.5,
+            player_max_speed: 5.5,
+            player_min_speed: 2.5,
+            target_occupation_weight: 0.18,
+            receivers: &[passer, receiver],
+            opponents: &[],
+        });
+
+        assert!(
+            distance(receiver.pos, target) > 2.5,
+            "the receiver starts outside the legacy static contest radius"
+        );
+        assert_eq!(arrival.winner_code, 0);
+        assert_eq!(arrival.receiver_index, Some(receiver.index));
+        assert!(arrival.receiver_control > arrival.loose_control);
+    }
+
+    #[test]
+    fn defender_in_a_long_lateral_pass_corridor_cuts_it_out_before_the_target() {
+        let target = (52.0, 62.0);
+        let passer = arrival_player(0, (52.0, 6.0), true, false);
+        let receiver = arrival_player(1, target, false, true);
+        let interceptor = arrival_player(7, (52.0, 34.0), false, false);
+
+        let arrival = resolve_pass_arrival(&PassArrivalInput {
+            flight_origin: passer.pos,
+            target_pos: target,
+            flight_ticks_total: 4,
+            passer_team_is_receiver_team: true,
+            contest_radius: 2.5,
+            player_max_speed: 8.0,
+            player_min_speed: 2.5,
+            target_occupation_weight: 0.18,
+            receivers: &[passer, receiver],
+            opponents: &[interceptor],
+        });
+
+        assert_eq!(arrival.winner_code, 1);
+        assert_eq!(arrival.opponent_index, Some(interceptor.index));
+        assert!(arrival.opponent_control > arrival.receiver_control);
+    }
+
+    #[test]
+    fn teammate_in_a_pass_corridor_does_not_shorten_the_intended_pass() {
+        let target = (52.0, 62.0);
+        let passer = arrival_player(0, (52.0, 6.0), true, false);
+        let receiver = arrival_player(1, target, false, true);
+        let supporting_teammate = arrival_player(2, (52.0, 34.0), false, false);
+
+        let arrival = resolve_pass_arrival(&PassArrivalInput {
+            flight_origin: passer.pos,
+            target_pos: target,
+            flight_ticks_total: 4,
+            passer_team_is_receiver_team: true,
+            contest_radius: 2.5,
+            player_max_speed: 8.0,
+            player_min_speed: 2.5,
+            target_occupation_weight: 0.18,
+            receivers: &[passer, receiver, supporting_teammate],
+            opponents: &[],
+        });
+
+        assert_eq!(arrival.winner_code, 0);
+        assert_eq!(arrival.receiver_index, Some(receiver.index));
+        assert_eq!(arrival.contact_pos, target);
+        assert_eq!(arrival.contact_tick, 4);
     }
 }

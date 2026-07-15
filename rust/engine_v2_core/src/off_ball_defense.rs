@@ -8,7 +8,7 @@ use crate::position_value::{defensive_position_value, DefensivePositionValueInpu
 use crate::shot_quality::{
     estimate_shot_contest, shot_contest_engagement, shot_contest_intent, ShotContestDefender,
 };
-use crate::team_plan::{team_plan_movement_target, TeamPlanSignals};
+use crate::team_plan::TeamPlanSignals;
 
 #[derive(Clone, Copy, Debug)]
 pub struct DefenseTeammateInput {
@@ -75,7 +75,7 @@ pub struct DefenseScoreOutput {
     pub residual_threat: f64,
     pub base_score: f64,
     pub press_value: f64,
-    pub pressure_responsibility: f64,
+    pub press_access: f64,
     pub carrier_threat: f64,
     pub shot_lane_closure: f64,
     pub best_mark_value: f64,
@@ -88,7 +88,7 @@ struct DefenseScoreContext {
     dist_to_ball: f64,
     shot_danger: f64,
     carrier_control_threat: f64,
-    pressure_responsibility: f64,
+    press_access: f64,
     immediate_threat: f64,
 }
 
@@ -169,7 +169,7 @@ pub struct DefenseChoiceOutput {
     pub goal_candidates: Vec<DefenseGoalCandidate>,
     pub used_roll: bool,
     pub used_random_choice: bool,
-    pub pressure_responsibility: f64,
+    pub press_access: f64,
     pub shot_danger: f64,
     pub carrier_control_threat: f64,
     pub base_score: f64,
@@ -187,7 +187,7 @@ pub struct DefensePreparedChoice {
     dangerous_receivers_count: usize,
     shot_danger: f64,
     carrier_control_threat: f64,
-    pressure_responsibility: f64,
+    press_access: f64,
 }
 
 impl DefensePreparedChoice {
@@ -220,38 +220,21 @@ fn pitch_clamp(pos: (f64, f64), pitch_length: f64, pitch_width: f64) -> (f64, f6
 
 pub fn defense_action_movement_intent(action: &str) -> &'static str {
     match action {
-        "tackle" | "approach" => "press",
+        "close_down" | "tackle" | "approach" => "press",
         "mark_runner" => "mark",
         "block_lane" => "block_lane",
         _ => "defend_shape",
     }
 }
 
-fn defense_task_commitment(action: &str, defender_pos: (f64, f64), target: (f64, f64)) -> f64 {
-    let role_commitment = match action {
-        "tackle" => 0.94,
-        "approach" => 0.82,
-        "block_lane" => 0.64,
-        "mark_runner" => 0.56,
-        _ => 0.0,
-    };
-    let travel_commitment = smoothstep(0.0, 12.0, distance(defender_pos, target));
-    role_commitment * (0.58 + 0.42 * travel_commitment)
-}
-
 pub fn project_defense_action_motion(
     defender_pos: (f64, f64),
     target: (f64, f64),
-    anchor: (f64, f64),
+    _anchor: (f64, f64),
     action: &str,
     movement: DefenseMovementInput<'_>,
 ) -> DefenseMotionOutput {
-    let formation_target = team_plan_movement_target(target, anchor, movement.plan_signals);
-    let task_commitment = defense_task_commitment(action, defender_pos, target);
-    let movement_target = (
-        formation_target.0 * (1.0 - task_commitment) + target.0 * task_commitment,
-        formation_target.1 * (1.0 - task_commitment) + target.1 * task_commitment,
-    );
+    let movement_target = target;
     let tick = player_move_tick(&PlayerMoveTickInput {
         pos: defender_pos,
         target_pos: movement_target,
@@ -271,6 +254,48 @@ pub fn project_defense_action_motion(
         distance_covered: tick.distance_covered,
         facing_direction: tick.facing_direction,
     }
+}
+
+fn closest_distance_to_motion_segment(
+    point: (f64, f64),
+    start: (f64, f64),
+    end: (f64, f64),
+) -> f64 {
+    let direction = (end.0 - start.0, end.1 - start.1);
+    let length_squared = direction.0 * direction.0 + direction.1 * direction.1;
+    if length_squared <= 1e-9 {
+        return distance(point, start);
+    }
+    let projected = ((point.0 - start.0) * direction.0 + (point.1 - start.1) * direction.1)
+        / length_squared;
+    let fraction = projected.clamp(0.0, 1.0);
+    distance(
+        point,
+        (
+            start.0 + direction.0 * fraction,
+            start.1 + direction.1 * fraction,
+        ),
+    )
+}
+
+fn close_down_contact_window(
+    defender_pos: (f64, f64),
+    carrier_pos: (f64, f64),
+    anchor: (f64, f64),
+    tackle_range: f64,
+    movement: DefenseMovementInput<'_>,
+) -> f64 {
+    let motion = project_defense_action_motion(
+        defender_pos,
+        carrier_pos,
+        anchor,
+        "close_down",
+        movement,
+    );
+    let approach_reach = (0.75 + 0.36 * tackle_range.max(0.0)) * 0.94;
+    let closest_distance =
+        closest_distance_to_motion_segment(carrier_pos, defender_pos, motion.pos);
+    1.0 - smoothstep(approach_reach * 0.72, approach_reach, closest_distance)
 }
 
 fn shot_lane_closure(
@@ -300,85 +325,18 @@ fn shot_lane_closure(
     lane.max(0.0) * (0.42 + 0.58 * depth.max(0.0))
 }
 
-fn press_responsibility_weight(
-    pos: (f64, f64),
-    anchor: (f64, f64),
-    ball_pos: (f64, f64),
+fn local_press_access(
+    defender_pos: (f64, f64),
+    ball_carrier_pos: Option<(f64, f64)>,
     press_radius: f64,
-    urgency: f64,
 ) -> f64 {
-    let press_scale = press_radius.max(0.1);
-    let travel_cost = distance(pos, ball_pos) / press_scale;
-    let shape_cost = distance(pos, anchor) / press_scale;
-    (-2.35 * travel_cost - (0.72 - 0.52 * urgency.clamp(0.0, 1.0)) * shape_cost).exp()
-}
-
-fn joint_press_responsibility(
-    input: &DefenseScoreInput<'_>,
-    shot_danger: f64,
-    carrier_control_threat: f64,
-) -> f64 {
-    if input.ball_carrier_pos.is_none() {
-        return 0.0;
-    }
-    let urgency = shot_danger.max(carrier_control_threat);
-    let own_weight = press_responsibility_weight(
-        input.defender_pos,
-        input.anchor,
-        input.ball_pos,
-        input.press_radius,
-        urgency,
-    );
-    let teammate_weight = input
-        .teammates
-        .iter()
-        .map(|teammate| {
-            press_responsibility_weight(
-                teammate.pos,
-                teammate.anchor,
-                input.ball_pos,
-                input.press_radius,
-                urgency,
-            )
-        })
-        .sum::<f64>();
-    own_weight / (own_weight + teammate_weight).max(1e-9)
-}
-
-#[cfg(test)]
-fn joint_choice_press_responsibility(
-    input: &DefenseChoiceInput<'_>,
-    shot_danger: f64,
-    carrier_control_threat: f64,
-) -> f64 {
-    joint_press_responsibility(
-        &DefenseScoreInput {
-            defender_pos: input.defender_pos,
-            anchor: input.anchor,
-            base_ref: input.base_ref,
-            ball_pos: input.ball_pos,
-            ball_carrier_pos: input.ball_carrier_pos,
-            ball_carrier_consecutive_carries: input.ball_carrier_consecutive_carries,
-            ball_carrier_possession_ticks: input.ball_carrier_possession_ticks,
-            carrier_control_readiness: input.carrier_control_readiness,
-            attacking_right: input.attacking_right,
-            pitch_length: input.pitch_length,
-            pitch_width: input.pitch_width,
-            press_radius: input.press_radius,
-            tackle_range: input.tackle_range,
-            carrier_speed: input.carrier_speed,
-            press_intensity: input.press_intensity,
-            compactness: input.compactness,
-            movement: input.movement,
-            candidates: &[],
-            attackers: input.attackers,
-            local_attackers: &[],
-            dangerous_receivers: &[],
-            teammates: input.teammates,
-        },
-        shot_danger,
-        carrier_control_threat,
-    )
+    ball_carrier_pos.map_or(0.0, |carrier_pos| {
+        1.0 - smoothstep(
+            press_radius.max(0.1) * 0.45,
+            press_radius.max(0.1) * 1.20,
+            distance(defender_pos, carrier_pos),
+        )
+    })
 }
 
 fn carrier_control_threat(input: &DefenseScoreInput<'_>) -> f64 {
@@ -389,7 +347,11 @@ fn carrier_control_threat(input: &DefenseScoreInput<'_>) -> f64 {
         .chain(input.teammates.iter().map(|teammate| teammate.pos))
         .map(|defender_pos| distance(defender_pos, carrier_pos))
         .fold(f64::INFINITY, f64::min);
-    let control_duration = 1.0 - (-(input.ball_carrier_possession_ticks.max(0) as f64) / 4.0).exp();
+    let settled_control =
+        1.0 - (-(input.ball_carrier_possession_ticks.max(0) as f64) / 4.0).exp();
+    let receiving_window =
+        (1.0 - settled_control) * (0.30 + 0.70 * input.carrier_control_readiness.clamp(0.0, 1.0));
+    let control_duration = settled_control.max(receiving_window);
     let pressure_arrival_scale = (input.press_radius * 0.55).max(0.1);
     let pressure_absence = 1.0 - (-nearest_defender_distance / pressure_arrival_scale).exp();
     let control_availability = input.carrier_control_readiness.clamp(0.0, 1.0);
@@ -410,7 +372,6 @@ pub(crate) struct FixedDefenseTeamContext {
     own_goal: (f64, f64),
     shot_danger: f64,
     carrier_control_threat: f64,
-    pressure_responsibilities: [f64; MAX_FIXED_TEAM_DEFENSE_PLAYERS],
 }
 
 pub(crate) fn fixed_defense_team_context(
@@ -439,37 +400,17 @@ pub(crate) fn fixed_defense_team_context(
             .iter()
             .map(|defender| distance(defender.pos, carrier_pos))
             .fold(f64::INFINITY, f64::min);
-        let control_duration = 1.0 - (-(ball_carrier_possession_ticks.max(0) as f64) / 4.0).exp();
+        let settled_control =
+            1.0 - (-(ball_carrier_possession_ticks.max(0) as f64) / 4.0).exp();
+        let receiving_window =
+            (1.0 - settled_control) * (0.30 + 0.70 * carrier_control_readiness.clamp(0.0, 1.0));
+        let control_duration = settled_control.max(receiving_window);
         let pressure_arrival_scale = (press_radius * 0.55).max(0.1);
         let pressure_absence = 1.0 - (-nearest_defender_distance / pressure_arrival_scale).exp();
         let control_availability = carrier_control_readiness.clamp(0.0, 1.0);
         (control_duration * (0.24 + 0.76 * control_availability) * (0.18 + 0.82 * pressure_absence))
             .clamp(0.0, 1.0)
     });
-    let mut pressure_responsibilities = [0.0; MAX_FIXED_TEAM_DEFENSE_PLAYERS];
-    if ball_carrier_pos.is_some() {
-        let urgency = shot_danger.max(carrier_control_threat);
-        let mut weights = [0.0; MAX_FIXED_TEAM_DEFENSE_PLAYERS];
-        for (index, defender) in defenders.iter().enumerate() {
-            weights[index] = press_responsibility_weight(
-                defender.pos,
-                defender.anchor,
-                ball_pos,
-                press_radius,
-                urgency,
-            );
-        }
-        for defender_index in 0..defenders.len() {
-            let mut teammate_weight = 0.0;
-            for (teammate_index, weight) in weights[..defenders.len()].iter().enumerate() {
-                if teammate_index != defender_index {
-                    teammate_weight += weight;
-                }
-            }
-            pressure_responsibilities[defender_index] =
-                weights[defender_index] / (weights[defender_index] + teammate_weight).max(1e-9);
-        }
-    }
     FixedDefenseTeamContext {
         defender_count: defenders.len(),
         defender_positions,
@@ -477,7 +418,6 @@ pub(crate) fn fixed_defense_team_context(
         own_goal,
         shot_danger,
         carrier_control_threat,
-        pressure_responsibilities,
     }
 }
 
@@ -503,7 +443,11 @@ impl FixedDefenseTeamContext {
             dist_to_ball,
             shot_danger: self.shot_danger,
             carrier_control_threat: self.carrier_control_threat,
-            pressure_responsibility: self.pressure_responsibilities[defender_index],
+            press_access: local_press_access(
+                input.defender_pos,
+                input.ball_carrier_pos,
+                input.press_radius,
+            ),
             immediate_threat,
         }
     }
@@ -520,7 +464,7 @@ pub struct FixedDefensePreparedChoice {
     pub candidate_projected_positions: [(f64, f64); MAX_FIXED_TEAM_DEFENSE_CANDIDATES],
     pub candidate_action_types: [&'static str; MAX_FIXED_TEAM_DEFENSE_CANDIDATES],
     pub candidate_residual_threats: [f64; MAX_FIXED_TEAM_DEFENSE_CANDIDATES],
-    pub pressure_responsibility: f64,
+    pub press_access: f64,
     pub shot_danger: f64,
     pub carrier_control_threat: f64,
 }
@@ -714,6 +658,7 @@ fn generate_defense_raw_candidates_into(
 fn candidate_defense_action_type(
     raw_target: (f64, f64),
     defender_pos: (f64, f64),
+    anchor: (f64, f64),
     ball_pos: (f64, f64),
     ball_carrier_pos: Option<(f64, f64)>,
     attacking_right: bool,
@@ -724,9 +669,9 @@ fn candidate_defense_action_type(
     dist_to_ball: f64,
     shot_danger: f64,
     carrier_control_threat: f64,
-    pressure_responsibility: f64,
     dangerous_receivers: &[(f64, f64)],
     local_attackers: &[(f64, f64)],
+    movement: DefenseMovementInput<'_>,
 ) -> &'static str {
     let Some(carrier_pos) = ball_carrier_pos else {
         if dangerous_receivers
@@ -750,31 +695,44 @@ fn candidate_defense_action_type(
 
     let own_goal_x = if attacking_right { 0.0 } else { pitch_length };
     let carrier_distance = distance(raw_target, carrier_pos);
-    let defender_access = (-distance(defender_pos, ball_pos) / press_radius.max(0.1)).exp();
+    let defender_access = 1.0
+        - smoothstep(
+            press_radius.max(0.1) * 0.45,
+            press_radius.max(0.1) * 1.20,
+            distance(defender_pos, carrier_pos),
+        );
     let target_access = (-carrier_distance / press_radius.max(0.1)).exp();
     let physical_contact_range = 0.75 + 0.36 * tackle_range.max(0.0);
-    let tackle_target_alignment = 1.0
-        - smoothstep(
-            physical_contact_range * 0.35,
-            physical_contact_range,
-            carrier_distance,
-        );
+    let contact_window = close_down_contact_window(
+        defender_pos,
+        carrier_pos,
+        anchor,
+        tackle_range,
+        movement,
+    );
+    let tackle_target_alignment =
+        1.0 - smoothstep(physical_contact_range * 0.35, physical_contact_range, carrier_distance);
     let tackle_immediacy = 1.0
         - smoothstep(
             physical_contact_range * 0.30,
             physical_contact_range * 1.25,
             dist_to_ball,
         );
-    let carrier_urgency =
-        (0.12 + 0.88 * shot_danger.max(carrier_control_threat)) * pressure_responsibility;
+    let carrier_urgency = 0.12 + 0.88 * shot_danger.max(carrier_control_threat);
     let tackle_value = carrier_urgency
+        * contact_window
         * (0.40 + 0.60 * defender_access)
         * tackle_target_alignment
         * tackle_immediacy;
     let approach_value = carrier_urgency
+        * contact_window
         * target_access
         * (1.0 - tackle_immediacy)
-        * (0.42 + 0.58 * defender_access);
+        * (0.20 + 0.80 * defender_access);
+    let close_down_value = carrier_urgency
+        * defender_access
+        * (0.34 + 0.66 * target_access)
+        * (1.0 - contact_window);
     let non_contact_target = 1.0 - tackle_target_alignment;
     let mark_value = dangerous_receivers
         .iter()
@@ -800,6 +758,7 @@ fn candidate_defense_action_type(
     [
         ("tackle", tackle_value),
         ("approach", approach_value),
+        ("close_down", close_down_value),
         ("mark_runner", mark_value),
         ("block_lane", block_value),
         ("hold_position", 0.04),
@@ -835,8 +794,6 @@ fn defense_score_context(input: &DefenseScoreInput<'_>) -> DefenseScoreContext {
     let dist_to_ball = distance(input.defender_pos, input.ball_pos);
     let carrier_control_threat = carrier_control_threat(input);
 
-    let pressure_responsibility =
-        joint_press_responsibility(input, shot_danger, carrier_control_threat);
     let immediate_threat = 1.0 - (1.0 - shot_danger) * (1.0 - carrier_control_threat);
     DefenseScoreContext {
         own_goal_x,
@@ -844,7 +801,11 @@ fn defense_score_context(input: &DefenseScoreInput<'_>) -> DefenseScoreContext {
         dist_to_ball,
         shot_danger,
         carrier_control_threat,
-        pressure_responsibility,
+        press_access: local_press_access(
+            input.defender_pos,
+            input.ball_carrier_pos,
+            input.press_radius,
+        ),
         immediate_threat,
     }
 }
@@ -859,6 +820,7 @@ fn score_defense_candidate(
     let candidate_action = candidate_defense_action_type(
         point,
         input.defender_pos,
+        input.anchor,
         input.ball_pos,
         input.ball_carrier_pos,
         input.attacking_right,
@@ -869,11 +831,11 @@ fn score_defense_candidate(
         context.dist_to_ball,
         context.shot_danger,
         context.carrier_control_threat,
-        context.pressure_responsibility,
         input.dangerous_receivers,
         input.local_attackers,
+        input.movement,
     );
-    let task_target = if matches!(candidate_action, "tackle" | "approach") {
+    let task_target = if matches!(candidate_action, "close_down" | "tackle" | "approach") {
         input.ball_carrier_pos.unwrap_or(point)
     } else {
         point
@@ -928,9 +890,7 @@ fn score_defense_candidate(
     let press_value = input.ball_carrier_pos.map_or(0.0, |carrier_pos| {
         (1.0 - distance(motion.pos, carrier_pos) / input.press_radius.max(0.1)).max(0.0)
     });
-    let cover_cost = (input.local_attackers.len() as f64 * 0.08
-        + (1.0 - context.pressure_responsibility) * 0.16)
-        .min(0.75);
+    let cover_cost = (input.local_attackers.len() as f64 * 0.08).min(0.32);
     let carrier_threat = 0.35 + 0.65 * context.shot_danger.max(context.carrier_control_threat);
     let anchor_distance = distance(motion.pos, input.anchor);
     let structure_factor =
@@ -980,7 +940,7 @@ fn score_defense_candidate(
         residual_threat,
         base_score,
         press_value,
-        pressure_responsibility: context.pressure_responsibility,
+        press_access: context.press_access,
         carrier_threat,
         shot_lane_closure: lane_closure,
         best_mark_value,
@@ -1174,13 +1134,13 @@ fn defense_action_type(
     dist_to_ball: f64,
     shot_danger: f64,
     carrier_control_threat: f64,
-    pressure_responsibility: f64,
     dangerous_receivers: &[(f64, f64)],
     local_attackers: &[(f64, f64)],
 ) -> &'static str {
     candidate_defense_action_type(
         raw_target,
         input.defender_pos,
+        input.anchor,
         input.ball_pos,
         input.ball_carrier_pos,
         input.attacking_right,
@@ -1191,9 +1151,9 @@ fn defense_action_type(
         dist_to_ball,
         shot_danger,
         carrier_control_threat,
-        pressure_responsibility,
         dangerous_receivers,
         local_attackers,
+        input.movement,
     )
 }
 
@@ -1397,7 +1357,7 @@ pub(crate) fn prepare_fixed_defense_choice_with_team_context(
         candidate_projected_positions: [(0.0, 0.0); MAX_FIXED_TEAM_DEFENSE_CANDIDATES],
         candidate_action_types: ["hold_position"; MAX_FIXED_TEAM_DEFENSE_CANDIDATES],
         candidate_residual_threats: [1.0; MAX_FIXED_TEAM_DEFENSE_CANDIDATES],
-        pressure_responsibility: 0.0,
+        press_access: 0.0,
         shot_danger,
         carrier_control_threat,
     };
@@ -1410,7 +1370,7 @@ pub(crate) fn prepare_fixed_defense_choice_with_team_context(
             skip_teammate_index,
         );
         if index == 0 {
-            prepared.pressure_responsibility = candidate.pressure_responsibility;
+            prepared.press_access = candidate.press_access;
         }
         prepared.candidate_targets[index] = candidate.target;
         prepared.candidate_scores[index] = candidate.score;
@@ -1616,7 +1576,7 @@ pub fn prepare_defense_choice(input: &DefenseChoiceInput<'_>) -> Option<DefenseP
     }
     Some(DefensePreparedChoice {
         raw_targets: raw_points,
-        pressure_responsibility: scored[0].pressure_responsibility,
+        press_access: scored[0].press_access,
         scored,
         local_attackers_count: local_attackers.len(),
         dangerous_receivers_count: dangerous_receivers.len(),
@@ -1746,7 +1706,7 @@ pub fn select_prepared_defense_action(
         goal_candidates,
         used_roll: selection.used_roll,
         used_random_choice: selection.used_random_choice,
-        pressure_responsibility: prepared.pressure_responsibility,
+        press_access: prepared.press_access,
         shot_danger: prepared.shot_danger,
         carrier_control_threat: prepared.carrier_control_threat,
         base_score: chosen.base_score,
@@ -1773,8 +1733,7 @@ mod tests {
     use super::{
         best_fixed_team_defense_candidate, best_fixed_team_defense_candidate_with_team_context,
         choose_defense_action, defense_action_type, fixed_defense_random_branch,
-        fixed_defense_team_context, joint_choice_press_responsibility, joint_press_responsibility,
-        prepare_defense_choice, prepare_fixed_defense_choice,
+        fixed_defense_team_context, prepare_defense_choice, prepare_fixed_defense_choice,
         prepare_fixed_defense_choice_with_team_context, score_defense_candidates,
         select_fixed_defense_action, select_prepared_defense_action,
         select_prepared_defense_candidate, DefenseChoiceInput, DefenseMovementInput,
@@ -1836,7 +1795,7 @@ mod tests {
         assert_field!(residual_threat);
         assert_field!(base_score);
         assert_field!(press_value);
-        assert_field!(pressure_responsibility);
+        assert_field!(press_access);
         assert_field!(carrier_threat);
         assert_field!(shot_lane_closure);
         assert_field!(best_mark_value);
@@ -1853,8 +1812,8 @@ mod tests {
             expected.dangerous_receivers_count
         );
         assert_eq!(
-            actual.pressure_responsibility.to_bits(),
-            expected.pressure_responsibility.to_bits()
+            actual.press_access.to_bits(),
+            expected.press_access.to_bits()
         );
         assert_eq!(actual.shot_danger.to_bits(), expected.shot_danger.to_bits());
         assert_eq!(
@@ -2029,14 +1988,15 @@ mod tests {
     }
 
     #[test]
-    fn joint_responsibility_concentrates_on_the_reachable_primary_engager() {
-        let teammates = teammates();
-        let primary = DefenseScoreInput {
+    fn nearby_teammates_do_not_dilute_local_press_candidates() {
+        let nearby_teammates = teammates();
+        let carrier = (84.0, 34.0);
+        let with_teammates = DefenseScoreInput {
             defender_pos: (82.0, 34.0),
             anchor: (80.0, 34.0),
             base_ref: (80.0, 34.0),
-            ball_pos: (84.0, 34.0),
-            ball_carrier_pos: Some((84.0, 34.0)),
+            ball_pos: carrier,
+            ball_carrier_pos: Some(carrier),
             ball_carrier_consecutive_carries: 3,
             ball_carrier_possession_ticks: 4,
             carrier_control_readiness: 0.80,
@@ -2053,57 +2013,37 @@ mod tests {
             attackers: &[],
             local_attackers: &[],
             dangerous_receivers: &[],
-            teammates: &teammates,
+            teammates: &nearby_teammates,
         };
-        let secondary = DefenseScoreInput {
-            defender_pos: teammates[0].pos,
-            anchor: teammates[0].anchor,
-            base_ref: teammates[0].anchor,
-            ..primary
+        let isolated = DefenseScoreInput {
+            teammates: &[],
+            ..with_teammates
         };
-        let primary_share = joint_press_responsibility(&primary, 0.74, 0.55);
-        let secondary_share = joint_press_responsibility(&secondary, 0.74, 0.55);
+        let with_teammates_choice =
+            score_defense_candidates(&DefenseScoreInput {
+                candidates: &[carrier],
+                ..with_teammates
+            })
+            .remove(0);
+        let isolated_choice = score_defense_candidates(&DefenseScoreInput {
+            candidates: &[carrier],
+            ..isolated
+        })
+        .remove(0);
 
-        assert!(primary_share > secondary_share);
         assert!(
-            primary_share > 0.45,
-            "the nearest defender must retain a meaningful primary-engager share: {primary_share}"
+            matches!(with_teammates_choice.action_type, "tackle" | "approach"),
+            "nearby visible teammates must not suppress this player's executable press: {with_teammates_choice:?}"
         );
-    }
-
-    #[test]
-    fn responsibility_is_a_team_distribution_not_a_local_crowd_penalty() {
-        let teammates = teammates();
-        let input = DefenseChoiceInput {
-            defender_pos: (82.0, 34.0),
-            anchor: (80.0, 34.0),
-            base_ref: (80.0, 34.0),
-            ball_pos: (84.0, 34.0),
-            ball_carrier_pos: Some((84.0, 34.0)),
-            ball_carrier_consecutive_carries: 3,
-            ball_carrier_possession_ticks: 4,
-            carrier_control_readiness: 0.80,
-            attacking_right: false,
-            pitch_length: 105.0,
-            pitch_width: 68.0,
-            press_radius: 12.0,
-            tackle_range: 6.0,
-            carrier_speed: 3.0,
-            press_intensity: 0.7,
-            compactness: 0.6,
-            movement: movement(),
-            iq: 1.0,
-            attackers: &[],
-            teammates: &teammates,
-            random_samples: &[],
-            score_noises: &[],
-            roll_by_count: &[],
-            fallback_index_by_count: &[],
-        };
-        let responsibility = joint_choice_press_responsibility(&input, 0.74, 0.55);
-
-        assert!(responsibility > 0.45);
-        assert!(responsibility <= 1.0);
+        assert_eq!(
+            with_teammates_choice.action_type,
+            isolated_choice.action_type,
+            "candidate semantics are local; team responsibility is assigned later"
+        );
+        assert_eq!(
+            with_teammates_choice.press_access.to_bits(),
+            isolated_choice.press_access.to_bits()
+        );
     }
 
     #[test]
@@ -2172,7 +2112,7 @@ mod tests {
             fallback_index_by_count: &[],
         };
 
-        let action = defense_action_type((84.0, 34.0), &input, 2.0, 0.6, 0.6, 0.7, &[], &[]);
+        let action = defense_action_type((84.0, 34.0), &input, 2.0, 0.6, 0.6, &[], &[]);
         assert!(
             matches!(action, "tackle" | "approach"),
             "the reachable primary defender must engage the carrier, got {action}"
@@ -2209,7 +2149,7 @@ mod tests {
             fallback_index_by_count: &[],
         };
 
-        let action = defense_action_type((48.0, 28.0), &input, 2.0, 0.6, 0.6, 0.7, &[], &[]);
+        let action = defense_action_type((48.0, 28.0), &input, 2.0, 0.6, 0.6, &[], &[]);
         assert_ne!(
             action, "tackle",
             "a defender moving away from the carrier cannot have tackle contact semantics"
@@ -2270,6 +2210,61 @@ mod tests {
     }
 
     #[test]
+    fn receiving_window_with_cover_triggers_local_engagement() {
+        let teammates = [
+            DefenseTeammateInput {
+                pos: (47.0, 34.0),
+                target_pos: (47.0, 34.0),
+                anchor: (47.0, 34.0),
+            },
+            DefenseTeammateInput {
+                pos: (50.0, 26.0),
+                target_pos: (50.0, 26.0),
+                anchor: (50.0, 26.0),
+            },
+        ];
+        let carrier = (54.0, 34.0);
+        let input = DefenseChoiceInput {
+            defender_pos: (50.0, 34.0),
+            anchor: (50.0, 34.0),
+            base_ref: (50.0, 34.0),
+            ball_pos: carrier,
+            ball_carrier_pos: Some(carrier),
+            ball_carrier_consecutive_carries: 0,
+            ball_carrier_possession_ticks: 0,
+            carrier_control_readiness: 0.95,
+            attacking_right: false,
+            pitch_length: 105.0,
+            pitch_width: 68.0,
+            press_radius: 12.0,
+            tackle_range: 6.0,
+            carrier_speed: 3.0,
+            press_intensity: 0.7,
+            compactness: 0.6,
+            movement: movement(),
+            iq: 1.0,
+            attackers: &[carrier],
+            teammates: &teammates,
+            random_samples: &[],
+            score_noises: &[],
+            roll_by_count: &[],
+            fallback_index_by_count: &[],
+        };
+
+        let choice = choose_defense_action(&input).expect("defense choice");
+
+        assert!(
+            choice.carrier_control_threat > 0.45,
+            "the receiving window must be actionable before possession ticks accumulate"
+        );
+        assert!(
+            matches!(choice.action_type, "tackle" | "approach"),
+            "a nearby defender with cover must engage the visible receiver, got {}",
+            choice.action_type
+        );
+    }
+
+    #[test]
     fn fixed_choice_kernel_matches_dynamic_prepare_and_selection() {
         let teammates = teammates();
         let carrier = (84.0, 34.0);
@@ -2324,10 +2319,7 @@ mod tests {
         );
         assert_eq!(fixed.shot_danger, dynamic.shot_danger);
         assert_eq!(fixed.carrier_control_threat, dynamic.carrier_control_threat);
-        assert_eq!(
-            fixed.pressure_responsibility,
-            dynamic.pressure_responsibility
-        );
+        assert_eq!(fixed.press_access, dynamic.press_access);
         for (index, candidate) in dynamic.scored.iter().enumerate() {
             assert_eq!(fixed.candidate_targets[index], candidate.target);
             assert_eq!(fixed.candidate_scores[index], candidate.score);
@@ -2384,7 +2376,7 @@ mod tests {
     }
 
     #[test]
-    fn press_candidates_move_to_the_carrier_instead_of_their_sampled_shape_point() {
+    fn carrier_closure_moves_to_the_carrier_instead_of_their_sampled_shape_point() {
         let teammates = teammates();
         let carrier = (84.0, 34.0);
         let sampled_shape_point = (78.0, 29.0);
@@ -2413,13 +2405,16 @@ mod tests {
             teammates: &teammates,
         });
 
-        let press = scored
+        let carrier_task = scored
             .iter()
-            .find(|candidate| matches!(candidate.action_type, "tackle" | "approach"))
-            .expect("the nearby defender must receive a press task");
+            .find(|candidate| {
+                matches!(candidate.action_type, "close_down" | "tackle" | "approach")
+            })
+            .expect("the nearby defender must receive a carrier-closing task");
 
-        assert_eq!(press.target, carrier);
-        assert_ne!(press.target, sampled_shape_point);
+        assert_eq!(carrier_task.action_type, "close_down");
+        assert_eq!(carrier_task.target, carrier);
+        assert_ne!(carrier_task.target, sampled_shape_point);
     }
 
     #[test]

@@ -101,7 +101,7 @@ fn outside_penalty_area(pos: (f64, f64), input: &ShotQualityInput<'_>) -> bool {
 
 pub fn shot_contest_intent(action: &str) -> ShotContestIntent {
     match action {
-        "tackle" | "approach" => ShotContestIntent::Press,
+        "close_down" | "tackle" | "approach" => ShotContestIntent::Press,
         "block_lane" => ShotContestIntent::BlockLane,
         "mark_runner" => ShotContestIntent::MarkRunner,
         "defend_shape" | "recover_shape" => ShotContestIntent::RecoverShape,

@@ -43,15 +43,8 @@ pub fn compute_vision_distance(
     distance.clamp(24.0, vision_max_distance)
 }
 
-pub fn compute_player_facing(facing_direction: f64, attacking_right: bool) -> f64 {
-    if facing_direction.abs() > 1e-3 {
-        return facing_direction;
-    }
-    if attacking_right {
-        0.0
-    } else {
-        180.0
-    }
+pub fn compute_player_facing(facing_direction: f64, _attacking_right: bool) -> f64 {
+    facing_direction
 }
 
 impl VisionContext {
@@ -159,5 +152,10 @@ mod tests {
         let result =
             get_visible_target_indices(0, (0.0, 0.0), 80.0, &teammates, (10.0, 0.0), 180.0, 0.5);
         assert_eq!(result, vec![1, 2]);
+    }
+
+    #[test]
+    fn zero_degree_is_a_valid_explicit_facing_direction() {
+        assert_eq!(compute_player_facing(0.0, false), 0.0);
     }
 }

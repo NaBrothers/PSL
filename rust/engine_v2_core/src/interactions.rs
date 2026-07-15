@@ -152,7 +152,7 @@ struct ContactEngagementProfile {
     containment_reach_scale: f64,
 }
 
-const CONTACT_ENGAGEMENT_PROFILES: [ContactEngagementProfile; 4] = [
+const CONTACT_ENGAGEMENT_PROFILES: [ContactEngagementProfile; 5] = [
     ContactEngagementProfile {
         action: "tackle",
         reach_scale: 1.08,
@@ -166,6 +166,13 @@ const CONTACT_ENGAGEMENT_PROFILES: [ContactEngagementProfile; 4] = [
         engagement_weight: 0.36,
         containment_weight: 0.46,
         containment_reach_scale: 1.15,
+    },
+    ContactEngagementProfile {
+        action: "close_down",
+        reach_scale: 0.0,
+        engagement_weight: 0.0,
+        containment_weight: 0.42,
+        containment_reach_scale: 1.20,
     },
     ContactEngagementProfile {
         action: "block_lane",
@@ -394,7 +401,13 @@ fn projected_defender_actions(
 }
 
 pub fn detect_duel(input: &DuelDetectionInput<'_>) -> DetectionResult {
-    if input.holder_action != "carry" && input.holder_action != "dribble" {
+    let exposure_multiplier = match input.holder_action {
+        "carry" | "dribble" => 1.0,
+        "hold" | "shield" => 0.68,
+        "reorient" => 0.58,
+        _ => 0.0,
+    };
+    if exposure_multiplier <= 0.0 {
         return DetectionResult {
             defender_index: None,
             distance: 0.0,
@@ -442,7 +455,8 @@ pub fn detect_duel(input: &DuelDetectionInput<'_>) -> DetectionResult {
         );
         let speed_factor = 0.78 + 0.22 * (defender.speed / 100.0).clamp(0.0, 1.0);
         let defensive_timing = 0.76 + 0.24 * (defender.defence / 100.0).clamp(0.0, 1.0);
-        let contact_probability = (profile.engagement_weight
+        let contact_probability = (exposure_multiplier
+            * profile.engagement_weight
             * (0.18 + 0.82 * proximity)
             * (0.70 + 0.30 * convergence)
             * speed_factor
@@ -742,8 +756,9 @@ pub fn detect_interception(input: &InterceptionDetectionInput<'_>) -> DetectionR
 #[cfg(test)]
 mod tests {
     use super::{
-        carry_survival_transition, carry_survival_transition_with_defender_responses, detect_duel,
-        track_defensive_pressures, track_defensive_pressures_into, CarrySurvivalInput,
+        carry_containment_transition, carry_survival_transition,
+        carry_survival_transition_with_defender_responses, detect_duel, track_defensive_pressures,
+        track_defensive_pressures_into, CarryContainmentInput, CarrySurvivalInput,
         DefenderActionInput, DefensivePressureInput, DuelDetectionInput,
     };
     use crate::{temporal_option_value, PossessionTransition, TemporalOptionValueInput};
@@ -812,6 +827,31 @@ mod tests {
     }
 
     #[test]
+    fn close_down_constrains_the_dribble_without_creating_contact() {
+        let defenders = [defender(3, (5.0, 0.0), (3.0, 0.0), "close_down")];
+        let duel = detect_duel(&DuelDetectionInput {
+            holder_pos: (0.0, 0.0),
+            holder_action: "carry",
+            carry_target: (10.0, 0.0),
+            carrier_step_distance: 3.0,
+            defenders: &defenders,
+            tackle_range: 6.0,
+        });
+        let containment = carry_containment_transition(&CarryContainmentInput {
+            holder_pos: (0.0, 0.0),
+            carrier_end: (3.0, 0.0),
+            defenders: &defenders,
+        });
+
+        assert_eq!(duel.defender_index, None);
+        assert_eq!(duel.contact_probability, 0.0);
+        assert!(
+            containment.constrained_control_probability > 0.0,
+            "a close-down that occupies the carrier's path must constrain progress"
+        );
+    }
+
+    #[test]
     fn distant_future_path_crossing_is_not_a_current_tick_duel() {
         let defenders = [defender(4, (8.0, 0.0), (7.0, 0.0), "tackle")];
         let result = detect_duel(&DuelDetectionInput {
@@ -841,6 +881,31 @@ mod tests {
         assert_eq!(result.defender_index, Some(5));
         assert!(result.distance < 1.7);
         assert!(result.contact_probability > 0.2);
+    }
+
+    #[test]
+    fn shielding_exposes_the_holder_without_becoming_a_dribble_contact() {
+        let defenders = [defender(5, (2.5, 1.2), (1.8, 0.3), "tackle")];
+        let carry = detect_duel(&DuelDetectionInput {
+            holder_pos: (0.0, 0.0),
+            holder_action: "carry",
+            carry_target: (6.0, 0.0),
+            carrier_step_distance: 1.2,
+            defenders: &defenders,
+            tackle_range: 6.0,
+        });
+        let shield = detect_duel(&DuelDetectionInput {
+            holder_pos: (0.0, 0.0),
+            holder_action: "hold",
+            carry_target: (0.0, 0.0),
+            carrier_step_distance: 0.45,
+            defenders: &defenders,
+            tackle_range: 6.0,
+        });
+
+        assert_eq!(shield.defender_index, Some(5));
+        assert!(shield.contact_probability > 0.0);
+        assert!(shield.contact_probability < carry.contact_probability);
     }
 
     #[test]

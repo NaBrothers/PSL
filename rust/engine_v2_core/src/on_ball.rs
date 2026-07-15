@@ -1084,10 +1084,8 @@ fn evaluate_carry_from_state(
         * (0.045
             + 0.090 * smoothstep(0.02, 0.12, progress_gain)
             + 0.040 * smoothstep(0.45, 0.90, context.old_width_ratio));
-    let mut score = (input.path_feasibility
-        * (after_value - input.current_state_value + continuity)
-        - risk_cost)
-        .max(0.0);
+    let immediate_gain = 0.018 + 0.20 * progress_gain + 0.045 * lane_gain;
+    let mut score = (input.path_feasibility * immediate_gain - risk_cost).max(0.0);
 
     let near_goal_pressure = 1.0 - smoothstep(16.0, 26.0, context.old_goal_dist);
     let angle_worsening = (new_angle_width - context.old_angle_width).max(0.0);
@@ -1098,23 +1096,22 @@ fn evaluate_carry_from_state(
     let backwards_penalty =
         1.0 - near_goal_pressure * 0.35 * smoothstep(0.0, 6.0, distance_worsening);
     let low_gain_penalty =
-        1.0 - near_goal_pressure * 0.35 * (1.0 - smoothstep(0.02, 0.10, effective_gain));
+        1.0 - near_goal_pressure * 0.35 * (1.0 - smoothstep(0.02, 0.08, immediate_gain));
     let near_goal_multiplier =
         (wide_penalty * too_close_penalty * backwards_penalty * low_gain_penalty).max(0.08);
     score *= near_goal_multiplier;
-    let extra_touch_gain = shot_quality_gain.max(future_shot_gain);
     let shot_window = smoothstep(0.07, 0.14, current_shot)
         * (1.0 - smoothstep(18.0, 28.0, context.old_goal_dist))
         * (1.0 - smoothstep(7.0, 18.0, context.old_angle_width));
-    let extra_touch_improvement = smoothstep(0.03, 0.09, extra_touch_gain);
+    let extra_touch_improvement = smoothstep(0.02, 0.08, immediate_gain);
     let shooting_window_multiplier =
         (1.0 - 0.50 * shot_window * (1.0 - extra_touch_improvement)).max(0.45);
     score *= shooting_window_multiplier;
 
     let stale_ticks = (input.possession_ticks - 2).max(0) as f64;
-    let low_gain_pressure = 1.0 - smoothstep(0.03, 0.12, effective_gain);
+    let low_gain_pressure = 1.0 - smoothstep(0.02, 0.08, immediate_gain);
     let possession_multiplier = 1.0 / (1.0 + stale_ticks * 0.20 * low_gain_pressure);
-    let low_gain_multiplier = 0.65 + 0.35 * smoothstep(0.0, 0.06, effective_gain);
+    let low_gain_multiplier = 0.65 + 0.35 * smoothstep(0.0, 0.06, immediate_gain);
     let final_third_carry =
         smoothstep(0.72, 0.88, target_progress) * smoothstep(0.35, 0.75, target_centrality);
     let support_release_cost = 1.0 + 0.55 * context.support_nearby;
@@ -1122,7 +1119,7 @@ fn evaluate_carry_from_state(
     let release_pressure = final_third_carry
         * repeated_carry_load
         * support_release_cost
-        * (0.62 + 0.38 * (1.0 - smoothstep(0.12, 0.28, effective_gain)));
+        * (0.62 + 0.38 * (1.0 - smoothstep(0.06, 0.14, immediate_gain)));
     let lateral_shift =
         (input.target.1 - input.carrier_pos.1).abs() / (input.pitch_width / 2.0).max(1.0);
     let pressure_draw = smoothstep(0.54, 0.86, context.old_progress)
@@ -1500,6 +1497,89 @@ mod tests {
         assert_carry_outputs_identical(
             evaluate_carry_with_context(&mismatched_input, &mismatched_context),
             evaluate_carry_with_explicit_target_shot(&mismatched_input, &mismatched_context),
+        );
+    }
+
+    #[test]
+    fn local_carry_value_does_not_prepay_post_carry_future_shooting() {
+        let low_post_carry_shooting = [
+            CarrySupportPlayer {
+                index: 0,
+                pos: (82.0, 31.0),
+                base: (84.0, 34.0),
+                finishing: 0.78,
+                long_shot: 0.74,
+                is_goalkeeper: false,
+            },
+            CarrySupportPlayer {
+                index: 1,
+                pos: (95.0, 39.0),
+                base: (84.0, 42.0),
+                finishing: 0.30,
+                long_shot: 0.30,
+                is_goalkeeper: false,
+            },
+            CarrySupportPlayer {
+                index: 2,
+                pos: (76.0, 22.0),
+                base: (74.0, 22.0),
+                finishing: 0.62,
+                long_shot: 0.62,
+                is_goalkeeper: false,
+            },
+            CarrySupportPlayer {
+                index: 3,
+                pos: (7.0, 34.0),
+                base: (6.0, 34.0),
+                finishing: 0.22,
+                long_shot: 0.18,
+                is_goalkeeper: true,
+            },
+        ];
+        let mut high_post_carry_shooting = low_post_carry_shooting;
+        high_post_carry_shooting[0].finishing = 0.96;
+        high_post_carry_shooting[0].long_shot = 0.96;
+        let opponents = [(100.0, 34.0), (87.0, 22.0), (90.0, 53.0)];
+        let evaluate = |teammates: &[CarrySupportPlayer]| {
+            evaluate_carry(&CarryInput {
+                tick: 1,
+                carrier_index: 0,
+                carrier_team_home: true,
+                carrier_pos: (82.0, 31.0),
+                target: (87.0, 34.0),
+                finishing: 0.78,
+                long_shot: 0.74,
+                consecutive_carries: 0,
+                possession_ticks: 1,
+                current_state_value: 0.08,
+                path_feasibility: 0.88,
+                teammates,
+                opponents: &opponents,
+                pitch_length: 105.0,
+                pitch_width: 68.0,
+                attacking_right: true,
+                carrier_speed: 4.4,
+                shot_ideal_distance: 20.0,
+                shot_on_target_base: 0.52,
+                gk_save_base: 0.66,
+                gk_attributes: None,
+                gk_pos: Some((100.0, 34.0)),
+                contest_defenders: None,
+                shot_quality_cache: None,
+            })
+        };
+
+        let low_post_carry_shooting = evaluate(&low_post_carry_shooting);
+        let high_post_carry_shooting = evaluate(&high_post_carry_shooting);
+
+        assert!(
+            high_post_carry_shooting.after_value > low_post_carry_shooting.after_value,
+            "the fixture must change the carry's projected continuation state: low={low_post_carry_shooting:?}, high={high_post_carry_shooting:?}"
+        );
+        assert_eq!(
+            high_post_carry_shooting.score.to_bits(),
+            low_post_carry_shooting.score.to_bits(),
+            "candidate-local carry value must not prepay post-carry continuation or terminal value; Temporal evaluates that state after the carry"
         );
     }
 

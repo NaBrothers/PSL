@@ -24,6 +24,7 @@ pub mod position_value;
 pub mod possession_control;
 pub mod shot_quality;
 pub mod state_value;
+pub mod tactical_task;
 pub mod team_plan;
 pub mod vision;
 
@@ -64,9 +65,12 @@ pub use decision::{
     SupportOpportunityInput, SupportOpportunityOutput, SupportOpportunityPassInput,
 };
 pub use defense_coordination::{
-    coordinate_team_defense, coordinate_team_defense_into, DefenseTaskKind, TeamDefenseAssignment,
-    TeamDefenseAssignmentInput, TeamDefenseAssignmentOutput, TeamDefenseCandidate,
-    TeamDefenseCoordinationSummary, TeamDefensePlayerInput, MAX_FIXED_TEAM_DEFENSE_PLAYERS,
+    coordinate_team_defense, coordinate_team_defense_into, defense_resource_claim,
+    defense_resource_claim_with_outlets, defense_resource_demand_from_visible_threats,
+    DefenseResourceClaim, DefenseResourceDemand, DefenseTaskContinuity, DefenseTaskKind,
+    TeamDefenseAssignment, TeamDefenseAssignmentInput, TeamDefenseAssignmentOutput,
+    TeamDefenseCandidate, TeamDefenseCoordinationSummary, TeamDefensePlayerInput,
+    MAX_FIXED_TEAM_DEFENSE_PLAYERS,
 };
 pub use execution::{
     execute_carry, execute_clear, execute_hold, execute_pass, execute_shot, generate_clear_target,
@@ -230,6 +234,13 @@ pub use state_value::{
     possession_state_value_with_context, possession_value_context, state_value,
     PassReceiveValueBreakdown, PassReceiveValueInput, PlayerShotProfile, PossessionStateValue,
     PossessionValueContext, StateValueInput,
+};
+pub use tactical_task::{
+    accept_task, formation_debt, observe_entities_into, task_intent_from_goal,
+    task_motion_target, task_policy_utility, update_player_belief, BelievedEntity, GoalProposal,
+    PlayerBelief, PlayerObservation, TacticalTask, TacticalTaskCoordination, TacticalTaskIntent,
+    TacticalTaskPhase, TaskAcceptance, TaskAcceptanceInput, TaskMotionInput, VisibleEntity,
+    MAX_PLAYER_OBSERVED_ENTITIES, MAX_TASK_OUTLET_COVERAGE,
 };
 pub use team_plan::{
     project_team_plan_formation, project_team_plan_formation_into, select_team_plan,

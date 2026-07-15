@@ -9,6 +9,7 @@ use crate::execution::{
     ShotExecutionInput,
 };
 use crate::interactions::{resolve_duel, DefenderActionInput, DuelResolveInput};
+use crate::offside::get_offside_line_from_xs;
 use crate::physics::PitchBoundaryKind;
 use crate::team_plan::TeamPlanSignals;
 
@@ -378,6 +379,7 @@ pub struct PassPhasePlanInput {
     pub is_long: bool,
     pub lane_risk: f64,
     pub retention_probability: f64,
+    pub technical_probability: f64,
     pub retention_roll: f64,
     pub pitch_length: f64,
     pub pitch_width: f64,
@@ -399,7 +401,9 @@ pub struct PassPhasePlanOutput {
     pub flight_from_yx: (f64, f64),
     pub flight_to_yx: (f64, f64),
     pub retention_probability: f64,
+    pub technical_probability: f64,
     pub retention_roll: f64,
+    pub technical_miss: bool,
     pub retained_possession: bool,
     pub randoms_used: usize,
 }
@@ -532,6 +536,8 @@ pub struct PassArrivalPlanOutput {
     pub outcome_code: u8,
     pub receiver_index: Option<usize>,
     pub opponent_index: Option<usize>,
+    pub contact_pos: (f64, f64),
+    pub contact_tick: i32,
     pub loose_velocity: (f64, f64),
     pub receiver_score: f64,
     pub receiver_control: f64,
@@ -712,6 +718,7 @@ pub fn pass_receive_plan(input: &PassReceivePlanInput) -> PassReceivePlanOutput 
 
 pub fn pass_arrival_plan(input: &PassArrivalPlanInput<'_>) -> PassArrivalPlanOutput {
     let arrival = crate::arrival::resolve_pass_arrival(&crate::arrival::PassArrivalInput {
+        flight_origin: input.flight_origin,
         target_pos: input.target_pos,
         flight_ticks_total: input.flight_ticks_total,
         passer_team_is_receiver_team: true,
@@ -726,9 +733,11 @@ pub fn pass_arrival_plan(input: &PassArrivalPlanInput<'_>) -> PassArrivalPlanOut
         outcome_code: arrival.winner_code,
         receiver_index: arrival.receiver_index,
         opponent_index: arrival.opponent_index,
+        contact_pos: arrival.contact_pos,
+        contact_tick: arrival.contact_tick,
         loose_velocity: crate::physics::residual_ball_velocity(
             input.flight_origin,
-            input.target_pos,
+            arrival.contact_pos,
             input.flight_speed,
             0.26,
         ),
@@ -844,6 +853,7 @@ pub fn pass_phase_plan(input: &PassPhasePlanInput) -> PassPhasePlanOutput {
         is_long: input.is_long,
         lane_risk: input.lane_risk,
         retention_probability: input.retention_probability,
+        technical_probability: input.technical_probability,
         retention_roll: input.retention_roll,
         pitch_length: input.pitch_length,
         pitch_width: input.pitch_width,
@@ -873,7 +883,9 @@ pub fn pass_phase_plan(input: &PassPhasePlanInput) -> PassPhasePlanOutput {
         flight_from_yx: flight.from_yx,
         flight_to_yx: flight.to_yx,
         retention_probability: pass.retention_probability,
+        technical_probability: pass.technical_probability,
         retention_roll: pass.retention_roll,
+        technical_miss: pass.technical_miss,
         retained_possession: pass.retained_possession,
         randoms_used: pass.randoms_used,
     }
@@ -2486,39 +2498,13 @@ pub fn team_shape_plan_into(
     let is_transition_def = input.phase == "transition_def";
     let plan = input.plan_signals;
 
-    let ahead_of = |candidate: f64, current: f64| {
-        if input.attacking_right {
-            candidate
-                .partial_cmp(&current)
-                .is_some_and(|ordering| ordering == std::cmp::Ordering::Greater)
-        } else {
-            candidate
-                .partial_cmp(&current)
-                .is_some_and(|ordering| ordering == std::cmp::Ordering::Less)
-        }
-    };
-    let mut first_defender_x = None;
-    let mut second_defender_x = None;
-    for opponent in input
-        .opponents
-        .iter()
-        .filter(|player| !player.is_goalkeeper)
-    {
-        let x = opponent.pos.0;
-        match first_defender_x {
-            None => first_defender_x = Some(x),
-            Some(first) if ahead_of(x, first) => {
-                second_defender_x = Some(first);
-                first_defender_x = Some(x);
-            }
-            _ => match second_defender_x {
-                None => second_defender_x = Some(x),
-                Some(second) if ahead_of(x, second) => second_defender_x = Some(x),
-                _ => {}
-            },
-        }
-    }
-    let offside_line = second_defender_x.or(first_defender_x);
+    let offside_line = (!input.opponents.is_empty()).then(|| {
+        get_offside_line_from_xs(
+            input.opponents.iter().map(|player| player.pos.0),
+            input.attacking_right,
+            input.pitch_length,
+        )
+    });
 
     let mut output_len = 0;
     for player in input.players {
@@ -3012,14 +2998,15 @@ mod tests {
     }
 
     #[test]
-    fn pass_phase_consumes_the_retention_roll_once() {
-        let retained = pass_phase_plan(&PassPhasePlanInput {
+    fn pass_phase_separates_expected_completion_from_technical_execution() {
+        let clean_execution = pass_phase_plan(&PassPhasePlanInput {
             passer_pos: (20.0, 34.0),
             ideal_target: (35.0, 40.0),
             passing: 80.0,
             is_long: false,
             lane_risk: 0.25,
             retention_probability: 0.60,
+            technical_probability: 0.80,
             retention_roll: 0.59,
             pitch_length: 105.0,
             pitch_width: 68.0,
@@ -3029,15 +3016,17 @@ mod tests {
             random_2: 0.75,
             intended_receiver_pos: Some((35.0, 40.0)),
         });
-        let lost = pass_phase_plan(&PassPhasePlanInput {
-            retention_roll: 0.61,
+        let technical_miss = pass_phase_plan(&PassPhasePlanInput {
+            retention_roll: 0.81,
             ..retained_input()
         });
 
-        assert!(retained.retained_possession);
-        assert!(!lost.retained_possession);
-        assert_eq!(retained.randoms_used, 2);
-        assert_eq!(lost.randoms_used, 2);
+        assert!(clean_execution.retained_possession);
+        assert!(!clean_execution.technical_miss);
+        assert!(technical_miss.retained_possession);
+        assert!(technical_miss.technical_miss);
+        assert_eq!(clean_execution.randoms_used, 2);
+        assert_eq!(technical_miss.randoms_used, 2);
     }
 
     fn retained_input() -> PassPhasePlanInput {
@@ -3048,6 +3037,7 @@ mod tests {
             is_long: false,
             lane_risk: 0.25,
             retention_probability: 0.60,
+            technical_probability: 0.80,
             retention_roll: 0.59,
             pitch_length: 105.0,
             pitch_width: 68.0,
@@ -3097,5 +3087,55 @@ mod tests {
                 "{phase}"
             );
         }
+    }
+
+    #[test]
+    fn attacking_shape_uses_goalkeeper_in_the_offside_boundary() {
+        let players = [
+            TeamShapePlayerInput {
+                index: 0,
+                base_pos: (5.0, 34.0),
+                is_goalkeeper: true,
+            },
+            TeamShapePlayerInput {
+                index: 1,
+                base_pos: (88.0, 34.0),
+                is_goalkeeper: false,
+            },
+        ];
+        let opponents = [
+            TeamShapeOpponentInput {
+                pos: (100.0, 34.0),
+                is_goalkeeper: true,
+            },
+            TeamShapeOpponentInput {
+                pos: (92.0, 18.0),
+                is_goalkeeper: false,
+            },
+            TeamShapeOpponentInput {
+                pos: (78.0, 50.0),
+                is_goalkeeper: false,
+            },
+        ];
+        let shape = team_shape_plan(&TeamShapePlanInput {
+            ball_pos: (95.0, 34.0),
+            attacking_right: true,
+            phase: "attacking",
+            plan_signals: TeamPlanSignals::default(),
+            pitch_length: 105.0,
+            pitch_width: 68.0,
+            players: &players,
+            opponents: &opponents,
+        });
+        let attacker = shape
+            .anchors
+            .iter()
+            .find(|player| player.index == 1)
+            .expect("attacker anchor");
+
+        assert!(
+            attacker.tactical_anchor.0 > 86.0,
+            "the goalkeeper plus defender establish a 92m line, so the shape must not cap the run at the old 78m line"
+        );
     }
 }

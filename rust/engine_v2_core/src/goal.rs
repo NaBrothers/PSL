@@ -1337,6 +1337,7 @@ pub fn build_defensive_goal<'a>(
     input: &DefensiveGoalBuildInput<'a>,
 ) -> DefensiveGoalBuildOutput<'a> {
     let mut goal_type = match input.action_type {
+        "close_down" => "defend_close_down",
         "approach" | "tackle" => "defend_press",
         "mark_runner" => "defend_mark_runner",
         "block_lane" => "defend_cover_lane",
