@@ -4,6 +4,7 @@ use crate::vision::VisionContext;
 
 pub const MAX_PLAYER_OBSERVED_ENTITIES: usize = 22;
 pub const MAX_TASK_OUTLET_COVERAGE: usize = 11;
+pub const MAX_FIXED_TEAM_TACTICAL_TASKS: usize = 11;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum TacticalTaskIntent {
@@ -61,6 +62,75 @@ impl TacticalTaskCoordination {
 }
 
 #[derive(Clone, Copy, Debug)]
+pub struct SpatialClaim {
+    pub active: bool,
+    pub target: (f64, f64),
+    pub origin: (f64, f64),
+    pub occupancy_radius: f64,
+    pub corridor_half_width: f64,
+    pub depth_band: i8,
+    pub width_band: i8,
+}
+
+impl Default for SpatialClaim {
+    fn default() -> Self {
+        Self {
+            active: false,
+            target: (0.0, 0.0),
+            origin: (0.0, 0.0),
+            occupancy_radius: 0.0,
+            corridor_half_width: 0.0,
+            depth_band: 0,
+            width_band: 0,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug)]
+pub struct TeamSpatialCandidate {
+    pub target: (f64, f64),
+    pub local_value: f64,
+    pub claim: SpatialClaim,
+}
+
+impl Default for TeamSpatialCandidate {
+    fn default() -> Self {
+        Self {
+            target: (0.0, 0.0),
+            local_value: f64::NEG_INFINITY,
+            claim: SpatialClaim::default(),
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug)]
+pub struct TeamSpatialPlayerInput<'a> {
+    pub index: usize,
+    pub candidates: &'a [TeamSpatialCandidate],
+    pub preferred_candidate_index: usize,
+}
+
+#[derive(Clone, Copy, Debug)]
+pub struct TeamSpatialAssignmentInput<'a> {
+    pub players: &'a [TeamSpatialPlayerInput<'a>],
+}
+
+#[derive(Clone, Copy, Debug, Default)]
+pub struct TeamSpatialAssignment {
+    pub index: usize,
+    pub candidate_index: usize,
+    pub local_value: f64,
+    pub displaced_from_preference: bool,
+}
+
+#[derive(Clone, Copy, Debug, Default)]
+pub struct TeamSpatialCoordinationSummary {
+    pub conflicts_before: usize,
+    pub conflicts_after: usize,
+    pub displaced_count: usize,
+}
+
+#[derive(Clone, Copy, Debug)]
 pub struct TacticalTask {
     pub intent: TacticalTaskIntent,
     pub phase: TacticalTaskPhase,
@@ -73,6 +143,7 @@ pub struct TacticalTask {
     pub formation_debt: f64,
     pub interruption: f64,
     pub coordination: TacticalTaskCoordination,
+    pub spatial_claim: SpatialClaim,
 }
 
 impl TacticalTask {
@@ -89,11 +160,322 @@ impl TacticalTask {
             formation_debt: 0.0,
             interruption: 1.0,
             coordination: TacticalTaskCoordination::default(),
+            spatial_claim: SpatialClaim::default(),
         }
     }
 
     pub fn active(&self, tick: i32) -> bool {
         self.phase == TacticalTaskPhase::Active && tick <= self.expires_tick
+    }
+}
+
+fn intent_space_scale(intent: TacticalTaskIntent) -> (f64, f64) {
+    match intent {
+        TacticalTaskIntent::Receive => (4.4, 2.1),
+        TacticalTaskIntent::Support => (4.2, 2.0),
+        TacticalTaskIntent::Carry => (3.4, 1.7),
+        TacticalTaskIntent::Control => (3.2, 1.6),
+        TacticalTaskIntent::CloseDown => (2.8, 1.4),
+        TacticalTaskIntent::Press => (2.6, 1.3),
+        TacticalTaskIntent::Cover => (3.8, 1.8),
+        TacticalTaskIntent::Screen => (3.6, 1.8),
+        TacticalTaskIntent::Recover => (3.9, 1.8),
+    }
+}
+
+fn spatial_band(value: f64) -> i8 {
+    if value < -14.0 {
+        -2
+    } else if value < -4.0 {
+        -1
+    } else if value <= 6.0 {
+        0
+    } else if value <= 18.0 {
+        1
+    } else {
+        2
+    }
+}
+
+pub fn spatial_claim_for_task(
+    origin: (f64, f64),
+    target: (f64, f64),
+    intent: TacticalTaskIntent,
+    attacking_right: bool,
+) -> SpatialClaim {
+    let (base_radius, base_half_width) = intent_space_scale(intent);
+    let target_distance = distance(origin, target);
+    let forward_direction = if attacking_right { 1.0 } else { -1.0 };
+    let depth = (target.0 - origin.0) * forward_direction;
+    SpatialClaim {
+        active: true,
+        target,
+        origin,
+        occupancy_radius: base_radius + (0.035 * target_distance).min(0.9),
+        corridor_half_width: base_half_width + (0.020 * target_distance).min(0.5),
+        depth_band: spatial_band(depth),
+        width_band: spatial_band(target.1 - origin.1),
+    }
+}
+
+pub fn spatial_claim_conflict(left: SpatialClaim, right: SpatialClaim) -> bool {
+    if !left.active || !right.active {
+        return false;
+    }
+    let target_distance = distance(left.target, right.target);
+    let occupied_distance = left.occupancy_radius + right.occupancy_radius;
+    if target_distance < occupied_distance {
+        return true;
+    }
+    let same_depth_band = left.depth_band == right.depth_band;
+    let same_width_band = left.width_band == right.width_band;
+    if !(same_depth_band && same_width_band) {
+        return false;
+    }
+    let left_route = (
+        left.target.0 - left.origin.0,
+        left.target.1 - left.origin.1,
+    );
+    let right_route = (
+        right.target.0 - right.origin.0,
+        right.target.1 - right.origin.1,
+    );
+    let left_length = (left_route.0 * left_route.0 + left_route.1 * left_route.1).sqrt();
+    let right_length = (right_route.0 * right_route.0 + right_route.1 * right_route.1).sqrt();
+    if left_length <= 1e-6 || right_length <= 1e-6 {
+        return target_distance < occupied_distance * 1.4;
+    }
+    let route_alignment =
+        (left_route.0 * right_route.0 + left_route.1 * right_route.1) / (left_length * right_length);
+    let corridor_width = left.corridor_half_width + right.corridor_half_width;
+    route_alignment > 0.90 && target_distance < occupied_distance * 1.65 + corridor_width
+}
+
+fn team_spatial_conflict_count(
+    input: &TeamSpatialAssignmentInput<'_>,
+    selections: &[usize],
+    replacement: Option<(usize, usize)>,
+) -> usize {
+    let mut conflicts = 0;
+    for left_index in 0..input.players.len() {
+        let left_player = input.players[left_index];
+        let left_selection = replacement
+            .filter(|(player_index, _)| *player_index == left_index)
+            .map(|(_, candidate_index)| candidate_index)
+            .unwrap_or_else(|| selections.get(left_index).copied().unwrap_or(0));
+        let Some(left_candidate) = left_player.candidates.get(left_selection).copied() else {
+            continue;
+        };
+        for right_index in left_index + 1..input.players.len() {
+            let right_player = input.players[right_index];
+            let right_selection = replacement
+                .filter(|(player_index, _)| *player_index == right_index)
+                .map(|(_, candidate_index)| candidate_index)
+                .unwrap_or_else(|| selections.get(right_index).copied().unwrap_or(0));
+            let Some(right_candidate) = right_player.candidates.get(right_selection).copied() else {
+                continue;
+            };
+            conflicts += usize::from(spatial_claim_conflict(
+                left_candidate.claim,
+                right_candidate.claim,
+            ));
+        }
+    }
+    conflicts
+}
+
+fn preferred_team_spatial_candidate(player: TeamSpatialPlayerInput<'_>) -> usize {
+    player
+        .candidates
+        .get(player.preferred_candidate_index)
+        .map(|_| player.preferred_candidate_index)
+        .unwrap_or(0)
+}
+
+pub fn coordinate_team_spatial_tasks_into(
+    input: &TeamSpatialAssignmentInput<'_>,
+    assignments: &mut [TeamSpatialAssignment],
+) -> TeamSpatialCoordinationSummary {
+    assert!(
+        input.players.len() <= MAX_FIXED_TEAM_TACTICAL_TASKS,
+        "fixed team spatial coordination supports eleven players"
+    );
+    assert!(
+        assignments.len() >= input.players.len(),
+        "fixed team spatial assignment output is too small"
+    );
+
+    let player_count = input.players.len();
+    let mut selections = [0usize; MAX_FIXED_TEAM_TACTICAL_TASKS];
+    for (player_index, player) in input.players.iter().copied().enumerate() {
+        selections[player_index] = preferred_team_spatial_candidate(player);
+    }
+    let conflicts_before =
+        team_spatial_conflict_count(input, &selections[..player_count], None);
+
+    let mut order = [0usize; MAX_FIXED_TEAM_TACTICAL_TASKS];
+    for player_index in 0..player_count {
+        order[player_index] = player_index;
+    }
+    for left_index in 0..player_count {
+        let mut best_index = left_index;
+        for right_index in left_index + 1..player_count {
+            let left_player = input.players[order[best_index]];
+            let right_player = input.players[order[right_index]];
+            let left_value = left_player
+                .candidates
+                .get(selections[order[best_index]])
+                .map(|candidate| candidate.local_value)
+                .unwrap_or(f64::NEG_INFINITY);
+            let right_value = right_player
+                .candidates
+                .get(selections[order[right_index]])
+                .map(|candidate| candidate.local_value)
+                .unwrap_or(f64::NEG_INFINITY);
+            if right_value > left_value + 1e-9
+                || ((right_value - left_value).abs() <= 1e-9
+                    && right_player.index < left_player.index)
+            {
+                best_index = right_index;
+            }
+        }
+        order.swap(left_index, best_index);
+    }
+
+    let mut committed = [false; MAX_FIXED_TEAM_TACTICAL_TASKS];
+    for order_index in 0..player_count {
+        let player_index = order[order_index];
+        let player = input.players[player_index];
+        if player.candidates.is_empty() {
+            continue;
+        }
+        let preferred = selections[player_index];
+        let mut best_candidate_index = preferred;
+        let mut best_conflicts = 0usize;
+        for other_index in 0..player_count {
+            if !committed[other_index] {
+                continue;
+            }
+            let other_player = input.players[other_index];
+            let Some(candidate) = player.candidates.get(preferred).copied() else {
+                continue;
+            };
+            let Some(other_candidate) = other_player
+                .candidates
+                .get(selections[other_index])
+                .copied()
+            else {
+                continue;
+            };
+            best_conflicts +=
+                usize::from(spatial_claim_conflict(candidate.claim, other_candidate.claim));
+        }
+        let mut best_value = player
+            .candidates
+            .get(preferred)
+            .map(|candidate| candidate.local_value)
+            .unwrap_or(f64::NEG_INFINITY);
+        for candidate_index in 0..player.candidates.len() {
+            let candidate = player.candidates[candidate_index];
+            let mut conflicts = 0usize;
+            for other_index in 0..player_count {
+                if !committed[other_index] {
+                    continue;
+                }
+                let other_player = input.players[other_index];
+                let Some(other_candidate) = other_player
+                    .candidates
+                    .get(selections[other_index])
+                    .copied()
+                else {
+                    continue;
+                };
+                conflicts +=
+                    usize::from(spatial_claim_conflict(candidate.claim, other_candidate.claim));
+            }
+            if conflicts < best_conflicts
+                || (conflicts == best_conflicts
+                    && candidate.local_value > best_value + 1e-9)
+            {
+                best_candidate_index = candidate_index;
+                best_conflicts = conflicts;
+                best_value = candidate.local_value;
+            }
+        }
+        selections[player_index] = best_candidate_index;
+        committed[player_index] = true;
+    }
+
+    let maximum_sweeps = player_count.saturating_mul(2).max(1);
+    for _ in 0..maximum_sweeps {
+        let mut changed = false;
+        let current_conflicts =
+            team_spatial_conflict_count(input, &selections[..player_count], None);
+        for player_index in 0..player_count {
+            let player = input.players[player_index];
+            let current_index = selections[player_index];
+            let mut best_index = current_index;
+            let mut best_conflicts = current_conflicts;
+            let mut best_value = player
+                .candidates
+                .get(current_index)
+                .map(|candidate| candidate.local_value)
+                .unwrap_or(f64::NEG_INFINITY);
+            for candidate_index in 0..player.candidates.len() {
+                if candidate_index == current_index {
+                    continue;
+                }
+                let conflicts = team_spatial_conflict_count(
+                    input,
+                    &selections[..player_count],
+                    Some((player_index, candidate_index)),
+                );
+                let value = player.candidates[candidate_index].local_value;
+                if conflicts < best_conflicts
+                    || (conflicts == best_conflicts
+                        && conflicts < current_conflicts
+                        && value > best_value + 1e-9)
+                {
+                    best_index = candidate_index;
+                    best_conflicts = conflicts;
+                    best_value = value;
+                }
+            }
+            if best_index != current_index {
+                selections[player_index] = best_index;
+                changed = true;
+            }
+        }
+        if !changed {
+            break;
+        }
+    }
+
+    let conflicts_after =
+        team_spatial_conflict_count(input, &selections[..player_count], None);
+    let mut displaced_count = 0;
+    for player_index in 0..player_count {
+        let player = input.players[player_index];
+        let candidate_index = selections[player_index];
+        let local_value = player
+            .candidates
+            .get(candidate_index)
+            .map(|candidate| candidate.local_value)
+            .unwrap_or(f64::NEG_INFINITY);
+        let displaced_from_preference =
+            candidate_index != preferred_team_spatial_candidate(player);
+        displaced_count += usize::from(displaced_from_preference);
+        assignments[player_index] = TeamSpatialAssignment {
+            index: player.index,
+            candidate_index,
+            local_value,
+            displaced_from_preference,
+        };
+    }
+    TeamSpatialCoordinationSummary {
+        conflicts_before,
+        conflicts_after,
+        displaced_count,
     }
 }
 
@@ -448,6 +830,12 @@ pub fn accept_task(input: &TaskAcceptanceInput<'_>) -> TaskAcceptance {
         input.pitch_width,
         input.belief,
     );
+    let spatial_claim = spatial_claim_for_task(
+        input.observation.self_pos,
+        input.proposal.raw_target,
+        intent,
+        input.attacking_right,
+    );
     let debt = formation_debt(
         input.proposal.raw_target,
         input.tactical_anchor,
@@ -498,6 +886,7 @@ pub fn accept_task(input: &TaskAcceptanceInput<'_>) -> TaskAcceptance {
             formation_debt: debt,
             interruption: input.proposal.pressure_interrupt.clamp(0.0, 1.0),
             coordination: retained_coordination,
+            spatial_claim,
         }
     } else if accepted {
         TacticalTask {
@@ -515,6 +904,7 @@ pub fn accept_task(input: &TaskAcceptanceInput<'_>) -> TaskAcceptance {
             formation_debt: debt,
             interruption: input.proposal.pressure_interrupt.clamp(0.0, 1.0),
             coordination,
+            spatial_claim,
         }
     } else {
         input.current
@@ -647,6 +1037,7 @@ mod tests {
             formation_debt: 0.44,
             interruption: 0.0,
             coordination: TacticalTaskCoordination::default(),
+            spatial_claim: SpatialClaim::default(),
         };
         let movement_target = task_motion_target(&TaskMotionInput {
             task,
@@ -673,6 +1064,7 @@ mod tests {
             formation_debt: 0.2,
             interruption: 0.0,
             coordination: TacticalTaskCoordination::default(),
+            spatial_claim: SpatialClaim::default(),
         };
         let anchor = (48.0, 34.0);
 
@@ -734,5 +1126,137 @@ mod tests {
         assert!(accepted.accepted);
         assert_eq!(accepted.task.raw_target, (76.0, 12.0));
         assert!(accepted.task.formation_debt > 0.0);
+    }
+
+    fn spatial_candidate(
+        origin: (f64, f64),
+        target: (f64, f64),
+        local_value: f64,
+    ) -> TeamSpatialCandidate {
+        TeamSpatialCandidate {
+            target,
+            local_value,
+            claim: spatial_claim_for_task(
+                origin,
+                target,
+                TacticalTaskIntent::Support,
+                true,
+            ),
+        }
+    }
+
+    #[test]
+    fn coordinated_support_claims_split_congested_box_edge_targets() {
+        let origin = (72.0, 34.0);
+        let shared_arc = (86.0, 34.0);
+        let first = [
+            spatial_candidate(origin, shared_arc, 1.00),
+            spatial_candidate(origin, (78.0, 12.0), 0.62),
+        ];
+        let second = [
+            spatial_candidate(origin, shared_arc, 0.96),
+            spatial_candidate(origin, (76.0, 52.0), 0.66),
+        ];
+        let third = [
+            spatial_candidate(origin, shared_arc, 0.92),
+            spatial_candidate(origin, (91.0, 17.0), 0.61),
+        ];
+        let fourth = [
+            spatial_candidate(origin, shared_arc, 0.88),
+            spatial_candidate(origin, (68.0, 43.0), 0.67),
+        ];
+        let fifth = [
+            spatial_candidate(origin, shared_arc, 0.84),
+            spatial_candidate(origin, (90.0, 63.0), 0.64),
+        ];
+        let players = [
+            TeamSpatialPlayerInput {
+                index: 0,
+                candidates: &first,
+                preferred_candidate_index: 0,
+            },
+            TeamSpatialPlayerInput {
+                index: 1,
+                candidates: &second,
+                preferred_candidate_index: 0,
+            },
+            TeamSpatialPlayerInput {
+                index: 2,
+                candidates: &third,
+                preferred_candidate_index: 0,
+            },
+            TeamSpatialPlayerInput {
+                index: 3,
+                candidates: &fourth,
+                preferred_candidate_index: 0,
+            },
+            TeamSpatialPlayerInput {
+                index: 4,
+                candidates: &fifth,
+                preferred_candidate_index: 0,
+            },
+        ];
+        let mut assignments = [TeamSpatialAssignment::default();
+            MAX_FIXED_TEAM_TACTICAL_TASKS];
+        let input = TeamSpatialAssignmentInput { players: &players };
+
+        let summary = coordinate_team_spatial_tasks_into(
+            &input,
+            &mut assignments[..players.len()],
+        );
+
+        assert_eq!(summary.conflicts_before, 10);
+        assert_eq!(summary.conflicts_after, 0);
+        assert_eq!(assignments[0].candidate_index, 0);
+        assert_eq!(summary.displaced_count, 4);
+        for left_index in 0..players.len() {
+            for right_index in left_index + 1..players.len() {
+                let left = players[left_index].candidates[assignments[left_index].candidate_index];
+                let right =
+                    players[right_index].candidates[assignments[right_index].candidate_index];
+                assert!(
+                    !spatial_claim_conflict(left.claim, right.claim),
+                    "coordinated support claims must not occupy the same run space: {left:?} {right:?}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn uncommitted_claim_does_not_displace_an_available_support_lane() {
+        let origin = (72.0, 34.0);
+        let committed = spatial_candidate(origin, (86.0, 34.0), 0.96);
+        let alternate = spatial_candidate(origin, (77.0, 52.0), 0.60);
+        let inactive = TeamSpatialCandidate {
+            target: (86.0, 34.0),
+            local_value: 1.20,
+            claim: SpatialClaim::default(),
+        };
+        let primary = [committed];
+        let secondary = [inactive, alternate];
+        let players = [
+            TeamSpatialPlayerInput {
+                index: 0,
+                candidates: &primary,
+                preferred_candidate_index: 0,
+            },
+            TeamSpatialPlayerInput {
+                index: 1,
+                candidates: &secondary,
+                preferred_candidate_index: 0,
+            },
+        ];
+        let mut assignments = [TeamSpatialAssignment::default();
+            MAX_FIXED_TEAM_TACTICAL_TASKS];
+
+        let summary = coordinate_team_spatial_tasks_into(
+            &TeamSpatialAssignmentInput { players: &players },
+            &mut assignments[..players.len()],
+        );
+
+        assert_eq!(summary.conflicts_after, 0);
+        assert_eq!(assignments[0].candidate_index, 0);
+        assert_eq!(assignments[1].candidate_index, 0);
+        assert!(!assignments[1].displaced_from_preference);
     }
 }

@@ -100,9 +100,10 @@ pub use goal::{
 };
 pub use goalkeeper::{
     choose_distribution, choose_fallback_target, compute_gk_save_probability,
-    compute_gk_save_probability_for_attributes, should_rush_out, GkDistributionInput,
-    GkDistributionOutput, GkFallbackTargetInput, GkFallbackTargetOutput, GkRushInput,
-    GkSaveAttributes, GkSaveInput,
+    compute_gk_save_probability_for_attributes, goalkeeper_positioning_target,
+    goalkeeper_shape_anchor, should_rush_out, GkDistributionInput, GkDistributionOutput,
+    GkFallbackTargetInput, GkFallbackTargetOutput, GkPositioningInput, GkPositioningOutput,
+    GkRushInput, GkSaveAttributes, GkSaveInput, GkShapeAnchorInput,
 };
 pub use interactions::{
     carry_survival_transition, carry_survival_transition_with_defender_response_slices,
@@ -117,7 +118,7 @@ pub use match_clock::{MatchClock, MatchClockPhase, MatchClockSnapshot};
 pub use match_flow::{
     build_ball_flight_frame, build_goal_event, carry_phase_plan, clear_phase_plan,
     clearance_arrival_plan, contested_tick_plan, defensive_pressure_adjust_plan, duel_phase_plan,
-    flight_movement_plan, give_ball_plan, gk_position_adjust, goal_kick_shape_targets,
+    flight_movement_plan, give_ball_plan, goal_kick_shape_targets,
     goal_kick_spot, hold_phase_plan, key_pass_for_shot, kickoff_shape_targets,
     must_leave_penalty_area_for_goal_kick, out_of_bounds_plan, pass_arrival_plan,
     pass_control_strength, pass_control_transition, pass_loose_control_strength,
@@ -136,8 +137,8 @@ pub use match_flow::{
     DefensivePressureAdjustInput, DefensivePressureAdjustOutput, DefensivePressureAdjustPlanOutput,
     DuelPhasePlanInput, DuelPhasePlanOutput, FlightMovementPlanInput, FlightMovementPlanOutput,
     FlightMovementPlanPlayerOutput, FlightMovementPlayerInput, FlightTickInput, FlightTickOutput,
-    GiveBallPlanInput, GiveBallPlanOutput, GkPositionAdjustInput, GkPositionAdjustOutput,
-    GoalEventInput, GoalEventOutput, GoalKickPlayerInput, GoalKickShapeInput, GoalKickShapeOutput,
+    GiveBallPlanInput, GiveBallPlanOutput, GoalEventInput, GoalEventOutput, GoalKickPlayerInput,
+    GoalKickShapeInput, GoalKickShapeOutput,
     HoldPhasePlanInput, HoldPhasePlanOutput, KeyPassInput, KeyPassOutput, KickoffPlayerInput,
     KickoffShapeInput, KickoffShapeOutput, OutOfBoundsPlanInput, OutOfBoundsPlanOutput,
     PassArrivalPlanInput, PassArrivalPlanOutput, PassControlInput, PassControlOutput,
@@ -163,7 +164,8 @@ pub use off_ball_attack::{
     generate_off_ball_attack_anchor_candidates, generate_off_ball_attack_anchor_candidates_into,
     generate_off_ball_attack_raw_candidates, generate_off_ball_attack_raw_candidates_into,
     generate_off_ball_attack_support_candidates, generate_off_ball_attack_support_candidates_into,
-    score_off_ball_attack_candidates, score_off_ball_attack_candidates_into,
+    off_ball_attack_components_from_scored, score_off_ball_attack_candidates,
+    score_off_ball_attack_candidates_into,
     OffBallAttackBatchInput, OffBallAttackCandidateInput, OffBallAttackCandidateOutput,
     OffBallAttackChoiceComponents, OffBallAttackChoiceInput, OffBallAttackChoiceOutput,
     OffBallAttackGoalInput, OffBallRawGenerationInput, OffBallTeammateInput, RandomPolarSample,
@@ -236,11 +238,14 @@ pub use state_value::{
     PossessionValueContext, StateValueInput,
 };
 pub use tactical_task::{
-    accept_task, formation_debt, observe_entities_into, task_intent_from_goal,
-    task_motion_target, task_policy_utility, update_player_belief, BelievedEntity, GoalProposal,
-    PlayerBelief, PlayerObservation, TacticalTask, TacticalTaskCoordination, TacticalTaskIntent,
-    TacticalTaskPhase, TaskAcceptance, TaskAcceptanceInput, TaskMotionInput, VisibleEntity,
-    MAX_PLAYER_OBSERVED_ENTITIES, MAX_TASK_OUTLET_COVERAGE,
+    accept_task, coordinate_team_spatial_tasks_into, formation_debt, observe_entities_into,
+    spatial_claim_conflict, spatial_claim_for_task, task_intent_from_goal, task_motion_target,
+    task_policy_utility, update_player_belief, BelievedEntity, GoalProposal, PlayerBelief,
+    PlayerObservation, SpatialClaim, TacticalTask, TacticalTaskCoordination, TacticalTaskIntent,
+    TacticalTaskPhase, TaskAcceptance, TaskAcceptanceInput, TaskMotionInput,
+    TeamSpatialAssignment, TeamSpatialAssignmentInput, TeamSpatialCandidate,
+    TeamSpatialCoordinationSummary, TeamSpatialPlayerInput, VisibleEntity,
+    MAX_FIXED_TEAM_TACTICAL_TASKS, MAX_PLAYER_OBSERVED_ENTITIES, MAX_TASK_OUTLET_COVERAGE,
 };
 pub use team_plan::{
     project_team_plan_formation, project_team_plan_formation_into, select_team_plan,

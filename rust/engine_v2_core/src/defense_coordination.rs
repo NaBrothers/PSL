@@ -152,6 +152,15 @@ pub struct TeamDefenseCoordinationSummary {
     pub formation_scale: f64,
 }
 
+#[derive(Clone, Copy, Debug)]
+struct SupportedEngagementRequirement {
+    engager_player_index: usize,
+    engager_candidate_index: usize,
+    cover_player_index: usize,
+    cover_candidate_index: usize,
+    minimum_supported_engagement: f64,
+}
+
 fn formation_scale(players: &[TeamDefensePlayerInput<'_>]) -> f64 {
     let mut nearest_distances = Vec::with_capacity(players.len());
     for (index, player) in players.iter().enumerate() {
@@ -684,11 +693,83 @@ fn resource_objective(
         - demand.carrier_closure * 0.14 * closure_overcommitment.powi(2)
 }
 
-fn selection_objective(
+fn supported_engagement_requirement(
+    input: &TeamDefenseAssignmentInput<'_>,
+) -> Option<SupportedEngagementRequirement> {
+    let demand = input.resource_demand.clamped();
+    if demand.carrier_engagement <= 1e-6 || demand.cover <= 1e-6 {
+        return None;
+    }
+    let mut best: Option<SupportedEngagementRequirement> = None;
+    for (engager_player_index, engager_player) in input.players.iter().enumerate() {
+        for (engager_candidate_index, engager_candidate) in engager_player.candidates.iter().enumerate()
+        {
+            let engagement = engager_candidate.resource_claim.carrier_engagement;
+            if engagement <= 1e-6 {
+                continue;
+            }
+            for (cover_player_index, cover_player) in input.players.iter().enumerate() {
+                if engager_player_index == cover_player_index {
+                    continue;
+                }
+                for (cover_candidate_index, cover_candidate) in
+                    cover_player.candidates.iter().enumerate()
+                {
+                    let cover = cover_candidate.resource_claim.cover;
+                    let supported_engagement = engagement.min(cover);
+                    if supported_engagement <= 1e-6 {
+                        continue;
+                    }
+                    let candidate = SupportedEngagementRequirement {
+                        engager_player_index,
+                        engager_candidate_index,
+                        cover_player_index,
+                        cover_candidate_index,
+                        minimum_supported_engagement: supported_engagement
+                            .min(demand.carrier_engagement)
+                            .min(demand.cover),
+                    };
+                    if best
+                        .map(|current| {
+                            candidate.minimum_supported_engagement
+                                > current.minimum_supported_engagement + 1e-9
+                        })
+                        .unwrap_or(true)
+                    {
+                        best = Some(candidate);
+                    }
+                }
+            }
+        }
+    }
+    best
+}
+
+fn selection_satisfies_supported_engagement(
+    input: &TeamDefenseAssignmentInput<'_>,
+    selections: &[usize],
+    requirement: Option<SupportedEngagementRequirement>,
+) -> bool {
+    let Some(requirement) = requirement else {
+        return true;
+    };
+    let coverage = resource_coverage(input, selections, None);
+    coverage
+        .carrier_engagement
+        .min(coverage.cover)
+        + 1e-9
+        >= requirement.minimum_supported_engagement
+}
+
+fn selection_objective_with_supported_engagement(
     input: &TeamDefenseAssignmentInput<'_>,
     selections: &[usize],
     scale: f64,
+    requirement: Option<SupportedEngagementRequirement>,
 ) -> f64 {
+    if !selection_satisfies_supported_engagement(input, selections, requirement) {
+        return f64::NEG_INFINITY;
+    }
     let compactness = input.compactness.clamp(0.0, 1.0);
     let mut value = 0.0;
 
@@ -726,14 +807,26 @@ fn selection_objective(
     value
 }
 
-fn selection_objective_after_change(
+fn selection_objective_after_change_with_supported_engagement(
     input: &TeamDefenseAssignmentInput<'_>,
     selections: &[usize],
     scale: f64,
     current_objective: f64,
     player_index: usize,
     candidate_index: usize,
+    requirement: Option<SupportedEngagementRequirement>,
 ) -> f64 {
+    let mut changed = [0usize; MAX_FIXED_TEAM_DEFENSE_PLAYERS];
+    assert!(
+        selections.len() <= changed.len(),
+        "fixed defense responsibility checks support eleven players"
+    );
+    changed[..selections.len()].copy_from_slice(selections);
+    changed[player_index] = candidate_index;
+    if !selection_satisfies_supported_engagement(input, &changed[..selections.len()], requirement)
+    {
+        return f64::NEG_INFINITY;
+    }
     let compactness = input.compactness.clamp(0.0, 1.0);
     let Some(player) = input.players.get(player_index).copied() else {
         return current_objective;
@@ -808,11 +901,27 @@ pub fn coordinate_team_defense_into(
     for (index, _) in input.players.iter().enumerate() {
         selections[index] = preferred_candidate_index(input, index);
     }
+    let supported_engagement = supported_engagement_requirement(input);
+    if !selection_satisfies_supported_engagement(
+        input,
+        &selections[..player_count],
+        supported_engagement,
+    ) {
+        if let Some(requirement) = supported_engagement {
+            selections[requirement.engager_player_index] = requirement.engager_candidate_index;
+            selections[requirement.cover_player_index] = requirement.cover_candidate_index;
+        }
+    }
 
     let maximum_sweeps = player_count.saturating_mul(2).max(1);
     for _ in 0..maximum_sweeps {
         let mut changed = false;
-        let mut current_objective = selection_objective(input, &selections[..player_count], scale);
+        let mut current_objective = selection_objective_with_supported_engagement(
+            input,
+            &selections[..player_count],
+            scale,
+            supported_engagement,
+        );
         for player_index in 0..player_count {
             let candidate_count = input.players[player_index].candidates.len();
             if candidate_count == 0 {
@@ -825,13 +934,14 @@ pub fn coordinate_team_defense_into(
                 if candidate_index == current_index {
                     continue;
                 }
-                let candidate_value = selection_objective_after_change(
+                let candidate_value = selection_objective_after_change_with_supported_engagement(
                     input,
                     &selections[..player_count],
                     scale,
                     current_objective,
                     player_index,
                     candidate_index,
+                    supported_engagement,
                 );
                 if candidate_value > best_value + 1e-9 {
                     best_index = candidate_index;
@@ -847,7 +957,12 @@ pub fn coordinate_team_defense_into(
         }
     }
 
-    let objective = selection_objective(input, &selections[..player_count], scale);
+    let objective = selection_objective_with_supported_engagement(
+        input,
+        &selections[..player_count],
+        scale,
+        supported_engagement,
+    );
     for (player_index, player) in input.players.iter().enumerate() {
         let candidate_index = selections[player_index];
         let candidate =
@@ -886,11 +1001,19 @@ pub fn coordinate_team_defense(
     let mut selections = (0..input.players.len())
         .map(|player_index| preferred_candidate_index(input, player_index))
         .collect::<Vec<_>>();
+    let supported_engagement = supported_engagement_requirement(input);
+    if !selection_satisfies_supported_engagement(input, &selections, supported_engagement) {
+        if let Some(requirement) = supported_engagement {
+            selections[requirement.engager_player_index] = requirement.engager_candidate_index;
+            selections[requirement.cover_player_index] = requirement.cover_candidate_index;
+        }
+    }
 
     let maximum_sweeps = input.players.len().saturating_mul(2).max(1);
     for _ in 0..maximum_sweeps {
         let mut changed = false;
-        let mut current_objective = selection_objective(input, &selections, scale);
+        let mut current_objective =
+            selection_objective_with_supported_engagement(input, &selections, scale, supported_engagement);
         for player_index in 0..input.players.len() {
             let candidate_count = input.players[player_index].candidates.len();
             if candidate_count == 0 {
@@ -903,13 +1026,14 @@ pub fn coordinate_team_defense(
                 if candidate_index == current_index {
                     continue;
                 }
-                let candidate_value = selection_objective_after_change(
+                let candidate_value = selection_objective_after_change_with_supported_engagement(
                     input,
                     &selections,
                     scale,
                     current_objective,
                     player_index,
                     candidate_index,
+                    supported_engagement,
                 );
                 if candidate_value > best_value + 1e-9 {
                     best_index = candidate_index;
@@ -925,7 +1049,8 @@ pub fn coordinate_team_defense(
         }
     }
 
-    let objective = selection_objective(input, &selections, scale);
+    let objective =
+        selection_objective_with_supported_engagement(input, &selections, scale, supported_engagement);
     let assignments =
         input
             .players
@@ -971,7 +1096,8 @@ mod tests {
     use super::{
         coordinate_team_defense, coordinate_team_defense_into, defense_resource_claim,
         defense_resource_claim_with_outlets, defense_resource_demand_from_visible_threats,
-        formation_scale, selection_objective, selection_objective_after_change,
+        formation_scale, selection_objective_after_change_with_supported_engagement,
+        selection_objective_with_supported_engagement, supported_engagement_requirement,
         DefenseResourceClaim, DefenseResourceDemand, DefenseTaskContinuity, DefenseTaskKind,
         TeamDefenseAssignment, TeamDefenseAssignmentInput,
         TeamDefenseCandidate, TeamDefensePlayerInput, MAX_FIXED_TEAM_DEFENSE_PLAYERS,
@@ -1393,23 +1519,32 @@ mod tests {
         let input = assignment_input(&players, 0.65, 0.90);
         let selections = [1, 0, 2];
         let scale = formation_scale(&players);
-        let current_objective = selection_objective(&input, &selections, scale);
+        let requirement = supported_engagement_requirement(&input);
+        let current_objective = selection_objective_with_supported_engagement(
+            &input,
+            &selections,
+            scale,
+            requirement,
+        );
 
         for (player_index, player) in players.iter().enumerate() {
             for candidate_index in 0..player.candidates.len() {
-                let incremental = selection_objective_after_change(
+                let incremental = selection_objective_after_change_with_supported_engagement(
                     &input,
                     &selections,
                     scale,
                     current_objective,
                     player_index,
                     candidate_index,
+                    requirement,
                 );
                 let mut changed = selections;
                 changed[player_index] = candidate_index;
-                let full = selection_objective(&input, &changed, scale);
+                let full =
+                    selection_objective_with_supported_engagement(&input, &changed, scale, requirement);
                 assert!(
-                    (incremental - full).abs() <= 1e-10,
+                    (incremental.is_infinite() && full.is_infinite())
+                        || (incremental - full).abs() <= 1e-10,
                     "player={player_index}, candidate={candidate_index}, incremental={incremental}, full={full}"
                 );
             }
@@ -1546,6 +1681,103 @@ mod tests {
         });
 
         assert_eq!(output.assignments[0].candidate_index, 1);
+    }
+
+    #[test]
+    fn reachable_engager_with_cover_cannot_be_replaced_by_deeper_recovery() {
+        let engager = [
+            with_claim(
+                candidate(
+                    (61.0, 34.0),
+                    (56.0, 34.0),
+                    0.62,
+                    DefenseTaskKind::Press,
+                ),
+                DefenseResourceClaim {
+                    carrier_closure: 0.88,
+                    carrier_engagement: 0.82,
+                    ..DefenseResourceClaim::default()
+                },
+            ),
+            with_claim(
+                candidate(
+                    (42.0, 34.0),
+                    (42.0, 34.0),
+                    0.92,
+                    DefenseTaskKind::RecoverShape,
+                ),
+                DefenseResourceClaim {
+                    lane_screen: 0.66,
+                    ..DefenseResourceClaim::default()
+                },
+            ),
+        ];
+        let cover = [
+            with_claim(
+                candidate(
+                    (53.0, 39.0),
+                    (50.0, 38.0),
+                    0.64,
+                    DefenseTaskKind::BlockLane,
+                ),
+                DefenseResourceClaim {
+                    cover: 0.88,
+                    lane_screen: 0.72,
+                    wide_balance: [0.0, 0.48],
+                    ..DefenseResourceClaim::default()
+                },
+            ),
+            with_claim(
+                candidate(
+                    (41.0, 49.0),
+                    (41.0, 49.0),
+                    0.90,
+                    DefenseTaskKind::RecoverShape,
+                ),
+                DefenseResourceClaim {
+                    wide_balance: [0.0, 0.76],
+                    ..DefenseResourceClaim::default()
+                },
+            ),
+        ];
+        let players = [
+            TeamDefensePlayerInput {
+                index: 0,
+                anchor: (46.0, 34.0),
+                candidates: &engager,
+            },
+            TeamDefensePlayerInput {
+                index: 1,
+                anchor: (43.0, 48.0),
+                candidates: &cover,
+            },
+        ];
+        let output = coordinate_team_defense(&TeamDefenseAssignmentInput {
+            players: &players,
+            compactness: 0.72,
+            immediate_threat: 0.66,
+            press_intensity: 0.72,
+            resource_demand: DefenseResourceDemand {
+                carrier_closure: 0.72,
+                carrier_engagement: 0.74,
+                cover: 0.74,
+                lane_screen: 0.34,
+                wide_balance: [0.0, 0.22],
+                ..DefenseResourceDemand::default()
+            },
+            local_candidate_indices: Some(&[1, 1]),
+            task_continuities: None,
+        });
+
+        assert_eq!(
+            output
+                .assignments
+                .iter()
+                .map(|assignment| assignment.candidate_index)
+                .collect::<Vec<_>>(),
+            vec![0, 0],
+            "when a reachable engager has a separate cover, the team must take the supported pressure responsibility"
+        );
     }
 
     #[test]

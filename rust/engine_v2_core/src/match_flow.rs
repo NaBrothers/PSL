@@ -8,6 +8,7 @@ use crate::execution::{
     ClearExecutionInput, ExecutionOpponent, HoldExecutionInput, PassExecutionInput,
     ShotExecutionInput,
 };
+use crate::goalkeeper::{goalkeeper_shape_anchor, GkShapeAnchorInput};
 use crate::interactions::{resolve_duel, DefenderActionInput, DuelResolveInput};
 use crate::offside::get_offside_line_from_xs;
 use crate::physics::PitchBoundaryKind;
@@ -1648,19 +1649,6 @@ pub struct TackleScoreOutput {
 }
 
 #[derive(Clone, Debug)]
-pub struct GkPositionAdjustInput {
-    pub ball_pos: (f64, f64),
-    pub attacking_right: bool,
-    pub pitch_length: f64,
-    pub pitch_width: f64,
-}
-
-#[derive(Clone, Debug)]
-pub struct GkPositionAdjustOutput {
-    pub target: (f64, f64),
-}
-
-#[derive(Clone, Debug)]
 pub struct PassControlInput {
     pub score: f64,
     pub contest_radius: f64,
@@ -2425,23 +2413,6 @@ pub fn score_mark_runner_legacy(input: &DefenseZoneHelperInput<'_>) -> DefenseZo
     }
 }
 
-pub fn gk_position_adjust(input: &GkPositionAdjustInput) -> GkPositionAdjustOutput {
-    let goal_x = if input.attacking_right {
-        5.0
-    } else {
-        input.pitch_length - 5.0
-    };
-    let goal_y = input.pitch_width / 2.0;
-    let shift_y = (input.ball_pos.1 - goal_y) * 0.3;
-    GkPositionAdjustOutput {
-        target: pitch_clamp(
-            (goal_x, goal_y + shift_y),
-            input.pitch_length,
-            input.pitch_width,
-        ),
-    }
-}
-
 pub fn pass_control_strength(input: &PassControlInput) -> PassControlOutput {
     if input.score.is_infinite() {
         return PassControlOutput { control: 0.0 };
@@ -2516,13 +2487,14 @@ pub fn team_shape_plan_into(
         };
         let base_width_offset = base.1 - input.pitch_width / 2.0;
         let (mut progress, y) = if player.is_goalkeeper {
-            let coverage_target = gk_position_adjust(&GkPositionAdjustInput {
+            let coverage_target = goalkeeper_shape_anchor(&GkShapeAnchorInput {
                 ball_pos: input.ball_pos,
+                base_pos: player.base_pos,
                 attacking_right: input.attacking_right,
+                team_depth_scale: plan.depth_scale,
                 pitch_length: input.pitch_length,
                 pitch_width: input.pitch_width,
-            })
-            .target;
+            });
             let progress = if input.attacking_right {
                 coverage_target.0 / input.pitch_length
             } else {
@@ -3058,7 +3030,7 @@ mod tests {
     }
 
     #[test]
-    fn goalkeeper_shape_anchor_stays_on_goal_coverage_in_every_phase() {
+    fn goalkeeper_shape_anchor_tracks_team_depth_and_ball_side_in_every_phase() {
         let players = [gk_shape_player(0), gk_shape_player(1)];
         let opponents = [TeamShapeOpponentInput {
             pos: (80.0, 34.0),
@@ -3081,10 +3053,15 @@ mod tests {
                 .iter()
                 .find(|player| player.index == 0)
                 .expect("goalkeeper anchor");
-            assert!((goalkeeper.tactical_anchor.0 - 5.0).abs() < 1e-9, "{phase}");
             assert!(
-                (goalkeeper.tactical_anchor.1 - 41.8).abs() < 1e-9,
-                "{phase}"
+                goalkeeper.tactical_anchor.0 > 7.0 && goalkeeper.tactical_anchor.0 < 12.0,
+                "{phase}: goalkeeper must advance from its fixed goal-line position with the team's depth, anchor={:?}",
+                goalkeeper.tactical_anchor
+            );
+            assert!(
+                goalkeeper.tactical_anchor.1 > 34.5,
+                "{phase}: goalkeeper must shift toward the ball side while preserving goal coverage, anchor={:?}",
+                goalkeeper.tactical_anchor
             );
         }
     }

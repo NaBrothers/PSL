@@ -18,6 +18,7 @@ use crate::pass_value::{
 };
 
 const MAX_FIXED_OFF_BALL_ATTACK_CHOICES: usize = MAX_FIXED_OFF_BALL_ATTACK_CANDIDATES + 1;
+const MAX_RUNNER_SPATIAL_TASK_CANDIDATES: usize = 6;
 use crate::shot_quality::{shot_contest_engagement, ShotQualityCache};
 use crate::state_value::{
     possession_bellman_geometry, possession_state_value_with_context_and_bellman_geometry,
@@ -35,7 +36,7 @@ use crate::{
     evaluate_cut_inside_goal, evaluate_drive_byline_goal, evaluate_hold,
     evaluate_hold_opportunity_goal, evaluate_layoff_goal, evaluate_release_support_goal,
     evaluate_shot, evaluate_through_ball_goal, evaluate_wide_hold_overlap_goal,
-    finalize_carry_score, generate_carry_offsets_into, gk_position_adjust,
+    finalize_carry_score, generate_carry_offsets_into, goalkeeper_positioning_target,
     hold_phase_plan, kickoff_shape_targets, out_of_bounds_plan, pass_arrival_plan,
     pass_control_transition, pass_phase_plan, pass_receive_plan, player_apply_stun,
     player_move_speed, player_move_tick,
@@ -47,7 +48,7 @@ use crate::{
     select_goal_deterministic, select_hold_support, select_prepared_defense_action,
     possession_state_value_with_context, possession_value_context, select_team_plan,
     shot_arrival_plan, shot_contest_intent, shot_phase_plan, should_continue_action,
-    softmax_select_index, state_value, task_motion_target,
+    off_ball_attack_components_from_scored, softmax_select_index, state_value, task_motion_target,
     update_player_belief,
     team_pass_candidates_batch_into_with_workspace,
     team_plan_action_utility, team_shape_plan_into, temporal_option_value, tick_ball_flight,
@@ -64,13 +65,14 @@ use crate::{
     DefenderActionInput, DefenseChoiceInput, DefenseChoiceOutput, DefenseRandomSample,
     DefenseTeammateInput, DefensiveGoalBuildInput, DefensivePressureInput,
     DriveBylineGoalInput, DuelDetectionInput, DuelPhasePlanInput, ExecutionOpponent,
-    ExpectedPassInput, FlightTickInput, GkPositionAdjustInput, GkSaveAttributes, GoalInput,
+    ExpectedPassInput, FlightTickInput, GkPositioningInput, GkSaveAttributes, GoalInput,
     GoalSwitchCostInput, HoldInput, HoldOpportunityGoalInput, HoldPhasePlanInput,
     HoldSupportCarryInput, HoldSupportHoldInput, HoldSupportPassInput, HoldSupportSelectionInput,
     InterceptionDetectionInput, KickoffPlayerInput, KickoffShapeInput, LayoffGoalInput,
     LayoffPassInput, LayoffSelectionInput, MatchClock, MatchClockPhase, OffBallAttackBatchInput,
-    OffBallAttackCandidateInput, OffBallAttackCandidateOutput, OffBallAttackChoiceInput,
-    OffBallAttackGoalBuildInput, OffBallRawGenerationInput, OffBallTeammateInput,
+    OffBallAttackCandidateInput, OffBallAttackCandidateOutput, OffBallAttackChoiceComponents,
+    OffBallAttackChoiceInput, OffBallAttackGoalBuildInput, OffBallRawGenerationInput,
+    OffBallTeammateInput,
     OnBallGenericGoalInput, OutOfBoundsPlanInput, OverlapPassInput, OverlapSelectionInput,
     PassArrivalPlanInput, PassControlTransitionInput, PassPhasePlanInput, PassReceivePlanInput,
     PassRiskPlayer, PassSpacePlayer, PassStatInput, PassTeamPlayer, PlayerApplyStunInput,
@@ -91,9 +93,12 @@ use crate::{
     TemporalActionKind, TemporalOptionValueInput, ThroughBallGoalInput, VisionContextInput,
     WideHoldOverlapGoalInput, coordinate_team_defense_into, defense_resource_claim,
     defense_resource_claim_with_outlets,
-    defense_resource_demand_from_visible_threats, DefenseTaskKind, GoalProposal, PlayerBelief,
-    PlayerObservation, TacticalTask, TacticalTaskCoordination, TaskAcceptanceInput, TaskMotionInput,
-    TeamDefenseAssignment, TeamDefenseCandidate, TeamDefensePlayerInput, VisibleEntity,
+    defense_resource_demand_from_visible_threats, coordinate_team_spatial_tasks_into,
+    spatial_claim_conflict, spatial_claim_for_task, task_intent_from_goal, DefenseTaskKind,
+    GoalProposal, PlayerBelief, PlayerObservation, TacticalTask, TacticalTaskCoordination,
+    TaskAcceptanceInput, TaskMotionInput, TeamDefenseAssignment, TeamDefenseCandidate,
+    TeamDefensePlayerInput, TeamSpatialAssignment, TeamSpatialAssignmentInput,
+    TeamSpatialCandidate, TeamSpatialPlayerInput, VisibleEntity,
     EMPTY_TEAM_PASS_CANDIDATE,
     MAX_CARRY_TARGET_OFFSETS, MAX_PLAYER_OBSERVED_ENTITIES,
     MAX_PASS_CANDIDATES_PER_RECEIVER, MAX_TEAM_PASS_CANDIDATES,
@@ -1280,6 +1285,304 @@ mod tests {
 
         assert_eq!(arena.noises.len(), arena.candidates.len() + 1);
         assert_eq!(arena.selection_scores.len(), arena.candidates.len() + 1);
+    }
+
+    #[test]
+    fn goalkeeper_runtime_target_uses_visible_geometry_without_overwriting_shape_anchor() {
+        let cards = (0..RUNNER_TEAM_SIZE)
+            .map(|index| runner_test_card(format!("Player {index}").as_str(), 75.0, 75.0))
+            .collect::<Vec<_>>();
+        let mut goalkeeper = build_players(&cards, formation_data("433"), true, 105.0, 68.0)
+            .remove(0);
+        let config = runtime_config(&json!({}));
+        goalkeeper.pos = (7.0, 34.0);
+        goalkeeper.target_pos = goalkeeper.pos;
+        goalkeeper.tactical_anchor = (9.0, 34.0);
+        goalkeeper.gk_positioning = 92.0;
+        goalkeeper.tactical_belief.ball_pos = (17.0, 58.0);
+        goalkeeper.tactical_belief.ball_confidence = 1.0;
+
+        apply_goalkeeper_coverage_target(&mut goalkeeper, true, &config);
+
+        assert_eq!(
+            goalkeeper.tactical_anchor,
+            (9.0, 34.0),
+            "shot-angle coverage must not replace the shape anchor"
+        );
+        assert!(
+            goalkeeper.target_pos.1 > goalkeeper.tactical_anchor.1 + 1.0,
+            "a visible wide threat must shift the runtime target toward the near-post line: target={:?}, anchor={:?}",
+            goalkeeper.target_pos,
+            goalkeeper.tactical_anchor,
+        );
+        assert!(
+            goalkeeper.target_pos.0 > 1.0,
+            "the runtime target must be a usable goal-coverage position rather than a fixed goal-line coordinate: target={:?}",
+            goalkeeper.target_pos,
+        );
+    }
+
+    #[test]
+    fn goalkeeper_coverage_survives_attack_and_defense_target_selection_then_moves_physically() {
+        let cards = (0..RUNNER_TEAM_SIZE)
+            .map(|index| runner_test_card(format!("Player {index}").as_str(), 75.0, 75.0))
+            .collect::<Vec<_>>();
+        let opponent_cards = (0..RUNNER_TEAM_SIZE)
+            .map(|index| runner_test_card(format!("Opponent {index}").as_str(), 75.0, 75.0))
+            .collect::<Vec<_>>();
+        let config = runtime_config(&json!({
+            "iq_noise_scale": 0.0,
+            "goal_noise_scale": 0.0,
+        }));
+        let ball_pos = (18.0, 57.0);
+        let mut home = build_players(&cards, formation_data("433"), true, 105.0, 68.0);
+        let away = build_players(
+            &opponent_cards,
+            formation_data("433"),
+            false,
+            105.0,
+            68.0,
+        );
+        let home_goalkeeper = &mut home[0];
+        home_goalkeeper.pos = (5.5, 34.0);
+        home_goalkeeper.target_pos = home_goalkeeper.pos;
+        home_goalkeeper.tactical_anchor = (9.0, 34.0);
+        home_goalkeeper.gk_positioning = 94.0;
+        home_goalkeeper.tactical_belief.ball_pos = ball_pos;
+        home_goalkeeper.tactical_belief.ball_confidence = 1.0;
+
+        let mut state = runner_test_state();
+        state.ball.position = ball_pos;
+        state.ball.holder_idx = Some(9);
+        state.ball.holder_team_home = Some(true);
+        state.home_plan_signals = crate::team_plan_signals(crate::TeamPlanKind::Advance);
+        state.away_plan_signals = crate::team_plan_signals(crate::TeamPlanKind::DefendPress);
+        let mut rng = RunnerRng::new(20260715);
+
+        let _ = apply_off_ball_attack_choices(
+            &mut home,
+            &mut state,
+            18,
+            true,
+            true,
+            Some(9),
+            Some(&[true; RUNNER_TEAM_SIZE]),
+            &config,
+            &mut rng,
+        );
+        let attack_target = home[0].target_pos;
+        assert!(
+            attack_target.1 > home[0].tactical_anchor.1 + 1.0,
+            "the attacking-side off-ball pass must preserve goalkeeper coverage instead of restoring the anchor: target={attack_target:?}, anchor={:?}",
+            home[0].tactical_anchor,
+        );
+
+        let _ = apply_off_ball_defense_choices(
+            &mut home,
+            &away,
+            ball_pos,
+            true,
+            Some(ball_pos),
+            0,
+            1,
+            1.0,
+            state.home_plan_signals,
+            Some(&[true; RUNNER_TEAM_SIZE]),
+            &config,
+            &mut rng,
+            Some(&mut state.fixed_defense_arena),
+            &mut state.trace_decisions,
+            18,
+            true,
+            false,
+        );
+        let defense_target = home[0].target_pos;
+        assert!(
+            defense_target.1 > home[0].tactical_anchor.1 + 1.0,
+            "the defending-side target selection must use the goalkeeper's visible shot geometry: target={defense_target:?}, anchor={:?}",
+            home[0].tactical_anchor,
+        );
+
+        let before = home[0].pos;
+        move_runner_player(&mut home[0], 18, state.home_plan_signals, &config);
+        let after = home[0].pos;
+        assert!(
+            distance(before, after)
+                <= player_speed(
+                    home[0].speed.round() as i32,
+                    config.player_max_speed,
+                    config.player_min_speed,
+                ) + 1e-9,
+            "goalkeeper coverage target must still flow through physical movement: before={before:?}, after={after:?}, target={attack_target:?}",
+        );
+        assert!(
+            after.1 > before.1,
+            "the goalkeeper must begin moving toward the visible wide-threat coverage target: before={before:?}, after={after:?}, target={attack_target:?}",
+        );
+    }
+
+    #[test]
+    fn runtime_attack_coordination_keeps_box_edge_tasks_separate_and_speed_limited() {
+        let cards = (0..RUNNER_TEAM_SIZE)
+            .map(|index| runner_test_card(format!("Home {index}").as_str(), 75.0, 75.0))
+            .collect::<Vec<_>>();
+        let opponent_cards = (0..RUNNER_TEAM_SIZE)
+            .map(|index| runner_test_card(format!("Away {index}").as_str(), 75.0, 75.0))
+            .collect::<Vec<_>>();
+        let mut home = build_players(&cards, formation_data("433"), true, 105.0, 68.0);
+        let mut away = build_players(
+            &opponent_cards,
+            formation_data("433"),
+            false,
+            105.0,
+            68.0,
+        );
+        let ball_pos = (88.0, 13.0);
+        let holder_idx = 9;
+        let support_indices = [5usize, 6, 7, 8, 10];
+        let clustered_positions = [
+            (79.0, 29.0),
+            (79.5, 31.5),
+            (79.0, 34.0),
+            (79.5, 36.5),
+            (80.0, 39.0),
+        ];
+
+        for (index, player) in home.iter_mut().enumerate() {
+            player.state = if index == holder_idx {
+                "on_ball".to_string()
+            } else {
+                "off_ball".to_string()
+            };
+            player.goal_type = None;
+            player.goal_phase = None;
+            player.tactical_task = TacticalTask::inactive(player.pos);
+        }
+        for (index, position) in support_indices
+            .iter()
+            .copied()
+            .zip(clustered_positions)
+        {
+            let player = &mut home[index];
+            player.pos = position;
+            player.target_pos = position;
+            player.tactical_anchor = position;
+            player.base_pos = position;
+            player.velocity = (0.0, 0.0);
+        }
+        home[holder_idx].pos = ball_pos;
+        home[holder_idx].target_pos = ball_pos;
+        home[holder_idx].tactical_anchor = ball_pos;
+        home[holder_idx].base_pos = ball_pos;
+        for (index, player) in away.iter_mut().enumerate() {
+            let position = if index == 0 {
+                (102.5, 34.0)
+            } else {
+                (94.0 + (index % 3) as f64 * 2.0, 5.0 + (index * 7 % 56) as f64)
+            };
+            player.pos = position;
+            player.target_pos = position;
+            player.tactical_anchor = position;
+            player.base_pos = position;
+            player.velocity = (0.0, 0.0);
+        }
+
+        let config = runtime_config(&json!({
+            "iq_noise_scale": 0.0,
+            "goal_noise_scale": 0.0,
+            "trace_detail": "full",
+        }));
+        let mut state = runner_test_state();
+        state.ball.position = ball_pos;
+        state.ball.holder_idx = Some(holder_idx);
+        state.ball.holder_team_home = Some(true);
+        state.home_plan_signals = crate::team_plan_signals(crate::TeamPlanKind::FinalThird);
+        let mut active = [false; RUNNER_TEAM_SIZE];
+        for index in support_indices {
+            active[index] = true;
+        }
+        refresh_team_tactical_beliefs(&mut home, &away, ball_pos, true, &config);
+        let mut rng = RunnerRng::new(20260715);
+        let (selected_count, _) = apply_off_ball_attack_choices(
+            &mut home,
+            &mut state,
+            41,
+            true,
+            true,
+            Some(holder_idx),
+            Some(&active),
+            &config,
+            &mut rng,
+        );
+        assert_eq!(selected_count, support_indices.len() as i32);
+
+        let active_tasks = support_indices
+            .iter()
+            .copied()
+            .map(|index| (index, &home[index]))
+            .filter(|(_, player)| player.tactical_task.active(41))
+            .collect::<Vec<_>>();
+        assert!(
+            active_tasks.len() >= 3,
+            "the clustered scenario needs multiple active support declarations to exercise coordination, active_count={}",
+            active_tasks.len()
+        );
+        for (_, player) in &active_tasks {
+            assert_eq!(
+                player.tactical_task.raw_target, player.goal_target,
+                "the task raw target must be the same declaration selected by attack coordination"
+            );
+            assert_eq!(
+                player.tactical_task.spatial_claim.target, player.goal_target,
+                "the spatial claim must be regenerated from the final declared task target"
+            );
+        }
+        for left_index in 0..active_tasks.len() {
+            for right_index in left_index + 1..active_tasks.len() {
+                let left = &active_tasks[left_index].1.tactical_task.spatial_claim;
+                let right = &active_tasks[right_index].1.tactical_task.spatial_claim;
+                assert!(
+                    !spatial_claim_conflict(*left, *right),
+                    "final runtime task declarations must not share an occupied box-edge run space: left={left:?}, right={right:?}"
+                );
+            }
+        }
+        assert!(
+            state.trace_decisions.iter().any(|entry| {
+                entry
+                    .get("phase")
+                    .and_then(serde_json::Value::as_str)
+                    == Some("off_ball_attack_spatial_coordination")
+            }),
+            "the clustered scenario must exercise the runtime coordination path"
+        );
+
+        let positions_before = support_indices.map(|index| home[index].pos);
+        apply_held_tick_movement(
+            &mut home,
+            &mut away,
+            true,
+            holder_idx,
+            41,
+            state.home_plan_signals,
+            state.away_plan_signals,
+            &RunnerDefenderPhase1Inputs::empty(),
+            &config,
+        );
+        for (slot, index) in support_indices.iter().copied().enumerate() {
+            let player = &home[index];
+            assert!(
+                distance(positions_before[slot], player.pos)
+                    <= player_speed(
+                        player.speed.round() as i32,
+                        config.player_max_speed,
+                        config.player_min_speed,
+                    ) + 1e-9,
+                "coordination may change a task declaration but may not teleport player {index}: before={:?}, after={:?}",
+                positions_before[slot],
+                player.pos,
+            );
+        }
     }
 
     fn unbatched_second_ball_control(
@@ -8674,6 +8977,48 @@ const RUNNER_EMPTY_OFF_BALL_ATTACK_SCORED: OffBallAttackCandidateOutput =
         dist_to_ball: 0.0,
     };
 
+const RUNNER_EMPTY_OFF_BALL_ATTACK_COMPONENTS: OffBallAttackChoiceComponents =
+    OffBallAttackChoiceComponents {
+        kind: 2,
+        pv: 0.0,
+        reach: 0.0,
+        movement_reach: 0.0,
+        immediate_reach: 0.0,
+        pass_feasibility: 0.0,
+        space_bonus: 0.0,
+        role_shape_factor: 0.0,
+        team_structure_factor: 0.0,
+        role_overlap_factor: 0.0,
+        role_overlap: 0.0,
+        lane_factor: 0.0,
+        offside_penalty: 0.0,
+        support_angle_value: 0.0,
+        inside_support: 0.0,
+        second_line_support: 0.0,
+        arrival_goal_fit: 0.0,
+        arrival_goal_multiplier: 0.0,
+        arrival_goal_bonus: 0.0,
+        layoff_window: 0.0,
+        candidate_progress: 0.0,
+        candidate_width: 0.0,
+        support_angle_dist: 0.0,
+        dist_to_ball: 0.0,
+    };
+
+const RUNNER_EMPTY_SPATIAL_TASK_CANDIDATE: TeamSpatialCandidate = TeamSpatialCandidate {
+    target: (0.0, 0.0),
+    local_value: f64::NEG_INFINITY,
+    claim: crate::SpatialClaim {
+        active: false,
+        target: (0.0, 0.0),
+        origin: (0.0, 0.0),
+        occupancy_radius: 0.0,
+        corridor_half_width: 0.0,
+        depth_band: 0,
+        width_band: 0,
+    },
+};
+
 const RUNNER_EMPTY_OFF_BALL_ATTACK_SAMPLE: RandomPolarSample = RandomPolarSample {
     angle_unit: 0.0,
     radius_unit: 0.0,
@@ -8692,6 +9037,17 @@ struct RunnerOffBallAttackArena {
     arrival_goals: [(&'static str, (f64, f64), f64); 2],
     arrival_values: [f64; 2],
     arrival_gaussians: [f64; 2],
+    spatial_candidates: [[TeamSpatialCandidate; MAX_RUNNER_SPATIAL_TASK_CANDIDATES];
+        RUNNER_TEAM_SIZE],
+    spatial_candidate_counts: [usize; RUNNER_TEAM_SIZE],
+    spatial_preferred_indices: [usize; RUNNER_TEAM_SIZE],
+    spatial_player_indices: [usize; RUNNER_TEAM_SIZE],
+    spatial_player_count: usize,
+    spatial_components: [[OffBallAttackChoiceComponents; MAX_RUNNER_SPATIAL_TASK_CANDIDATES];
+        RUNNER_TEAM_SIZE],
+    spatial_goal_types: [[&'static str; MAX_RUNNER_SPATIAL_TASK_CANDIDATES];
+        RUNNER_TEAM_SIZE],
+    spatial_assignments: [TeamSpatialAssignment; RUNNER_TEAM_SIZE],
 }
 
 impl RunnerOffBallAttackArena {
@@ -8710,8 +9066,199 @@ impl RunnerOffBallAttackArena {
             arrival_goals: [("", (0.0, 0.0), 0.0); 2],
             arrival_values: [0.0; 2],
             arrival_gaussians: [0.0; 2],
+            spatial_candidates: [[RUNNER_EMPTY_SPATIAL_TASK_CANDIDATE;
+                MAX_RUNNER_SPATIAL_TASK_CANDIDATES]; RUNNER_TEAM_SIZE],
+            spatial_candidate_counts: [0; RUNNER_TEAM_SIZE],
+            spatial_preferred_indices: [0; RUNNER_TEAM_SIZE],
+            spatial_player_indices: [0; RUNNER_TEAM_SIZE],
+            spatial_player_count: 0,
+            spatial_components: [[RUNNER_EMPTY_OFF_BALL_ATTACK_COMPONENTS;
+                MAX_RUNNER_SPATIAL_TASK_CANDIDATES]; RUNNER_TEAM_SIZE],
+            spatial_goal_types: [[""; MAX_RUNNER_SPATIAL_TASK_CANDIDATES];
+                RUNNER_TEAM_SIZE],
+            spatial_assignments: [TeamSpatialAssignment::default(); RUNNER_TEAM_SIZE],
         }
     }
+}
+
+fn runner_spatial_attack_goal(
+    target: (f64, f64),
+    value: f64,
+    components: &OffBallAttackChoiceComponents,
+) -> crate::OffBallAttackGoalBuildOutput {
+    build_off_ball_attack_goal(&OffBallAttackGoalBuildInput {
+        target_pos: target,
+        value,
+        second_line_support: components.second_line_support,
+        inside_support: components.inside_support,
+        support_angle_value: components.support_angle_value,
+        layoff_window: components.layoff_window,
+        candidate_progress: components.candidate_progress,
+        candidate_width: components.candidate_width,
+    })
+}
+
+fn runner_spatial_attack_goal_type(
+    target: (f64, f64),
+    value: f64,
+    components: &OffBallAttackChoiceComponents,
+    active_goal_type: Option<&'static str>,
+    active_goal_target: (f64, f64),
+) -> &'static str {
+    if let Some(goal_type) =
+        active_goal_type.filter(|_| distance(target, active_goal_target) <= 0.35)
+    {
+        return goal_type;
+    }
+    runner_spatial_attack_goal(target, value, components).goal_type
+}
+
+fn commit_off_ball_attack_goal(
+    player: &mut RunnerPlayer,
+    goal_type: &'static str,
+    target: (f64, f64),
+    value: f64,
+) {
+    update_runner_optional_text(&mut player.goal_type, Some(goal_type));
+    update_runner_optional_text(&mut player.goal_phase, Some("support"));
+    player.goal_target = target;
+    player.goal_value = value.max(0.0);
+    player.goal_action_code = 3;
+}
+
+fn runner_spatial_attack_candidate(
+    origin: (f64, f64),
+    target: (f64, f64),
+    local_value: f64,
+    goal_type: &'static str,
+    attacking_right: bool,
+) -> TeamSpatialCandidate {
+    TeamSpatialCandidate {
+        target,
+        local_value,
+        claim: spatial_claim_for_task(
+            origin,
+            target,
+            task_intent_from_goal(goal_type, "support"),
+            attacking_right,
+        ),
+    }
+}
+
+fn runner_append_spatial_attack_candidate(
+    candidates: &mut [TeamSpatialCandidate; MAX_RUNNER_SPATIAL_TASK_CANDIDATES],
+    count: &mut usize,
+    candidate: TeamSpatialCandidate,
+) -> Option<usize> {
+    if *count == candidates.len() {
+        return None;
+    }
+    candidates[*count] = candidate;
+    let index = *count;
+    *count += 1;
+    Some(index)
+}
+
+fn runner_build_spatial_attack_candidates(
+    candidates: &mut [TeamSpatialCandidate; MAX_RUNNER_SPATIAL_TASK_CANDIDATES],
+    candidate_components: &mut [OffBallAttackChoiceComponents;
+        MAX_RUNNER_SPATIAL_TASK_CANDIDATES],
+    candidate_goal_types: &mut [&'static str; MAX_RUNNER_SPATIAL_TASK_CANDIDATES],
+    origin: (f64, f64),
+    selected_candidate_index: Option<usize>,
+    selected_score: f64,
+    stay_score: f64,
+    components: OffBallAttackChoiceComponents,
+    scored: &[OffBallAttackCandidateOutput],
+    score_noises: &[f64],
+    attacking_right: bool,
+    active_goal_type: Option<&'static str>,
+    active_goal_target: (f64, f64),
+) -> (usize, usize) {
+    let mut count = 0;
+    let selected_target = selected_candidate_index
+        .and_then(|candidate_index| scored.get(candidate_index))
+        .map(|candidate| candidate.target)
+        .unwrap_or(origin);
+    let selected_goal_type = runner_spatial_attack_goal_type(
+        selected_target,
+        selected_score,
+        &components,
+        active_goal_type,
+        active_goal_target,
+    );
+    let selected_value = selected_score.max(0.0);
+    let preferred = runner_append_spatial_attack_candidate(
+        candidates,
+        &mut count,
+        runner_spatial_attack_candidate(
+            origin,
+            selected_target,
+            selected_value,
+            selected_goal_type,
+            attacking_right,
+        ),
+    )
+    .unwrap_or(0);
+    candidate_components[preferred] = components;
+    candidate_goal_types[preferred] = selected_goal_type;
+
+    let local_floor = (selected_value * 0.54).max(0.015);
+    for (candidate_index, scored_candidate) in scored.iter().copied().enumerate() {
+        if Some(candidate_index) == selected_candidate_index {
+            continue;
+        }
+        let local_value = scored_candidate.score
+            * (1.0 + score_noises.get(candidate_index + 1).copied().unwrap_or(0.0));
+        if local_value < local_floor {
+            continue;
+        }
+        let alternate_components = off_ball_attack_components_from_scored(scored_candidate);
+        let alternate_goal_type = runner_spatial_attack_goal_type(
+            scored_candidate.target,
+            local_value,
+            &alternate_components,
+            active_goal_type,
+            active_goal_target,
+        );
+        let alternate = runner_spatial_attack_candidate(
+            origin,
+            scored_candidate.target,
+            local_value.max(0.0),
+            alternate_goal_type,
+            attacking_right,
+        );
+        let conflicts_with_all_existing = candidates[..count]
+            .iter()
+            .all(|existing| spatial_claim_conflict(existing.claim, alternate.claim));
+        if conflicts_with_all_existing {
+            continue;
+        }
+        if count + 1 >= candidates.len() {
+            break;
+        }
+        if let Some(index) =
+            runner_append_spatial_attack_candidate(candidates, &mut count, alternate)
+        {
+            candidate_components[index] = alternate_components;
+            candidate_goal_types[index] = alternate_goal_type;
+        } else {
+            break;
+        }
+    }
+    let fallback = TeamSpatialCandidate {
+        target: origin,
+        local_value: stay_score.max(0.0),
+        claim: crate::SpatialClaim::default(),
+    };
+    if let Some(index) = runner_append_spatial_attack_candidate(candidates, &mut count, fallback) {
+        candidate_components[index] = OffBallAttackChoiceComponents {
+            kind: 0,
+            ..RUNNER_EMPTY_OFF_BALL_ATTACK_COMPONENTS
+        };
+        candidate_goal_types[index] = "";
+    }
+    (count, preferred)
 }
 
 const RUNNER_EMPTY_TEAM_PLAN_PLAYER: TeamPlanPlayerInput = TeamPlanPlayerInput {
@@ -16362,7 +16909,7 @@ fn apply_team_shape_targets(
                 continue;
             }
             if player.position == "GK" {
-                apply_goalkeeper_coverage_target(player, ball_pos, attacking_right, config);
+                apply_goalkeeper_coverage_target(player, attacking_right, config);
             } else if player.target_pos == (0.0, 0.0) {
                 player.target_pos = anchor.tactical_anchor;
                 update_runner_text(&mut player.movement_intent, intent);
@@ -16373,20 +16920,23 @@ fn apply_team_shape_targets(
 
 fn apply_goalkeeper_coverage_target(
     goalkeeper: &mut RunnerPlayer,
-    ball_pos: (f64, f64),
     attacking_right: bool,
     config: &RunnerRuntimeConfig,
 ) {
-    let target = gk_position_adjust(&GkPositionAdjustInput {
-        ball_pos,
+    let positioning = goalkeeper_positioning_target(&GkPositioningInput {
+        ball_pos: goalkeeper.tactical_belief.ball_pos,
+        ball_confidence: goalkeeper.tactical_belief.ball_confidence,
+        structure_anchor: goalkeeper.tactical_anchor,
+        gk_positioning: goalkeeper.gk_positioning,
         attacking_right,
         pitch_length: config.pitch_length,
         pitch_width: config.pitch_width,
-    })
-    .target;
-    goalkeeper.tactical_anchor = target;
-    goalkeeper.target_pos = target;
-    update_runner_text(&mut goalkeeper.movement_intent, "recover_shape");
+    });
+    update_runner_movement_target(
+        goalkeeper,
+        positioning.target,
+        Some("recover_shape"),
+    );
 }
 
 fn belief_off_ball_attack_teammates_into(
@@ -16792,6 +17342,15 @@ fn runner_tactical_task_payload(task: TacticalTask) -> serde_json::Value {
         "policy_utility": task.policy_utility,
         "formation_debt": task.formation_debt,
         "interruption": task.interruption,
+        "spatial_claim": {
+            "active": task.spatial_claim.active,
+            "origin": [task.spatial_claim.origin.0, task.spatial_claim.origin.1],
+            "target": [task.spatial_claim.target.0, task.spatial_claim.target.1],
+            "occupancy_radius": task.spatial_claim.occupancy_radius,
+            "corridor_half_width": task.spatial_claim.corridor_half_width,
+            "depth_band": task.spatial_claim.depth_band,
+            "width_band": task.spatial_claim.width_band,
+        },
         "coordination": {
             "commitment": task.coordination.commitment,
             "carrier_closure": task.coordination.carrier_closure,
@@ -17195,7 +17754,16 @@ fn apply_off_ball_attack_choices(
         arrival_goals: fixed_arrival_goals,
         arrival_values: fixed_arrival_values,
         arrival_gaussians: fixed_arrival_gaussians,
+        spatial_candidates,
+        spatial_candidate_counts,
+        spatial_preferred_indices,
+        spatial_player_indices,
+        spatial_player_count,
+        spatial_components,
+        spatial_goal_types,
+        spatial_assignments,
     } = &mut state.off_ball_attack_arena;
+    *spatial_player_count = 0;
     for idx in 0..players.len() {
         if holder_idx == Some(idx) {
             continue;
@@ -17208,9 +17776,8 @@ fn apply_off_ball_attack_choices(
             continue;
         }
         if players[idx].position == "GK" {
-            let anchor = players[idx].tactical_anchor;
             if let Some(player) = players.get_mut(idx) {
-                update_runner_movement_target(player, anchor, Some("recover_shape"));
+                apply_goalkeeper_coverage_target(player, attacking_right, config);
             }
             continue;
         }
@@ -17718,75 +18285,84 @@ fn apply_off_ball_attack_choices(
             if choice.used_roll {
                 advance_randoms(rng, 1);
             }
-            if choice.components.kind == 2 {
-                if let Some(target_player) = players.get_mut(idx) {
+            if choice.components.kind == 1
+                && choice.selected_candidate_index.is_some()
+                && *spatial_player_count < RUNNER_TEAM_SIZE
+            {
+                let spatial_slot = *spatial_player_count;
+                let (candidate_count, preferred_candidate_index) =
+                    runner_build_spatial_attack_candidates(
+                        &mut spatial_candidates[spatial_slot],
+                        &mut spatial_components[spatial_slot],
+                        &mut spatial_goal_types[spatial_slot],
+                        player_pos,
+                        choice.selected_candidate_index,
+                        choice.score,
+                        stay_score,
+                        choice.components,
+                        scored,
+                        noises,
+                        attacking_right,
+                        active_goal_type,
+                        active_goal_target,
+                    );
+                if candidate_count > 0 {
+                    spatial_candidate_counts[spatial_slot] = candidate_count;
+                    spatial_preferred_indices[spatial_slot] = preferred_candidate_index;
+                    spatial_player_indices[spatial_slot] = idx;
+                    *spatial_player_count += 1;
+                }
+            }
+            if let Some(target_player) = players.get_mut(idx) {
+                if choice.components.kind == 2 {
                     update_runner_movement_target(
                         target_player,
                         player_anchor,
                         Some("recover_shape"),
                     );
-                }
-            } else if let Some(target_player) = players.get_mut(idx) {
-                let intent = off_ball_attack_movement_intent(
-                    player_pos,
-                    player_anchor,
-                    choice.target,
-                    &choice.components,
-                    current_goal,
-                    attacking_right,
-                );
-                update_runner_movement_target(target_player, choice.target, Some(intent));
-                let mut chosen_target = choice.target;
-                let mut summary = target_player
-                    .goal_type
-                    .as_deref()
-                    .and_then(off_ball_attack_goal_type)
-                    .map(|goal_type| RunnerGoalSummary {
-                        goal_type,
-                        target: target_player.goal_target,
-                        value: target_player.goal_value,
-                    });
-                if !matches!(
-                    target_player.goal_type.as_deref(),
-                    Some("arc_arrival_for_cutback" | "attack_far_post")
-                ) {
-                    let goal = build_off_ball_attack_goal(&OffBallAttackGoalBuildInput {
-                        target_pos: choice.target,
-                        value: choice.max_score,
-                        second_line_support: choice.components.second_line_support,
-                        inside_support: choice.components.inside_support,
-                        support_angle_value: choice.components.support_angle_value,
-                        layoff_window: choice.components.layoff_window,
-                        candidate_progress: choice.components.candidate_progress,
-                        candidate_width: choice.components.candidate_width,
-                    });
-                    let previous_target = target_player.target_pos;
-                    let switch_result = apply_player_goal_switch_with_details(
-                        target_player,
-                        goal.goal_type,
-                        "support",
-                        goal.target_pos,
-                        goal.value,
-                        player_iq,
-                        0.020,
-                        0.0,
-                        config,
-                        rng,
+                    clear_player_goal(target_player);
+                } else if choice.components.kind == 1 {
+                    let goal_type = runner_spatial_attack_goal_type(
+                        choice.target,
+                        choice.score,
+                        &choice.components,
+                        active_goal_type,
+                        active_goal_target,
                     );
-                    if switch_result.reason == "current_goal_within_switch_cost" {
-                        let goal_target = target_player.goal_target;
-                        let retained_request = (
-                            previous_target.0 * 0.55 + goal_target.0 * 0.45,
-                            previous_target.1 * 0.55 + goal_target.1 * 0.45,
-                        );
-                        update_runner_movement_target(
-                            target_player,
-                            retained_request,
-                            Some(intent),
-                        );
-                        chosen_target = target_player.target_pos;
-                    }
-                    summary = target_player
+                    let declared_goal = matches!(
+                        goal_type,
+                        "arc_arrival_for_cutback" | "attack_far_post"
+                    )
+                    .then_some(crate::OffBallAttackGoalInput {
+                        goal_type,
+                        target_pos: choice.target,
+                        value: choice.score.max(0.0),
+                    });
+                    let movement_intent = off_ball_attack_movement_intent(
+                        player_pos,
+                        player_anchor,
+                        choice.target,
+                        &choice.components,
+                        declared_goal,
+                        attacking_right,
+                    );
+                    update_runner_movement_target(
+                        target_player,
+                        choice.target,
+                        Some(movement_intent),
+                    );
+                    commit_off_ball_attack_goal(
+                        target_player,
+                        goal_type,
+                        choice.target,
+                        choice.score,
+                    );
+                } else {
+                    update_runner_movement_target(target_player, player_pos, Some("support"));
+                    clear_player_goal(target_player);
+                }
+                if config.trace_detail == "full" {
+                    let declaration = target_player
                         .goal_type
                         .as_deref()
                         .and_then(off_ball_attack_goal_type)
@@ -17795,40 +18371,6 @@ fn apply_off_ball_attack_choices(
                             target: target_player.goal_target,
                             value: target_player.goal_value,
                         });
-                    if config.trace_detail == "full" {
-                        goal_trace_json = Some(json!({
-                            "goal": {
-                                "goal_type": summary.map(|summary| summary.goal_type).unwrap_or_default(),
-                                "target_pos": [target_player.goal_target.0, target_player.goal_target.1],
-                                "value": target_player.goal_value
-                            },
-                            "switched": switch_result.switched,
-                            "switch_cost": switch_result.switch_cost,
-                            "value_advantage": switch_result.value_advantage,
-                            "reason": switch_result.reason,
-                            "candidate": {
-                                "goal_type": goal.goal_type,
-                                "target_pos": [goal.target_pos.0, goal.target_pos.1],
-                                "value": goal.value
-                            }
-                        }));
-                    }
-                }
-                if let Some(summary) = summary {
-                    if best_goal
-                        .as_ref()
-                        .map(|goal| summary.value > goal.value)
-                        .unwrap_or(true)
-                    {
-                        best_goal = Some(summary);
-                    }
-                }
-                if config.trace_detail == "full" {
-                    let summary = summary.unwrap_or(RunnerGoalSummary {
-                        goal_type: "",
-                        target: target_player.goal_target,
-                        value: target_player.goal_value,
-                    });
                     state.trace_decisions.push(json!({
                         "tick": tick,
                         "team": if team_home { "home" } else { "away" },
@@ -17837,10 +18379,10 @@ fn apply_off_ball_attack_choices(
                         "phase": "off_ball_attack",
                         "pos": [player_pos.0, player_pos.1],
                         "chosen": {
-	                            "phase": "off_ball_attack",
-	                            "action_type": "move",
-	                            "target": [chosen_target.0, chosen_target.1],
-	                            "value": {
+                            "phase": "off_ball_attack",
+                            "action_type": "move",
+                            "target": [choice.target.0, choice.target.1],
+                            "value": {
                                 "score": choice.max_score,
                                 "selected_score": choice.score,
                                 "stay_score": stay_score,
@@ -17876,16 +18418,21 @@ fn apply_off_ball_attack_choices(
                                 }
                             }
                         },
+                        "declaration": declaration.map(|summary| json!({
+                            "goal_type": summary.goal_type,
+                            "raw_target": [summary.target.0, summary.target.1],
+                            "value": summary.value,
+                        })).unwrap_or(serde_json::Value::Null),
                         "goal": goal_trace_json.clone().unwrap_or_else(|| json!({
                             "goal": {
-                                "goal_type": summary.goal_type,
-                                "target_pos": [summary.target.0, summary.target.1],
-                                "value": summary.value
+                                "goal_type": declaration.map(|summary| summary.goal_type).unwrap_or_default(),
+                                "target_pos": declaration.map(|summary| [summary.target.0, summary.target.1]).unwrap_or([target_player.goal_target.0, target_player.goal_target.1]),
+                                "value": declaration.map(|summary| summary.value).unwrap_or(target_player.goal_value)
                             },
                             "switched": false,
                             "switch_cost": 0.0,
                             "value_advantage": 0.0,
-                            "reason": "no_goal_update"
+                            "reason": "candidate_task_declaration"
                         })),
                         "alternatives": offball_debug_alternatives.clone().unwrap_or_default()
                     }));
@@ -17903,6 +18450,146 @@ fn apply_off_ball_attack_choices(
             players[idx].name.as_str(),
             rng,
         );
+    }
+    let coordinated_spatial_count = *spatial_player_count;
+    if coordinated_spatial_count > 0 {
+        let spatial_inputs: [TeamSpatialPlayerInput<'_>; RUNNER_TEAM_SIZE] =
+            std::array::from_fn(|slot| {
+                if slot < coordinated_spatial_count {
+                    TeamSpatialPlayerInput {
+                        index: spatial_player_indices[slot],
+                        candidates: &spatial_candidates[slot][..spatial_candidate_counts[slot]],
+                        preferred_candidate_index: spatial_preferred_indices[slot],
+                    }
+                } else {
+                    TeamSpatialPlayerInput {
+                        index: 0,
+                        candidates: &spatial_candidates[slot][..0],
+                        preferred_candidate_index: 0,
+                    }
+                }
+            });
+        let coordination = coordinate_team_spatial_tasks_into(
+            &TeamSpatialAssignmentInput {
+                players: &spatial_inputs[..coordinated_spatial_count],
+            },
+            &mut spatial_assignments[..coordinated_spatial_count],
+        );
+        debug_assert_eq!(
+            coordination.conflicts_after, 0,
+            "each spatial player has a no-claim fallback, so joint attack coordination must resolve all active claim conflicts"
+        );
+        for spatial_slot in 0..coordinated_spatial_count {
+            let assignment = spatial_assignments[spatial_slot];
+            let player_index = spatial_player_indices[spatial_slot];
+            let Some(candidate) = spatial_candidates[spatial_slot]
+                .get(assignment.candidate_index)
+                .copied()
+            else {
+                continue;
+            };
+            let components = spatial_components[spatial_slot][assignment.candidate_index];
+            let goal_type = spatial_goal_types[spatial_slot][assignment.candidate_index];
+            let Some(player) = players.get_mut(player_index) else {
+                continue;
+            };
+            let previous_target = player.target_pos;
+            let mut task_accepted = None;
+            if components.kind != 0 {
+                let declared_goal = matches!(
+                    goal_type,
+                    "arc_arrival_for_cutback" | "attack_far_post"
+                )
+                .then_some(crate::OffBallAttackGoalInput {
+                    goal_type,
+                    target_pos: candidate.target,
+                    value: candidate.local_value.max(0.0),
+                });
+                let movement_intent = off_ball_attack_movement_intent(
+                    player.pos,
+                    player.tactical_anchor,
+                    candidate.target,
+                    &components,
+                    declared_goal,
+                    attacking_right,
+                );
+                update_runner_movement_target(player, candidate.target, Some(movement_intent));
+                commit_off_ball_attack_goal(
+                    player,
+                    goal_type,
+                    candidate.target,
+                    candidate.local_value,
+                );
+                task_accepted = Some(accept_player_tactical_task_with_coordination(
+                    player,
+                    goal_type,
+                    "support",
+                    candidate.target,
+                    candidate.local_value,
+                    tick,
+                    plan_signals,
+                    attacking_right,
+                    config,
+                    TacticalTaskCoordination {
+                        commitment: 1.0,
+                        ..TacticalTaskCoordination::default()
+                    },
+                ));
+            } else {
+                update_runner_movement_target(player, player.pos, Some("support"));
+                clear_player_goal(player);
+            }
+            if components.kind != 0 {
+                let summary = RunnerGoalSummary {
+                    goal_type,
+                    target: candidate.target,
+                    value: candidate.local_value.max(0.0),
+                };
+                if best_goal
+                    .as_ref()
+                    .map(|current| summary.value > current.value)
+                    .unwrap_or(true)
+                {
+                    best_goal = Some(summary);
+                }
+            }
+            if config.trace_detail == "full" {
+                state.trace_decisions.push(json!({
+                    "tick": tick,
+                    "team": if team_home { "home" } else { "away" },
+                    "player_idx": player_index,
+                    "player": player.name.clone(),
+                    "phase": "off_ball_attack_spatial_coordination",
+                    "resolution": {
+                        "reason": "spatial_claim_conflict",
+                        "target_before": [previous_target.0, previous_target.1],
+                        "target_after": [candidate.target.0, candidate.target.1],
+                        "local_value": candidate.local_value,
+                        "candidate_index": assignment.candidate_index,
+                        "preferred_candidate_index": spatial_preferred_indices[spatial_slot],
+                        "conflicts_before": coordination.conflicts_before,
+                        "conflicts_after": coordination.conflicts_after,
+                        "displaced_count": coordination.displaced_count,
+                    },
+                    "declaration": {
+                        "goal_type": player.goal_type,
+                        "raw_target": [player.goal_target.0, player.goal_target.1],
+                        "value": player.goal_value,
+                        "task_accepted": task_accepted.map(|acceptance| acceptance.accepted),
+                        "task_candidate_value": task_accepted.map(|acceptance| acceptance.candidate_value),
+                        "task_retained_value": task_accepted.map(|acceptance| acceptance.retained_value),
+                    },
+                    "claim": {
+                        "origin": [candidate.claim.origin.0, candidate.claim.origin.1],
+                        "target": [candidate.claim.target.0, candidate.claim.target.1],
+                        "occupancy_radius": candidate.claim.occupancy_radius,
+                        "corridor_half_width": candidate.claim.corridor_half_width,
+                        "depth_band": candidate.claim.depth_band,
+                        "width_band": candidate.claim.width_band,
+                    },
+                }));
+            }
+        }
     }
     (selected_count, best_goal)
 }
@@ -17934,12 +18621,7 @@ fn apply_off_ball_defense_choices_fixed(
         }
         if defenders[idx].position == "GK" {
             if let Some(player) = defenders.get_mut(idx) {
-                apply_goalkeeper_coverage_target(
-                    player,
-                    player.tactical_belief.ball_pos,
-                    attacking_right,
-                    config,
-                );
+                apply_goalkeeper_coverage_target(player, attacking_right, config);
             }
             continue;
         }
@@ -18226,12 +18908,7 @@ fn apply_coordinated_off_ball_defense_choices(
         }
         if defenders[idx].position == "GK" {
             if let Some(player) = defenders.get_mut(idx) {
-                apply_goalkeeper_coverage_target(
-                    player,
-                    player.tactical_belief.ball_pos,
-                    attacking_right,
-                    config,
-                );
+                apply_goalkeeper_coverage_target(player, attacking_right, config);
             }
             continue;
         }
@@ -18794,12 +19471,7 @@ fn apply_off_ball_defense_choices_legacy(
         }
         if defenders[idx].position == "GK" {
             if let Some(player) = defenders.get_mut(idx) {
-                apply_goalkeeper_coverage_target(
-                    player,
-                    player.tactical_belief.ball_pos,
-                    attacking_right,
-                    config,
-                );
+                apply_goalkeeper_coverage_target(player, attacking_right, config);
             }
             continue;
         }
@@ -19056,12 +19728,7 @@ fn apply_off_ball_defense_choices_individually(
         }
         if defenders[idx].position == "GK" {
             if let Some(player) = defenders.get_mut(idx) {
-                apply_goalkeeper_coverage_target(
-                    player,
-                    player.tactical_belief.ball_pos,
-                    attacking_right,
-                    config,
-                );
+                apply_goalkeeper_coverage_target(player, attacking_right, config);
             }
             continue;
         }
@@ -19766,6 +20433,7 @@ fn move_contested_team(
         config,
         shape_arena,
     );
+    refresh_team_tactical_beliefs(players, opponents, ball_pos, attacking_right, config);
     let mut target_inputs = [ContestedTargetPlayerInput {
         index: 0,
         pos: (0.0, 0.0),
@@ -19798,13 +20466,17 @@ fn move_contested_team(
             if player.state == "stunned" {
                 continue;
             }
-            player.target_pos = output.target;
-            let requested_intent = if output.intent_code == 1 {
-                "contest"
+            if player.position == "GK" {
+                apply_goalkeeper_coverage_target(player, attacking_right, config);
             } else {
-                "recover_shape"
-            };
-            update_runner_text(&mut player.movement_intent, requested_intent);
+                player.target_pos = output.target;
+                let requested_intent = if output.intent_code == 1 {
+                    "contest"
+                } else {
+                    "recover_shape"
+                };
+                update_runner_text(&mut player.movement_intent, requested_intent);
+            }
         }
     }
     for player in players.iter_mut() {
@@ -20843,14 +21515,14 @@ fn move_flight_players(
         refresh_team_tactical_beliefs(
             home,
             away,
-            target_pos,
+            state.ball.position,
             home_attacking_right,
             config,
         );
         refresh_team_tactical_beliefs(
             away,
             home,
-            target_pos,
+            state.ball.position,
             !home_attacking_right,
             config,
         );
@@ -20864,12 +21536,7 @@ fn move_flight_players(
                 continue;
             }
             if home[idx].position == "GK" {
-                apply_goalkeeper_coverage_target(
-                    &mut home[idx],
-                    target_pos,
-                    home_attacking_right,
-                    config,
-                );
+                apply_goalkeeper_coverage_target(&mut home[idx], home_attacking_right, config);
                 move_runner_player(&mut home[idx], tick, state.home_plan_signals, config);
                 continue;
             }
@@ -20919,12 +21586,7 @@ fn move_flight_players(
                 continue;
             }
             if away[idx].position == "GK" {
-                apply_goalkeeper_coverage_target(
-                    &mut away[idx],
-                    target_pos,
-                    !home_attacking_right,
-                    config,
-                );
+                apply_goalkeeper_coverage_target(&mut away[idx], !home_attacking_right, config);
                 move_runner_player(&mut away[idx], tick, state.away_plan_signals, config);
                 continue;
             }
@@ -20990,14 +21652,14 @@ fn move_flight_players(
         refresh_team_tactical_beliefs(
             home,
             away,
-            target_pos,
+            state.ball.position,
             home_attacking_right,
             config,
         );
         refresh_team_tactical_beliefs(
             away,
             home,
-            target_pos,
+            state.ball.position,
             !home_attacking_right,
             config,
         );
@@ -21011,12 +21673,7 @@ fn move_flight_players(
                 continue;
             }
             if away[idx].position == "GK" {
-                apply_goalkeeper_coverage_target(
-                    &mut away[idx],
-                    target_pos,
-                    !home_attacking_right,
-                    config,
-                );
+                apply_goalkeeper_coverage_target(&mut away[idx], !home_attacking_right, config);
                 move_runner_player(&mut away[idx], tick, state.away_plan_signals, config);
                 continue;
             }
@@ -21066,12 +21723,7 @@ fn move_flight_players(
                 continue;
             }
             if home[idx].position == "GK" {
-                apply_goalkeeper_coverage_target(
-                    &mut home[idx],
-                    target_pos,
-                    home_attacking_right,
-                    config,
-                );
+                apply_goalkeeper_coverage_target(&mut home[idx], home_attacking_right, config);
                 move_runner_player(&mut home[idx], tick, state.home_plan_signals, config);
                 continue;
             }

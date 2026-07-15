@@ -138,6 +138,7 @@ pub struct OffBallAttackChoiceOutput {
     pub score: f64,
     pub max_score: f64,
     pub candidate_count: usize,
+    pub selected_candidate_index: Option<usize>,
     pub used_roll: bool,
     pub components: OffBallAttackChoiceComponents,
 }
@@ -715,6 +716,37 @@ fn default_off_ball_attack_components(kind: u8) -> OffBallAttackChoiceComponents
     }
 }
 
+pub fn off_ball_attack_components_from_scored(
+    value: OffBallAttackCandidateOutput,
+) -> OffBallAttackChoiceComponents {
+    OffBallAttackChoiceComponents {
+        kind: 1,
+        pv: value.pv,
+        reach: value.reach,
+        movement_reach: value.movement_reach,
+        immediate_reach: value.immediate_reach,
+        pass_feasibility: value.pass_feasibility,
+        space_bonus: value.space_bonus,
+        role_shape_factor: value.role_shape_factor,
+        team_structure_factor: value.team_structure_factor,
+        role_overlap_factor: value.role_overlap_factor,
+        role_overlap: value.role_overlap,
+        lane_factor: value.lane_factor,
+        offside_penalty: value.offside_penalty,
+        support_angle_value: value.support_angle_value,
+        inside_support: value.inside_support,
+        second_line_support: value.second_line_support,
+        arrival_goal_fit: value.arrival_goal_fit,
+        arrival_goal_multiplier: value.arrival_goal_multiplier,
+        arrival_goal_bonus: value.arrival_goal_bonus,
+        layoff_window: value.layoff_window,
+        candidate_progress: value.candidate_progress,
+        candidate_width: value.candidate_width,
+        support_angle_dist: value.support_angle_dist,
+        dist_to_ball: value.dist_to_ball,
+    }
+}
+
 pub fn choose_off_ball_attack_target_from_scored(
     input: &OffBallAttackChoiceInput<'_>,
     scored: &[OffBallAttackCandidateOutput],
@@ -738,6 +770,7 @@ pub fn choose_off_ball_attack_target_from_scored(
             score: max_score,
             max_score,
             candidate_count,
+            selected_candidate_index: None,
             used_roll: false,
             components: default_off_ball_attack_components(2),
         });
@@ -756,6 +789,7 @@ pub fn choose_off_ball_attack_target_from_scored(
             score: scores[0],
             max_score,
             candidate_count,
+            selected_candidate_index: None,
             used_roll,
             components: default_off_ball_attack_components(0),
         });
@@ -766,33 +800,9 @@ pub fn choose_off_ball_attack_target_from_scored(
         score: scores[index],
         max_score,
         candidate_count,
+        selected_candidate_index: Some(index - 1),
         used_roll,
-        components: OffBallAttackChoiceComponents {
-            kind: 1,
-            pv: value.pv,
-            reach: value.reach,
-            movement_reach: value.movement_reach,
-            immediate_reach: value.immediate_reach,
-            pass_feasibility: value.pass_feasibility,
-            space_bonus: value.space_bonus,
-            role_shape_factor: value.role_shape_factor,
-            team_structure_factor: value.team_structure_factor,
-            role_overlap_factor: value.role_overlap_factor,
-            role_overlap: value.role_overlap,
-            lane_factor: value.lane_factor,
-            offside_penalty: value.offside_penalty,
-            support_angle_value: value.support_angle_value,
-            inside_support: value.inside_support,
-            second_line_support: value.second_line_support,
-            arrival_goal_fit: value.arrival_goal_fit,
-            arrival_goal_multiplier: value.arrival_goal_multiplier,
-            arrival_goal_bonus: value.arrival_goal_bonus,
-            layoff_window: value.layoff_window,
-            candidate_progress: value.candidate_progress,
-            candidate_width: value.candidate_width,
-            support_angle_dist: value.support_angle_dist,
-            dist_to_ball: value.dist_to_ball,
-        },
+        components: off_ball_attack_components_from_scored(value),
     })
 }
 
