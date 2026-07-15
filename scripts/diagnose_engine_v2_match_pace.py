@@ -59,6 +59,254 @@ def _classify_pass(origin: list[float], target: list[float], attacking_right: bo
     return "lateral"
 
 
+def _event_attacking_right(event: dict[str, Any], home_attacking_right: bool) -> bool:
+    team = event.get("team_side")
+    attacking_right = home_attacking_right if team == "home" else not home_attacking_right
+    if event.get("half") == 2:
+        attacking_right = not attacking_right
+    return attacking_right
+
+
+def _attacking_progress(
+    position: list[float],
+    attacking_right: bool,
+    pitch_length: float = 105.0,
+) -> float:
+    return position[0] / pitch_length if attacking_right else 1.0 - position[0] / pitch_length
+
+
+def _relative_width(position: list[float], pitch_width: float = 68.0) -> float:
+    return abs(position[1] - pitch_width / 2.0) / (pitch_width / 2.0)
+
+
+def _is_wide_final_third(position: list[float], attacking_right: bool) -> bool:
+    return _attacking_progress(position, attacking_right) >= 0.72 and _relative_width(position) >= 0.48
+
+
+def _is_byline_wide(position: list[float], attacking_right: bool) -> bool:
+    return _attacking_progress(position, attacking_right) >= 0.86 and _relative_width(position) >= 0.50
+
+
+def _is_central_box(position: list[float], attacking_right: bool) -> bool:
+    return _attacking_progress(position, attacking_right) >= 0.84 and _relative_width(position) <= 0.45
+
+
+def _is_strict_cutback(
+    origin: list[float],
+    target: list[float],
+    attacking_right: bool,
+) -> bool:
+    progress_delta = (
+        (target[0] - origin[0]) if attacking_right else (origin[0] - target[0])
+    )
+    inward_distance = abs(origin[1] - 34.0) - abs(target[1] - 34.0)
+    return (
+        _is_byline_wide(origin, attacking_right)
+        and progress_delta <= -2.5
+        and inward_distance >= 0.16 * (68.0 / 2.0)
+        and _attacking_progress(target, attacking_right) >= 0.84
+        and _relative_width(target) <= 0.60
+    )
+
+
+def _action_origin(event: dict[str, Any]) -> list[float] | None:
+    origin = event.get("origin")
+    return origin if isinstance(origin, list) and len(origin) == 2 else None
+
+
+def _action_target(event: dict[str, Any]) -> list[float] | None:
+    target = event.get("target")
+    return target if isinstance(target, list) and len(target) == 2 else None
+
+
+def _attack_pattern_summary(
+    events: Iterable[dict[str, Any]],
+    home_attacking_right: bool,
+) -> dict[str, Any]:
+    action_types = ("carry", "pass", "shot")
+    byline_exit_types = ("carry", "other_pass", "strict_cutback", "shot", "none")
+    shot_regions = ("central_box", "byline_wide", "wide_final_third", "outside")
+    completed_actions: Counter[str] = Counter()
+    wide_final_origin_actions: Counter[str] = Counter()
+    byline_entry_types: Counter[str] = Counter()
+    byline_exit_actions: Counter[str] = Counter()
+    shot_origin_regions: Counter[str] = Counter()
+    grouped: dict[tuple[str, int], list[dict[str, Any]]] = defaultdict(list)
+    strict_cutbacks: list[dict[str, Any]] = []
+    wide_final_entries = 0
+
+    for event in events:
+        team = event.get("team_side")
+        possession_id = event.get("possession_id")
+        if team in {"home", "away"} and isinstance(possession_id, int):
+            grouped[(team, possession_id)].append(event)
+
+        event_type = event.get("event_type")
+        origin = _action_origin(event)
+        target = _action_target(event)
+        if event_type not in action_types or origin is None:
+            continue
+        attacking_right = _event_attacking_right(event, home_attacking_right)
+        if event_type != "shot" and event.get("outcome") != "completed":
+            continue
+        completed_actions[event_type] += 1
+        if _is_wide_final_third(origin, attacking_right):
+            wide_final_origin_actions[event_type] += 1
+        if event_type in {"carry", "pass"} and target is not None:
+            target_wide_final = _is_wide_final_third(target, attacking_right)
+            if target_wide_final and not _is_wide_final_third(origin, attacking_right):
+                wide_final_entries += 1
+            if _is_byline_wide(target, attacking_right) and not _is_byline_wide(
+                origin, attacking_right
+            ):
+                byline_entry_types[event_type] += 1
+            if event_type == "pass" and _is_strict_cutback(origin, target, attacking_right):
+                strict_cutbacks.append(event)
+        if event_type == "shot":
+            if _is_byline_wide(origin, attacking_right):
+                shot_origin_regions["byline_wide"] += 1
+            elif _is_central_box(origin, attacking_right):
+                shot_origin_regions["central_box"] += 1
+            elif _is_wide_final_third(origin, attacking_right):
+                shot_origin_regions["wide_final_third"] += 1
+            else:
+                shot_origin_regions["outside"] += 1
+
+    byline_episode_count = 0
+    byline_episodes_with_later_shot = 0
+    byline_episodes_with_immediate_shot = 0
+    shots_after_byline_in_possession = 0
+    strict_cutback_immediate_shots = 0
+    wide_possession_count = 0
+    wide_possession_shots = 0
+
+    for sequence_events in grouped.values():
+        ordered = sorted(sequence_events, key=lambda event: (event["tick"], event["seq"]))
+        action_events = [
+            event
+            for event in ordered
+            if event.get("event_type") in action_types
+            and _action_origin(event) is not None
+            and (
+                event.get("event_type") == "shot"
+                or event.get("outcome") == "completed"
+            )
+        ]
+        if not action_events:
+            continue
+
+        has_wide_final = False
+        first_byline_index: int | None = None
+        for index, event in enumerate(action_events):
+            attacking_right = _event_attacking_right(event, home_attacking_right)
+            origin = _action_origin(event)
+            target = _action_target(event)
+            if origin is None:
+                continue
+            has_wide_final = has_wide_final or _is_wide_final_third(origin, attacking_right)
+            has_wide_final = has_wide_final or (
+                target is not None and _is_wide_final_third(target, attacking_right)
+            )
+            if first_byline_index is None and (
+                _is_byline_wide(origin, attacking_right)
+                or (
+                    target is not None
+                    and event.get("event_type") in {"carry", "pass"}
+                    and _is_byline_wide(target, attacking_right)
+                )
+            ):
+                first_byline_index = index
+
+        shots = [event for event in action_events if event.get("event_type") == "shot"]
+        if has_wide_final:
+            wide_possession_count += 1
+            wide_possession_shots += int(bool(shots))
+        if first_byline_index is None:
+            continue
+
+        byline_episode_count += 1
+        byline_event = action_events[first_byline_index]
+        later_actions = action_events[first_byline_index + 1 :]
+        later_shots = [
+            event for event in later_actions if event.get("event_type") == "shot"
+        ]
+        if later_shots:
+            byline_episodes_with_later_shot += 1
+            shots_after_byline_in_possession += len(later_shots)
+        if any(
+            int(shot["tick"]) - int(byline_event["tick"]) <= 8
+            for shot in later_shots
+        ):
+            byline_episodes_with_immediate_shot += 1
+
+        if not later_actions:
+            byline_exit_actions["none"] += 1
+            continue
+        exit_action = later_actions[0]
+        if exit_action.get("event_type") == "carry":
+            byline_exit_actions["carry"] += 1
+        elif exit_action.get("event_type") == "shot":
+            byline_exit_actions["shot"] += 1
+        else:
+            origin = _action_origin(exit_action)
+            target = _action_target(exit_action)
+            attacking_right = _event_attacking_right(exit_action, home_attacking_right)
+            if (
+                origin is not None
+                and target is not None
+                and _is_strict_cutback(origin, target, attacking_right)
+            ):
+                byline_exit_actions["strict_cutback"] += 1
+            else:
+                byline_exit_actions["other_pass"] += 1
+
+    for cutback in strict_cutbacks:
+        sequence_events = grouped[
+            (str(cutback["team_side"]), int(cutback["possession_id"]))
+        ]
+        if any(
+            event.get("event_type") == "shot"
+            and 0 <= int(event["tick"]) - int(cutback["tick"]) <= 8
+            for event in sequence_events
+        ):
+            strict_cutback_immediate_shots += 1
+
+    return {
+        "completed_actions": {
+            action_type: completed_actions[action_type] for action_type in action_types
+        },
+        "wide_final_third_origin_actions": {
+            action_type: wide_final_origin_actions[action_type] for action_type in action_types
+        },
+        "wide_final_third_entries": wide_final_entries,
+        "byline_entries": {
+            "total": sum(byline_entry_types.values()),
+            **{action_type: byline_entry_types[action_type] for action_type in ("carry", "pass")},
+        },
+        "byline_episodes": {
+            "count": byline_episode_count,
+            "next_action": {
+                action_type: byline_exit_actions[action_type]
+                for action_type in byline_exit_types
+            },
+            "with_later_shot": byline_episodes_with_later_shot,
+            "with_shot_within_8_ticks": byline_episodes_with_immediate_shot,
+        },
+        "strict_cutbacks": {
+            "completed": len(strict_cutbacks),
+            "with_shot_within_8_ticks": strict_cutback_immediate_shots,
+        },
+        "shots_after_byline_in_possession": shots_after_byline_in_possession,
+        "shot_origin_regions": {
+            region: shot_origin_regions[region] for region in shot_regions
+        },
+        "wide_possessions": {
+            "count": wide_possession_count,
+            "with_shot": wide_possession_shots,
+        },
+    }
+
+
 def _sequence_summary(
     events: Iterable[dict[str, Any]],
     home_attacking_right: bool,
@@ -196,6 +444,7 @@ def summarize_match(
         "home_stats": response["home_stats"],
         "away_stats": response["away_stats"],
         "sequence": _sequence_summary(events, home_attacking_right, include_sequences),
+        "attack_patterns": _attack_pattern_summary(events, home_attacking_right),
         "shape": _shape_summary(response["replay"]),
     }
 
@@ -247,11 +496,49 @@ def _aggregate_summaries(summaries: list[dict[str, Any]]) -> dict[str, Any]:
 
     direction_counts: Counter[str] = Counter()
     terminal_events: Counter[str] = Counter()
+    completed_attack_actions: Counter[str] = Counter()
+    wide_final_origin_actions: Counter[str] = Counter()
+    byline_entry_types: Counter[str] = Counter()
+    byline_exit_actions: Counter[str] = Counter()
+    shot_origin_regions: Counter[str] = Counter()
+    attack_totals: Counter[str] = Counter()
     for summary in summaries:
         for direction, data in summary["sequence"]["pass_directions"].items():
             direction_counts[direction] += data["count"]
         terminal_events.update(summary["sequence"]["terminal_events"])
+        attack = summary["attack_patterns"]
+        completed_attack_actions.update(attack["completed_actions"])
+        wide_final_origin_actions.update(attack["wide_final_third_origin_actions"])
+        byline_entry_types.update(
+            {
+                action_type: count
+                for action_type, count in attack["byline_entries"].items()
+                if action_type != "total"
+            }
+        )
+        byline_exit_actions.update(attack["byline_episodes"]["next_action"])
+        shot_origin_regions.update(attack["shot_origin_regions"])
+        attack_totals["wide_final_third_entries"] += attack["wide_final_third_entries"]
+        attack_totals["byline_entries"] += attack["byline_entries"]["total"]
+        attack_totals["byline_episodes"] += attack["byline_episodes"]["count"]
+        attack_totals["byline_episodes_with_later_shot"] += attack["byline_episodes"][
+            "with_later_shot"
+        ]
+        attack_totals["byline_episodes_with_shot_within_8_ticks"] += attack[
+            "byline_episodes"
+        ]["with_shot_within_8_ticks"]
+        attack_totals["strict_cutbacks"] += attack["strict_cutbacks"]["completed"]
+        attack_totals["strict_cutbacks_with_shot_within_8_ticks"] += attack[
+            "strict_cutbacks"
+        ]["with_shot_within_8_ticks"]
+        attack_totals["shots_after_byline_in_possession"] += attack[
+            "shots_after_byline_in_possession"
+        ]
+        attack_totals["wide_possessions"] += attack["wide_possessions"]["count"]
+        attack_totals["wide_possessions_with_shot"] += attack["wide_possessions"]["with_shot"]
     direction_total = sum(direction_counts.values())
+    completed_attack_total = sum(completed_attack_actions.values())
+    shot_origin_total = sum(shot_origin_regions.values())
 
     def average(path: tuple[str, ...]) -> float:
         values = []
@@ -293,6 +580,80 @@ def _aggregate_summaries(summaries: list[dict[str, Any]]) -> dict[str, Any]:
                 for direction, count in sorted(direction_counts.items())
             },
             "terminal_events": dict(sorted(terminal_events.items())),
+        },
+        "attack_patterns": {
+            "completed_actions": dict(sorted(completed_attack_actions.items())),
+            "wide_final_third_origin_actions": dict(
+                sorted(wide_final_origin_actions.items())
+            ),
+            "wide_final_third_entries": attack_totals["wide_final_third_entries"],
+            "byline_entries": {
+                "total": attack_totals["byline_entries"],
+                **dict(sorted(byline_entry_types.items())),
+                "share_of_wide_final_third_entries": round(
+                    attack_totals["byline_entries"]
+                    / max(attack_totals["wide_final_third_entries"], 1),
+                    4,
+                ),
+            },
+            "byline_episodes": {
+                "count": attack_totals["byline_episodes"],
+                "next_action": dict(sorted(byline_exit_actions.items())),
+                "next_action_share": {
+                    action_type: round(
+                        count / max(attack_totals["byline_episodes"], 1), 4
+                    )
+                    for action_type, count in sorted(byline_exit_actions.items())
+                },
+                "with_later_shot": attack_totals["byline_episodes_with_later_shot"],
+                "with_later_shot_share": round(
+                    attack_totals["byline_episodes_with_later_shot"]
+                    / max(attack_totals["byline_episodes"], 1),
+                    4,
+                ),
+                "with_shot_within_8_ticks": attack_totals[
+                    "byline_episodes_with_shot_within_8_ticks"
+                ],
+            },
+            "strict_cutbacks": {
+                "completed": attack_totals["strict_cutbacks"],
+                "share_of_completed_passes": round(
+                    attack_totals["strict_cutbacks"]
+                    / max(completed_attack_actions["pass"], 1),
+                    4,
+                ),
+                "with_shot_within_8_ticks": attack_totals[
+                    "strict_cutbacks_with_shot_within_8_ticks"
+                ],
+                "immediate_shot_rate": round(
+                    attack_totals["strict_cutbacks_with_shot_within_8_ticks"]
+                    / max(attack_totals["strict_cutbacks"], 1),
+                    4,
+                ),
+            },
+            "shots_after_byline_in_possession": attack_totals[
+                "shots_after_byline_in_possession"
+            ],
+            "shot_origin_regions": {
+                region: {
+                    "count": count,
+                    "share": round(count / max(shot_origin_total, 1), 4),
+                }
+                for region, count in sorted(shot_origin_regions.items())
+            },
+            "wide_possessions": {
+                "count": attack_totals["wide_possessions"],
+                "with_shot": attack_totals["wide_possessions_with_shot"],
+                "shot_rate": round(
+                    attack_totals["wide_possessions_with_shot"]
+                    / max(attack_totals["wide_possessions"], 1),
+                    4,
+                ),
+            },
+            "wide_final_third_carry_share_of_all_actions": round(
+                wide_final_origin_actions["carry"] / max(completed_attack_total, 1),
+                4,
+            ),
         },
         "shape": {
             team: {

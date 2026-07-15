@@ -33,10 +33,11 @@ pub use action_timing::{
     TemporalActionKind,
 };
 pub use action_value::{
-    estimate_second_ball_control, second_ball_player_access, shot_possession_transition,
-    temporal_option_value, PossessionTransition, SecondBallControlEstimate, SecondBallControlInput,
-    SecondBallPlayerInput, ShotPossessionTransitionInput, TemporalOptionValueInput,
-    TemporalOptionValueOutput,
+    action_outcome_value, estimate_second_ball_control, second_ball_player_access,
+    shot_possession_transition, temporal_option_value, ActionOutcomeValueInput,
+    ActionOutcomeValueOutput, PossessionTransition, SecondBallControlEstimate,
+    SecondBallControlInput, SecondBallPlayerInput, ShotPossessionTransitionInput,
+    TemporalOptionValueInput, TemporalOptionValueOutput,
 };
 pub use arrival::{
     resolve_clearance_arrival, resolve_first_touch, resolve_pass_arrival, resolve_shot_arrival,

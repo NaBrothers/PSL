@@ -563,13 +563,6 @@ pub fn select_hold_support(input: &HoldSupportSelectionInput<'_>) -> HoldSupport
             .max(hold.opportunity_wait_value);
         no_clear_release = no_clear_release.max(hold.no_clear_release);
     }
-    if best_fit == f64::NEG_INFINITY && (hold_support > 0.0 || no_clear_release > 0.0) {
-        let value = hold_support.max(no_clear_release);
-        best_fit = value * 0.065;
-        best_target = input.player_pos;
-        best_support_value = value * 0.10;
-    }
-
     let mut clear_carry_plan: f64 = 0.0;
     for carry in input.carries {
         clear_carry_plan = clear_carry_plan
@@ -592,6 +585,7 @@ pub fn select_hold_support(input: &HoldSupportSelectionInput<'_>) -> HoldSupport
 
     HoldSupportSelectionOutput {
         has_support: best_fit != f64::NEG_INFINITY
+            && best_support_value > 0.0
             && (carry_interrupt < 0.72 || input.current_opportunity_goal),
         target: best_target,
         fit: if best_fit == f64::NEG_INFINITY {
@@ -863,7 +857,8 @@ pub fn softmax_select_index_with_temperature(
 #[cfg(test)]
 mod tests {
     use super::{
-        softmax_select_index, softmax_select_index_signed, softmax_select_index_with_temperature,
+        select_hold_support, softmax_select_index, softmax_select_index_signed,
+        softmax_select_index_with_temperature, HoldSupportHoldInput, HoldSupportSelectionInput,
         SoftmaxSelectionOutput,
     };
 
@@ -962,5 +957,30 @@ mod tests {
             explicit,
             reference_softmax(&scores, 0.023, roll, 3, true, false),
         );
+    }
+
+    #[test]
+    fn hold_support_requires_a_visible_release_target() {
+        let holds = [HoldSupportHoldInput {
+            opportunity_wait: 0.86,
+            opportunity_wait_value: 0.82,
+            no_clear_release: 0.91,
+        }];
+        let selection = select_hold_support(&HoldSupportSelectionInput {
+            player_pos: (72.0, 34.0),
+            attacking_right: true,
+            pitch_length: 105.0,
+            pitch_width: 68.0,
+            passes: &[],
+            carries: &[],
+            holds: &holds,
+            current_opportunity_goal: true,
+        });
+
+        assert!(
+            !selection.has_support,
+            "a hold candidate cannot create its own support target without a visible pass"
+        );
+        assert_eq!(selection.target, (72.0, 34.0));
     }
 }

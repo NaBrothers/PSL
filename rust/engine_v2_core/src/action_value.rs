@@ -187,6 +187,19 @@ pub struct TemporalOptionValueOutput {
     pub unresolved_probability: f64,
 }
 
+#[derive(Clone, Copy, Debug)]
+pub struct ActionOutcomeValueInput {
+    pub temporal: TemporalOptionValueOutput,
+    pub policy_alignment: f64,
+}
+
+#[derive(Clone, Copy, Debug)]
+pub struct ActionOutcomeValueOutput {
+    pub score: f64,
+    pub outcome_value: f64,
+    pub policy_value: f64,
+}
+
 pub fn temporal_option_value(input: &TemporalOptionValueInput) -> TemporalOptionValueOutput {
     let duration = input.duration_ticks.max(1) as f64;
     let tempo = input.tempo.clamp(0.0, 1.0);
@@ -226,12 +239,23 @@ pub fn temporal_option_value(input: &TemporalOptionValueInput) -> TemporalOption
     }
 }
 
+pub fn action_outcome_value(input: &ActionOutcomeValueInput) -> ActionOutcomeValueOutput {
+    let outcome_value = input.temporal.score;
+    let policy_value = 0.035 * input.policy_alignment.clamp(-0.25, 1.25);
+    ActionOutcomeValueOutput {
+        score: outcome_value + policy_value,
+        outcome_value,
+        policy_value,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::{
-        estimate_second_ball_control, shot_possession_transition, temporal_option_value,
-        PossessionTransition, SecondBallControlEstimate, SecondBallControlInput,
-        SecondBallPlayerInput, ShotPossessionTransitionInput, TemporalOptionValueInput,
+        action_outcome_value, estimate_second_ball_control, shot_possession_transition,
+        temporal_option_value, ActionOutcomeValueInput, PossessionTransition,
+        SecondBallControlEstimate, SecondBallControlInput, SecondBallPlayerInput,
+        ShotPossessionTransitionInput, TemporalOptionValueInput,
     };
 
     #[test]
@@ -510,6 +534,57 @@ mod tests {
         });
 
         assert!(shot.score > retain.score);
+    }
+
+    #[test]
+    fn outcome_comparison_keeps_policy_secondary_to_executed_return() {
+        let direct_terminal = temporal_option_value(&TemporalOptionValueInput {
+            current_control_value: 0.12,
+            transition: PossessionTransition {
+                goal_probability: 0.18,
+                retained_control_probability: 0.04,
+                retained_control_value: 0.11,
+                opposing_control_probability: 0.72,
+                opposing_control_value: 0.05,
+            },
+            duration_ticks: 1,
+            tempo: 0.62,
+            risk_budget: 0.58,
+        });
+        let safe_control = temporal_option_value(&TemporalOptionValueInput {
+            current_control_value: 0.12,
+            transition: PossessionTransition {
+                goal_probability: 0.0,
+                retained_control_probability: 0.82,
+                retained_control_value: 0.15,
+                opposing_control_probability: 0.18,
+                opposing_control_value: 0.08,
+            },
+            duration_ticks: 2,
+            tempo: 0.62,
+            risk_budget: 0.58,
+        });
+        let terminal_value = action_outcome_value(&ActionOutcomeValueInput {
+            temporal: direct_terminal,
+            policy_alignment: 0.0,
+        });
+        let control_value = action_outcome_value(&ActionOutcomeValueInput {
+            temporal: safe_control,
+            policy_alignment: 1.25,
+        });
+
+        assert!(
+            terminal_value.outcome_value > control_value.outcome_value,
+            "the terminal result must be compared on its own expected return"
+        );
+        assert!(
+            terminal_value.score > control_value.score,
+            "the bounded team policy term must not overturn a materially better executed result"
+        );
+        assert!(
+            control_value.policy_value <= 0.04375 + 1e-12,
+            "team policy must stay a coordination term instead of a replacement action value"
+        );
     }
 
     #[test]

@@ -1510,14 +1510,9 @@ pub fn evaluate_hold_opportunity_goal(
         * crate::physics::smoothstep(0.06, 0.44, lateral_gap)
         * crate::physics::smoothstep(0.030, 0.120, opportunity_window)
         * no_clear_shot;
-    let retain_window = crate::physics::smoothstep(0.42, 0.88, progress)
-        * (1.0 - crate::physics::smoothstep(0.0, 3.0, pass_distance))
-        * crate::physics::smoothstep(0.08, 0.55, input.hold_value)
-        * no_clear_shot;
-    let window = support_window.max(retain_window);
     let interrupt = crate::physics::smoothstep(0.14, 0.32, input.immediate_best_score);
     let stale = crate::physics::smoothstep(5.0, 9.0, input.goal_age_ticks.max(0) as f64);
-    let value = (window * (1.0 - interrupt) * (1.0 - 0.55 * stale)).max(0.0);
+    let value = (support_window * (1.0 - interrupt) * (1.0 - 0.55 * stale)).max(0.0);
     if value <= 0.0 {
         return HoldOpportunityGoalOutput {
             has_goal: false,
@@ -1605,5 +1600,28 @@ mod tests {
         let released = select_goal_deterministic(Some(&current), &better_alternative, &context);
         assert_eq!(released.selected, "candidate");
         assert!(released.switched);
+    }
+
+    #[test]
+    fn hold_opportunity_requires_a_distinct_support_target() {
+        let output = evaluate_hold_opportunity_goal(&HoldOpportunityGoalInput {
+            player_pos: (72.0, 34.0),
+            support_target: (72.0, 34.0),
+            attacking_right: true,
+            pitch_length: 105.0,
+            pitch_width: 68.0,
+            support_value: 0.92,
+            hold_value: 0.95,
+            current_shot: 0.0,
+            shot_readiness: 0.0,
+            immediate_best_score: 0.0,
+            goal_age_ticks: 0,
+        });
+
+        assert!(
+            !output.has_goal,
+            "an opportunity task must wait for a reachable support line, not its own location"
+        );
+        assert_eq!(output.target_pos, (72.0, 34.0));
     }
 }
