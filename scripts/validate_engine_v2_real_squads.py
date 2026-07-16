@@ -99,11 +99,21 @@ def _scan_match(response: dict) -> dict:
         if entry.get("event") == "duel" and entry.get("outcome") == "attacker_wins"
     ]
     carries = [entry for entry in entries if entry.get("action") == "carry"]
+    home_stats = response["home_stats"]
+    away_stats = response["away_stats"]
     return {
         "home_score": response["home_score"],
         "away_score": response["away_score"],
         "home_possession": response["home_stats"]["possession"],
         "away_possession": response["away_stats"]["possession"],
+        "home_shots": home_stats["shots"],
+        "away_shots": away_stats["shots"],
+        "home_xg": home_stats["xg"],
+        "away_xg": away_stats["xg"],
+        "home_pass_success_rate": home_stats["pass_success_rate"],
+        "away_pass_success_rate": away_stats["pass_success_rate"],
+        "home_tackles": home_stats["tackles"],
+        "away_tackles": away_stats["tackles"],
         "max_same_position_seconds": max_same_position_seconds,
         "long_shots_over_50m": len(long_shots),
         "attacker_won_duels": len(attacker_wins),
@@ -118,6 +128,11 @@ def main() -> int:
     parser.add_argument("--away-qq", type=int, default=10003)
     parser.add_argument("--seeds", type=int, default=40)
     parser.add_argument("--start-seed", type=int, default=1)
+    parser.add_argument(
+        "--disable-team-communication",
+        action="store_true",
+        help="Run the same match path without the delayed team communication layer.",
+    )
     args = parser.parse_args()
 
     from psl_core.engine_v2 import EngineConfig
@@ -137,6 +152,7 @@ def main() -> int:
             home_cards, home_formation = _build_cards(db, args.home_qq)
             away_cards, away_formation = _build_cards(db, args.away_qq)
             config = EngineConfig()
+            config.team_communication_enabled = not args.disable_team_communication
             config_service = GameConfigService(db)
             for key in (
                 "tick_duration",
@@ -164,12 +180,26 @@ def main() -> int:
             db.close()
 
     total = len(matches)
+    def average(metric: str) -> float:
+        return round(sum(match[metric] for match in matches) / total, 3)
+
     summary = {
         "match_count": total,
         "home_formation": home_formation,
         "away_formation": away_formation,
-        "avg_home_goals": round(sum(match["home_score"] for match in matches) / total, 3),
-        "avg_away_goals": round(sum(match["away_score"] for match in matches) / total, 3),
+        "team_communication_enabled": config.team_communication_enabled,
+        "avg_home_goals": average("home_score"),
+        "avg_away_goals": average("away_score"),
+        "avg_home_possession": average("home_possession"),
+        "avg_away_possession": average("away_possession"),
+        "avg_home_shots": average("home_shots"),
+        "avg_away_shots": average("away_shots"),
+        "avg_home_xg": average("home_xg"),
+        "avg_away_xg": average("away_xg"),
+        "avg_home_pass_success_rate": average("home_pass_success_rate"),
+        "avg_away_pass_success_rate": average("away_pass_success_rate"),
+        "avg_home_tackles": average("home_tackles"),
+        "avg_away_tackles": average("away_tackles"),
         "max_same_position_seconds": max(
             match["max_same_position_seconds"] for match in matches
         ),

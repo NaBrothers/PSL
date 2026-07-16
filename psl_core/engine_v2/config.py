@@ -65,6 +65,7 @@ class EngineConfig:
     carry_error_divisor: float = 900.0
     tackle_fail_stun_seconds: float = 1.5
     target_occupation_weight: float = 0.18
+    team_communication_enabled: bool = True
 
     # Deterministic scenario controls used by engine tests and tuning agents.
     runner_forced_action: Optional[str] = None

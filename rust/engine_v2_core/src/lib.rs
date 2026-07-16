@@ -26,6 +26,7 @@ pub mod shot_quality;
 pub mod state_value;
 pub mod tactical_task;
 pub mod team_plan;
+pub mod team_communication;
 pub mod vision;
 
 pub use action_timing::{
@@ -160,6 +161,10 @@ pub use match_flow::{
     TeamShapePlayerOutput,
 };
 pub use match_runner::{run_match_v2, MatchV2RunRequest, MatchV2RunResponse};
+pub use team_communication::{
+    TeamCommunicationBus, TeamCommunicationPublishInput, TeamSharedBelief,
+    TEAM_COMMUNICATION_PLAYER_COUNT,
+};
 pub use off_ball_attack::{
     choose_off_ball_attack_target, choose_off_ball_attack_target_from_scored,
     generate_off_ball_attack_anchor_candidates, generate_off_ball_attack_anchor_candidates_into,

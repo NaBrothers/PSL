@@ -90,6 +90,7 @@ use crate::{
     TeamPlanActionInput, TeamPlanOpponentInput, TeamPlanPlayerInput,
     TeamPlanProjectionPlayerInput, TeamPlanProjectionPlayerOutput, TeamPlanSignals,
     TeamPlanState, TeamPlanUpdateInput,
+    TeamCommunicationBus, TeamCommunicationPublishInput, TeamSharedBelief,
     TeamShapeOpponentInput, TeamShapePlanInput, TeamShapePlayerInput, TeamShapePlayerOutput,
     TemporalActionKind, TemporalOptionValueInput, ThroughBallGoalInput, VisionContextInput,
     WideHoldOverlapGoalInput, coordinate_team_defense_into, defense_resource_claim,
@@ -748,6 +749,7 @@ struct RunnerMatchState {
     away_plan: TeamPlanState,
     home_plan_signals: TeamPlanSignals,
     away_plan_signals: TeamPlanSignals,
+    team_communication: TeamCommunicationBus,
     trace_enabled: bool,
     rng_trace_enabled: bool,
 }
@@ -804,6 +806,7 @@ struct RunnerRuntimeConfig {
     runner_force_specialized_goal: Option<String>,
     trace_detail: String,
     trace_top_k: usize,
+    team_communication_enabled: bool,
 }
 
 #[derive(Debug, Deserialize)]
@@ -1230,6 +1233,142 @@ mod tests {
         assert!(!active[4], "distant defenders remain in the formation recovery path");
     }
 
+    #[test]
+    fn delayed_task_claim_penalizes_only_conflicting_new_support_space() {
+        let declared_origin = (57.0, 22.0);
+        let declared_target = (74.0, 27.0);
+        let mut declared_task = TacticalTask::inactive(declared_target);
+        declared_task.intent = crate::TacticalTaskIntent::Support;
+        declared_task.phase = crate::TacticalTaskPhase::Active;
+        declared_task.accepted_tick = 20;
+        declared_task.expires_tick = 28;
+        declared_task.commitment = 0.9;
+        declared_task.coordination.commitment = 0.8;
+        declared_task.spatial_claim = spatial_claim_for_task(
+            declared_origin,
+            declared_target,
+            declared_task.intent,
+            true,
+        );
+
+        let mut bus = TeamCommunicationBus::default();
+        bus.publish(
+            true,
+            TeamCommunicationPublishInput {
+                sender_index: 4,
+                task: Some(declared_task),
+                observed_tick: 20,
+            },
+        );
+        bus.deliver(20);
+
+        let mut claims = [crate::SpatialClaim::default(); RUNNER_TEAM_SIZE];
+        let mut owners = [usize::MAX; RUNNER_TEAM_SIZE];
+        let mut strengths = [0.0; RUNNER_TEAM_SIZE];
+        assert_eq!(
+            communication_task_claims_into(
+                bus.snapshot(true),
+                20,
+                &mut claims,
+                &mut owners,
+                &mut strengths,
+            ),
+            0,
+            "a declaration must not affect teammates in its source tick"
+        );
+
+        bus.deliver(21);
+        let claim_count = communication_task_claims_into(
+            bus.snapshot(true),
+            21,
+            &mut claims,
+            &mut owners,
+            &mut strengths,
+        );
+        assert_eq!(claim_count, 1);
+        assert_eq!(owners[0], 4);
+
+        let conflicting = TeamSpatialCandidate {
+            target: (74.8, 27.6),
+            local_value: 0.62,
+            claim: spatial_claim_for_task(
+                (59.0, 32.0),
+                (74.8, 27.6),
+                crate::TacticalTaskIntent::Support,
+                true,
+            ),
+        };
+        let distinct = TeamSpatialCandidate {
+            target: (74.0, 49.0),
+            local_value: 0.62,
+            claim: spatial_claim_for_task(
+                (59.0, 38.0),
+                (74.0, 49.0),
+                crate::TacticalTaskIntent::Support,
+                true,
+            ),
+        };
+        assert!(
+            communication_claim_cost(conflicting, 7, &claims[..claim_count], &owners[..claim_count], &strengths[..claim_count])
+                > 0.0,
+            "a new player must treat a teammate's communicated occupied space as a soft cost"
+        );
+        assert_eq!(
+            communication_claim_cost(distinct, 7, &claims[..claim_count], &owners[..claim_count], &strengths[..claim_count]),
+            0.0,
+            "non-overlapping support should preserve its local value"
+        );
+        assert_eq!(
+            communication_claim_cost(conflicting, 4, &claims[..claim_count], &owners[..claim_count], &strengths[..claim_count]),
+            0.0,
+            "a player's own declaration must never suppress its continuation"
+        );
+    }
+
+    #[test]
+    fn delayed_defensive_task_does_not_reserve_attacking_support_space() {
+        let declared_origin = (54.0, 30.0);
+        let declared_target = (63.0, 34.0);
+        let mut declared_task = TacticalTask::inactive(declared_target);
+        declared_task.intent = crate::TacticalTaskIntent::Press;
+        declared_task.phase = crate::TacticalTaskPhase::Active;
+        declared_task.accepted_tick = 20;
+        declared_task.expires_tick = 28;
+        declared_task.commitment = 0.9;
+        declared_task.spatial_claim = spatial_claim_for_task(
+            declared_origin,
+            declared_target,
+            declared_task.intent,
+            true,
+        );
+
+        let mut bus = TeamCommunicationBus::default();
+        bus.publish(
+            true,
+            TeamCommunicationPublishInput {
+                sender_index: 4,
+                task: Some(declared_task),
+                observed_tick: 20,
+            },
+        );
+        bus.deliver(21);
+
+        let mut claims = [crate::SpatialClaim::default(); RUNNER_TEAM_SIZE];
+        let mut owners = [usize::MAX; RUNNER_TEAM_SIZE];
+        let mut strengths = [0.0; RUNNER_TEAM_SIZE];
+        assert_eq!(
+            communication_task_claims_into(
+                bus.snapshot(true),
+                21,
+                &mut claims,
+                &mut owners,
+                &mut strengths,
+            ),
+            0,
+            "defensive declarations must stay out of attacking-space coordination"
+        );
+    }
+
     fn runner_test_state() -> RunnerMatchState {
         RunnerMatchState {
             ball: RunnerBall {
@@ -1292,6 +1431,7 @@ mod tests {
             away_plan: TeamPlanState::default(),
             home_plan_signals: TeamPlanSignals::default(),
             away_plan_signals: TeamPlanSignals::default(),
+        team_communication: TeamCommunicationBus::default(),
             trace_enabled: false,
             rng_trace_enabled: false,
         }
@@ -6784,6 +6924,7 @@ mod tests {
             away_plan: TeamPlanState::default(),
             home_plan_signals: TeamPlanSignals::default(),
             away_plan_signals: TeamPlanSignals::default(),
+            team_communication: TeamCommunicationBus::default(),
             trace_enabled: false,
             rng_trace_enabled: false,
         };
@@ -6891,6 +7032,7 @@ mod tests {
             away_plan: TeamPlanState::default(),
             home_plan_signals: TeamPlanSignals::default(),
             away_plan_signals: TeamPlanSignals::default(),
+            team_communication: TeamCommunicationBus::default(),
             trace_enabled: false,
             rng_trace_enabled: false,
         };
@@ -7021,6 +7163,7 @@ mod tests {
             away_plan: TeamPlanState::default(),
             home_plan_signals: TeamPlanSignals::default(),
             away_plan_signals: TeamPlanSignals::default(),
+            team_communication: TeamCommunicationBus::default(),
             trace_enabled: false,
             rng_trace_enabled: false,
         };
@@ -8314,6 +8457,10 @@ fn runtime_config(config: &serde_json::Value) -> RunnerRuntimeConfig {
         runner_force_specialized_goal: config_string(config, "runner_force_specialized_goal"),
         trace_detail: config_string(config, "trace_detail").unwrap_or_else(|| "off".to_string()),
         trace_top_k: config_i32(config, "trace_top_k", 5).max(0) as usize,
+        team_communication_enabled: config
+            .get("team_communication_enabled")
+            .and_then(|value| value.as_bool())
+            .unwrap_or(true),
     }
 }
 
@@ -10508,6 +10655,10 @@ const RUNNER_EMPTY_OFF_BALL_ATTACK_SAMPLE: RandomPolarSample = RandomPolarSample
 struct RunnerOffBallAttackArena {
     believed_teammate_positions: [(f64, f64); RUNNER_TEAM_SIZE],
     believed_teammates: [OffBallTeammateInput; RUNNER_TEAM_SIZE],
+    communication_claims: [crate::SpatialClaim; RUNNER_TEAM_SIZE],
+    communication_claim_owners: [usize; RUNNER_TEAM_SIZE],
+    communication_claim_strengths: [f64; RUNNER_TEAM_SIZE],
+    communication_claim_count: usize,
     candidates: [OffBallAttackCandidateInput; MAX_FIXED_OFF_BALL_ATTACK_CANDIDATES],
     noises: [f64; MAX_FIXED_OFF_BALL_ATTACK_CHOICES],
     scored: [OffBallAttackCandidateOutput; MAX_FIXED_OFF_BALL_ATTACK_CANDIDATES],
@@ -10535,6 +10686,10 @@ impl RunnerOffBallAttackArena {
         Self {
             believed_teammate_positions: [(0.0, 0.0); RUNNER_TEAM_SIZE],
             believed_teammates: [RUNNER_EMPTY_OFF_BALL_ATTACK_TEAMMATE; RUNNER_TEAM_SIZE],
+            communication_claims: [crate::SpatialClaim::default(); RUNNER_TEAM_SIZE],
+            communication_claim_owners: [usize::MAX; RUNNER_TEAM_SIZE],
+            communication_claim_strengths: [0.0; RUNNER_TEAM_SIZE],
+            communication_claim_count: 0,
             candidates: [RUNNER_EMPTY_OFF_BALL_ATTACK_CANDIDATE;
                 MAX_FIXED_OFF_BALL_ATTACK_CANDIDATES],
             noises: [0.0; MAX_FIXED_OFF_BALL_ATTACK_CHOICES],
@@ -19069,6 +19224,40 @@ fn refresh_team_tactical_beliefs(
     }
 }
 
+fn publish_team_communication(
+    state: &mut RunnerMatchState,
+    players: &[RunnerPlayer],
+    team_home: bool,
+    tick: i32,
+    config: &RunnerRuntimeConfig,
+) {
+    if !config.team_communication_enabled {
+        return;
+    }
+    for (index, player) in players.iter().enumerate() {
+        state.team_communication.publish(
+            team_home,
+            TeamCommunicationPublishInput {
+                sender_index: index,
+                task: player.tactical_task.active(tick).then_some(player.tactical_task),
+                observed_tick: tick,
+            },
+        );
+    }
+}
+
+fn initialize_team_communication(
+    state: &mut RunnerMatchState,
+    delivery_tick: i32,
+    config: &RunnerRuntimeConfig,
+) {
+    if !config.team_communication_enabled {
+        return;
+    }
+    state.team_communication.reset();
+    state.team_communication.deliver(delivery_tick);
+}
+
 fn accept_player_tactical_task(
     player: &mut RunnerPlayer,
     candidate_type: &str,
@@ -19588,6 +19777,75 @@ fn attenuate_arrival_goal_for_teammate_occupancy(
     }
 }
 
+fn communication_task_claims_into(
+    shared: TeamSharedBelief,
+    tick: i32,
+    claims: &mut [crate::SpatialClaim; RUNNER_TEAM_SIZE],
+    owners: &mut [usize; RUNNER_TEAM_SIZE],
+    strengths: &mut [f64; RUNNER_TEAM_SIZE],
+) -> usize {
+    let mut count = 0;
+    for teammate_index in 0..RUNNER_TEAM_SIZE {
+        let Some(task) = shared.task(teammate_index, tick) else {
+            continue;
+        };
+        if !matches!(
+            task.intent,
+            crate::TacticalTaskIntent::Receive | crate::TacticalTaskIntent::Support
+        ) || !task.spatial_claim.active
+            || count == claims.len()
+        {
+            continue;
+        }
+        claims[count] = task.spatial_claim;
+        owners[count] = teammate_index;
+        strengths[count] = (task.commitment * (0.45 + 0.55 * task.coordination.commitment.max(0.35)))
+            .clamp(0.0, 1.0);
+        count += 1;
+    }
+    count
+}
+
+fn communication_claim_cost(
+    candidate: TeamSpatialCandidate,
+    player_index: usize,
+    claims: &[crate::SpatialClaim],
+    owners: &[usize],
+    strengths: &[f64],
+) -> f64 {
+    claims
+        .iter()
+        .zip(owners.iter())
+        .zip(strengths.iter())
+        .filter(|((_, owner), strength)| **owner != player_index && **strength > 1e-6)
+        .map(|((claim, _), strength)| {
+            let occupied_radius = (claim.occupancy_radius * 0.65).max(1.2);
+            let target_distance = distance(candidate.target, claim.target);
+            let overlap = 1.0
+                - crate::physics::smoothstep(
+                    occupied_radius * 0.25,
+                    occupied_radius,
+                    target_distance,
+                );
+            0.012 * *strength * overlap.max(0.0)
+        })
+        .sum()
+}
+
+fn apply_communication_claim_costs(
+    candidates: &mut [TeamSpatialCandidate],
+    player_index: usize,
+    claims: &[crate::SpatialClaim],
+    owners: &[usize],
+    strengths: &[f64],
+) {
+    for candidate in candidates {
+        candidate.local_value =
+            (candidate.local_value - communication_claim_cost(*candidate, player_index, claims, owners, strengths))
+                .max(0.0);
+    }
+}
+
 fn apply_off_ball_attack_choices(
     players: &mut [RunnerPlayer],
     state: &mut RunnerMatchState,
@@ -19609,11 +19867,18 @@ fn apply_off_ball_attack_choices(
     let team_structure_weight =
         (0.20 + 0.60 * plan_signals.recycle_bias + 0.20 * (1.0 - plan_signals.risk_budget))
             .clamp(0.0, 1.0);
+    let shared_tasks = config
+        .team_communication_enabled
+        .then(|| state.team_communication.snapshot(team_home));
     assert!(players.len() <= RUNNER_TEAM_SIZE, "off-ball attack expects eleven-player teams");
     let use_fixed_buffers = config.trace_detail == "off";
     let RunnerOffBallAttackArena {
         believed_teammate_positions,
         believed_teammates,
+        communication_claims,
+        communication_claim_owners,
+        communication_claim_strengths,
+        communication_claim_count,
         candidates: fixed_candidates,
         noises: fixed_noises,
         scored: fixed_scored,
@@ -19632,6 +19897,18 @@ fn apply_off_ball_attack_choices(
         spatial_goal_types,
         spatial_assignments,
     } = &mut state.off_ball_attack_arena;
+    *communication_claim_count = shared_tasks
+        .map(|shared| {
+            communication_task_claims_into(
+                shared,
+                tick,
+                communication_claims,
+                communication_claim_owners,
+                communication_claim_strengths,
+            )
+        })
+        .unwrap_or(0);
+    let shared_claim_count = *communication_claim_count;
     *spatial_player_count = 0;
     for idx in 0..players.len() {
         if holder_idx == Some(idx) {
@@ -20176,6 +20453,25 @@ fn apply_off_ball_attack_choices(
                         active_goal_target,
                     );
                 if candidate_count > 0 {
+                    apply_communication_claim_costs(
+                        &mut spatial_candidates[spatial_slot][..candidate_count],
+                        idx,
+                        &communication_claims[..shared_claim_count],
+                        &communication_claim_owners[..shared_claim_count],
+                        &communication_claim_strengths[..shared_claim_count],
+                    );
+                    let preferred_candidate_index = spatial_candidates[spatial_slot]
+                        [..candidate_count]
+                        .iter()
+                        .enumerate()
+                        .max_by(|(left_index, left), (right_index, right)| {
+                            left.local_value
+                                .partial_cmp(&right.local_value)
+                                .unwrap_or(std::cmp::Ordering::Equal)
+                                .then_with(|| right_index.cmp(left_index))
+                        })
+                        .map(|(candidate_index, _)| candidate_index)
+                        .unwrap_or(preferred_candidate_index);
                     spatial_candidate_counts[spatial_slot] = candidate_count;
                     spatial_preferred_indices[spatial_slot] = preferred_candidate_index;
                     spatial_player_indices[spatial_slot] = idx;
@@ -24214,6 +24510,9 @@ fn tick_match(
     rng: &mut RunnerRng,
 ) {
     let state_before = state.ball.state;
+    if config.team_communication_enabled {
+        state.team_communication.deliver(tick);
+    }
     let clock_phase = if state_before == RunnerBallState::Dead {
         MatchClockPhase::DeadBall
     } else {
@@ -26989,6 +27288,8 @@ fn tick_match(
             "away_had_possession_last_tick": state.away_had_possession_last_tick
         })
     );
+    publish_team_communication(state, home, true, tick, config);
+    publish_team_communication(state, away, false, tick, config);
 }
 
 pub fn run_match_v2(request: MatchV2RunRequest) -> MatchV2RunResponse {
@@ -27120,6 +27421,7 @@ pub fn run_match_v2(request: MatchV2RunRequest) -> MatchV2RunResponse {
         away_plan: TeamPlanState::default(),
         home_plan_signals: TeamPlanSignals::default(),
         away_plan_signals: TeamPlanSignals::default(),
+        team_communication: TeamCommunicationBus::default(),
         trace_enabled,
         rng_trace_enabled,
     };
@@ -27134,6 +27436,7 @@ pub fn run_match_v2(request: MatchV2RunRequest) -> MatchV2RunResponse {
         true,
         &config,
     );
+    initialize_team_communication(&mut state, 0, &config);
     replay.push(RunnerReplayEntry::Frame(frame(
         0,
         config.tick_duration,
@@ -27191,6 +27494,7 @@ pub fn run_match_v2(request: MatchV2RunRequest) -> MatchV2RunResponse {
     state.restart_ticks_remaining = 0;
     state.last_passer_team_home = None;
     state.last_passer_idx = -1;
+    initialize_team_communication(&mut state, config.half_ticks, &config);
     replay.push(RunnerReplayEntry::Frame(frame(
         (config.half_ticks - 1).max(0),
         config.tick_duration,
