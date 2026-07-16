@@ -462,6 +462,7 @@ fn runner_goal_text_static(value: &str) -> Option<&'static str> {
         "recycle_support" => Some("recycle_support"),
         "defend_close_down" => Some("defend_close_down"),
         "defend_press" => Some("defend_press"),
+        "defend_pursuit" => Some("defend_pursuit"),
         "defend_mark_runner" => Some("defend_mark_runner"),
         "defend_cover_lane" => Some("defend_cover_lane"),
         "defend_recover_shape" => Some("defend_recover_shape"),
@@ -1200,6 +1201,33 @@ mod tests {
                 "GK_Reaction": 75.0
             }
         })
+    }
+
+    #[test]
+    fn flight_defense_coordination_uses_one_shared_local_unit() {
+        let cards = (0..RUNNER_TEAM_SIZE)
+            .map(|index| runner_test_card(format!("Away {index}").as_str(), 75.0, 75.0))
+            .collect::<Vec<_>>();
+        let mut players = build_players(&cards, formation_data("433"), false, 105.0, 68.0);
+        players[0].pos = (58.0, 34.0);
+        players[1].pos = (57.0, 30.0);
+        players[2].pos = (58.0, 38.0);
+        players[3].pos = (56.0, 36.0);
+        players[4].pos = (88.0, 34.0);
+        update_runner_text(&mut players[3].state, "stunned");
+
+        let active = runner_flight_defense_active_indices(
+            &players,
+            (60.0, 34.0),
+            15.0,
+            Some(2),
+        );
+
+        assert!(active[1], "a reachable outfield defender must join the shared unit");
+        assert!(!active[0], "the goalkeeper keeps its dedicated flight behavior");
+        assert!(!active[2], "the scheduled interceptor keeps its dedicated contest task");
+        assert!(!active[3], "a stunned player cannot receive a defensive responsibility");
+        assert!(!active[4], "distant defenders remain in the formation recovery path");
     }
 
     fn runner_test_state() -> RunnerMatchState {
@@ -9384,6 +9412,26 @@ fn runner_single_active_indices(
     active_indices
 }
 
+fn runner_flight_defense_active_indices(
+    players: &[RunnerPlayer],
+    target_pos: (f64, f64),
+    race_radius: f64,
+    interceptor_index: Option<usize>,
+) -> [bool; RUNNER_TEAM_SIZE] {
+    assert!(
+        players.len() <= RUNNER_TEAM_SIZE,
+        "flight defense active players exceed team size"
+    );
+    let mut active_indices = [false; RUNNER_TEAM_SIZE];
+    for (index, player) in players.iter().enumerate() {
+        active_indices[index] = player.state != "stunned"
+            && player.position != "GK"
+            && interceptor_index != Some(index)
+            && distance(player.pos, target_pos) < race_radius * 1.25;
+    }
+    active_indices
+}
+
 fn give_ball(state: &mut RunnerMatchState, idx: usize, team_home: bool, pos: (f64, f64)) {
     state.ball.state = RunnerBallState::Held;
     state.ball.position = pos;
@@ -13571,6 +13619,7 @@ fn runner_static_defense_action(action: &str) -> &'static str {
         "close_down" => "close_down",
         "tackle" => "tackle",
         "approach" => "approach",
+        "pursuit" => "close_down",
         "mark_runner" => "mark_runner",
         "block_lane" => "block_lane",
         _ => "hold_position",
@@ -19134,6 +19183,7 @@ fn runner_tactical_task_intent_name(intent: crate::TacticalTaskIntent) -> &'stat
         crate::TacticalTaskIntent::Control => "control",
         crate::TacticalTaskIntent::CloseDown => "close_down",
         crate::TacticalTaskIntent::Press => "press",
+        crate::TacticalTaskIntent::Pursuit => "pursuit",
         crate::TacticalTaskIntent::Cover => "cover",
         crate::TacticalTaskIntent::Screen => "screen",
         crate::TacticalTaskIntent::Recover => "recover",
@@ -20596,7 +20646,10 @@ fn apply_off_ball_defense_choices_fixed(
         }
         let requested_intent =
             crate::off_ball_defense::defense_action_movement_intent(selected_action_type);
-        if matches!(selected_action_type, "close_down" | "tackle" | "approach") {
+        if matches!(
+            selected_action_type,
+            "close_down" | "tackle" | "approach" | "pursuit"
+        ) {
             update_runner_text(&mut target_defender.state, "pressing");
         } else if target_defender.state == "pressing"
             && !matches!(
@@ -20633,6 +20686,7 @@ fn defense_task_kind(action_type: &str) -> DefenseTaskKind {
     match action_type {
         "close_down" => DefenseTaskKind::CloseDown,
         "tackle" | "approach" => DefenseTaskKind::Press,
+        "pursuit" => DefenseTaskKind::Pursuit,
         "mark_runner" => DefenseTaskKind::Mark,
         "block_lane" => DefenseTaskKind::BlockLane,
         _ => DefenseTaskKind::RecoverShape,
@@ -20884,7 +20938,7 @@ fn apply_coordinated_off_ball_defense_choices(
             );
             let carrier_closure = if matches!(
                 task_kind,
-                DefenseTaskKind::CloseDown | DefenseTaskKind::Press
+                DefenseTaskKind::CloseDown | DefenseTaskKind::Press | DefenseTaskKind::Pursuit
             ) {
                 let immediate_closure = 1.0
                     - crate::physics::smoothstep(
@@ -20892,7 +20946,10 @@ fn apply_coordinated_off_ball_defense_choices(
                         config.press_radius * 1.20,
                         projected_distance,
                     );
-                let approach_reachability = if task_kind == DefenseTaskKind::Press {
+                let pursuit_reachability = if matches!(
+                    task_kind,
+                    DefenseTaskKind::Press | DefenseTaskKind::Pursuit
+                ) {
                     crate::off_ball_defense::defensive_approach_reachability(
                         defender.pos,
                         perceived_ball_pos,
@@ -20905,7 +20962,7 @@ fn apply_coordinated_off_ball_defense_choices(
                     0.0
                 };
                 immediate_closure
-                    .max(0.72 * approach_reachability)
+                    .max(0.72 * pursuit_reachability)
                     * (0.38 + 0.62 * convergence)
             } else {
                 0.0
@@ -21086,7 +21143,10 @@ fn apply_coordinated_off_ball_defense_choices(
         );
         let requested_intent =
             crate::off_ball_defense::defense_action_movement_intent(selected_action_type);
-        if matches!(selected_action_type, "close_down" | "tackle" | "approach") {
+        if matches!(
+            selected_action_type,
+            "close_down" | "tackle" | "approach" | "pursuit"
+        ) {
             update_runner_text(&mut target_defender.state, "pressing");
         } else if target_defender.state == "pressing"
             && !matches!(
@@ -21444,7 +21504,10 @@ fn apply_off_ball_defense_choices_legacy(
         };
         let requested_intent =
             crate::off_ball_defense::defense_action_movement_intent(selected_action_type);
-        if matches!(selected_action_type, "close_down" | "tackle" | "approach") {
+        if matches!(
+            selected_action_type,
+            "close_down" | "tackle" | "approach" | "pursuit"
+        ) {
             update_runner_text(&mut target_defender.state, "pressing");
         } else if target_defender.state == "pressing"
             && !matches!(
@@ -21718,13 +21781,12 @@ fn apply_off_ball_defense_choices_individually(
                     )
                 };
                 let selected_action_type = candidate.action_type;
-                let requested_intent = match selected_action_type {
-                    "close_down" | "tackle" | "approach" => "press",
-                    "mark_runner" => "mark",
-                    "block_lane" => "block_lane",
-                    _ => "defend_shape",
-                };
-                if matches!(selected_action_type, "close_down" | "tackle" | "approach") {
+                let requested_intent =
+                    crate::off_ball_defense::defense_action_movement_intent(selected_action_type);
+                if matches!(
+                    selected_action_type,
+                    "close_down" | "tackle" | "approach" | "pursuit"
+                ) {
                     update_runner_text(&mut target_defender.state, "pressing");
                 } else if target_defender.state == "pressing"
                     && !matches!(
@@ -23482,6 +23544,29 @@ fn move_flight_players(
             !home_attacking_right,
             config,
         );
+        let defense_active =
+            runner_flight_defense_active_indices(away, target_pos, race_radius, interceptor_idx);
+        if defense_active[..away.len()].iter().any(|active| *active) {
+            let (_, _, _) = apply_off_ball_defense_choices(
+                away,
+                home,
+                target_pos,
+                !home_attacking_right,
+                None,
+                0,
+                0,
+                0.0,
+                state.away_plan_signals,
+                Some(&defense_active[..away.len()]),
+                config,
+                rng,
+                Some(&mut state.fixed_defense_arena),
+                &mut state.trace_decisions,
+                tick,
+                false,
+                false,
+            );
+        }
         for idx in 0..home.len() {
             if home[idx].state == "stunned" {
                 tick_player_stun(&mut home[idx]);
@@ -23546,28 +23631,7 @@ fn move_flight_players(
                 move_runner_player(&mut away[idx], tick, state.away_plan_signals, config);
                 continue;
             }
-            if distance(away[idx].pos, target_pos) < race_radius * 1.25 {
-                let active = runner_single_active_indices(idx, away.len());
-                let (_, _, _) = apply_off_ball_defense_choices(
-                    away,
-                    home,
-                    target_pos,
-                    !home_attacking_right,
-                    None,
-                    0,
-                    0,
-                    0.0,
-                    state.away_plan_signals,
-                    Some(&active[..away.len()]),
-                    config,
-                    rng,
-                    Some(&mut state.fixed_defense_arena),
-                    &mut state.trace_decisions,
-                    tick,
-                    false,
-                    false,
-                );
-            } else {
+            if !defense_active[idx] {
                 let support_target = pitch_clamp(
                     (
                         away[idx].tactical_anchor.0 * 0.88 + target_pos.0 * 0.12,
@@ -23619,6 +23683,29 @@ fn move_flight_players(
             !home_attacking_right,
             config,
         );
+        let defense_active =
+            runner_flight_defense_active_indices(home, target_pos, race_radius, interceptor_idx);
+        if defense_active[..home.len()].iter().any(|active| *active) {
+            let (_, _, _) = apply_off_ball_defense_choices(
+                home,
+                away,
+                target_pos,
+                home_attacking_right,
+                None,
+                0,
+                0,
+                0.0,
+                state.home_plan_signals,
+                Some(&defense_active[..home.len()]),
+                config,
+                rng,
+                Some(&mut state.fixed_defense_arena),
+                &mut state.trace_decisions,
+                tick,
+                true,
+                false,
+            );
+        }
         for idx in 0..away.len() {
             if away[idx].state == "stunned" {
                 tick_player_stun(&mut away[idx]);
@@ -23683,28 +23770,7 @@ fn move_flight_players(
                 move_runner_player(&mut home[idx], tick, state.home_plan_signals, config);
                 continue;
             }
-            if distance(home[idx].pos, target_pos) < race_radius * 1.25 {
-                let active = runner_single_active_indices(idx, home.len());
-                let (_, _, _) = apply_off_ball_defense_choices(
-                    home,
-                    away,
-                    target_pos,
-                    home_attacking_right,
-                    None,
-                    0,
-                    0,
-                    0.0,
-                    state.home_plan_signals,
-                    Some(&active[..home.len()]),
-                    config,
-                    rng,
-                    Some(&mut state.fixed_defense_arena),
-                    &mut state.trace_decisions,
-                    tick,
-                    true,
-                    false,
-                );
-            } else {
+            if !defense_active[idx] {
                 let support_target = pitch_clamp(
                     (
                         home[idx].tactical_anchor.0 * 0.88 + target_pos.0 * 0.12,

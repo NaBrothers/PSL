@@ -220,7 +220,7 @@ fn pitch_clamp(pos: (f64, f64), pitch_length: f64, pitch_width: f64) -> (f64, f6
 
 pub fn defense_action_movement_intent(action: &str) -> &'static str {
     match action {
-        "close_down" | "tackle" | "approach" => "press",
+        "close_down" | "tackle" | "approach" | "pursuit" => "press",
         "mark_runner" => "mark",
         "block_lane" => "block_lane",
         _ => "defend_shape",
@@ -256,7 +256,7 @@ pub fn project_defense_action_motion(
     }
 }
 
-pub fn defensive_approach_reachability(
+pub fn defensive_pursuit_reachability(
     defender_pos: (f64, f64),
     carrier_pos: (f64, f64),
     anchor: (f64, f64),
@@ -286,6 +286,24 @@ pub fn defensive_approach_reachability(
         press_radius.max(0.1) * 0.32,
         press_radius.max(0.1) * 0.92,
         closest_distance,
+    )
+}
+
+pub fn defensive_approach_reachability(
+    defender_pos: (f64, f64),
+    carrier_pos: (f64, f64),
+    anchor: (f64, f64),
+    press_radius: f64,
+    movement: DefenseMovementInput<'_>,
+    commitment_ticks: i32,
+) -> f64 {
+    defensive_pursuit_reachability(
+        defender_pos,
+        carrier_pos,
+        anchor,
+        press_radius,
+        movement,
+        commitment_ticks,
     )
 }
 
@@ -766,6 +784,26 @@ fn candidate_defense_action_type(
         * defender_access
         * (0.34 + 0.66 * target_access)
         * (1.0 - contact_window);
+    let immediate_closure = defender_access.max(contact_window);
+    let pursuit_reachability = defensive_pursuit_reachability(
+        defender_pos,
+        carrier_pos,
+        anchor,
+        press_radius,
+        movement,
+        4,
+    );
+    let pursuit_value = if target_access >= 0.72
+        && immediate_closure < 0.10
+        && pursuit_reachability > 0.10
+    {
+        carrier_urgency
+            * pursuit_reachability
+            * target_access
+            * (0.42 + 0.58 * (1.0 - immediate_closure))
+    } else {
+        0.0
+    };
     let non_contact_target = 1.0 - tackle_target_alignment;
     let mark_value = dangerous_receivers
         .iter()
@@ -792,6 +830,7 @@ fn candidate_defense_action_type(
         ("tackle", tackle_value),
         ("approach", approach_value),
         ("close_down", close_down_value),
+        ("pursuit", pursuit_value),
         ("mark_runner", mark_value),
         ("block_lane", block_value),
         ("hold_position", 0.04),
@@ -868,7 +907,10 @@ fn score_defense_candidate(
         input.local_attackers,
         input.movement,
     );
-    let task_target = if matches!(candidate_action, "close_down" | "tackle" | "approach") {
+    let task_target = if matches!(
+        candidate_action,
+        "close_down" | "tackle" | "approach" | "pursuit"
+    ) {
         input.ball_carrier_pos.unwrap_or(point)
     } else {
         point
@@ -933,6 +975,21 @@ fn score_defense_candidate(
         * (1.0 - cover_cost * 0.28)
         * (1.0 - context.immediate_threat.clamp(0.0, 1.0));
     let mut score = immediate_denial + structural_value;
+    if candidate_action == "pursuit" {
+        let future_closure = input.ball_carrier_pos.map_or(0.0, |carrier_pos| {
+            defensive_pursuit_reachability(
+                input.defender_pos,
+                carrier_pos,
+                input.anchor,
+                input.press_radius,
+                input.movement,
+                4,
+            )
+        });
+        score += context.immediate_threat
+            * future_closure
+            * (0.30 + 0.30 * input.press_intensity.clamp(0.0, 1.0));
+    }
     let lane_closure = shot_lane_closure(
         motion.pos,
         input.ball_pos,
@@ -1765,8 +1822,8 @@ pub fn choose_defense_action(input: &DefenseChoiceInput<'_>) -> Option<DefenseCh
 mod tests {
     use super::{
         best_fixed_team_defense_candidate, best_fixed_team_defense_candidate_with_team_context,
-        choose_defense_action, defense_action_type, defensive_approach_reachability,
-        fixed_defense_random_branch,
+        choose_defense_action, close_down_contact_window, defense_action_type,
+        defensive_approach_reachability, defensive_pursuit_reachability, fixed_defense_random_branch,
         fixed_defense_team_context, prepare_defense_choice, prepare_fixed_defense_choice,
         prepare_fixed_defense_choice_with_team_context, score_defense_candidates,
         select_fixed_defense_action, select_prepared_defense_action,
@@ -1935,6 +1992,118 @@ mod tests {
         assert!(
             retreating < 1.0 && short_window < 1.0,
             "reachability is a motion prediction, not an instant arrival claim"
+        );
+    }
+
+    #[test]
+    fn pursuit_requires_future_closure_without_claiming_immediate_contact() {
+        let teammates = teammates();
+        let carrier = (57.0, 34.0);
+        let input = DefenseChoiceInput {
+            defender_pos: (42.0, 34.0),
+            anchor: (42.0, 34.0),
+            base_ref: (42.0, 34.0),
+            ball_pos: carrier,
+            ball_carrier_pos: Some(carrier),
+            ball_carrier_consecutive_carries: 0,
+            ball_carrier_possession_ticks: 3,
+            carrier_control_readiness: 0.88,
+            attacking_right: false,
+            pitch_length: 105.0,
+            pitch_width: 68.0,
+            press_radius: 12.0,
+            tackle_range: 6.0,
+            carrier_speed: 3.0,
+            press_intensity: 0.72,
+            compactness: 0.60,
+            movement: movement(),
+            iq: 90.0,
+            attackers: &[carrier],
+            teammates: &teammates,
+            random_samples: &[],
+            score_noises: &[],
+            roll_by_count: &[],
+            fallback_index_by_count: &[],
+        };
+
+        let action = defense_action_type(carrier, &input, 15.0, 0.60, 0.60, &[], &[]);
+        let reachability = defensive_pursuit_reachability(
+            input.defender_pos,
+            carrier,
+            input.anchor,
+            input.press_radius,
+            input.movement,
+            4,
+        );
+
+        assert_eq!(
+            action, "pursuit",
+            "a defender outside immediate contact but able to close in the commitment window must pursue"
+        );
+        assert!(
+            reachability > 0.10,
+            "pursuit must be backed by physical future reachability"
+        );
+        assert!(
+            close_down_contact_window(
+                input.defender_pos,
+                carrier,
+                input.anchor,
+                input.tackle_range,
+                input.movement,
+            ) < 0.10,
+            "pursuit must not fabricate an immediate tackle window"
+        );
+    }
+
+    #[test]
+    fn unreachable_defender_does_not_receive_a_pursuit_label() {
+        let teammates = teammates();
+        let carrier = (82.0, 34.0);
+        let input = DefenseChoiceInput {
+            defender_pos: (42.0, 34.0),
+            anchor: (42.0, 34.0),
+            base_ref: (42.0, 34.0),
+            ball_pos: carrier,
+            ball_carrier_pos: Some(carrier),
+            ball_carrier_consecutive_carries: 0,
+            ball_carrier_possession_ticks: 3,
+            carrier_control_readiness: 0.88,
+            attacking_right: false,
+            pitch_length: 105.0,
+            pitch_width: 68.0,
+            press_radius: 12.0,
+            tackle_range: 6.0,
+            carrier_speed: 3.0,
+            press_intensity: 0.72,
+            compactness: 0.60,
+            movement: movement(),
+            iq: 90.0,
+            attackers: &[carrier],
+            teammates: &teammates,
+            random_samples: &[],
+            score_noises: &[],
+            roll_by_count: &[],
+            fallback_index_by_count: &[],
+        };
+
+        let action = defense_action_type(carrier, &input, 40.0, 0.60, 0.60, &[], &[]);
+        let reachability = defensive_pursuit_reachability(
+            input.defender_pos,
+            carrier,
+            input.anchor,
+            input.press_radius,
+            input.movement,
+            4,
+        );
+
+        assert!(
+            reachability <= 0.10,
+            "the narrow unreachable control must be outside the closure window"
+        );
+        assert_ne!(
+            action, "pursuit",
+            "the decision layer must not label an unreachable player as a future closer"
         );
     }
 

@@ -14,6 +14,7 @@ pub enum TacticalTaskIntent {
     Control,
     CloseDown,
     Press,
+    Pursuit,
     Cover,
     Screen,
     Recover,
@@ -177,6 +178,7 @@ fn intent_space_scale(intent: TacticalTaskIntent) -> (f64, f64) {
         TacticalTaskIntent::Control => (3.2, 1.6),
         TacticalTaskIntent::CloseDown => (2.8, 1.4),
         TacticalTaskIntent::Press => (2.6, 1.3),
+        TacticalTaskIntent::Pursuit => (3.0, 1.5),
         TacticalTaskIntent::Cover => (3.8, 1.8),
         TacticalTaskIntent::Screen => (3.6, 1.8),
         TacticalTaskIntent::Recover => (3.9, 1.8),
@@ -750,6 +752,8 @@ pub fn update_player_belief(
 pub fn task_intent_from_goal(goal_type: &str, phase: &str) -> TacticalTaskIntent {
     if goal_type.starts_with("defend_close_down") {
         TacticalTaskIntent::CloseDown
+    } else if goal_type.starts_with("defend_pursuit") {
+        TacticalTaskIntent::Pursuit
     } else if goal_type.starts_with("defend_press")
         || matches!(goal_type, "defend" if phase == "press")
     {
@@ -782,6 +786,7 @@ fn intent_commitment(intent: TacticalTaskIntent) -> f64 {
         TacticalTaskIntent::Control => 0.56,
         TacticalTaskIntent::CloseDown => 0.70,
         TacticalTaskIntent::Press => 0.82,
+        TacticalTaskIntent::Pursuit => 0.76,
         TacticalTaskIntent::Cover => 0.68,
         TacticalTaskIntent::Screen => 0.64,
         TacticalTaskIntent::Recover => 0.34,
@@ -821,6 +826,7 @@ pub fn formation_debt(
         TacticalTaskIntent::Carry | TacticalTaskIntent::Control => 0.18 * plan_signals.risk_budget,
         TacticalTaskIntent::CloseDown => 0.24 * plan_signals.press_intensity,
         TacticalTaskIntent::Press => 0.30 * plan_signals.press_intensity,
+        TacticalTaskIntent::Pursuit => 0.28 * plan_signals.press_intensity,
         TacticalTaskIntent::Cover | TacticalTaskIntent::Screen => 0.20 * teammate_cover,
         TacticalTaskIntent::Recover => 0.0,
     };
@@ -864,6 +870,9 @@ pub fn task_policy_utility(
             0.34 * plan_signals.press_intensity + 0.16 * nearest_pressure
         }
         TacticalTaskIntent::Press => 0.42 * plan_signals.press_intensity + 0.20 * nearest_pressure,
+        TacticalTaskIntent::Pursuit => {
+            0.38 * plan_signals.press_intensity + 0.16 * nearest_pressure
+        }
         TacticalTaskIntent::Cover | TacticalTaskIntent::Screen => 0.30 * plan_signals.compactness,
         TacticalTaskIntent::Recover => 0.16 * plan_signals.compactness,
     };

@@ -6,6 +6,7 @@ pub const MAX_FIXED_TEAM_DEFENSE_PLAYERS: usize = 11;
 pub enum DefenseTaskKind {
     CloseDown,
     Press,
+    Pursuit,
     Mark,
     BlockLane,
     RecoverShape,
@@ -222,6 +223,7 @@ fn task_concentration(kind: DefenseTaskKind) -> f64 {
     match kind {
         DefenseTaskKind::CloseDown => 0.88,
         DefenseTaskKind::Press => 1.0,
+        DefenseTaskKind::Pursuit => 0.70,
         DefenseTaskKind::Mark => 0.86,
         DefenseTaskKind::BlockLane => 0.72,
         DefenseTaskKind::RecoverShape => 0.28,
@@ -245,6 +247,7 @@ pub fn defense_resource_claim(
     let screen_role = match task_kind {
         DefenseTaskKind::CloseDown => 0.18,
         DefenseTaskKind::Press => 0.0,
+        DefenseTaskKind::Pursuit => 0.10,
         DefenseTaskKind::Mark => 0.76,
         DefenseTaskKind::BlockLane => 0.92,
         DefenseTaskKind::RecoverShape => 0.62,
@@ -252,6 +255,7 @@ pub fn defense_resource_claim(
     let lane_role = match task_kind {
         DefenseTaskKind::CloseDown => 0.18,
         DefenseTaskKind::Press => 0.06,
+        DefenseTaskKind::Pursuit => 0.04,
         DefenseTaskKind::Mark => 0.66,
         DefenseTaskKind::BlockLane => 0.88,
         DefenseTaskKind::RecoverShape => 0.24,
@@ -262,6 +266,7 @@ pub fn defense_resource_claim(
     let balance_role = match task_kind {
         DefenseTaskKind::CloseDown => 0.18,
         DefenseTaskKind::Press => 0.08,
+        DefenseTaskKind::Pursuit => 0.10,
         DefenseTaskKind::Mark => 0.70,
         DefenseTaskKind::BlockLane => 0.76,
         DefenseTaskKind::RecoverShape => 0.64,
@@ -273,8 +278,10 @@ pub fn defense_resource_claim(
         wide_balance[1] = balance_role * lateral_fit;
     }
     DefenseResourceClaim {
-        carrier_closure: if matches!(task_kind, DefenseTaskKind::CloseDown | DefenseTaskKind::Press)
-        {
+        carrier_closure: if matches!(
+            task_kind,
+            DefenseTaskKind::CloseDown | DefenseTaskKind::Press | DefenseTaskKind::Pursuit
+        ) {
             carrier_closure
         } else {
             0.0
@@ -318,6 +325,7 @@ pub fn defense_resource_claim_with_outlets(
     let (lane_role, mark_role) = match task_kind {
         DefenseTaskKind::CloseDown => (0.18, 0.12),
         DefenseTaskKind::Press => (0.05, 0.04),
+        DefenseTaskKind::Pursuit => (0.03, 0.02),
         DefenseTaskKind::Mark => (0.70, 0.86),
         DefenseTaskKind::BlockLane => (0.94, 0.48),
         DefenseTaskKind::RecoverShape => (0.42, 0.30),
@@ -611,7 +619,22 @@ fn pair_candidate_penalty(
         * task_concentration(right_candidate.task_kind);
     let overlap_penalty = (0.10 + 0.24 * compactness) * target_overlap * task_overlap;
 
-    linkage_penalty + occupancy_penalty + overlap_penalty
+    let shared_future_closure_penalty =
+        if left_candidate.task_kind == DefenseTaskKind::Pursuit
+            && right_candidate.task_kind == DefenseTaskKind::Pursuit
+        {
+            let same_closure_window =
+                (-(distance(left_candidate.target, right_candidate.target) / 5.0).powi(2)).exp();
+            let redundant_closure = left_candidate
+                .resource_claim
+                .carrier_closure
+                .min(right_candidate.resource_claim.carrier_closure);
+            (0.44 + 0.46 * compactness) * same_closure_window * redundant_closure
+        } else {
+            0.0
+        };
+
+    linkage_penalty + occupancy_penalty + overlap_penalty + shared_future_closure_penalty
 }
 
 fn resource_coverage(
@@ -627,6 +650,7 @@ fn resource_coverage(
         wide_balance: [1.0, 1.0],
         outlet_coverage: [1.0; MAX_FIXED_TEAM_DEFENSE_PLAYERS],
     };
+    let mut best_future_closure = 0.0_f64;
     for (player_index, player) in input.players.iter().enumerate() {
         let candidate_index = replacement
             .filter(|(index, _)| *index == player_index)
@@ -636,7 +660,11 @@ fn resource_coverage(
             continue;
         };
         let claim = candidate.resource_claim.clamped();
-        uncovered.carrier_closure *= 1.0 - claim.carrier_closure;
+        if candidate.task_kind == DefenseTaskKind::Pursuit {
+            best_future_closure = best_future_closure.max(claim.carrier_closure);
+        } else {
+            uncovered.carrier_closure *= 1.0 - claim.carrier_closure;
+        }
         uncovered.carrier_engagement *= 1.0 - claim.carrier_engagement;
         uncovered.cover *= 1.0 - claim.cover;
         uncovered.lane_screen *= 1.0 - claim.lane_screen;
@@ -647,8 +675,10 @@ fn resource_coverage(
                 1.0 - claim.outlet_coverage[outlet_index];
         }
     }
+    let immediate_closure = 1.0 - uncovered.carrier_closure;
     DefenseResourceClaim {
-        carrier_closure: 1.0 - uncovered.carrier_closure,
+        carrier_closure: immediate_closure
+            + (1.0 - immediate_closure) * best_future_closure,
         carrier_engagement: 1.0 - uncovered.carrier_engagement,
         cover: 1.0 - uncovered.cover,
         lane_screen: 1.0 - uncovered.lane_screen,
@@ -2333,6 +2363,218 @@ mod tests {
 
         assert_eq!(claim.carrier_closure, 0.78);
         assert_eq!(claim.carrier_engagement, 0.0);
+    }
+
+    #[test]
+    fn pursuit_claims_future_closure_without_claiming_immediate_engagement() {
+        let claim = defense_resource_claim(
+            DefenseTaskKind::Pursuit,
+            (49.0, 34.0),
+            (60.0, 34.0),
+            0.0,
+            68.0,
+            0.71,
+            0.94,
+        );
+
+        assert_eq!(claim.carrier_closure, 0.71);
+        assert_eq!(
+            claim.carrier_engagement, 0.0,
+            "future closure must not masquerade as a current tackle responsibility"
+        );
+    }
+
+    #[test]
+    fn shared_future_closure_window_keeps_one_primary_pursuer_and_one_cover() {
+        let shared_target = (60.0, 34.0);
+        let first_pursuit_or_cover = [
+            with_claim(
+                candidate(
+                    shared_target,
+                    (51.0, 29.0),
+                    0.72,
+                    DefenseTaskKind::Pursuit,
+                ),
+                DefenseResourceClaim {
+                    carrier_closure: 0.82,
+                    ..DefenseResourceClaim::default()
+                },
+            ),
+            with_claim(
+                candidate(
+                    (51.0, 26.0),
+                    (51.0, 26.0),
+                    0.68,
+                    DefenseTaskKind::BlockLane,
+                ),
+                DefenseResourceClaim {
+                    cover: 0.78,
+                    lane_screen: 0.62,
+                    ..DefenseResourceClaim::default()
+                },
+            ),
+        ];
+        let second_pursuit_or_cover = [
+            with_claim(
+                candidate(
+                    shared_target,
+                    (52.0, 39.0),
+                    0.72,
+                    DefenseTaskKind::Pursuit,
+                ),
+                DefenseResourceClaim {
+                    carrier_closure: 0.80,
+                    ..DefenseResourceClaim::default()
+                },
+            ),
+            with_claim(
+                candidate(
+                    (52.0, 42.0),
+                    (52.0, 42.0),
+                    0.68,
+                    DefenseTaskKind::BlockLane,
+                ),
+                DefenseResourceClaim {
+                    cover: 0.78,
+                    lane_screen: 0.62,
+                    ..DefenseResourceClaim::default()
+                },
+            ),
+        ];
+        let players = [
+            TeamDefensePlayerInput {
+                index: 0,
+                anchor: (50.0, 28.0),
+                candidates: &first_pursuit_or_cover,
+            },
+            TeamDefensePlayerInput {
+                index: 1,
+                anchor: (50.0, 40.0),
+                candidates: &second_pursuit_or_cover,
+            },
+        ];
+
+        let output = coordinate_team_defense(&TeamDefenseAssignmentInput {
+            players: &players,
+            compactness: 0.68,
+            immediate_threat: 0.72,
+            press_intensity: 0.72,
+            resource_demand: DefenseResourceDemand {
+                carrier_closure: 0.72,
+                carrier_engagement: 0.0,
+                cover: 0.72,
+                lane_screen: 0.42,
+                ..DefenseResourceDemand::default()
+            },
+            local_candidate_indices: Some(&[0, 0]),
+            task_continuities: None,
+        });
+
+        let selected = output
+            .assignments
+            .iter()
+            .map(|assignment| assignment.candidate_index)
+            .collect::<Vec<_>>();
+        assert!(
+            matches!(selected.as_slice(), [0, 1] | [1, 0]),
+            "one defender must own the shared future closure window while the other supplies cover: {selected:?}"
+        );
+    }
+
+    #[test]
+    fn reachable_pursuit_with_cover_is_assigned_before_deeper_recovery() {
+        let pursuit_or_recover = [
+            with_claim(
+                candidate(
+                    (61.0, 34.0),
+                    (50.0, 34.0),
+                    0.56,
+                    DefenseTaskKind::Pursuit,
+                ),
+                DefenseResourceClaim {
+                    carrier_closure: 0.74,
+                    ..DefenseResourceClaim::default()
+                },
+            ),
+            with_claim(
+                candidate(
+                    (42.0, 34.0),
+                    (42.0, 34.0),
+                    0.91,
+                    DefenseTaskKind::RecoverShape,
+                ),
+                DefenseResourceClaim {
+                    lane_screen: 0.68,
+                    ..DefenseResourceClaim::default()
+                },
+            ),
+        ];
+        let cover_or_recover = [
+            with_claim(
+                candidate(
+                    (52.0, 39.0),
+                    (49.0, 38.0),
+                    0.58,
+                    DefenseTaskKind::BlockLane,
+                ),
+                DefenseResourceClaim {
+                    cover: 0.86,
+                    lane_screen: 0.64,
+                    ..DefenseResourceClaim::default()
+                },
+            ),
+            with_claim(
+                candidate(
+                    (41.0, 47.0),
+                    (41.0, 47.0),
+                    0.90,
+                    DefenseTaskKind::RecoverShape,
+                ),
+                DefenseResourceClaim {
+                    wide_balance: [0.0, 0.72],
+                    ..DefenseResourceClaim::default()
+                },
+            ),
+        ];
+        let players = [
+            TeamDefensePlayerInput {
+                index: 0,
+                anchor: (44.0, 34.0),
+                candidates: &pursuit_or_recover,
+            },
+            TeamDefensePlayerInput {
+                index: 1,
+                anchor: (42.0, 47.0),
+                candidates: &cover_or_recover,
+            },
+        ];
+
+        let output = coordinate_team_defense(&TeamDefenseAssignmentInput {
+            players: &players,
+            compactness: 0.70,
+            immediate_threat: 0.70,
+            press_intensity: 0.72,
+            resource_demand: DefenseResourceDemand {
+                carrier_closure: 0.74,
+                carrier_engagement: 0.0,
+                cover: 0.82,
+                lane_screen: 0.32,
+                wide_balance: [0.0, 0.20],
+                ..DefenseResourceDemand::default()
+            },
+            local_candidate_indices: Some(&[1, 1]),
+            task_continuities: None,
+        });
+
+        assert_eq!(
+            output
+                .assignments
+                .iter()
+                .map(|assignment| assignment.candidate_index)
+                .collect::<Vec<_>>(),
+            vec![0, 0],
+            "a reachable future closer with a separate cover must be assigned before passive recovery"
+        );
     }
 
     #[test]
