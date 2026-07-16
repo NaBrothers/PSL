@@ -14,7 +14,19 @@ interface ReplayFrame {
   ball?: [number, number] | null
   ball_team: string | null
   score: [number, number]
-  ball_flight?: { from: [number, number]; to: [number, number]; path?: [number, number][]; type: string; on_target?: boolean }
+  ball_flight?: {
+    id?: number
+    from: [number, number]
+    to: [number, number]
+    end?: [number, number]
+    path?: [number, number][]
+    type: string
+    on_target?: boolean
+    elapsed_ticks?: number
+    total_ticks?: number
+    complete?: boolean
+    end_reason?: string | null
+  }
   event_text?: string
   pause_ms?: number
   cut?: boolean
@@ -62,6 +74,112 @@ function catmullRom(p0: number, p1: number, p2: number, p3: number, t: number) {
 function pointDist(a: [number, number], b: [number, number]) {
   return Math.hypot(a[0] - b[0], a[1] - b[1])
 }
+
+function isContinuousFlightEnd(flight: ReplayFrame['ball_flight']) {
+  return flight?.complete === true
+    && ['received', 'cleared', 'intercepted', 'loose', 'first_touch_error'].includes(flight.end_reason || '')
+}
+
+function hasHardReplayCut(frame: ReplayFrame) {
+  return frame.cut === true && !isContinuousFlightEnd(frame.ball_flight)
+}
+
+function blocksReplayExit(frame: ReplayFrame) {
+  return hasHardReplayCut(frame)
+}
+
+function flightProgress(flight: NonNullable<ReplayFrame['ball_flight']>) {
+  const totalTicks = flight.total_ticks || 0
+  return totalTicks > 0
+    ? Math.min(Math.max((flight.elapsed_ticks || 0) / totalTicks, 0), 1)
+    : 0
+}
+
+function terminalFlightFrame(
+  frames: ReplayFrame[],
+  idx: number,
+  flightId: number | undefined,
+) {
+  if (flightId === undefined) return undefined
+  for (let frameIdx = idx; frameIdx < frames.length; frameIdx++) {
+    const candidate = frames[frameIdx]
+    const candidateFlight = candidate.ball_flight
+    if (!candidateFlight) continue
+    if (candidateFlight.id !== flightId) return undefined
+    if (candidateFlight.complete === true) return candidate
+  }
+  return undefined
+}
+
+function flightPath(
+  frames: ReplayFrame[],
+  idx: number,
+  flight: NonNullable<ReplayFrame['ball_flight']>,
+) {
+  if (flight.path) return flight.path
+  const terminalFrame = terminalFlightFrame(frames, idx, flight.id)
+  const terminalBall = terminalFrame
+    ? terminalFrame.ball || terminalFrame.ball_flight?.end
+    : undefined
+  const end = terminalBall || (flight.complete ? flight.end || frames[idx].ball : undefined) || flight.end || flight.to
+  return [flight.from, end]
+}
+
+function pointAlongFlightPath(path: [number, number][], progress: number): [number, number] {
+  const segmentCount = path.length - 1
+  if (segmentCount <= 0) return path[0]
+  const scaled = Math.min(Math.max(progress, 0) * segmentCount, segmentCount - 0.0001)
+  const segment = Math.floor(scaled)
+  const local = scaled - segment
+  return [
+    lerp(path[segment][0], path[segment + 1][0], local),
+    lerp(path[segment][1], path[segment + 1][1], local),
+  ]
+}
+
+function ballFlightPosition(
+  frames: ReplayFrame[],
+  idx: number,
+  interpT: number,
+): [number, number] | null {
+  const frame = frames[idx]
+  const nextFrame = frames[idx + 1]
+  const flight = frame.ball_flight
+  const nextFlight = nextFrame?.ball_flight
+  const interpolation = Math.min(Math.max(interpT, 0), 1)
+
+  if (flight && (!flight.complete || !isContinuousFlightEnd(flight))) {
+    const startProgress = flightProgress(flight)
+    const continuesSameFlight = flight.id !== undefined
+      && nextFlight?.id === flight.id
+      && nextFlight.total_ticks === flight.total_ticks
+    const endProgress = continuesSameFlight
+      ? Math.max(startProgress, flightProgress(nextFlight))
+      : 1
+    return pointAlongFlightPath(
+      flightPath(frames, idx, flight),
+      startProgress + (endProgress - startProgress) * interpolation,
+    )
+  }
+
+  if (
+    frame.ball
+    && nextFlight
+    && !hasHardReplayCut(frame)
+  ) {
+    const target = pointAlongFlightPath(
+      flightPath(frames, idx + 1, nextFlight),
+      flightProgress(nextFlight),
+    )
+    return [
+      lerp(frame.ball[0], target[0], interpolation),
+      lerp(frame.ball[1], target[1], interpolation),
+    ]
+  }
+
+  return null
+}
+
 function smoothPoint(
   frames: ReplayFrame[],
   idx: number,
@@ -73,12 +191,14 @@ function smoothPoint(
   const next = frames[idx + 1]
   const current = side === 'home' ? frame.home[playerIdx] : frame.away[playerIdx]
   const target = next ? (side === 'home' ? next.home[playerIdx] : next.away[playerIdx]) : current
-  if (!next || frame.cut || next.cut) return current
+  if (!next || blocksReplayExit(frame)) return current
 
-  const prev = idx > 0 && !frames[idx - 1].cut
+  const prev = idx > 0 && !hasHardReplayCut(frames[idx - 1])
     ? (side === 'home' ? frames[idx - 1].home[playerIdx] : frames[idx - 1].away[playerIdx])
     : current
-  const after = idx + 2 < frames.length && !frames[idx + 2].cut
+  const after = !hasHardReplayCut(next)
+    && idx + 2 < frames.length
+    && !hasHardReplayCut(frames[idx + 2])
     ? (side === 'home' ? frames[idx + 2].home[playerIdx] : frames[idx + 2].away[playerIdx])
     : target
   const segment = pointDist(current, target)
@@ -105,8 +225,8 @@ function extractHighlights(frames: ReplayFrame[], header: ReplayHeader | null): 
           const team = f.ball_team === 'home' ? header.home : header.away
           playerName = team.players[f.ball_holder]?.name.split(' ').pop() || ''
         } else {
-          const opposingTeam = f.ball_team === 'home' ? header.away : header.home
-          playerName = opposingTeam.players[0]?.name.split(' ').pop() || ''
+          const keeperTeam = f.ball_team === 'home' ? header.home : header.away
+          playerName = keeperTeam.players[f.ball_holder]?.name.split(' ').pop() || ''
         }
       }
       const label = f.event_text === 'GOAL' ? `${minute}' 进球 [${f.score[0]}-${f.score[1]}]` : `${minute}' 扑救`
@@ -229,44 +349,9 @@ export default function ReplayHighlights({ replayUrl }: Props) {
     if (!frame) return
 
     let home = frame.home.map(p => [...p] as [number, number]), away = frame.away.map(p => [...p] as [number, number])
-    if (idx < f.length - 1 && interpT > 0 && !frame.cut && !f[idx + 1].cut) {
+    if (idx < f.length - 1 && interpT > 0 && !blocksReplayExit(frame)) {
       home = frame.home.map((_, i) => smoothPoint(f, idx, 'home', i, interpT))
       away = frame.away.map((_, i) => smoothPoint(f, idx, 'away', i, interpT))
-    }
-
-    // GK lateral dive on SAVE/GOAL (move horizontally to ball intercept point)
-    const isSaveFrame = (frame.event_text === 'SAVE' || frame.event_text === 'GOAL') && frame.ball_flight
-    let isAfterSave = false
-    let saveRefFrame: typeof frame | null = null
-    for (let back = 1; back <= 4 && idx - back >= 0; back++) {
-      const prev = f[idx - back]
-      if ((prev.event_text === 'SAVE' || prev.event_text === 'GOAL') && prev.ball_flight) {
-        isAfterSave = true
-        saveRefFrame = prev
-        break
-      }
-      if (prev.cut) break
-    }
-    if (isSaveFrame || isAfterSave) {
-      const saveFrame = isSaveFrame ? frame : saveRefFrame!
-      const bf = saveFrame.ball_flight!
-      const gkTeam = saveFrame.ball_team === 'home' ? 'away' : 'home'
-      const gkPos = gkTeam === 'home' ? home[0] : away[0]
-      const gkY = gkPos[1]
-      // Calculate where ball path crosses GK's y-line
-      const dy = bf.to[1] - bf.from[1]
-      const targetX = dy !== 0
-        ? bf.from[0] + (bf.to[0] - bf.from[0]) * (gkY - bf.from[1]) / dy
-        : bf.to[0]
-      if (isSaveFrame) {
-        const diveT = Math.min(Math.max((interpT - 0.3) / 0.5, 0), 1)
-        if (gkTeam === 'home') { home[0] = [lerp(home[0][0], targetX, diveT), gkY] }
-        else { away[0] = [lerp(away[0][0], targetX, diveT), gkY] }
-      } else {
-        // After save: keep GK at intercept position
-        if (gkTeam === 'home') { home[0] = [targetX, gkY] }
-        else { away[0] = [targetX, gkY] }
-      }
     }
 
     // Field
@@ -309,17 +394,21 @@ export default function ReplayHighlights({ replayUrl }: Props) {
     // Ball
     let ballX: number, ballY: number
     const nextBallFrame = f[idx + 1]
-    if (frame.ball && nextBallFrame?.ball && !frame.cut && !nextBallFrame.cut) {
-      // Use explicit ball position with interpolation
+    const flightPosition = ballFlightPosition(f, idx, interpT)
+    if (flightPosition) {
+      [ballX, ballY] = flightPosition
+    } else if (
+      frame.ball
+      && nextBallFrame?.ball
+      && !hasHardReplayCut(frame)
+      && !hasHardReplayCut(nextBallFrame)
+      && !nextBallFrame.ball_flight
+    ) {
+      // Only interpolate stable ball states; a new flight starts a distinct physical segment.
       ballX = lerp(frame.ball[0], nextBallFrame.ball![0], interpT)
       ballY = lerp(frame.ball[1], nextBallFrame.ball![1], interpT)
     } else if (frame.ball) {
       ballX = frame.ball[0]; ballY = frame.ball[1]
-    } else if (frame.ball_flight) {
-      const bf = frame.ball_flight, path = bf.path || [bf.from, bf.to]
-      const p = Math.min(interpT, 1), segCount = path.length-1
-      const scaled = Math.min(p*segCount, segCount-0.0001), seg = Math.floor(scaled), local = scaled-seg
-      ballX = lerp(path[seg][0], path[seg+1][0], local); ballY = lerp(path[seg][1], path[seg+1][1], local)
     } else {
       const holder = frame.ball_team==='home' ? home[frame.ball_holder!] : frame.ball_team==='away' ? away[frame.ball_holder!] : null
       if (holder) { ballX = holder[0]; ballY = holder[1] } else { ballX = PITCH_W/2; ballY = PITCH_H/2 }
