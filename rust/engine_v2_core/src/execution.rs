@@ -60,7 +60,7 @@ pub struct PassExecutionInput {
     pub lane_risk: f64,
     pub retention_probability: f64,
     pub technical_probability: f64,
-    pub retention_roll: f64,
+    pub technical_roll: f64,
     pub pitch_length: f64,
     pub pitch_width: f64,
     pub ball_pass_speed: f64,
@@ -80,9 +80,8 @@ pub struct PassExecutionOutput {
     pub flight_type_code: u8,
     pub retention_probability: f64,
     pub technical_probability: f64,
-    pub retention_roll: f64,
-    pub technical_miss: bool,
-    pub retained_possession: bool,
+    pub technical_roll: f64,
+    pub delivery_miss: bool,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -313,11 +312,12 @@ pub fn execute_carry(input: &CarryExecutionInput<'_>) -> CarryExecutionOutput {
 pub fn execute_pass(input: &PassExecutionInput) -> PassExecutionOutput {
     let dist_to_target = distance(input.passer_pos, input.ideal_target);
     let ability_factor = (input.passing / 100.0).clamp(0.0, 1.0);
+    let retention_probability = input.retention_probability.clamp(0.0, 1.0);
     let technical_probability = input.technical_probability.clamp(0.0, 1.0);
-    let technical_miss = input.retention_roll >= technical_probability;
+    let delivery_miss = input.technical_roll >= retention_probability;
     let base_error_radius = (1.0 - ability_factor) * (1.2 + dist_to_target / 12.0);
     let error_radius = base_error_radius
-        * if technical_miss {
+        * if delivery_miss {
             3.0 + (dist_to_target / 45.0).min(0.8)
         } else {
             1.0
@@ -354,11 +354,10 @@ pub fn execute_pass(input: &PassExecutionInput) -> PassExecutionOutput {
         speed,
         ticks_needed,
         flight_type_code: if input.is_long { 1 } else { 0 },
-        retention_probability: input.retention_probability.clamp(0.0, 1.0),
+        retention_probability,
         technical_probability,
-        retention_roll: input.retention_roll,
-        technical_miss,
-        retained_possession: true,
+        technical_roll: input.technical_roll,
+        delivery_miss,
     }
 }
 

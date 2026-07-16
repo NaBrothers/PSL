@@ -544,6 +544,9 @@ const EMPTY_BELIEVED_ENTITY: BelievedEntity = BelievedEntity {
 pub struct PlayerBelief {
     pub ball_pos: (f64, f64),
     pub ball_confidence: f64,
+    observed_carrier_index: Option<usize>,
+    observed_carrier_ticks: i32,
+    observed_carrier_control_readiness: f64,
     entities: [BelievedEntity; MAX_PLAYER_OBSERVED_ENTITIES],
     entity_count: usize,
 }
@@ -553,6 +556,9 @@ impl Default for PlayerBelief {
         Self {
             ball_pos: (0.0, 0.0),
             ball_confidence: 0.0,
+            observed_carrier_index: None,
+            observed_carrier_ticks: 0,
+            observed_carrier_control_readiness: 0.0,
             entities: [EMPTY_BELIEVED_ENTITY; MAX_PLAYER_OBSERVED_ENTITIES],
             entity_count: 0,
         }
@@ -562,6 +568,16 @@ impl Default for PlayerBelief {
 impl PlayerBelief {
     pub fn entities(&self) -> &[BelievedEntity] {
         &self.entities[..self.entity_count]
+    }
+
+    pub fn observed_carrier(&self) -> Option<(usize, i32, f64)> {
+        self.observed_carrier_index.map(|index| {
+            (
+                index,
+                self.observed_carrier_ticks,
+                self.observed_carrier_control_readiness,
+            )
+        })
     }
 }
 
@@ -686,9 +702,46 @@ pub fn update_player_belief(
             (previous.ball_confidence * retained_confidence).clamp(0.0, 1.0),
         )
     };
+    let observed_carrier = (observation.ball_confidence >= 0.18)
+        .then(|| {
+            observation
+                .visible_entities
+                .iter()
+                .filter(|entity| !entity.is_teammate && !entity.is_goalkeeper)
+                .filter_map(|entity| {
+                    let carrier_radius = 2.0 + 3.0 * observation.ball_confidence;
+                    let dx = entity.pos.0 - observation.ball_pos.0;
+                    let dy = entity.pos.1 - observation.ball_pos.1;
+                    let ball_distance = (dx * dx + dy * dy).sqrt();
+                    (ball_distance <= carrier_radius).then_some((entity.index, ball_distance))
+                })
+                .min_by(|(_, left), (_, right)| {
+                    left.partial_cmp(right).unwrap_or(std::cmp::Ordering::Equal)
+                })
+                .map(|(index, _)| index)
+        })
+        .flatten();
+    let (observed_carrier_index, observed_carrier_ticks, observed_carrier_control_readiness) =
+        if let Some(index) = observed_carrier {
+            let ticks = if previous.observed_carrier_index == Some(index) {
+                previous.observed_carrier_ticks.saturating_add(1)
+            } else {
+                1
+            };
+            (
+                Some(index),
+                ticks,
+                (0.42 + 0.58 * ball_confidence).clamp(0.0, 1.0),
+            )
+        } else {
+            (None, 0, 0.0)
+        };
     *belief = PlayerBelief {
         ball_pos,
         ball_confidence,
+        observed_carrier_index,
+        observed_carrier_ticks,
+        observed_carrier_control_readiness,
         entities,
         entity_count,
     };
@@ -1021,6 +1074,53 @@ mod tests {
         assert_eq!(belief.ball_pos, (52.0, 34.0));
         assert!(belief.ball_confidence > 0.0);
         assert!(belief.ball_confidence < 0.9);
+    }
+
+    #[test]
+    fn visible_carrier_observation_accumulates_only_while_the_same_opponent_is_seen() {
+        let carrier = VisibleEntity {
+            index: 12,
+            pos: (52.0, 34.0),
+            velocity: (0.0, 0.0),
+            confidence: 1.0,
+            is_teammate: false,
+            is_goalkeeper: false,
+        };
+        let mut belief = PlayerBelief::default();
+        let visible = PlayerObservation {
+            ball_pos: (52.0, 34.0),
+            ball_confidence: 1.0,
+            visible_entities: &[carrier],
+            ..observation(&[])
+        };
+
+        for _ in 0..3 {
+            update_player_belief(&mut belief, &visible, 82.0);
+        }
+
+        assert_eq!(
+            belief.observed_carrier().map(|(index, ticks, _)| (index, ticks)),
+            Some((12, 3))
+        );
+        assert!(
+            belief
+                .observed_carrier()
+                .is_some_and(|(_, _, readiness)| readiness > 0.9)
+        );
+
+        let hidden = PlayerObservation {
+            ball_pos: (52.0, 34.0),
+            ball_confidence: 0.0,
+            visible_entities: &[],
+            ..observation(&[])
+        };
+        update_player_belief(&mut belief, &hidden, 82.0);
+
+        assert_eq!(
+            belief.observed_carrier(),
+            None,
+            "remembering an old ball position must not fabricate a current carrier"
+        );
     }
 
     #[test]

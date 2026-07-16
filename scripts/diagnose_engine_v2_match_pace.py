@@ -307,6 +307,91 @@ def _attack_pattern_summary(
     }
 
 
+def _event_has_tag(event: dict[str, Any], tag: str) -> bool:
+    tags = event.get("tags")
+    return isinstance(tags, list) and tag in tags
+
+
+def _pass_causality_summary(events: Iterable[dict[str, Any]]) -> dict[str, Any]:
+    released_by_team: Counter[str] = Counter()
+    completed_by_team: Counter[str] = Counter()
+    released_outcomes: Counter[str] = Counter()
+    released_failures: Counter[str] = Counter()
+    release_duels: Counter[str] = Counter()
+    release_duel_wins: Counter[str] = Counter()
+
+    for event in events:
+        team = event.get("team_side")
+        if team not in {"home", "away"}:
+            continue
+        event_type = event.get("event_type")
+        outcome = event.get("outcome")
+        if event_type == "pass":
+            released_by_team[team] += 1
+            released_outcomes[str(outcome)] += 1
+            if outcome == "completed":
+                completed_by_team[team] += 1
+                continue
+            if outcome == "first_touch_error":
+                cause = "first_touch_error"
+            elif outcome == "offside":
+                cause = "offside"
+            elif outcome == "loose":
+                cause = (
+                    "delivery_error_loose"
+                    if _event_has_tag(event, "delivery_error")
+                    else "arrival_loose"
+                )
+            else:
+                cause = f"other_{outcome}"
+            released_failures[cause] += 1
+        elif event_type == "interception":
+            passer_team = "away" if team == "home" else "home"
+            released_by_team[passer_team] += 1
+            released_outcomes["intercepted"] += 1
+            cause = (
+                "delivery_error_interception"
+                if _event_has_tag(event, "delivery_error")
+                else "arrival_interception"
+            )
+            released_failures[cause] += 1
+        elif event_type == "tackle" and _event_has_tag(event, "pass_release"):
+            release_duels["attempts"] += 1
+            if outcome == "won":
+                release_duel_wins["won"] += 1
+        elif event_type == "duel" and _event_has_tag(event, "pass_release"):
+            release_duels["attempts"] += 1
+
+    released_total = sum(released_by_team.values())
+    completed_total = sum(completed_by_team.values())
+    failed_total = sum(released_failures.values())
+    return {
+        "released": {
+            "total": released_total,
+            "home": released_by_team["home"],
+            "away": released_by_team["away"],
+        },
+        "completed": completed_total,
+        "completion_rate": round(completed_total / max(released_total, 1), 4),
+        "outcomes": dict(sorted(released_outcomes.items())),
+        "failure_causes": {
+            cause: {
+                "count": count,
+                "share_of_released": round(count / max(released_total, 1), 4),
+                "share_of_failed": round(count / max(failed_total, 1), 4),
+            }
+            for cause, count in sorted(released_failures.items())
+        },
+        "pass_release_duels": {
+            "attempts": release_duels["attempts"],
+            "tackles_won": release_duel_wins["won"],
+            "win_rate": round(
+                release_duel_wins["won"] / max(release_duels["attempts"], 1), 4
+            ),
+        },
+    }
+
+
 def _sequence_summary(
     events: Iterable[dict[str, Any]],
     home_attacking_right: bool,
@@ -443,6 +528,7 @@ def summarize_match(
         "score": [response["home_score"], response["away_score"]],
         "home_stats": response["home_stats"],
         "away_stats": response["away_stats"],
+        "pass_causality": _pass_causality_summary(events),
         "sequence": _sequence_summary(events, home_attacking_right, include_sequences),
         "attack_patterns": _attack_pattern_summary(events, home_attacking_right),
         "shape": _shape_summary(response["replay"]),
@@ -497,6 +583,10 @@ def _aggregate_summaries(summaries: list[dict[str, Any]]) -> dict[str, Any]:
     direction_counts: Counter[str] = Counter()
     terminal_events: Counter[str] = Counter()
     completed_attack_actions: Counter[str] = Counter()
+    pass_outcomes: Counter[str] = Counter()
+    pass_failure_causes: Counter[str] = Counter()
+    pass_release_duel_attempts = 0
+    pass_release_duel_wins = 0
     wide_final_origin_actions: Counter[str] = Counter()
     byline_entry_types: Counter[str] = Counter()
     byline_exit_actions: Counter[str] = Counter()
@@ -506,6 +596,16 @@ def _aggregate_summaries(summaries: list[dict[str, Any]]) -> dict[str, Any]:
         for direction, data in summary["sequence"]["pass_directions"].items():
             direction_counts[direction] += data["count"]
         terminal_events.update(summary["sequence"]["terminal_events"])
+        causality = summary["pass_causality"]
+        pass_outcomes.update(causality["outcomes"])
+        pass_failure_causes.update(
+            {
+                cause: data["count"]
+                for cause, data in causality["failure_causes"].items()
+            }
+        )
+        pass_release_duel_attempts += causality["pass_release_duels"]["attempts"]
+        pass_release_duel_wins += causality["pass_release_duels"]["tackles_won"]
         attack = summary["attack_patterns"]
         completed_attack_actions.update(attack["completed_actions"])
         wide_final_origin_actions.update(attack["wide_final_third_origin_actions"])
@@ -561,6 +661,42 @@ def _aggregate_summaries(summaries: list[dict[str, Any]]) -> dict[str, Any]:
         "average_away_stats": {
             key: round(mean(float(summary["away_stats"][key]) for summary in summaries), 3)
             for key in PACE_STAT_KEYS
+        },
+        "pass_causality": {
+            "average_released": round(
+                mean(float(summary["pass_causality"]["released"]["total"]) for summary in summaries),
+                3,
+            ),
+            "average_completion_rate": round(
+                mean(float(summary["pass_causality"]["completion_rate"]) for summary in summaries),
+                4,
+            ),
+            "outcomes": dict(sorted(pass_outcomes.items())),
+            "failure_causes": {
+                cause: {
+                    "count": count,
+                    "share_of_released": round(
+                        count
+                        / max(
+                            sum(
+                                summary["pass_causality"]["released"]["total"]
+                                for summary in summaries
+                            ),
+                            1,
+                        ),
+                        4,
+                    ),
+                }
+                for cause, count in sorted(pass_failure_causes.items())
+            },
+            "pass_release_duels": {
+                "attempts": pass_release_duel_attempts,
+                "tackles_won": pass_release_duel_wins,
+                "win_rate": round(
+                    pass_release_duel_wins / max(pass_release_duel_attempts, 1),
+                    4,
+                ),
+            },
         },
         "sequence": {
             "average_count": average(("sequence", "sequence_count")),

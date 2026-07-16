@@ -109,7 +109,7 @@ pub use goalkeeper::{
 pub use interactions::{
     carry_survival_transition, carry_survival_transition_with_defender_response_slices,
     carry_survival_transition_with_defender_responses, detect_duel, detect_interception,
-    detect_wasted_tackle, interception_chance, resolve_duel, resolve_interception,
+    detect_wasted_tackle, duel_margin, interception_chance, resolve_duel, resolve_interception,
     track_defensive_pressures, track_defensive_pressures_into, CarrySurvivalInput,
     CarrySurvivalTransition, DefenderActionInput, DefensivePressureInput, DefensivePressureOutput,
     DetectionResult, DuelDetectionInput, DuelResolveInput, InterceptionDetectionInput,

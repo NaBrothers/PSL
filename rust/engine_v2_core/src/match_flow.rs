@@ -381,7 +381,7 @@ pub struct PassPhasePlanInput {
     pub lane_risk: f64,
     pub retention_probability: f64,
     pub technical_probability: f64,
-    pub retention_roll: f64,
+    pub technical_roll: f64,
     pub pitch_length: f64,
     pub pitch_width: f64,
     pub ball_pass_speed: f64,
@@ -403,9 +403,8 @@ pub struct PassPhasePlanOutput {
     pub flight_to_yx: (f64, f64),
     pub retention_probability: f64,
     pub technical_probability: f64,
-    pub retention_roll: f64,
-    pub technical_miss: bool,
-    pub retained_possession: bool,
+    pub technical_roll: f64,
+    pub delivery_miss: bool,
     pub randoms_used: usize,
 }
 
@@ -605,12 +604,16 @@ pub struct ContestedTickPlanOutput {
 }
 
 #[derive(Clone, Debug)]
-pub struct DuelPhasePlanInput {
+pub struct DuelPhasePlanInput<'a> {
     pub holder_pos: (f64, f64),
     pub pitch_length: f64,
     pub pitch_width: f64,
     pub attacker_dribbling: f64,
     pub defender_tackling: f64,
+    pub defender_defence: f64,
+    pub holder_action: &'a str,
+    pub defender_action: &'a str,
+    pub contact_quality: f64,
     pub attacker_uniform: f64,
     pub defender_uniform: f64,
     pub loose_x_roll: f64,
@@ -663,10 +666,14 @@ pub fn carry_phase_plan(input: &CarryPhasePlanInput<'_>) -> CarryPhasePlanOutput
     }
 }
 
-pub fn duel_phase_plan(input: &DuelPhasePlanInput) -> DuelPhasePlanOutput {
+pub fn duel_phase_plan(input: &DuelPhasePlanInput<'_>) -> DuelPhasePlanOutput {
     let outcome = resolve_duel(&DuelResolveInput {
         attacker_dribbling: input.attacker_dribbling,
         defender_tackling: input.defender_tackling,
+        defender_defence: input.defender_defence,
+        holder_action: input.holder_action,
+        defender_action: input.defender_action,
+        contact_quality: input.contact_quality,
         attacker_uniform: input.attacker_uniform,
         defender_uniform: input.defender_uniform,
     });
@@ -855,7 +862,7 @@ pub fn pass_phase_plan(input: &PassPhasePlanInput) -> PassPhasePlanOutput {
         lane_risk: input.lane_risk,
         retention_probability: input.retention_probability,
         technical_probability: input.technical_probability,
-        retention_roll: input.retention_roll,
+        technical_roll: input.technical_roll,
         pitch_length: input.pitch_length,
         pitch_width: input.pitch_width,
         ball_pass_speed: input.ball_pass_speed,
@@ -885,9 +892,8 @@ pub fn pass_phase_plan(input: &PassPhasePlanInput) -> PassPhasePlanOutput {
         flight_to_yx: flight.to_yx,
         retention_probability: pass.retention_probability,
         technical_probability: pass.technical_probability,
-        retention_roll: pass.retention_roll,
-        technical_miss: pass.technical_miss,
-        retained_possession: pass.retained_possession,
+        technical_roll: pass.technical_roll,
+        delivery_miss: pass.delivery_miss,
         randoms_used: pass.randoms_used,
     }
 }
@@ -2970,7 +2976,7 @@ mod tests {
     }
 
     #[test]
-    fn pass_phase_separates_expected_completion_from_technical_execution() {
+    fn pass_phase_uses_shared_retention_probability_for_delivery_error() {
         let clean_execution = pass_phase_plan(&PassPhasePlanInput {
             passer_pos: (20.0, 34.0),
             ideal_target: (35.0, 40.0),
@@ -2979,7 +2985,7 @@ mod tests {
             lane_risk: 0.25,
             retention_probability: 0.60,
             technical_probability: 0.80,
-            retention_roll: 0.59,
+            technical_roll: 0.59,
             pitch_length: 105.0,
             pitch_width: 68.0,
             ball_pass_speed: 18.0,
@@ -2988,17 +2994,15 @@ mod tests {
             random_2: 0.75,
             intended_receiver_pos: Some((35.0, 40.0)),
         });
-        let technical_miss = pass_phase_plan(&PassPhasePlanInput {
-            retention_roll: 0.81,
+        let delivery_miss = pass_phase_plan(&PassPhasePlanInput {
+            technical_roll: 0.61,
             ..retained_input()
         });
 
-        assert!(clean_execution.retained_possession);
-        assert!(!clean_execution.technical_miss);
-        assert!(technical_miss.retained_possession);
-        assert!(technical_miss.technical_miss);
+        assert!(!clean_execution.delivery_miss);
+        assert!(delivery_miss.delivery_miss);
         assert_eq!(clean_execution.randoms_used, 2);
-        assert_eq!(technical_miss.randoms_used, 2);
+        assert_eq!(delivery_miss.randoms_used, 2);
     }
 
     fn retained_input() -> PassPhasePlanInput {
@@ -3010,7 +3014,7 @@ mod tests {
             lane_risk: 0.25,
             retention_probability: 0.60,
             technical_probability: 0.80,
-            retention_roll: 0.59,
+            technical_roll: 0.79,
             pitch_length: 105.0,
             pitch_width: 68.0,
             ball_pass_speed: 18.0,

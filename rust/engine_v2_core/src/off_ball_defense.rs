@@ -256,6 +256,39 @@ pub fn project_defense_action_motion(
     }
 }
 
+pub fn defensive_approach_reachability(
+    defender_pos: (f64, f64),
+    carrier_pos: (f64, f64),
+    anchor: (f64, f64),
+    press_radius: f64,
+    movement: DefenseMovementInput<'_>,
+    commitment_ticks: i32,
+) -> f64 {
+    let mut projected_pos = defender_pos;
+    let mut projected_velocity = movement.velocity;
+    let mut closest_distance = distance(defender_pos, carrier_pos);
+    for _ in 0..commitment_ticks.clamp(1, 8) {
+        let motion = project_defense_action_motion(
+            projected_pos,
+            carrier_pos,
+            anchor,
+            "approach",
+            DefenseMovementInput {
+                velocity: projected_velocity,
+                ..movement
+            },
+        );
+        closest_distance = closest_distance.min(distance(motion.pos, carrier_pos));
+        projected_pos = motion.pos;
+        projected_velocity = motion.velocity;
+    }
+    1.0 - smoothstep(
+        press_radius.max(0.1) * 0.32,
+        press_radius.max(0.1) * 0.92,
+        closest_distance,
+    )
+}
+
 fn closest_distance_to_motion_segment(
     point: (f64, f64),
     start: (f64, f64),
@@ -1732,7 +1765,8 @@ pub fn choose_defense_action(input: &DefenseChoiceInput<'_>) -> Option<DefenseCh
 mod tests {
     use super::{
         best_fixed_team_defense_candidate, best_fixed_team_defense_candidate_with_team_context,
-        choose_defense_action, defense_action_type, fixed_defense_random_branch,
+        choose_defense_action, defense_action_type, defensive_approach_reachability,
+        fixed_defense_random_branch,
         fixed_defense_team_context, prepare_defense_choice, prepare_fixed_defense_choice,
         prepare_fixed_defense_choice_with_team_context, score_defense_candidates,
         select_fixed_defense_action, select_prepared_defense_action,
@@ -1858,6 +1892,50 @@ mod tests {
                 expected.candidate_residual_threats[index].to_bits()
             );
         }
+    }
+
+    #[test]
+    fn approach_reachability_respects_speed_turning_and_task_window() {
+        let direct = defensive_approach_reachability(
+            (42.0, 34.0),
+            (57.0, 34.0),
+            (42.0, 34.0),
+            12.0,
+            movement(),
+            4,
+        );
+        let retreating = defensive_approach_reachability(
+            (42.0, 34.0),
+            (57.0, 34.0),
+            (42.0, 34.0),
+            12.0,
+            DefenseMovementInput {
+                velocity: (-5.0, 0.0),
+                ..movement()
+            },
+            4,
+        );
+        let short_window = defensive_approach_reachability(
+            (42.0, 34.0),
+            (57.0, 34.0),
+            (42.0, 34.0),
+            12.0,
+            movement(),
+            1,
+        );
+
+        assert!(
+            direct > retreating,
+            "a defender already moving toward the carrier must be more reachable than one who first has to turn"
+        );
+        assert!(
+            direct > short_window,
+            "a legal multi-tick press commitment must value future arrival more than the current-tick snapshot"
+        );
+        assert!(
+            retreating < 1.0 && short_window < 1.0,
+            "reachability is a motion prediction, not an instant arrival claim"
+        );
     }
 
     #[test]
