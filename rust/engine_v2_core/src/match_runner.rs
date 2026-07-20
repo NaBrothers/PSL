@@ -13575,18 +13575,18 @@ struct RunnerProjectedControlProjection {
     bellman_geometry: crate::state_value::PossessionBellmanGeometry,
 }
 
-const RUNNER_PROJECTED_CONTROL_PROJECTION_CACHE_SIZE: usize = 8;
+const RUNNER_PROJECTED_CONTROL_PROJECTION_CACHE_SIZE: usize =
+    crate::execution_transition::MAX_EXECUTION_TRANSITION_BRANCHES;
 
 struct RunnerProjectedControlProjectionCache {
-    entries:
-        [Option<RunnerProjectedControlProjection>; RUNNER_PROJECTED_CONTROL_PROJECTION_CACHE_SIZE],
+    entries: Vec<RunnerProjectedControlProjection>,
     next_slot: usize,
 }
 
 impl Default for RunnerProjectedControlProjectionCache {
     fn default() -> Self {
         Self {
-            entries: [None; RUNNER_PROJECTED_CONTROL_PROJECTION_CACHE_SIZE],
+            entries: Vec::with_capacity(RUNNER_PROJECTED_CONTROL_PROJECTION_CACHE_SIZE),
             next_slot: 0,
         }
     }
@@ -13594,7 +13594,7 @@ impl Default for RunnerProjectedControlProjectionCache {
 
 impl RunnerProjectedControlProjectionCache {
     fn clear(&mut self) {
-        self.entries.fill(None);
+        self.entries.clear();
         self.next_slot = 0;
     }
 
@@ -13604,7 +13604,7 @@ impl RunnerProjectedControlProjectionCache {
         controller_pos: (f64, f64),
         duration_ticks: i32,
     ) -> Option<&RunnerProjectedControlProjection> {
-        self.entries.iter().flatten().find(|projection| {
+        self.entries.iter().find(|projection| {
             projection.controller_idx == controller_idx
                 && projection.controller_pos.0.to_bits() == controller_pos.0.to_bits()
                 && projection.controller_pos.1.to_bits() == controller_pos.1.to_bits()
@@ -13616,12 +13616,30 @@ impl RunnerProjectedControlProjectionCache {
         &mut self,
         projection: RunnerProjectedControlProjection,
     ) -> &RunnerProjectedControlProjection {
+        if self.entries.len() < RUNNER_PROJECTED_CONTROL_PROJECTION_CACHE_SIZE {
+            self.entries.push(projection);
+            return self
+                .entries
+                .last()
+                .expect("projected control cache entry must be present after insertion");
+        }
         let slot = self.next_slot;
-        self.next_slot = (self.next_slot + 1) % self.entries.len();
-        self.entries[slot] = Some(projection);
-        self.entries[slot]
-            .as_ref()
-            .expect("projected control cache entry must be present after insertion")
+        self.next_slot = (self.next_slot + 1) % RUNNER_PROJECTED_CONTROL_PROJECTION_CACHE_SIZE;
+        self.entries[slot] = projection;
+        &self.entries[slot]
+    }
+}
+
+#[cfg(test)]
+mod projected_control_projection_cache_tests {
+    use super::*;
+
+    #[test]
+    fn cache_retains_a_complete_execution_distribution() {
+        assert!(
+            RUNNER_PROJECTED_CONTROL_PROJECTION_CACHE_SIZE
+                >= crate::execution_transition::MAX_EXECUTION_TRANSITION_BRANCHES
+        );
     }
 }
 
