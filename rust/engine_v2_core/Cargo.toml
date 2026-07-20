@@ -12,6 +12,7 @@ name = "engine"
 path = "src/bin/match_engine.rs"
 
 [dependencies]
+rayon = "1.10"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 

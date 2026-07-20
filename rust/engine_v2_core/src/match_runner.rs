@@ -1,7 +1,10 @@
+use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use std::cell::RefCell;
 use std::collections::HashMap;
+use std::sync::OnceLock;
+use std::time::{Duration, Instant};
 
 mod runner_transition_model;
 
@@ -109,6 +112,120 @@ macro_rules! trace_entry {
             $state.trace_entries.push($entry);
         }
     };
+}
+
+#[derive(Clone, Copy, Default)]
+struct RunnerPerfProfile {
+    enabled: bool,
+    team_plans: Duration,
+    held_attack_targets: Duration,
+    held_defense_targets: Duration,
+    candidate_generation: Duration,
+    carry_generation: Duration,
+    carry_path: Duration,
+    carry_responses: Duration,
+    carry_survival: Duration,
+    carry_value: Duration,
+    pass_generation: Duration,
+    shot_and_control_generation: Duration,
+    temporal_evaluation: Duration,
+    flight_shape: Duration,
+    flight_beliefs: Duration,
+    flight_defense_choices: Duration,
+    flight_attack_choices: Duration,
+    flight_movement: Duration,
+    held_ticks: Duration,
+    flight_ticks: Duration,
+    contested_ticks: Duration,
+    dead_ticks: Duration,
+    replay_frames: Duration,
+    response_finalization: Duration,
+    held_tick_count: u64,
+    flight_tick_count: u64,
+    contested_tick_count: u64,
+    dead_tick_count: u64,
+    decision_count: u64,
+}
+
+impl RunnerPerfProfile {
+    fn from_env() -> Self {
+        Self {
+            enabled: std::env::var_os("PSL_ENGINE_PROFILE").is_some(),
+            ..Self::default()
+        }
+    }
+
+    fn start(&self) -> Option<Instant> {
+        self.enabled.then(Instant::now)
+    }
+
+    fn elapsed(started: Option<Instant>) -> Duration {
+        started.map_or(Duration::ZERO, |started| started.elapsed())
+    }
+
+    fn report(&self) {
+        if !self.enabled {
+            return;
+        }
+        let millis = |duration: Duration| duration.as_secs_f64() * 1_000.0;
+        eprintln!(
+            concat!(
+                "PSL_ENGINE_PROFILE ",
+                "team_plans_ms={:.3} ",
+                "held_attack_targets_ms={:.3} ",
+                "held_defense_targets_ms={:.3} ",
+                "candidate_generation_ms={:.3} ",
+                "carry_generation_ms={:.3} ",
+                "carry_path_ms={:.3} ",
+                "carry_responses_ms={:.3} ",
+                "carry_survival_ms={:.3} ",
+                "carry_value_ms={:.3} ",
+                "pass_generation_ms={:.3} ",
+                "shot_and_control_generation_ms={:.3} ",
+                "temporal_evaluation_ms={:.3} ",
+                "flight_shape_ms={:.3} ",
+                "flight_beliefs_ms={:.3} ",
+                "flight_defense_choices_ms={:.3} ",
+                "flight_attack_choices_ms={:.3} ",
+                "flight_movement_ms={:.3} ",
+                "held_ticks_ms={:.3} ",
+                "flight_ticks_ms={:.3} ",
+                "contested_ticks_ms={:.3} ",
+                "dead_ticks_ms={:.3} ",
+                "replay_frames_ms={:.3} ",
+                "response_finalization_ms={:.3} ",
+                "held_ticks={} flight_ticks={} contested_ticks={} dead_ticks={} decisions={}"
+            ),
+            millis(self.team_plans),
+            millis(self.held_attack_targets),
+            millis(self.held_defense_targets),
+            millis(self.candidate_generation),
+            millis(self.carry_generation),
+            millis(self.carry_path),
+            millis(self.carry_responses),
+            millis(self.carry_survival),
+            millis(self.carry_value),
+            millis(self.pass_generation),
+            millis(self.shot_and_control_generation),
+            millis(self.temporal_evaluation),
+            millis(self.flight_shape),
+            millis(self.flight_beliefs),
+            millis(self.flight_defense_choices),
+            millis(self.flight_attack_choices),
+            millis(self.flight_movement),
+            millis(self.held_ticks),
+            millis(self.flight_ticks),
+            millis(self.contested_ticks),
+            millis(self.dead_ticks),
+            millis(self.replay_frames),
+            millis(self.response_finalization),
+            self.held_tick_count,
+            self.flight_tick_count,
+            self.contested_tick_count,
+            self.dead_tick_count,
+            self.decision_count,
+        );
+    }
 }
 
 #[derive(Clone, Copy)]
@@ -789,6 +906,7 @@ struct RunnerMatchState {
     team_communication: TeamCommunicationBus,
     trace_enabled: bool,
     rng_trace_enabled: bool,
+    perf_profile: RunnerPerfProfile,
 }
 
 #[derive(Clone, Debug)]
@@ -1666,6 +1784,7 @@ mod tests {
             team_communication: TeamCommunicationBus::default(),
             trace_enabled: false,
             rng_trace_enabled: false,
+            perf_profile: RunnerPerfProfile::default(),
         }
     }
 
@@ -8111,6 +8230,7 @@ mod tests {
             team_communication: TeamCommunicationBus::default(),
             trace_enabled: false,
             rng_trace_enabled: false,
+            perf_profile: RunnerPerfProfile::default(),
         };
 
         give_ball_to_player(
@@ -8216,6 +8336,7 @@ mod tests {
             team_communication: TeamCommunicationBus::default(),
             trace_enabled: false,
             rng_trace_enabled: false,
+            perf_profile: RunnerPerfProfile::default(),
         };
         let config = runtime_config(&json!({}));
         let mut rng = RunnerRng::new(7);
@@ -8345,6 +8466,7 @@ mod tests {
             team_communication: TeamCommunicationBus::default(),
             trace_enabled: false,
             rng_trace_enabled: false,
+            perf_profile: RunnerPerfProfile::default(),
         };
 
         give_ball_to_player(
@@ -12598,6 +12720,16 @@ struct RunnerCarryDefenderResponseArena {
     responses: [RunnerCarryDefenderResponses; RUNNER_MAX_CARRY_CANDIDATES],
     response_count: usize,
     scratch: RunnerCarryDefenderResponseScratch,
+    perf: RunnerCarryPerfProfile,
+}
+
+#[derive(Clone, Copy, Debug, Default)]
+struct RunnerCarryPerfProfile {
+    enabled: bool,
+    path: Duration,
+    responses: Duration,
+    survival: Duration,
+    value: Duration,
 }
 
 impl RunnerCarryDefenderResponseArena {
@@ -12606,11 +12738,16 @@ impl RunnerCarryDefenderResponseArena {
             responses: [RUNNER_EMPTY_CARRY_DEFENDER_RESPONSES; RUNNER_MAX_CARRY_CANDIDATES],
             response_count: 0,
             scratch: RunnerCarryDefenderResponseScratch::new(),
+            perf: RunnerCarryPerfProfile::default(),
         }
     }
 
     fn clear(&mut self) {
         self.response_count = 0;
+        self.perf = RunnerCarryPerfProfile {
+            enabled: std::env::var_os("PSL_ENGINE_PROFILE").is_some(),
+            ..RunnerCarryPerfProfile::default()
+        };
     }
 
     fn next(
@@ -13598,13 +13735,13 @@ impl RunnerProjectedControlProjectionCache {
         self.next_slot = 0;
     }
 
-    fn get(
+    fn slot(
         &self,
         controller_idx: usize,
         controller_pos: (f64, f64),
         duration_ticks: i32,
-    ) -> Option<&RunnerProjectedControlProjection> {
-        self.entries.iter().find(|projection| {
+    ) -> Option<usize> {
+        self.entries.iter().position(|projection| {
             projection.controller_idx == controller_idx
                 && projection.controller_pos.0.to_bits() == controller_pos.0.to_bits()
                 && projection.controller_pos.1.to_bits() == controller_pos.1.to_bits()
@@ -13612,21 +13749,27 @@ impl RunnerProjectedControlProjectionCache {
         })
     }
 
-    fn insert(
-        &mut self,
-        projection: RunnerProjectedControlProjection,
-    ) -> &RunnerProjectedControlProjection {
+    #[cfg(test)]
+    fn get(
+        &self,
+        controller_idx: usize,
+        controller_pos: (f64, f64),
+        duration_ticks: i32,
+    ) -> Option<&RunnerProjectedControlProjection> {
+        self.slot(controller_idx, controller_pos, duration_ticks)
+            .map(|slot| &self.entries[slot])
+    }
+
+    fn insert(&mut self, projection: RunnerProjectedControlProjection) -> usize {
         if self.entries.len() < RUNNER_PROJECTED_CONTROL_PROJECTION_CACHE_SIZE {
+            let slot = self.entries.len();
             self.entries.push(projection);
-            return self
-                .entries
-                .last()
-                .expect("projected control cache entry must be present after insertion");
+            return slot;
         }
         let slot = self.next_slot;
         self.next_slot = (self.next_slot + 1) % RUNNER_PROJECTED_CONTROL_PROJECTION_CACHE_SIZE;
         self.entries[slot] = projection;
-        &self.entries[slot]
+        slot
     }
 }
 
@@ -13657,6 +13800,19 @@ struct RunnerProjectedTransitionValueContexts {
     execution_second_ball_inputs: RunnerSecondBallInputs,
     execution_outcomes: ExecutionTransitionDistribution,
     control_execution_outcome_cache: Option<RunnerProjectedControlExecutionOutcomeCache>,
+}
+
+struct RunnerProjectionWorkerContext {
+    value_contexts: RunnerProjectedTransitionValueContexts,
+    shot_quality_cache: ShotQualityCache,
+}
+
+thread_local! {
+    static RUNNER_PROJECTION_WORKER_CONTEXT: RefCell<RunnerProjectionWorkerContext> =
+        RefCell::new(RunnerProjectionWorkerContext {
+            value_contexts: RunnerProjectedTransitionValueContexts::default(),
+            shot_quality_cache: RefCell::new(HashMap::new()),
+        });
 }
 
 impl Default for RunnerProjectedTransitionValueContexts {
@@ -13705,8 +13861,6 @@ impl RunnerProjectedTransitionValueContexts {
         self.reset();
         self.execution_shape_inputs.refresh(teammates, opponents);
         self.execution_shape_inputs_ready = true;
-        self.execution_second_ball_inputs
-            .prepare_projected_players(teammates, opponents, config);
         if let Some(context) = self.retained.as_mut() {
             context.refresh(teammates, opponents, config);
         }
@@ -14035,8 +14189,10 @@ fn build_carry_candidates_into(
         ),
         shot_quality_cache: Some(shot_quality_cache),
     });
-    let mut seen_count = 0;
-    for &(dx, dy) in &scratch.carry_offsets[..offset_count] {
+    let mut targets = [(0.0, 0.0); RUNNER_MAX_CARRY_CANDIDATES];
+    let mut target_count = 0;
+    for offset_index in 0..offset_count {
+        let (dx, dy) = scratch.carry_offsets[offset_index];
         let target = pitch_clamp(
             (holder.pos.0 + dx, holder.pos.1 + dy),
             config.pitch_length,
@@ -14049,11 +14205,104 @@ fn build_carry_candidates_into(
             (target.0 * 10.0).round() as i64,
             (target.1 * 10.0).round() as i64,
         );
-        if scratch.carry_seen[..seen_count].contains(&key) {
+        if scratch.carry_seen[..target_count].contains(&key) {
             continue;
         }
-        scratch.carry_seen[seen_count] = key;
-        seen_count += 1;
+        scratch.carry_seen[target_count] = key;
+        targets[target_count] = target;
+        target_count += 1;
+    }
+    let perf_enabled = response_arena.perf.enabled;
+    let mut path_elapsed = Duration::ZERO;
+    let mut responses_elapsed = Duration::ZERO;
+    let mut survival_elapsed = Duration::ZERO;
+    let mut value_elapsed = Duration::ZERO;
+    let mut segment_counts = [1; RUNNER_MAX_CARRY_CANDIDATES];
+    for (target_index, &target) in targets[..target_count].iter().enumerate() {
+        segment_counts[target_index] = runner_action_timing(
+            RunnerHeldAction::Carry { target },
+            holder.pos,
+            plan_signals,
+            scratch.local_pressure,
+            0.0,
+            config,
+        )
+        .map(|timing| timing.initial_ticks)
+        .unwrap_or(1);
+    }
+    let response_start = response_arena.response_count;
+    assert!(
+        response_start + target_count <= RUNNER_MAX_CARRY_CANDIDATES,
+        "carry defender response arena exceeds generated candidate bound"
+    );
+    for (target_index, &segment_count) in segment_counts[..target_count].iter().enumerate() {
+        response_arena.responses[response_start + target_index].reset(
+            segment_count.max(1) as usize,
+            scratch.perceived_defender_count,
+        );
+    }
+    response_arena.response_count += target_count;
+    let started = perf_enabled.then(Instant::now);
+    for player in &scratch.carry_support[..scratch.carry_support_count] {
+        response_arena.scratch.control_teammates[player.index] =
+            (player.index, player.pos.0, player.pos.1);
+    }
+    if target_count > 0 {
+        let response_scratch = response_arena.scratch.clone();
+        let final_response_scratch = response_scratch.clone();
+        let (parallel_responses, final_response) = response_arena.responses
+            [response_start..response_start + target_count]
+            .split_at_mut(target_count - 1);
+        let final_target_index = target_count - 1;
+        let final_scratch = runner_carry_response_pool().install(|| {
+            rayon::join(
+                || {
+                    parallel_responses.par_iter_mut().enumerate().for_each(
+                        |(target_index, responses)| {
+                            let mut local_scratch = response_scratch.clone();
+                            runner_carry_defender_responses_into(
+                                holder_idx,
+                                holder,
+                                &scratch.carry_support[..scratch.carry_support_count],
+                                &scratch.perceived_defenders[..scratch.perceived_defender_count],
+                                current_control,
+                                targets[target_index],
+                                attacking_right,
+                                opponent_plan_signals,
+                                segment_counts[target_index],
+                                config,
+                                responses,
+                                &mut local_scratch,
+                            );
+                        },
+                    );
+                },
+                || {
+                    let mut local_scratch = final_response_scratch;
+                    runner_carry_defender_responses_into(
+                        holder_idx,
+                        holder,
+                        &scratch.carry_support[..scratch.carry_support_count],
+                        &scratch.perceived_defenders[..scratch.perceived_defender_count],
+                        current_control,
+                        targets[final_target_index],
+                        attacking_right,
+                        opponent_plan_signals,
+                        segment_counts[final_target_index],
+                        config,
+                        &mut final_response[0],
+                        &mut local_scratch,
+                    );
+                    local_scratch
+                },
+            )
+            .1
+        });
+        response_arena.scratch = final_scratch;
+    }
+    responses_elapsed += RunnerPerfProfile::elapsed(started);
+    for (target_index, &target) in targets[..target_count].iter().enumerate() {
+        let started = perf_enabled.then(Instant::now);
         let path = crate::on_ball::evaluate_carry_path_metrics(&CarryPathInput {
             carrier_pos: holder.pos,
             target,
@@ -14066,16 +14315,8 @@ fn build_carry_candidates_into(
             tackle_range: config.tackle_range,
             opponents: &scratch.path_opponents[..scratch.path_opponent_count],
         });
-        let segment_count = runner_action_timing(
-            RunnerHeldAction::Carry { target },
-            holder.pos,
-            plan_signals,
-            scratch.local_pressure,
-            0.0,
-            config,
-        )
-        .map(|timing| timing.initial_ticks)
-        .unwrap_or(1);
+        path_elapsed += RunnerPerfProfile::elapsed(started);
+        let segment_count = segment_counts[target_index];
         let survival_input = CarrySurvivalInput {
             holder_pos: holder.pos,
             carry_target: target,
@@ -14085,30 +14326,16 @@ fn build_carry_candidates_into(
             tackle_range: config.tackle_range,
             segment_count,
         };
-        let (defender_response_index, defender_responses, defender_response_scratch) =
-            response_arena.next(
-                segment_count.max(1) as usize,
-                scratch.perceived_defender_count,
-            );
-        runner_carry_defender_responses_into(
-            holder_idx,
-            holder,
-            &scratch.carry_support[..scratch.carry_support_count],
-            &scratch.perceived_defenders[..scratch.perceived_defender_count],
-            current_control,
-            target,
-            attacking_right,
-            opponent_plan_signals,
-            segment_count,
-            config,
-            defender_responses,
-            defender_response_scratch,
-        );
+        let defender_response_index = response_start + target_index;
+        let defender_responses = &response_arena.responses[defender_response_index];
         let defender_response_slices = defender_responses.slices();
+        let started = perf_enabled.then(Instant::now);
         let survival = carry_survival_transition_with_defender_response_slices(
             &survival_input,
             &defender_response_slices[..defender_responses.segment_count],
         );
+        survival_elapsed += RunnerPerfProfile::elapsed(started);
+        let started = perf_enabled.then(Instant::now);
         let value = evaluate_carry_with_context(
             &CarryInput {
                 tick,
@@ -14141,6 +14368,7 @@ fn build_carry_candidates_into(
             },
             &carry_value_context,
         );
+        value_elapsed += RunnerPerfProfile::elapsed(started);
         let final_score = finalize_carry_score(&CarryFinalizeInput {
             evaluator_score: value.score,
             feasibility: survival.retained_control_probability,
@@ -14226,6 +14454,10 @@ fn build_carry_candidates_into(
             debug_path_conflict_cost: final_score.conflict_cost,
         });
     }
+    response_arena.perf.path += path_elapsed;
+    response_arena.perf.responses += responses_elapsed;
+    response_arena.perf.survival += survival_elapsed;
+    response_arena.perf.value += value_elapsed;
 }
 
 #[cfg(test)]
@@ -15519,13 +15751,13 @@ fn runner_cache_projected_control_positions_with_shape_inputs(
     shot_quality_cache: &ShotQualityCache,
     value_context: &mut RunnerProjectedControlValueContext,
     config: &RunnerRuntimeConfig,
-) {
-    if value_context
-        .projection_cache
-        .get(controller_idx, controller_pos, duration_ticks)
-        .is_some()
+) -> usize {
+    if let Some(slot) =
+        value_context
+            .projection_cache
+            .slot(controller_idx, controller_pos, duration_ticks)
     {
-        return;
+        return slot;
     }
 
     let RunnerProjectedControlValueContext {
@@ -15711,7 +15943,7 @@ fn runner_cache_projected_control_positions_with_shape_inputs(
             projected_teammate_count,
             possession_value_context,
             bellman_geometry,
-        });
+        })
 }
 
 #[cfg(test)]
@@ -15738,7 +15970,7 @@ fn runner_cache_projected_control_positions(
 ) {
     let mut shape_inputs = RunnerProjectedExecutionShapeInputs::new();
     shape_inputs.refresh(controlling_players, defending_players);
-    runner_cache_projected_control_positions_with_shape_inputs(
+    let _ = runner_cache_projected_control_positions_with_shape_inputs(
         controller_idx,
         controller_pos,
         controlling_players,
@@ -15792,7 +16024,7 @@ fn runner_projected_control_value_with_shape_inputs(
     let Some(controller) = controlling_players.get(controller_idx) else {
         return 0.0;
     };
-    runner_cache_projected_control_positions_with_shape_inputs(
+    let projection_slot = runner_cache_projected_control_positions_with_shape_inputs(
         controller_idx,
         controller_pos,
         controlling_players,
@@ -15813,10 +16045,7 @@ fn runner_projected_control_value_with_shape_inputs(
         value_context,
         config,
     );
-    let projection = value_context
-        .projection_cache
-        .get(controller_idx, controller_pos, duration_ticks)
-        .expect("projected control cache must be populated");
+    let projection = &value_context.projection_cache.entries[projection_slot];
     let projected_controlling = &projection.controlling;
     let control_state = crate::transition_possession_control(&PossessionControlTransitionInput {
         previous: previous_control,
@@ -16008,106 +16237,249 @@ fn apply_temporal_option_values_with_contexts(
     config: &RunnerRuntimeConfig,
 ) {
     value_contexts.prepare(teammates, opponents, config);
-    for action in actions {
-        let target = match action.action {
-            RunnerHeldAction::Carry { target }
-            | RunnerHeldAction::Pass { target, .. }
-            | RunnerHeldAction::Clear { target }
-            | RunnerHeldAction::Shoot { target, .. }
-            | RunnerHeldAction::Reorient { target } => target,
-            RunnerHeldAction::Hold { opportunity_target } => opportunity_target.unwrap_or(origin),
-        };
-        let duration_ticks =
-            runner_option_duration_ticks(action, origin, team_plan_signals, config);
-        let projected_values = runner_transition_model::projected_transition_values(
+    runner_projection_pool().install(|| {
+        actions
+            .par_iter_mut()
+            .filter(|action| {
+                matches!(
+                    action.action,
+                    RunnerHeldAction::Carry { .. }
+                        | RunnerHeldAction::Pass { .. }
+                        | RunnerHeldAction::Clear { .. }
+                )
+            })
+            .for_each(|action| {
+                RUNNER_PROJECTION_WORKER_CONTEXT.with(|worker_context| {
+                    let mut worker_context = worker_context.borrow_mut();
+                    worker_context
+                        .value_contexts
+                        .prepare(teammates, opponents, config);
+                    worker_context.shot_quality_cache.borrow_mut().clear();
+                    let RunnerProjectionWorkerContext {
+                        value_contexts,
+                        shot_quality_cache,
+                        ..
+                    } = &mut *worker_context;
+                    apply_projected_temporal_option_value(
+                        action,
+                        response_arena,
+                        defender_responses,
+                        holder_idx,
+                        origin,
+                        current_control,
+                        teammates,
+                        opponents,
+                        holder_home,
+                        attacking_right,
+                        tick,
+                        shot_quality_cache,
+                        team_phase,
+                        opponent_phase,
+                        team_plan,
+                        opponent_plan,
+                        team_plan_signals,
+                        opponent_plan_signals,
+                        value_contexts,
+                        config,
+                    );
+                });
+            });
+    });
+    for action in actions.iter_mut().filter(|action| {
+        matches!(
+            action.action,
+            RunnerHeldAction::Hold { .. }
+                | RunnerHeldAction::Reorient { .. }
+                | RunnerHeldAction::Shoot { .. }
+        )
+    }) {
+        apply_projected_temporal_option_value(
             action,
             response_arena,
             defender_responses,
             holder_idx,
             origin,
-            target,
+            current_control,
             teammates,
             opponents,
             holder_home,
             attacking_right,
+            tick,
+            shot_quality_cache,
             team_phase,
             opponent_phase,
             team_plan,
             opponent_plan,
             team_plan_signals,
             opponent_plan_signals,
-            current_control,
-            duration_ticks,
-            tick,
-            shot_quality_cache,
             value_contexts,
             config,
         );
-        if !matches!(action.action, RunnerHeldAction::Shoot { .. }) {
-            if let Some(values) = projected_values {
-                action.debug_after_value = values.retained_control_value;
-                action.success_prob = values.retained_control_probability;
-                action.carry_transition = values.carry_transition;
-                action.pass_transition = values.pass_transition;
-                action.control_transition = values.control_transition;
-                action.clearance_transition = values.clearance_transition;
-            }
+    }
+}
+
+fn runner_projection_pool() -> &'static rayon::ThreadPool {
+    static POOL: OnceLock<rayon::ThreadPool> = OnceLock::new();
+    POOL.get_or_init(|| {
+        let available_threads = std::thread::available_parallelism()
+            .map(usize::from)
+            .unwrap_or(1);
+        rayon::ThreadPoolBuilder::new()
+            .stack_size(8 * 1024 * 1024)
+            .thread_name(|index| format!("psl-projection-{index}"))
+            .num_threads(
+                std::env::var("PSL_ENGINE_PROJECTION_THREADS")
+                    .ok()
+                    .and_then(|value| value.parse::<usize>().ok())
+                    .filter(|count| *count > 0)
+                    .unwrap_or_else(|| available_threads.saturating_sub(2).max(1)),
+            )
+            .build()
+            .expect("projection worker pool must initialize")
+    })
+}
+
+fn runner_carry_response_pool() -> &'static rayon::ThreadPool {
+    static POOL: OnceLock<rayon::ThreadPool> = OnceLock::new();
+    POOL.get_or_init(|| {
+        let available_threads = std::thread::available_parallelism()
+            .map(usize::from)
+            .unwrap_or(1);
+        rayon::ThreadPoolBuilder::new()
+            .stack_size(8 * 1024 * 1024)
+            .thread_name(|index| format!("psl-carry-response-{index}"))
+            .num_threads(
+                std::env::var("PSL_ENGINE_CARRY_THREADS")
+                    .ok()
+                    .and_then(|value| value.parse::<usize>().ok())
+                    .filter(|count| *count > 0)
+                    .unwrap_or_else(|| available_threads.saturating_add(2)),
+            )
+            .build()
+            .expect("carry response worker pool must initialize")
+    })
+}
+
+#[allow(clippy::too_many_arguments)]
+fn apply_projected_temporal_option_value(
+    action: &mut RunnerEvaluatedAction,
+    response_arena: Option<&RunnerCarryDefenderResponseArena>,
+    defender_responses: &[DefenderActionInput],
+    holder_idx: usize,
+    origin: (f64, f64),
+    current_control: PossessionControlState,
+    teammates: &[RunnerPlayer],
+    opponents: &[RunnerPlayer],
+    holder_home: bool,
+    attacking_right: bool,
+    tick: i32,
+    shot_quality_cache: &ShotQualityCache,
+    team_phase: &str,
+    opponent_phase: &str,
+    team_plan: TeamPlanState,
+    opponent_plan: TeamPlanState,
+    team_plan_signals: TeamPlanSignals,
+    opponent_plan_signals: TeamPlanSignals,
+    value_contexts: &mut RunnerProjectedTransitionValueContexts,
+    config: &RunnerRuntimeConfig,
+) {
+    let target = match action.action {
+        RunnerHeldAction::Carry { target }
+        | RunnerHeldAction::Pass { target, .. }
+        | RunnerHeldAction::Clear { target }
+        | RunnerHeldAction::Shoot { target, .. }
+        | RunnerHeldAction::Reorient { target } => target,
+        RunnerHeldAction::Hold { opportunity_target } => opportunity_target.unwrap_or(origin),
+    };
+    let duration_ticks = runner_option_duration_ticks(action, origin, team_plan_signals, config);
+    let projected_values = runner_transition_model::projected_transition_values(
+        action,
+        response_arena,
+        defender_responses,
+        holder_idx,
+        origin,
+        target,
+        teammates,
+        opponents,
+        holder_home,
+        attacking_right,
+        team_phase,
+        opponent_phase,
+        team_plan,
+        opponent_plan,
+        team_plan_signals,
+        opponent_plan_signals,
+        current_control,
+        duration_ticks,
+        tick,
+        shot_quality_cache,
+        value_contexts,
+        config,
+    );
+    if !matches!(action.action, RunnerHeldAction::Shoot { .. }) {
+        if let Some(values) = projected_values {
+            action.debug_after_value = values.retained_control_value;
+            action.success_prob = values.retained_control_probability;
+            action.carry_transition = values.carry_transition;
+            action.pass_transition = values.pass_transition;
+            action.control_transition = values.control_transition;
+            action.clearance_transition = values.clearance_transition;
         }
-        let transition = match projected_values {
-            Some(values) => PossessionTransition {
-                goal_probability: 0.0,
-                retained_control_probability: values.retained_control_probability,
-                retained_control_value: values.retained_control_value,
-                opposing_control_probability: values.opposing_control_probability,
-                opposing_control_value: values.opposing_control_value,
-            },
-            None => runner_shot_possession_transition_with_context(
-                action,
-                origin,
-                target,
-                teammates,
-                opponents,
-                holder_home,
-                attacking_right,
-                tick,
-                shot_quality_cache,
-                Some(value_contexts.immediate_opposing_control(opponents, teammates, config)),
-                config,
-            ),
-        };
-        let value = temporal_option_value(&TemporalOptionValueInput {
-            current_control_value: action.debug_current_pv,
-            transition,
-            duration_seconds: duration_ticks.max(1) as f64 * config.tick_duration,
-            tempo: team_plan_signals.tempo,
-            risk_budget: team_plan_signals.risk_budget,
-        });
-        let policy = team_plan_action_utility(&TeamPlanActionInput {
-            signals: team_plan_signals,
+    }
+    let transition = match projected_values {
+        Some(values) => PossessionTransition {
+            goal_probability: 0.0,
+            retained_control_probability: values.retained_control_probability,
+            retained_control_value: values.retained_control_value,
+            opposing_control_probability: values.opposing_control_probability,
+            opposing_control_value: values.opposing_control_value,
+        },
+        None => runner_shot_possession_transition_with_context(
+            action,
             origin,
             target,
+            teammates,
+            opponents,
+            holder_home,
             attacking_right,
-            pitch_length: config.pitch_length,
-            pitch_width: config.pitch_width,
-            success_probability: action.success_prob.clamp(0.0, 1.0),
-            continuation_probability: transition.retained_control_probability.clamp(0.0, 1.0),
-            risk: action.pressure.clamp(0.0, 1.0),
-        });
-        let outcome = action_outcome_value(&ActionOutcomeValueInput {
-            temporal: value,
-            policy_alignment: policy.alignment,
-            current_control_value: action.debug_current_pv,
-        });
-        let total_value = outcome.score;
-        assert!(
-            (total_value - (outcome.outcome_value + outcome.policy_value)).abs() <= f64::EPSILON,
-            "action value must retain outcome and policy components"
-        );
-        action.set_decision_value(outcome);
-        action.debug_temporal_discount = value.temporal_discount;
-        action.debug_turnover_cost = value.turnover_cost;
-        action.debug_option_duration_ticks = duration_ticks;
-    }
+            tick,
+            shot_quality_cache,
+            Some(value_contexts.immediate_opposing_control(opponents, teammates, config)),
+            config,
+        ),
+    };
+    let value = temporal_option_value(&TemporalOptionValueInput {
+        current_control_value: action.debug_current_pv,
+        transition,
+        duration_seconds: duration_ticks.max(1) as f64 * config.tick_duration,
+        tempo: team_plan_signals.tempo,
+        risk_budget: team_plan_signals.risk_budget,
+    });
+    let policy = team_plan_action_utility(&TeamPlanActionInput {
+        signals: team_plan_signals,
+        origin,
+        target,
+        attacking_right,
+        pitch_length: config.pitch_length,
+        pitch_width: config.pitch_width,
+        success_probability: action.success_prob.clamp(0.0, 1.0),
+        continuation_probability: transition.retained_control_probability.clamp(0.0, 1.0),
+        risk: action.pressure.clamp(0.0, 1.0),
+    });
+    let outcome = action_outcome_value(&ActionOutcomeValueInput {
+        temporal: value,
+        policy_alignment: policy.alignment,
+        current_control_value: action.debug_current_pv,
+    });
+    let total_value = outcome.score;
+    assert!(
+        (total_value - (outcome.outcome_value + outcome.policy_value)).abs() <= f64::EPSILON,
+        "action value must retain outcome and policy components"
+    );
+    action.set_decision_value(outcome);
+    action.debug_temporal_discount = value.temporal_discount;
+    action.debug_turnover_cost = value.turnover_cost;
+    action.debug_option_duration_ticks = duration_ticks;
 }
 
 fn runner_opponent_control_value(
@@ -19278,6 +19650,8 @@ fn choose_default_held_action(
     if actions.capacity() < RUNNER_MAX_HELD_ACTIONS {
         actions.reserve(RUNNER_MAX_HELD_ACTIONS - actions.capacity());
     }
+    let candidate_generation_started = state.perf_profile.start();
+    let carry_generation_started = state.perf_profile.start();
     build_carry_candidates_into(
         holder_idx,
         holder,
@@ -19297,6 +19671,12 @@ fn choose_default_held_action(
         &mut state.carry_defender_response_arena,
         &mut state.held_decision_arena.scratch,
     );
+    state.perf_profile.carry_generation += RunnerPerfProfile::elapsed(carry_generation_started);
+    state.perf_profile.carry_path += state.carry_defender_response_arena.perf.path;
+    state.perf_profile.carry_responses += state.carry_defender_response_arena.perf.responses;
+    state.perf_profile.carry_survival += state.carry_defender_response_arena.perf.survival;
+    state.perf_profile.carry_value += state.carry_defender_response_arena.perf.value;
+    let pass_generation_started = state.perf_profile.start();
     build_pass_candidates_into(
         holder_idx,
         holder,
@@ -19314,6 +19694,8 @@ fn choose_default_held_action(
         &mut actions,
         &state.held_decision_arena.scratch,
     );
+    state.perf_profile.pass_generation += RunnerPerfProfile::elapsed(pass_generation_started);
+    let shot_and_control_generation_started = state.perf_profile.start();
     let shot = build_shot_candidate_with_scratch(
         holder_idx,
         holder,
@@ -19380,6 +19762,10 @@ fn choose_default_held_action(
         actions.push(clear);
     }
     retain_executable_held_actions(&mut actions, holder.pos);
+    state.perf_profile.shot_and_control_generation +=
+        RunnerPerfProfile::elapsed(shot_and_control_generation_started);
+    state.perf_profile.candidate_generation +=
+        RunnerPerfProfile::elapsed(candidate_generation_started);
     if config.trace_detail == "full" {
         let best_score = |items: &[RunnerEvaluatedAction]| -> f64 {
             items
@@ -19494,6 +19880,7 @@ fn choose_default_held_action(
         tick,
         rng,
     );
+    let temporal_evaluation_started = state.perf_profile.start();
     apply_temporal_option_values_with_contexts(
         &mut actions,
         Some(&state.carry_defender_response_arena),
@@ -19516,6 +19903,9 @@ fn choose_default_held_action(
         &mut state.held_decision_arena.temporal_value_contexts,
         config,
     );
+    state.perf_profile.temporal_evaluation +=
+        RunnerPerfProfile::elapsed(temporal_evaluation_started);
+    state.perf_profile.decision_count += 1;
     if has_specialized_goal {
         apply_runner_specialized_goal_policy(&mut actions, holder, goal_state);
     } else {
@@ -24504,6 +24894,12 @@ fn move_flight_players(
     home_attacking_right: bool,
     rng: &mut RunnerRng,
 ) {
+    let profile_enabled = state.perf_profile.enabled;
+    let total_started = profile_enabled.then(Instant::now);
+    let mut shape_elapsed = Duration::ZERO;
+    let mut belief_elapsed = Duration::ZERO;
+    let mut defense_elapsed = Duration::ZERO;
+    let mut attack_elapsed = Duration::ZERO;
     let target_pos = flight.target;
     let race_radius = config.contested_race_radius;
     let interceptor_idx = flight_interceptor_index(&flight);
@@ -24513,6 +24909,7 @@ fn move_flight_players(
         .map(|arrival| arrival.contact_pos)
         .unwrap_or(target_pos);
     if flight.passer_team_home {
+        let started = profile_enabled.then(Instant::now);
         apply_team_shape_targets(
             home,
             away,
@@ -24537,6 +24934,8 @@ fn move_flight_players(
             config,
             &mut state.team_shape_arena,
         );
+        shape_elapsed += RunnerPerfProfile::elapsed(started);
+        let started = profile_enabled.then(Instant::now);
         refresh_team_tactical_beliefs(
             home,
             away,
@@ -24551,9 +24950,11 @@ fn move_flight_players(
             !home_attacking_right,
             config,
         );
+        belief_elapsed += RunnerPerfProfile::elapsed(started);
         let defense_active =
             runner_flight_defense_active_indices(away, target_pos, race_radius, interceptor_idx);
         if defense_active[..away.len()].iter().any(|active| *active) {
+            let started = profile_enabled.then(Instant::now);
             let (_, _, _) = apply_off_ball_defense_choices(
                 away,
                 home,
@@ -24573,6 +24974,7 @@ fn move_flight_players(
                 false,
                 false,
             );
+            defense_elapsed += RunnerPerfProfile::elapsed(started);
         }
         for idx in 0..home.len() {
             if home[idx].state == "stunned" {
@@ -24590,6 +24992,7 @@ fn move_flight_players(
             let dist_to_target = distance(home[idx].pos, target_pos);
             if idx != flight.passer_idx && dist_to_target < race_radius * 1.35 {
                 let active = runner_single_active_indices(idx, home.len());
+                let started = profile_enabled.then(Instant::now);
                 let _ = apply_off_ball_attack_choices(
                     home,
                     state,
@@ -24601,6 +25004,7 @@ fn move_flight_players(
                     config,
                     rng,
                 );
+                attack_elapsed += RunnerPerfProfile::elapsed(started);
             } else {
                 let support_target = pitch_clamp(
                     (
@@ -24650,6 +25054,7 @@ fn move_flight_players(
             move_runner_player(&mut away[idx], tick, state.away_plan_signals, config);
         }
     } else {
+        let started = profile_enabled.then(Instant::now);
         apply_team_shape_targets(
             away,
             home,
@@ -24674,6 +25079,8 @@ fn move_flight_players(
             config,
             &mut state.team_shape_arena,
         );
+        shape_elapsed += RunnerPerfProfile::elapsed(started);
+        let started = profile_enabled.then(Instant::now);
         refresh_team_tactical_beliefs(
             home,
             away,
@@ -24688,9 +25095,11 @@ fn move_flight_players(
             !home_attacking_right,
             config,
         );
+        belief_elapsed += RunnerPerfProfile::elapsed(started);
         let defense_active =
             runner_flight_defense_active_indices(home, target_pos, race_radius, interceptor_idx);
         if defense_active[..home.len()].iter().any(|active| *active) {
+            let started = profile_enabled.then(Instant::now);
             let (_, _, _) = apply_off_ball_defense_choices(
                 home,
                 away,
@@ -24710,6 +25119,7 @@ fn move_flight_players(
                 true,
                 false,
             );
+            defense_elapsed += RunnerPerfProfile::elapsed(started);
         }
         for idx in 0..away.len() {
             if away[idx].state == "stunned" {
@@ -24727,6 +25137,7 @@ fn move_flight_players(
             let dist_to_target = distance(away[idx].pos, target_pos);
             if idx != flight.passer_idx && dist_to_target < race_radius * 1.35 {
                 let active = runner_single_active_indices(idx, away.len());
+                let started = profile_enabled.then(Instant::now);
                 let _ = apply_off_ball_attack_choices(
                     away,
                     state,
@@ -24738,6 +25149,7 @@ fn move_flight_players(
                     config,
                     rng,
                 );
+                attack_elapsed += RunnerPerfProfile::elapsed(started);
             } else {
                 let support_target = pitch_clamp(
                     (
@@ -24787,6 +25199,13 @@ fn move_flight_players(
             move_runner_player(&mut home[idx], tick, state.home_plan_signals, config);
         }
     }
+    let total_elapsed = RunnerPerfProfile::elapsed(total_started);
+    state.perf_profile.flight_shape += shape_elapsed;
+    state.perf_profile.flight_beliefs += belief_elapsed;
+    state.perf_profile.flight_defense_choices += defense_elapsed;
+    state.perf_profile.flight_attack_choices += attack_elapsed;
+    state.perf_profile.flight_movement += total_elapsed
+        .saturating_sub(shape_elapsed + belief_elapsed + defense_elapsed + attack_elapsed);
 }
 
 fn apply_kickoff(
@@ -24907,6 +25326,8 @@ fn record_half_frames(
     let interval = config.frame_interval.max(1);
     let mut held_tick_arena = RunnerHeldTickArena::new();
     for tick in start_tick..end_tick {
+        let state_before = state.ball.state;
+        let tick_started = state.perf_profile.start();
         tick_match(
             state,
             tick,
@@ -24918,6 +25339,26 @@ fn record_half_frames(
             &mut held_tick_arena,
             rng,
         );
+        let tick_elapsed = RunnerPerfProfile::elapsed(tick_started);
+        match state_before {
+            RunnerBallState::Held => {
+                state.perf_profile.held_ticks += tick_elapsed;
+                state.perf_profile.held_tick_count += 1;
+            }
+            RunnerBallState::InFlight => {
+                state.perf_profile.flight_ticks += tick_elapsed;
+                state.perf_profile.flight_tick_count += 1;
+            }
+            RunnerBallState::Contested => {
+                state.perf_profile.contested_ticks += tick_elapsed;
+                state.perf_profile.contested_tick_count += 1;
+            }
+            RunnerBallState::Dead => {
+                state.perf_profile.dead_ticks += tick_elapsed;
+                state.perf_profile.dead_tick_count += 1;
+            }
+        }
+        let replay_started = state.perf_profile.start();
         let has_event_frame = !state.pending_replay_frames.is_empty();
         let pending_frames = std::mem::take(&mut state.pending_replay_frames);
         reconcile_replay_flight_terminal_frames(frames, &pending_frames);
@@ -24952,6 +25393,7 @@ fn record_half_frames(
             sample_player_positions(home);
             sample_player_positions(away);
         }
+        state.perf_profile.replay_frames += RunnerPerfProfile::elapsed(replay_started);
     }
 }
 
@@ -25290,7 +25732,9 @@ fn tick_match_phase(
         )
     {
         update_team_phases(state, config);
+        let started = state.perf_profile.start();
         update_team_plans(state, home, away, home_attacking_right, config);
+        state.perf_profile.team_plans += RunnerPerfProfile::elapsed(started);
     }
     let mut held_attack_choices = 0;
     let mut held_defense_choices = 0;
@@ -25318,6 +25762,7 @@ fn tick_match_phase(
                     defender_phase1_inputs(defenders, plan_signals, config)
                 } else {
                     push_rng_trace(state, tick, "before_attack_targets", rng);
+                    let started = state.perf_profile.start();
                     let (attack_choices, _) = update_held_tick_targets(
                         home,
                         away,
@@ -25327,9 +25772,11 @@ fn tick_match_phase(
                         tick,
                         rng,
                     );
+                    state.perf_profile.held_attack_targets += RunnerPerfProfile::elapsed(started);
                     push_rng_trace(state, tick, "after_attack_targets", rng);
                     held_attack_choices = attack_choices;
                     push_rng_trace(state, tick, "before_defense_targets", rng);
+                    let started = state.perf_profile.start();
                     let (defense_choices, inputs) = update_held_tick_defense_targets(
                         home,
                         away,
@@ -25339,6 +25786,7 @@ fn tick_match_phase(
                         tick,
                         rng,
                     );
+                    state.perf_profile.held_defense_targets += RunnerPerfProfile::elapsed(started);
                     push_rng_trace(state, tick, "after_defense_targets", rng);
                     held_defense_choices = defense_choices;
                     inputs
@@ -28410,6 +28858,7 @@ pub fn run_match_v2(request: MatchV2RunRequest) -> MatchV2RunResponse {
         team_communication: TeamCommunicationBus::default(),
         trace_enabled,
         rng_trace_enabled,
+        perf_profile: RunnerPerfProfile::from_env(),
     };
     give_ball_to_player(
         &mut state,
@@ -28508,6 +28957,7 @@ pub fn run_match_v2(request: MatchV2RunRequest) -> MatchV2RunResponse {
         false,
         &mut rng,
     );
+    let response_finalization_started = state.perf_profile.start();
     let possession_total =
         state.home_possession_ticks + state.away_possession_ticks + state.neutral_ticks;
     let home_possession = possession_pct(state.home_possession_ticks, possession_total);
@@ -28515,6 +28965,9 @@ pub fn run_match_v2(request: MatchV2RunRequest) -> MatchV2RunResponse {
     let home_stats = team_stats(&home_players, home_possession, &state.events, true);
     let away_stats = team_stats(&away_players, away_possession, &state.events, false);
     let match_clock = match_clock_payload(state.match_clock);
+    state.perf_profile.response_finalization +=
+        RunnerPerfProfile::elapsed(response_finalization_started);
+    state.perf_profile.report();
     MatchV2RunResponse {
         home_score: state.home_score,
         away_score: state.away_score,
