@@ -2,8 +2,8 @@ use crate::goalkeeper::GkSaveAttributes;
 use crate::offside::is_offside_position;
 use crate::pass_value::{
     expected_pass_value_with_context,
-    expected_pass_value_with_context_and_precomputed_receiver_pressure,
-    passer_pass_value_context, ExpectedPassInput, PasserPassValueContext, PasserPassValueContextInput,
+    expected_pass_value_with_context_and_precomputed_receiver_pressure, passer_pass_value_context,
+    ExpectedPassInput, PasserPassValueContext, PasserPassValueContextInput,
 };
 use crate::physics::distance;
 use crate::position_value::{position_value, PositionValueInput};
@@ -763,18 +763,10 @@ impl ReceiverPassWorkspace {
         Self {
             target_buffer: [EMPTY_RAW_PASS_TARGET; MAX_RECEIVER_BASE_PASS_TARGETS],
             raw_targets: [EMPTY_RAW_PASS_TARGET_META; MAX_PASS_CANDIDATES_PER_RECEIVER],
-            value_field_targets: [
-                EMPTY_VALUE_FIELD_RAW_TARGET;
-                MAX_SELECTED_GENERIC_PASS_SPACE_CANDIDATES
-            ],
-            spatial_candidates: [
-                EMPTY_RECEIVER_SPATIAL_CANDIDATE;
-                MAX_RECEIVER_SPATIAL_CANDIDATES
-            ],
-            opponent_motion: [
-                EMPTY_RAW_PASS_OPPONENT_MOTION;
-                MAX_PASS_RISK_PLAYERS
-            ],
+            value_field_targets: [EMPTY_VALUE_FIELD_RAW_TARGET;
+                MAX_SELECTED_GENERIC_PASS_SPACE_CANDIDATES],
+            spatial_candidates: [EMPTY_RECEIVER_SPATIAL_CANDIDATE; MAX_RECEIVER_SPATIAL_CANDIDATES],
+            opponent_motion: [EMPTY_RAW_PASS_OPPONENT_MOTION; MAX_PASS_RISK_PLAYERS],
             candidates: [EMPTY_RECEIVER_PASS_CANDIDATE; MAX_PASS_CANDIDATES_PER_RECEIVER],
         }
     }
@@ -2032,11 +2024,7 @@ fn raw_pass_prevalue_motion_context<'a>(
     let opponent_motion = opponent_motion.get_mut(..opponents.len())?;
     for (motion, opponent) in opponent_motion.iter_mut().zip(opponents) {
         *motion = RawPassOpponentMotion {
-            speed: crate::physics::player_speed(
-                opponent.speed,
-                player_max_speed,
-                player_min_speed,
-            ),
+            speed: crate::physics::player_speed(opponent.speed, player_max_speed, player_min_speed),
             is_goalkeeper: opponent.is_goalkeeper,
         };
     }
@@ -2088,12 +2076,8 @@ fn evaluate_raw_pass_target_prevalue_with_motion_context(
     input: &RawPassPreValueInput<'_>,
     motion_context: Option<&RawPassPreValueMotionContext<'_>>,
 ) -> RawPassPreValueOutput {
-    evaluate_raw_pass_target_prevalue_with_motion_context_and_geometry(
-        input,
-        motion_context,
-        false,
-    )
-    .0
+    evaluate_raw_pass_target_prevalue_with_motion_context_and_geometry(input, motion_context, false)
+        .0
 }
 
 fn evaluate_raw_pass_target_prevalue_with_motion_context_and_geometry(
@@ -2182,8 +2166,7 @@ fn evaluate_raw_pass_target_prevalue_with_motion_context_and_geometry(
                 }
                 opp_speed *= 1.18;
             }
-            defender_time =
-                defender_time.min(opponent_to_target_distance / opp_speed.max(0.1));
+            defender_time = defender_time.min(opponent_to_target_distance / opp_speed.max(0.1));
         }
     } else {
         for opp in input.opponents {
@@ -2213,8 +2196,7 @@ fn evaluate_raw_pass_target_prevalue_with_motion_context_and_geometry(
                 }
                 opp_speed *= 1.18;
             }
-            defender_time =
-                defender_time.min(opponent_to_target_distance / opp_speed.max(0.1));
+            defender_time = defender_time.min(opponent_to_target_distance / opp_speed.max(0.1));
         }
     }
     let nearest_teammate_to_target = input
@@ -2414,53 +2396,54 @@ fn score_raw_pass_target_with_batch_context(
     }
 
     let expected_input = ExpectedPassInput {
-            tick: input.tick,
-            passer_index: input.prevalue.passer_index,
-            passer_team_home: input.passer_team_home,
-            passer_pos: input.prevalue.passer_pos,
-            passer_finishing: input.passer_finishing,
-            passer_long_shot: input.passer_long_shot,
-            passer_consecutive_carries: input.passer_consecutive_carries,
-            receiver_index: input.receiver_index,
-            receiver_team_home: input.receiver_team_home,
-            receiver_finishing: input.receiver_finishing,
-            receiver_long_shot: input.receiver_long_shot,
-            receiver_anchor: input.receiver_anchor,
-            receiver_base: input.receiver_base,
-            receiver_goal_type: input.receiver_goal_type,
-            receiver_goal_target: input.receiver_goal_target,
-            receiver_goal_value: input.receiver_goal_value,
-            target: input.prevalue.target,
-            shot_profiles: input.shot_profiles,
-            teammate_positions: input.teammate_positions,
-            teammate_goalkeeper_indices: input.teammate_goalkeeper_indices,
-            opponent_positions: input.opponent_positions,
-            pitch_length: input.prevalue.pitch_length,
-            pitch_width: input.prevalue.pitch_width,
-            attacking_right: input.prevalue.attacking_right,
-            interception_reach: input.interception_reach,
-            shot_ideal_distance: input.shot_ideal_distance,
-            shot_on_target_base: input.shot_on_target_base,
-            gk_save_base: input.gk_save_base,
-            gk_attributes: input.gk_attributes,
-            gk_pos: input.gk_pos,
-            contest_defenders: input.contest_defenders,
-            current_value: input.current_value,
-            base_accuracy: pre.base_accuracy,
-            receiver_arrival: pre.receiver_arrival,
-            continuity: pre.continuity,
-            shot_quality_cache: input.shot_quality_cache,
-        };
-    let precomputed_receiver_pressure = geometry.zip(receiver_pressure_reuse).map(
-        |(geometry, reuse)| match reuse {
-            RawPassReceiverPressureReuse::AllOpponents => {
-                geometry.all_opponents_receiver_pressure
-            }
-            RawPassReceiverPressureReuse::OutfieldOpponents => {
-                geometry.outfield_opponents_receiver_pressure
-            }
-        },
-    );
+        tick: input.tick,
+        passer_index: input.prevalue.passer_index,
+        passer_team_home: input.passer_team_home,
+        passer_pos: input.prevalue.passer_pos,
+        passer_finishing: input.passer_finishing,
+        passer_long_shot: input.passer_long_shot,
+        passer_consecutive_carries: input.passer_consecutive_carries,
+        receiver_index: input.receiver_index,
+        receiver_team_home: input.receiver_team_home,
+        receiver_finishing: input.receiver_finishing,
+        receiver_long_shot: input.receiver_long_shot,
+        receiver_anchor: input.receiver_anchor,
+        receiver_base: input.receiver_base,
+        receiver_goal_type: input.receiver_goal_type,
+        receiver_goal_target: input.receiver_goal_target,
+        receiver_goal_value: input.receiver_goal_value,
+        target: input.prevalue.target,
+        shot_profiles: input.shot_profiles,
+        teammate_positions: input.teammate_positions,
+        teammate_goalkeeper_indices: input.teammate_goalkeeper_indices,
+        opponent_positions: input.opponent_positions,
+        pitch_length: input.prevalue.pitch_length,
+        pitch_width: input.prevalue.pitch_width,
+        attacking_right: input.prevalue.attacking_right,
+        interception_reach: input.interception_reach,
+        shot_ideal_distance: input.shot_ideal_distance,
+        shot_on_target_base: input.shot_on_target_base,
+        gk_save_base: input.gk_save_base,
+        gk_attributes: input.gk_attributes,
+        gk_pos: input.gk_pos,
+        contest_defenders: input.contest_defenders,
+        current_value: input.current_value,
+        base_accuracy: pre.base_accuracy,
+        receiver_arrival: pre.receiver_arrival,
+        continuity: pre.continuity,
+        shot_quality_cache: input.shot_quality_cache,
+    };
+    let precomputed_receiver_pressure =
+        geometry
+            .zip(receiver_pressure_reuse)
+            .map(|(geometry, reuse)| match reuse {
+                RawPassReceiverPressureReuse::AllOpponents => {
+                    geometry.all_opponents_receiver_pressure
+                }
+                RawPassReceiverPressureReuse::OutfieldOpponents => {
+                    geometry.outfield_opponents_receiver_pressure
+                }
+            });
     let value = if let Some(receiver_pressure) = precomputed_receiver_pressure {
         expected_pass_value_with_context_and_precomputed_receiver_pressure(
             &expected_input,
@@ -2769,7 +2752,9 @@ fn receiver_pass_candidates_batch_into(
     };
     let receive_context = team_value_context.map_or_else(
         || pass_receive_value_context(&receiver_context),
-        |team_context| pass_receive_value_context_with_team_context(&receiver_context, team_context),
+        |team_context| {
+            pass_receive_value_context_with_team_context(&receiver_context, team_context)
+        },
     );
     let receiver_batch_context = RawPassBatchValueContext {
         passer: batch_context.passer,
@@ -3188,10 +3173,7 @@ mod tests {
             (left.after_value, right.after_value),
             (left.after_direct_xg, right.after_direct_xg),
             (left.current_value, right.current_value),
-            (
-                left.effective_current_value,
-                right.effective_current_value,
-            ),
+            (left.effective_current_value, right.effective_current_value),
             (left.delta, right.delta),
             (left.effective_delta, right.effective_delta),
             (left.progress_gain, right.progress_gain),
@@ -3200,10 +3182,7 @@ mod tests {
             (left.receiver_pressure, right.receiver_pressure),
             (left.turnover_consequence, right.turnover_consequence),
             (left.high_threat_space, right.high_threat_space),
-            (
-                left.final_third_combination,
-                right.final_third_combination,
-            ),
+            (left.final_third_combination, right.final_third_combination),
             (
                 left.second_line_arrival_value,
                 right.second_line_arrival_value,
@@ -3295,8 +3274,7 @@ mod tests {
                 teammates: &teammates,
             };
             let direct = evaluate_raw_pass_target_prevalue(&input);
-            let mut opponent_motion =
-                [EMPTY_RAW_PASS_OPPONENT_MOTION; MAX_PASS_RISK_PLAYERS];
+            let mut opponent_motion = [EMPTY_RAW_PASS_OPPONENT_MOTION; MAX_PASS_RISK_PLAYERS];
             let motion_context = raw_pass_prevalue_motion_context(
                 receiver,
                 &opponents,
@@ -3305,8 +3283,10 @@ mod tests {
                 &mut opponent_motion,
             )
             .expect("fixed workspace accepts an eleven-player opponent snapshot");
-            let prepared =
-                evaluate_raw_pass_target_prevalue_with_motion_context(&input, Some(&motion_context));
+            let prepared = evaluate_raw_pass_target_prevalue_with_motion_context(
+                &input,
+                Some(&motion_context),
+            );
 
             assert_raw_pass_prevalue_bits_equal(direct, prepared);
         }
@@ -3385,12 +3365,9 @@ mod tests {
             opponents: &risk_opponents,
             teammates: &teammates,
         };
-        let (pre, geometry) =
-            evaluate_raw_pass_target_prevalue_with_motion_context_and_geometry(
-                &prevalue,
-                None,
-                true,
-            );
+        let (pre, geometry) = evaluate_raw_pass_target_prevalue_with_motion_context_and_geometry(
+            &prevalue, None, true,
+        );
         assert!(pre.valid);
         assert!(matches!(
             raw_pass_receiver_pressure_reuse(&risk_opponents, &opponent_positions),
@@ -3467,15 +3444,14 @@ mod tests {
             shot_quality_cache: expected_input.shot_quality_cache,
         });
         let direct = expected_pass_value_with_context(&expected_input, passer_context, None);
-        let prepared =
-            expected_pass_value_with_context_and_precomputed_receiver_pressure(
-                &expected_input,
-                passer_context,
-                None,
-                geometry
-                    .expect("valid prevalue produces geometry")
-                    .outfield_opponents_receiver_pressure,
-            );
+        let prepared = expected_pass_value_with_context_and_precomputed_receiver_pressure(
+            &expected_input,
+            passer_context,
+            None,
+            geometry
+                .expect("valid prevalue produces geometry")
+                .outfield_opponents_receiver_pressure,
+        );
 
         assert_expected_pass_output_bits_equal(direct, prepared);
     }
@@ -3612,10 +3588,7 @@ mod tests {
         assert!(value.valid);
     }
 
-    fn assert_team_pass_candidate_bits_equal(
-        left: TeamPassCandidate,
-        right: TeamPassCandidate,
-    ) {
+    fn assert_team_pass_candidate_bits_equal(left: TeamPassCandidate, right: TeamPassCandidate) {
         assert_eq!(left.receiver_index, right.receiver_index);
         assert_eq!(left.target.0.to_bits(), right.target.0.to_bits());
         assert_eq!(left.target.1.to_bits(), right.target.1.to_bits());
@@ -3628,10 +3601,7 @@ mod tests {
             (left.success_prob, right.success_prob),
             (left.risk_cost, right.risk_cost),
             (left.current_value, right.current_value),
-            (
-                left.effective_current_value,
-                right.effective_current_value,
-            ),
+            (left.effective_current_value, right.effective_current_value),
             (left.delta, right.delta),
             (left.after_value, right.after_value),
             (left.after_direct_xg, right.after_direct_xg),
@@ -3642,10 +3612,7 @@ mod tests {
             (left.receiver_pressure, right.receiver_pressure),
             (left.turnover_consequence, right.turnover_consequence),
             (left.high_threat_space, right.high_threat_space),
-            (
-                left.final_third_combination,
-                right.final_third_combination,
-            ),
+            (left.final_third_combination, right.final_third_combination),
             (
                 left.second_line_arrival_value,
                 right.second_line_arrival_value,
@@ -3655,14 +3622,8 @@ mod tests {
                 right.second_line_cutback_value,
             ),
             (left.layoff_support_value, right.layoff_support_value),
-            (
-                left.short_combination_value,
-                right.short_combination_value,
-            ),
-            (
-                left.layoff_retention_value,
-                right.layoff_retention_value,
-            ),
+            (left.short_combination_value, right.short_combination_value),
+            (left.layoff_retention_value, right.layoff_retention_value),
             (left.receiver_arrival, right.receiver_arrival),
             (left.base_accuracy, right.base_accuracy),
             (left.goal_target_fit, right.goal_target_fit),
@@ -3671,18 +3632,12 @@ mod tests {
             (left.perception_multiplier, right.perception_multiplier),
             (left.arrival_margin, right.arrival_margin),
             (left.defender_first_risk, right.defender_first_risk),
-            (
-                left.target_occupation_risk,
-                right.target_occupation_risk,
-            ),
+            (left.target_occupation_risk, right.target_occupation_risk),
             (
                 left.nearest_teammate_to_target,
                 right.nearest_teammate_to_target,
             ),
-            (
-                left.nearest_opp_to_target,
-                right.nearest_opp_to_target,
-            ),
+            (left.nearest_opp_to_target, right.nearest_opp_to_target),
             (left.box_space_pressure, right.box_space_pressure),
             (left.tactical_space_prior, right.tactical_space_prior),
             (left.tactical_space_value, right.tactical_space_value),
@@ -3694,10 +3649,7 @@ mod tests {
                 left.expected_arrival_confidence,
                 right.expected_arrival_confidence,
             ),
-            (
-                left.expected_arrival_fit,
-                right.expected_arrival_fit,
-            ),
+            (left.expected_arrival_fit, right.expected_arrival_fit),
         ] {
             assert_eq!(left_value.to_bits(), right_value.to_bits());
         }

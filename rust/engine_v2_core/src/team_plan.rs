@@ -74,7 +74,7 @@ pub struct TeamPlanUpdateInput<'a> {
     pub current: TeamPlanState,
     pub ball_pos: (f64, f64),
     pub attacking_right: bool,
-    pub has_possession: bool,
+    pub possession_probability: f64,
     pub phase: &'a str,
     pub pitch_length: f64,
     pub pitch_width: f64,
@@ -94,7 +94,7 @@ pub struct TeamPlanFeatures {
     pub team_width: f64,
     pub defensive_threat: f64,
     pub transition: f64,
-    pub has_possession: f64,
+    pub possession_probability: f64,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -670,12 +670,12 @@ pub fn team_plan_features(input: &TeamPlanUpdateInput<'_>) -> TeamPlanFeatures {
         team_width,
         defensive_threat,
         transition,
-        has_possession: if input.has_possession { 1.0 } else { 0.0 },
+        possession_probability: input.possession_probability.clamp(0.0, 1.0),
     }
 }
 
 fn profile_value(profile: TeamPlanProfile, features: TeamPlanFeatures) -> f64 {
-    let possession_alignment = features.has_possession * 2.0 - 1.0;
+    let possession_alignment = features.possession_probability * 2.0 - 1.0;
     profile.intercept
         + profile.possession * possession_alignment
         + profile.ball_progress * features.ball_progress
@@ -739,13 +739,65 @@ fn team_plan_state(
     }
 }
 
+fn blend_team_plan_signals(
+    candidates: &[TeamPlanCandidate],
+    selected: TeamPlanCandidate,
+) -> TeamPlanSignals {
+    let temperature = 0.18;
+    let mut total_weight = 0.0;
+    let mut forward_bias = 0.0;
+    let mut recycle_bias = 0.0;
+    let mut switch_bias = 0.0;
+    let mut width_scale = 0.0;
+    let mut depth_scale = 0.0;
+    let mut tempo = 0.0;
+    let mut risk_budget = 0.0;
+    let mut compactness = 0.0;
+    let mut press_intensity = 0.0;
+    for candidate in candidates {
+        let weight = ((candidate.value - selected.value) / temperature).exp();
+        let signals = team_plan_signals(candidate.kind);
+        total_weight += weight;
+        forward_bias += weight * signals.forward_bias;
+        recycle_bias += weight * signals.recycle_bias;
+        switch_bias += weight * signals.switch_bias;
+        width_scale += weight * signals.width_scale;
+        depth_scale += weight * signals.depth_scale;
+        tempo += weight * signals.tempo;
+        risk_budget += weight * signals.risk_budget;
+        compactness += weight * signals.compactness;
+        press_intensity += weight * signals.press_intensity;
+    }
+    if total_weight <= 1e-12 {
+        return team_plan_signals(selected.kind);
+    }
+    TeamPlanSignals {
+        forward_bias: forward_bias / total_weight,
+        recycle_bias: recycle_bias / total_weight,
+        switch_bias: switch_bias / total_weight,
+        width_scale: width_scale / total_weight,
+        depth_scale: depth_scale / total_weight,
+        tempo: tempo / total_weight,
+        risk_budget: risk_budget / total_weight,
+        compactness: compactness / total_weight,
+        press_intensity: press_intensity / total_weight,
+    }
+}
+
 pub fn select_team_plan(input: &TeamPlanUpdateInput<'_>) -> (TeamPlanState, TeamPlanSignals) {
     let features = team_plan_features(input);
     let current_inertia = current_plan_inertia(input.current);
+    let mut candidates = [TeamPlanCandidate {
+        kind: TeamPlanKind::BuildUp,
+        raw_value: 0.0,
+        switch_cost: 0.0,
+        value: 0.0,
+    }; TEAM_PLAN_PROFILES.len()];
     let mut selected = None;
     let mut best_raw_value = f64::NEG_INFINITY;
-    for profile in TEAM_PLAN_PROFILES {
+    for (index, profile) in TEAM_PLAN_PROFILES.iter().copied().enumerate() {
         let candidate = team_plan_candidate(profile, input.current, current_inertia, features);
+        candidates[index] = candidate;
         if selected
             .map(|current: TeamPlanCandidate| {
                 candidate
@@ -762,7 +814,7 @@ pub fn select_team_plan(input: &TeamPlanUpdateInput<'_>) -> (TeamPlanState, Team
     }
     let selected = selected.expect("team plan profiles must not be empty");
     let state = team_plan_state(input.current, selected, best_raw_value);
-    (state, team_plan_signals(selected.kind))
+    (state, blend_team_plan_signals(&candidates, selected))
 }
 
 pub fn update_team_plan(input: &TeamPlanUpdateInput<'_>) -> TeamPlanUpdateOutput {
@@ -793,7 +845,7 @@ pub fn update_team_plan(input: &TeamPlanUpdateInput<'_>) -> TeamPlanUpdateOutput
     let state = team_plan_state(input.current, selected, best_raw_value);
     TeamPlanUpdateOutput {
         state,
-        signals: team_plan_signals(selected.kind),
+        signals: blend_team_plan_signals(&candidates, selected),
         features,
         candidates,
     }
@@ -841,7 +893,7 @@ mod tests {
             current: TeamPlanState::default(),
             ball_pos: (64.0, 9.0),
             attacking_right: true,
-            has_possession: true,
+            possession_probability: 1.0,
             phase: "attacking",
             pitch_length: 105.0,
             pitch_width: 68.0,
@@ -858,7 +910,14 @@ mod tests {
         assert!(output.features.ball_pressure > 0.55);
         assert!(output.features.weak_side_outlets > 0.20);
         assert!(output.signals.width_scale > 1.2);
-        assert!(output.signals.switch_bias > 0.9);
+        assert!(
+            output.signals.switch_bias > 0.85,
+            "the dominant switch plan must retain a strong switch tendency"
+        );
+        assert!(
+            output.signals.switch_bias < team_plan_signals(TeamPlanKind::Switch).switch_bias,
+            "continuous planning should retain secondary build-up and recycle evidence"
+        );
     }
 
     #[test]
@@ -884,7 +943,7 @@ mod tests {
             current: TeamPlanState::default(),
             ball_pos: (35.0, 34.0),
             attacking_right: true,
-            has_possession: true,
+            possession_probability: 1.0,
             phase: "attacking",
             pitch_length: 105.0,
             pitch_width: 68.0,
@@ -900,7 +959,7 @@ mod tests {
             current: committed,
             ball_pos: (38.0, 35.0),
             attacking_right: true,
-            has_possession: true,
+            possession_probability: 1.0,
             phase: "attacking",
             pitch_length: 105.0,
             pitch_width: 68.0,
@@ -909,6 +968,60 @@ mod tests {
         });
         assert_eq!(second.state.kind, committed.kind);
         assert!(second.state.commitment > 0.7);
+    }
+
+    #[test]
+    fn nearby_match_states_produce_continuous_mixed_plan_signals() {
+        let players = [
+            TeamPlanPlayerInput {
+                pos: (7.0, 34.0),
+                is_goalkeeper: true,
+            },
+            player((31.0, 18.0)),
+            player((35.0, 48.0)),
+            player((48.0, 15.0)),
+            player((52.0, 53.0)),
+            player((62.0, 34.0)),
+        ];
+        let opponents = [
+            opponent((54.0, 25.0)),
+            opponent((58.0, 43.0)),
+            opponent((68.0, 34.0)),
+            opponent((75.0, 18.0)),
+        ];
+        let input = TeamPlanUpdateInput {
+            current: TeamPlanState::default(),
+            ball_pos: (52.0, 31.0),
+            attacking_right: true,
+            possession_probability: 1.0,
+            phase: "possession",
+            pitch_length: 105.0,
+            pitch_width: 68.0,
+            players: &players,
+            opponents: &opponents,
+        };
+        let first = update_team_plan(&input);
+        let second = update_team_plan(&TeamPlanUpdateInput {
+            ball_pos: (52.2, 31.0),
+            ..input
+        });
+        let signal_distance = (first.signals.forward_bias - second.signals.forward_bias).abs()
+            + (first.signals.recycle_bias - second.signals.recycle_bias).abs()
+            + (first.signals.switch_bias - second.signals.switch_bias).abs()
+            + (first.signals.press_intensity - second.signals.press_intensity).abs();
+
+        assert!(signal_distance > 0.0);
+        assert!(
+            signal_distance < 0.05,
+            "small spatial evidence changes must not cause a profile-sized tactical jump"
+        );
+        let dominant = team_plan_signals(first.state.kind);
+        assert!(
+            (first.signals.forward_bias - dominant.forward_bias).abs() > 1e-6
+                || (first.signals.recycle_bias - dominant.recycle_bias).abs() > 1e-6
+                || (first.signals.switch_bias - dominant.switch_bias).abs() > 1e-6,
+            "the plan label may stay discrete, but its executable signals must be mixed"
+        );
     }
 
     #[test]
@@ -934,7 +1047,7 @@ mod tests {
             current: TeamPlanState::default(),
             ball_pos: (31.0, 34.0),
             attacking_right: true,
-            has_possession: false,
+            possession_probability: 0.0,
             phase: "defending",
             pitch_length: 105.0,
             pitch_width: 68.0,
@@ -1126,11 +1239,8 @@ mod tests {
         }; 3];
         let mut prepared = reference;
         let reference_len = project_team_plan_formation_into(&input, &mut reference);
-        let prepared_len = project_team_plan_formation_into_with_prepared_targets(
-            &input,
-            &targets,
-            &mut prepared,
-        );
+        let prepared_len =
+            project_team_plan_formation_into_with_prepared_targets(&input, &targets, &mut prepared);
 
         assert_eq!(prepared_len, reference_len);
         for (actual, expected) in prepared[..prepared_len]

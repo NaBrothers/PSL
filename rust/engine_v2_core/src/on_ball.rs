@@ -455,8 +455,7 @@ fn evaluate_carry_path_impl<const INCLUDE_FEASIBILITY: bool>(
         (input.pitch_length - input.target.0) / input.pitch_length
     };
     let central_lane = 1.0
-        - ((input.target.1 - input.pitch_width / 2.0).abs() / (input.pitch_width / 2.0))
-            .min(1.0);
+        - ((input.target.1 - input.pitch_width / 2.0).abs() / (input.pitch_width / 2.0)).min(1.0);
 
     for opp in input.opponents {
         if opp.is_goalkeeper {

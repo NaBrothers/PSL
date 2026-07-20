@@ -334,12 +334,14 @@ pub struct PassTraceOutput {
 
 #[derive(Clone, Debug)]
 pub struct CarryPhasePlanInput<'a> {
+    pub transition: Option<crate::execution_transition::CarrySegmentTransition>,
     pub holder_pos: (f64, f64),
     pub target: (f64, f64),
     pub velocity: (f64, f64),
     pub speed_ability: i32,
     pub dribbling: f64,
     pub consecutive_carries: i32,
+    pub control_readiness: f64,
     pub attacking_right: bool,
     pub pitch_length: f64,
     pub pitch_width: f64,
@@ -350,12 +352,14 @@ pub struct CarryPhasePlanInput<'a> {
     pub opponents: &'a [ExecutionOpponent],
     pub defender_responses: &'a [DefenderActionInput],
     pub error_roll: f64,
+    pub containment_roll: f64,
     pub loose_x_roll: f64,
     pub loose_y_roll: f64,
 }
 
 #[derive(Clone, Debug)]
 pub struct CarryPhasePlanOutput {
+    pub transition: crate::execution_transition::CarrySegmentTransition,
     pub carry_speed: f64,
     pub carry_difficulty: f64,
     pub new_pos: (f64, f64),
@@ -367,6 +371,7 @@ pub struct CarryPhasePlanOutput {
     pub error_chance: f64,
     pub is_error: bool,
     pub loose_pos: (f64, f64),
+    pub constrained_control: bool,
     pub constrained_control_probability: f64,
     pub constrained_control_position: (f64, f64),
     pub randoms_used: usize,
@@ -374,6 +379,7 @@ pub struct CarryPhasePlanOutput {
 
 #[derive(Clone, Debug)]
 pub struct PassPhasePlanInput {
+    pub transition: Option<crate::execution_transition::PassActionTransition>,
     pub passer_pos: (f64, f64),
     pub ideal_target: (f64, f64),
     pub passing: f64,
@@ -386,6 +392,7 @@ pub struct PassPhasePlanInput {
     pub pitch_width: f64,
     pub ball_pass_speed: f64,
     pub ball_long_pass_speed: f64,
+    pub tick_duration: f64,
     pub random_1: f64,
     pub random_2: f64,
     pub intended_receiver_pos: Option<(f64, f64)>,
@@ -393,6 +400,7 @@ pub struct PassPhasePlanInput {
 
 #[derive(Clone, Debug)]
 pub struct PassPhasePlanOutput {
+    pub transition: crate::execution_transition::PassActionTransition,
     pub target: (f64, f64),
     pub speed: f64,
     pub ticks_needed: i32,
@@ -420,6 +428,7 @@ pub struct ShotPhasePlanInput<'a> {
     pub pitch_width: f64,
     pub goal_width: f64,
     pub ball_shot_speed: f64,
+    pub tick_duration: f64,
     pub random_1: f64,
     pub random_2: f64,
     pub random_3: f64,
@@ -445,6 +454,7 @@ pub struct ClearPhasePlanInput {
     pub clearer_pos: (f64, f64),
     pub target: (f64, f64),
     pub ball_long_pass_speed: f64,
+    pub tick_duration: f64,
 }
 
 #[derive(Clone, Debug)]
@@ -458,6 +468,7 @@ pub struct ClearPhasePlanOutput {
 
 #[derive(Clone, Debug)]
 pub struct HoldPhasePlanInput<'a> {
+    pub transition: Option<crate::execution_transition::ControlActionTransition>,
     pub holder_pos: (f64, f64),
     pub velocity: (f64, f64),
     pub speed_ability: i32,
@@ -477,6 +488,7 @@ pub struct HoldPhasePlanInput<'a> {
 
 #[derive(Clone, Debug)]
 pub struct HoldPhasePlanOutput {
+    pub transition: crate::execution_transition::ControlActionTransition,
     pub new_pos: (f64, f64),
     pub velocity: (f64, f64),
     pub facing_direction: Option<f64>,
@@ -570,7 +582,7 @@ pub struct ClearanceArrivalPlanInput<'a> {
     pub away_players: &'a [crate::arrival::ClearancePlayerInput],
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Copy, Debug)]
 pub struct ClearanceArrivalPlanOutput {
     pub winner_code: u8,
     pub player_index: Option<usize>,
@@ -629,12 +641,14 @@ pub struct DuelPhasePlanOutput {
 
 pub fn carry_phase_plan(input: &CarryPhasePlanInput<'_>) -> CarryPhasePlanOutput {
     let carry = execute_carry(&CarryExecutionInput {
+        transition: input.transition,
         holder_pos: input.holder_pos,
         target: input.target,
         velocity: input.velocity,
         speed_ability: input.speed_ability,
         dribbling: input.dribbling,
         consecutive_carries: input.consecutive_carries,
+        control_readiness: input.control_readiness,
         attacking_right: input.attacking_right,
         pitch_length: input.pitch_length,
         pitch_width: input.pitch_width,
@@ -645,10 +659,12 @@ pub fn carry_phase_plan(input: &CarryPhasePlanInput<'_>) -> CarryPhasePlanOutput
         opponents: input.opponents,
         defender_responses: input.defender_responses,
         error_roll: input.error_roll,
+        containment_roll: input.containment_roll,
         loose_x_roll: input.loose_x_roll,
         loose_y_roll: input.loose_y_roll,
     });
     CarryPhasePlanOutput {
+        transition: carry.transition,
         carry_speed: carry.carry_speed,
         carry_difficulty: carry.carry_difficulty,
         new_pos: carry.new_pos,
@@ -660,9 +676,10 @@ pub fn carry_phase_plan(input: &CarryPhasePlanInput<'_>) -> CarryPhasePlanOutput
         error_chance: carry.error_chance,
         is_error: carry.is_error,
         loose_pos: carry.loose_pos,
+        constrained_control: carry.constrained_control,
         constrained_control_probability: carry.constrained_control_probability,
         constrained_control_position: carry.constrained_control_position,
-        randoms_used: 1 + if carry.is_error { 2 } else { 0 },
+        randoms_used: 2 + if carry.is_error { 2 } else { 0 },
     }
 }
 
@@ -855,6 +872,7 @@ pub fn pass_trace_payload(input: &PassTraceInput) -> PassTraceOutput {
 
 pub fn pass_phase_plan(input: &PassPhasePlanInput) -> PassPhasePlanOutput {
     let pass = execute_pass(&PassExecutionInput {
+        transition: input.transition,
         passer_pos: input.passer_pos,
         ideal_target: input.ideal_target,
         passing: input.passing,
@@ -867,6 +885,7 @@ pub fn pass_phase_plan(input: &PassPhasePlanInput) -> PassPhasePlanOutput {
         pitch_width: input.pitch_width,
         ball_pass_speed: input.ball_pass_speed,
         ball_long_pass_speed: input.ball_long_pass_speed,
+        tick_duration: input.tick_duration,
         random_1: input.random_1,
         random_2: input.random_2,
     });
@@ -882,6 +901,7 @@ pub fn pass_phase_plan(input: &PassPhasePlanInput) -> PassPhasePlanOutput {
         on_target: false,
     });
     PassPhasePlanOutput {
+        transition: pass.transition,
         target: pass.target,
         speed: pass.speed,
         ticks_needed: pass.ticks_needed,
@@ -912,6 +932,7 @@ pub fn shot_phase_plan(input: &ShotPhasePlanInput<'_>) -> ShotPhasePlanOutput {
         pitch_width: input.pitch_width,
         goal_width: input.goal_width,
         ball_shot_speed: input.ball_shot_speed,
+        tick_duration: input.tick_duration,
         random_1: input.random_1,
         random_2: input.random_2,
         random_3: input.random_3,
@@ -950,6 +971,7 @@ pub fn clear_phase_plan(input: &ClearPhasePlanInput) -> ClearPhasePlanOutput {
         clearer_pos: input.clearer_pos,
         target: input.target,
         ball_long_pass_speed: input.ball_long_pass_speed,
+        tick_duration: input.tick_duration,
     });
     ClearPhasePlanOutput {
         origin: clear.origin,
@@ -962,6 +984,7 @@ pub fn clear_phase_plan(input: &ClearPhasePlanInput) -> ClearPhasePlanOutput {
 
 pub fn hold_phase_plan(input: &HoldPhasePlanInput<'_>) -> HoldPhasePlanOutput {
     let hold = execute_hold(&HoldExecutionInput {
+        transition: input.transition,
         holder_pos: input.holder_pos,
         velocity: input.velocity,
         speed_ability: input.speed_ability,
@@ -979,6 +1002,7 @@ pub fn hold_phase_plan(input: &HoldPhasePlanInput<'_>) -> HoldPhasePlanOutput {
         loose_y_roll: input.loose_y_roll,
     });
     HoldPhasePlanOutput {
+        transition: hold.transition,
         new_pos: hold.new_pos,
         velocity: hold.velocity,
         facing_direction: hold.facing_direction,
@@ -2742,7 +2766,8 @@ pub fn player_apply_stun(input: &PlayerApplyStunInput) -> PlayerApplyStunOutput 
         state: "stunned".to_string(),
         stun_ticks_remaining: (input.tackle_fail_stun_seconds / input.tick_duration)
             .ceil()
-            .max(1.0) as i32,
+            .max(1.0) as i32
+            + 1,
     }
 }
 
@@ -2976,37 +3001,9 @@ mod tests {
     }
 
     #[test]
-    fn pass_phase_uses_shared_retention_probability_for_delivery_error() {
+    fn pass_phase_separates_technical_delivery_from_candidate_retention() {
         let clean_execution = pass_phase_plan(&PassPhasePlanInput {
-            passer_pos: (20.0, 34.0),
-            ideal_target: (35.0, 40.0),
-            passing: 80.0,
-            is_long: false,
-            lane_risk: 0.25,
-            retention_probability: 0.60,
-            technical_probability: 0.80,
-            technical_roll: 0.59,
-            pitch_length: 105.0,
-            pitch_width: 68.0,
-            ball_pass_speed: 18.0,
-            ball_long_pass_speed: 22.0,
-            random_1: 0.25,
-            random_2: 0.75,
-            intended_receiver_pos: Some((35.0, 40.0)),
-        });
-        let delivery_miss = pass_phase_plan(&PassPhasePlanInput {
-            technical_roll: 0.61,
-            ..retained_input()
-        });
-
-        assert!(!clean_execution.delivery_miss);
-        assert!(delivery_miss.delivery_miss);
-        assert_eq!(clean_execution.randoms_used, 2);
-        assert_eq!(delivery_miss.randoms_used, 2);
-    }
-
-    fn retained_input() -> PassPhasePlanInput {
-        PassPhasePlanInput {
+            transition: None,
             passer_pos: (20.0, 34.0),
             ideal_target: (35.0, 40.0),
             passing: 80.0,
@@ -3019,6 +3016,44 @@ mod tests {
             pitch_width: 68.0,
             ball_pass_speed: 18.0,
             ball_long_pass_speed: 22.0,
+            tick_duration: 2.0,
+            random_1: 0.25,
+            random_2: 0.75,
+            intended_receiver_pos: Some((35.0, 40.0)),
+        });
+        let lower_retention = pass_phase_plan(&PassPhasePlanInput {
+            retention_probability: 0.30,
+            ..retained_input()
+        });
+        let delivery_miss = pass_phase_plan(&PassPhasePlanInput {
+            technical_roll: 0.81,
+            ..retained_input()
+        });
+
+        assert!(!clean_execution.delivery_miss);
+        assert!(!lower_retention.delivery_miss);
+        assert!(delivery_miss.delivery_miss);
+        assert_eq!(clean_execution.target, lower_retention.target);
+        assert_eq!(clean_execution.randoms_used, 2);
+        assert_eq!(delivery_miss.randoms_used, 2);
+    }
+
+    fn retained_input() -> PassPhasePlanInput {
+        PassPhasePlanInput {
+            transition: None,
+            passer_pos: (20.0, 34.0),
+            ideal_target: (35.0, 40.0),
+            passing: 80.0,
+            is_long: false,
+            lane_risk: 0.25,
+            retention_probability: 0.60,
+            technical_probability: 0.80,
+            technical_roll: 0.79,
+            pitch_length: 105.0,
+            pitch_width: 68.0,
+            ball_pass_speed: 18.0,
+            ball_long_pass_speed: 22.0,
+            tick_duration: 2.0,
             random_1: 0.25,
             random_2: 0.75,
             intended_receiver_pos: Some((35.0, 40.0)),
@@ -3118,5 +3153,29 @@ mod tests {
             attacker.tactical_anchor.0 > 86.0,
             "the goalkeeper plus defender establish a 92m line, so the shape must not cap the run at the old 78m line"
         );
+    }
+
+    #[test]
+    fn tackle_stun_blocks_the_next_decision_window_before_expiring() {
+        let applied = player_apply_stun(&PlayerApplyStunInput {
+            tackle_fail_stun_seconds: 1.5,
+            tick_duration: 2.0,
+        });
+        assert_eq!(applied.state, "stunned");
+        assert_eq!(applied.stun_ticks_remaining, 2);
+
+        let current_tick_end = player_tick_stun(&PlayerTickStunInput {
+            state: applied.state.as_str(),
+            stun_ticks_remaining: applied.stun_ticks_remaining,
+        });
+        assert_eq!(current_tick_end.state, "stunned");
+        assert_eq!(current_tick_end.stun_ticks_remaining, 1);
+
+        let next_tick_end = player_tick_stun(&PlayerTickStunInput {
+            state: current_tick_end.state.as_str(),
+            stun_ticks_remaining: current_tick_end.stun_ticks_remaining,
+        });
+        assert_eq!(next_tick_end.state, "off_ball");
+        assert_eq!(next_tick_end.stun_ticks_remaining, 0);
     }
 }

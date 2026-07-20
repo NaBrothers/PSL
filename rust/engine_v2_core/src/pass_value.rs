@@ -228,8 +228,7 @@ fn pass_risk_evaluation(
     let own_goal = (own_goal_x, pitch_width / 2.0);
     let d_goal = distance(loss_pos, own_goal);
     let goal_danger = (1.0 - d_goal / 60.0).max(0.0);
-    let central =
-        1.0 - ((loss_pos.1 - pitch_width / 2.0).abs() / (pitch_width / 2.0)).min(1.0);
+    let central = 1.0 - ((loss_pos.1 - pitch_width / 2.0).abs() / (pitch_width / 2.0)).min(1.0);
     let mut lane_risk = 0.0;
     let mut receiver_pressure = 0.0;
     let mut target_local_pressure = 0.0;
@@ -252,7 +251,7 @@ fn pass_risk_evaluation(
         }
         let target_distance_to_opponent = distance(target, *opponent);
         if precomputed_receiver_pressure.is_none() && target_distance_to_opponent < 12.0 {
-                receiver_pressure += 1.0 - target_distance_to_opponent / 12.0;
+            receiver_pressure += 1.0 - target_distance_to_opponent / 12.0;
         }
         if target_distance_to_opponent < 18.0 {
             target_local_pressure += (1.0 - target_distance_to_opponent / 18.0).powf(1.25);
@@ -269,11 +268,10 @@ fn pass_risk_evaluation(
         let length_factor = 1.4_f64.min(target_distance / 35.0);
         (lane_risk * 0.28 * length_factor).clamp(0.0, 1.0)
     };
-    let receiver_pressure = precomputed_receiver_pressure
-        .unwrap_or_else(|| (receiver_pressure * 0.35).clamp(0.0, 1.0));
+    let receiver_pressure =
+        precomputed_receiver_pressure.unwrap_or_else(|| (receiver_pressure * 0.35).clamp(0.0, 1.0));
     let turnover_consequence =
-        (goal_danger * 0.55 + central * 0.20 + (nearby_opponents * 0.25).min(1.0))
-            .clamp(0.05, 1.0);
+        (goal_danger * 0.55 + central * 0.20 + (nearby_opponents * 0.25).min(1.0)).clamp(0.05, 1.0);
 
     PassRiskEvaluation {
         lane_risk,
@@ -451,41 +449,40 @@ fn expected_pass_value_with_optional_receiver_pressure(
     );
 
     let pass_receive_input = PassReceiveValueInput {
-            pos: input.target,
-            receiver_index: input.receiver_index,
-            shot_profiles: input.shot_profiles,
-            receiver_anchor: input.receiver_anchor,
-            receiver_base: input.receiver_base,
-            teammate_positions: input.teammate_positions,
-            teammate_goalkeeper_indices: input.teammate_goalkeeper_indices,
-            opponent_positions: input.opponent_positions,
-            pitch_length: input.pitch_length,
-            pitch_width: input.pitch_width,
-            attacking_right: input.attacking_right,
-            receiver_finishing: input.receiver_finishing,
-            receiver_long_shot: input.receiver_long_shot,
-            shot_ideal_distance: input.shot_ideal_distance,
-            shot_on_target_base: input.shot_on_target_base,
-            gk_save_base: input.gk_save_base,
-            gk_attributes: input.gk_attributes,
-            gk_pos: input.gk_pos,
-            contest_defenders: input.contest_defenders,
-            tick: input.tick,
-            receiver_team_home: input.receiver_team_home,
-            shot_quality_cache: input.shot_quality_cache,
-            receiver_goal_type: input.receiver_goal_type,
-            receiver_goal_target: input.receiver_goal_target,
-            receiver_goal_value: input.receiver_goal_value,
-        };
-    let after_state =
-        pass_receive_value_breakdown_with_context_and_precomputed_target_pressures(
-            &pass_receive_input,
-            pass_receive_context,
-            PassReceiveTargetPressure {
-                local: risk.target_local_pressure,
-                receiver: risk.receiver_pressure,
-            },
-        );
+        pos: input.target,
+        receiver_index: input.receiver_index,
+        shot_profiles: input.shot_profiles,
+        receiver_anchor: input.receiver_anchor,
+        receiver_base: input.receiver_base,
+        teammate_positions: input.teammate_positions,
+        teammate_goalkeeper_indices: input.teammate_goalkeeper_indices,
+        opponent_positions: input.opponent_positions,
+        pitch_length: input.pitch_length,
+        pitch_width: input.pitch_width,
+        attacking_right: input.attacking_right,
+        receiver_finishing: input.receiver_finishing,
+        receiver_long_shot: input.receiver_long_shot,
+        shot_ideal_distance: input.shot_ideal_distance,
+        shot_on_target_base: input.shot_on_target_base,
+        gk_save_base: input.gk_save_base,
+        gk_attributes: input.gk_attributes,
+        gk_pos: input.gk_pos,
+        contest_defenders: input.contest_defenders,
+        tick: input.tick,
+        receiver_team_home: input.receiver_team_home,
+        shot_quality_cache: input.shot_quality_cache,
+        receiver_goal_type: input.receiver_goal_type,
+        receiver_goal_target: input.receiver_goal_target,
+        receiver_goal_value: input.receiver_goal_value,
+    };
+    let after_state = pass_receive_value_breakdown_with_context_and_precomputed_target_pressures(
+        &pass_receive_input,
+        pass_receive_context,
+        PassReceiveTargetPressure {
+            local: risk.target_local_pressure,
+            receiver: risk.receiver_pressure,
+        },
+    );
     let after_value = after_state.value;
     let lane_risk = risk.lane_risk;
     let target_distance = risk.target_distance;
@@ -766,27 +763,20 @@ mod tests {
     #[test]
     fn pass_risk_evaluation_preserves_independent_risk_components() {
         for (origin, target, opponents) in [
-            ((40.0, 34.0), (40.5, 34.0), &[(40.2, 34.0), (44.0, 35.0)][..]),
+            (
+                (40.0, 34.0),
+                (40.5, 34.0),
+                &[(40.2, 34.0), (44.0, 35.0)][..],
+            ),
             (
                 (40.0, 34.0),
                 (70.0, 28.0),
                 &[(55.0, 32.0), (65.0, 27.0), (35.0, 40.0)][..],
             ),
         ] {
-            let loss_pos = (
-                (origin.0 + target.0) / 2.0,
-                (origin.1 + target.1) / 2.0,
-            );
+            let loss_pos = ((origin.0 + target.0) / 2.0, (origin.1 + target.1) / 2.0);
             let prepared = pass_risk_evaluation(
-                origin,
-                target,
-                opponents,
-                3.5,
-                loss_pos,
-                105.0,
-                68.0,
-                true,
-                None,
+                origin, target, opponents, 3.5, loss_pos, 105.0, 68.0, true, None,
             );
             let lane_input = PassLaneRiskInput {
                 origin,
@@ -802,7 +792,10 @@ mod tests {
                 attacking_right: true,
             };
 
-            assert_eq!(prepared.lane_risk.to_bits(), pass_lane_risk(&lane_input).to_bits());
+            assert_eq!(
+                prepared.lane_risk.to_bits(),
+                pass_lane_risk(&lane_input).to_bits()
+            );
             assert_eq!(
                 prepared.target_distance.to_bits(),
                 distance(origin, target).to_bits()
@@ -847,11 +840,7 @@ mod tests {
 
     #[test]
     fn local_pass_value_does_not_prepay_receiver_future_shooting() {
-        let teammate_positions = [
-            (1, 91.0, 39.0),
-            (2, 95.0, 34.0),
-            (3, 76.0, 22.0),
-        ];
+        let teammate_positions = [(1, 91.0, 39.0), (2, 95.0, 34.0), (3, 76.0, 22.0)];
         let opponents = [(100.0, 34.0), (84.0, 22.0), (88.0, 54.0)];
         let low_receiver_profiles = [
             PlayerShotProfile {

@@ -145,8 +145,8 @@ pub fn goalkeeper_positioning_target(input: &GkPositioningInput) -> GkPositionin
     let shot_angle = angle_to_goal(input.ball_pos, (goal_x, goal_y), 7.32);
     let threat = 1.0 - smoothstep(20.0, 75.0, ball_distance);
     let angle_factor = smoothstep(0.08, 0.45, shot_angle);
-    let ideal_depth = (2.4 + threat * (2.7 + 2.0 * angle_factor))
-        .min((ball_distance * 0.72).max(0.5));
+    let ideal_depth =
+        (2.4 + threat * (2.7 + 2.0 * angle_factor)).min((ball_distance * 0.72).max(0.5));
     let ball_direction = if ball_distance > 1e-6 {
         (ball_vector.0 / ball_distance, ball_vector.1 / ball_distance)
     } else {
@@ -161,9 +161,8 @@ pub fn goalkeeper_positioning_target(input: &GkPositioningInput) -> GkPositionin
         input.pitch_width,
     );
     let positioning_quality = smoothstep(15.0, 95.0, input.gk_positioning);
-    let geometry_weight = input.ball_confidence.clamp(0.0, 1.0)
-        * threat
-        * (0.24 + 0.76 * positioning_quality);
+    let geometry_weight =
+        input.ball_confidence.clamp(0.0, 1.0) * threat * (0.24 + 0.76 * positioning_quality);
     let target = interpolate(
         input.structure_anchor,
         geometric_target,

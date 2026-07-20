@@ -22,6 +22,29 @@ pub struct DetectionResult {
     pub contact_quality: f64,
 }
 
+#[derive(Debug, Clone, Copy)]
+pub struct PassReleaseContactTransition {
+    pub contact: DetectionResult,
+    pub released_probability: f64,
+    pub opposing_control_probability: f64,
+    pub unresolved_probability: f64,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct ControlContactTransition {
+    pub contact: DetectionResult,
+    pub retained_probability: f64,
+    pub opposing_control_probability: f64,
+    pub unresolved_probability: f64,
+}
+
+impl ControlContactTransition {
+    pub fn contact_occurs(self, roll: f64) -> bool {
+        self.contact.defender_index.is_some()
+            && roll.clamp(0.0, 1.0) < self.contact.contact_probability
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct DuelDetectionInput<'a> {
     pub holder_pos: (f64, f64),
@@ -99,6 +122,85 @@ pub struct DuelResolveInput<'a> {
     pub defender_uniform: f64,
 }
 
+#[derive(Debug, Clone, Copy)]
+pub struct DuelOutcomeTransition {
+    attacker_dribbling: f64,
+    defender_tackling: f64,
+    defender_defence: f64,
+    holder_action: &'static str,
+    defender_action: &'static str,
+    contact_quality: f64,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DuelOutcome {
+    AttackerWins,
+    DefenderWins,
+    LooseBall,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct DuelOutcomeProbabilities {
+    pub attacker_wins: f64,
+    pub defender_wins: f64,
+    pub loose_ball: f64,
+}
+
+impl DuelOutcomeTransition {
+    pub fn new(
+        attacker_dribbling: f64,
+        defender: DefenderActionInput,
+        holder_action: &'static str,
+        contact_quality: f64,
+    ) -> Self {
+        Self {
+            attacker_dribbling,
+            defender_tackling: defender.tackling,
+            defender_defence: defender.defence,
+            holder_action,
+            defender_action: defender.action,
+            contact_quality,
+        }
+    }
+
+    fn margin(self, attacker_uniform: f64, defender_uniform: f64) -> f64 {
+        duel_margin(&DuelResolveInput {
+            attacker_dribbling: self.attacker_dribbling,
+            defender_tackling: self.defender_tackling,
+            defender_defence: self.defender_defence,
+            holder_action: self.holder_action,
+            defender_action: self.defender_action,
+            contact_quality: self.contact_quality,
+            attacker_uniform,
+            defender_uniform,
+        })
+    }
+
+    pub fn sample(self, attacker_uniform: f64, defender_uniform: f64) -> DuelOutcome {
+        match duel_outcome_code_from_margin(
+            self.margin(attacker_uniform, defender_uniform),
+            self.contact_quality,
+            self.defender_action,
+        ) {
+            0 => DuelOutcome::AttackerWins,
+            1 => DuelOutcome::DefenderWins,
+            _ => DuelOutcome::LooseBall,
+        }
+    }
+
+    pub fn probabilities(self) -> DuelOutcomeProbabilities {
+        let margin_without_rolls = self.margin(0.0, 0.0);
+        let contest_band = duel_contest_margin_band(self.contact_quality, self.defender_action);
+        let attacker_wins = uniform_difference_cdf(-contest_band - margin_without_rolls, 12.0);
+        let defender_wins = 1.0 - uniform_difference_cdf(contest_band - margin_without_rolls, 12.0);
+        DuelOutcomeProbabilities {
+            attacker_wins,
+            defender_wins,
+            loose_ball: (1.0 - attacker_wins - defender_wins).max(0.0),
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct InterceptionResolveInput {
     pub defender_defence: f64,
@@ -147,14 +249,32 @@ pub fn duel_margin(input: &DuelResolveInput<'_>) -> f64 {
         - input.attacker_uniform
 }
 
+pub fn duel_contest_margin_band(contact_quality: f64, defender_action: &str) -> f64 {
+    let commitment = engagement_profile(defender_action).outcome_commitment;
+    (1.5 + 3.5 * contact_quality.clamp(0.0, 1.0) * commitment).clamp(1.5, 5.0)
+}
+
+pub fn duel_outcome_code_from_margin(
+    margin: f64,
+    contact_quality: f64,
+    defender_action: &str,
+) -> u8 {
+    let contest_band = duel_contest_margin_band(contact_quality, defender_action);
+    if margin > contest_band {
+        1
+    } else if margin < -contest_band {
+        0
+    } else {
+        2
+    }
+}
+
 pub fn resolve_duel(input: &DuelResolveInput<'_>) -> &'static str {
     let margin = duel_margin(input);
-    if margin > 8.0 {
-        "defender_wins"
-    } else if margin < -8.0 {
-        "attacker_wins"
-    } else {
-        "loose_ball"
+    match duel_outcome_code_from_margin(margin, input.contact_quality, input.defender_action) {
+        0 => "attacker_wins",
+        1 => "defender_wins",
+        _ => "loose_ball",
     }
 }
 
@@ -175,6 +295,7 @@ struct ContactEngagementProfile {
     reach_scale: f64,
     engagement_weight: f64,
     outcome_commitment: f64,
+    records_tackle_attempt: bool,
     containment_weight: f64,
     containment_reach_scale: f64,
 }
@@ -185,6 +306,7 @@ const CONTACT_ENGAGEMENT_PROFILES: [ContactEngagementProfile; 5] = [
         reach_scale: 1.08,
         engagement_weight: 0.86,
         outcome_commitment: 1.0,
+        records_tackle_attempt: true,
         containment_weight: 0.28,
         containment_reach_scale: 0.95,
     },
@@ -193,6 +315,7 @@ const CONTACT_ENGAGEMENT_PROFILES: [ContactEngagementProfile; 5] = [
         reach_scale: 0.94,
         engagement_weight: 0.36,
         outcome_commitment: 0.56,
+        records_tackle_attempt: false,
         containment_weight: 0.46,
         containment_reach_scale: 1.15,
     },
@@ -201,6 +324,7 @@ const CONTACT_ENGAGEMENT_PROFILES: [ContactEngagementProfile; 5] = [
         reach_scale: 0.0,
         engagement_weight: 0.0,
         outcome_commitment: 0.0,
+        records_tackle_attempt: false,
         containment_weight: 0.42,
         containment_reach_scale: 1.20,
     },
@@ -209,6 +333,7 @@ const CONTACT_ENGAGEMENT_PROFILES: [ContactEngagementProfile; 5] = [
         reach_scale: 0.0,
         engagement_weight: 0.0,
         outcome_commitment: 0.0,
+        records_tackle_attempt: false,
         containment_weight: 0.84,
         containment_reach_scale: 1.28,
     },
@@ -217,6 +342,7 @@ const CONTACT_ENGAGEMENT_PROFILES: [ContactEngagementProfile; 5] = [
         reach_scale: 0.0,
         engagement_weight: 0.0,
         outcome_commitment: 0.0,
+        records_tackle_attempt: false,
         containment_weight: 0.60,
         containment_reach_scale: 1.16,
     },
@@ -232,9 +358,14 @@ fn engagement_profile(action: &str) -> ContactEngagementProfile {
             reach_scale: 0.0,
             engagement_weight: 0.0,
             outcome_commitment: 0.0,
+            records_tackle_attempt: false,
             containment_weight: 0.0,
             containment_reach_scale: 0.0,
         })
+}
+
+pub fn records_tackle_attempt(action: &str) -> bool {
+    engagement_profile(action).records_tackle_attempt
 }
 
 fn step_toward(origin: (f64, f64), target: (f64, f64), step_distance: f64) -> (f64, f64) {
@@ -395,26 +526,146 @@ fn uniform_difference_cdf(value: f64, bound: f64) -> f64 {
     }
 }
 
+fn canonical_duel_holder_action(holder_action: &str) -> &'static str {
+    match holder_action {
+        "carry" => "carry",
+        "pass" => "pass",
+        "reorient" => "reorient",
+        "hold" | "shield" => "hold",
+        _ => panic!("unsupported duel holder action: {holder_action}"),
+    }
+}
+
 fn duel_outcome_probabilities(
     attacker_dribbling: f64,
     defender: &DefenderActionInput,
     holder_action: &str,
     contact_quality: f64,
 ) -> (f64, f64, f64) {
-    let margin_without_rolls = duel_margin(&DuelResolveInput {
+    let probabilities = DuelOutcomeTransition::new(
         attacker_dribbling,
-        defender_tackling: defender.tackling,
-        defender_defence: defender.defence,
-        holder_action,
-        defender_action: defender.action,
+        *defender,
+        canonical_duel_holder_action(holder_action),
         contact_quality,
-        attacker_uniform: 0.0,
-        defender_uniform: 0.0,
+    )
+    .probabilities();
+    (
+        probabilities.attacker_wins,
+        probabilities.defender_wins,
+        probabilities.loose_ball,
+    )
+}
+
+pub fn control_contact_transition(
+    holder_pos: (f64, f64),
+    holder_action: &str,
+    control_target: (f64, f64),
+    control_step_distance: f64,
+    attacker_dribbling: f64,
+    defenders: &[DefenderActionInput],
+    tackle_range: f64,
+) -> ControlContactTransition {
+    let contact = detect_duel(&DuelDetectionInput {
+        holder_pos,
+        holder_action,
+        carry_target: control_target,
+        carrier_step_distance: control_step_distance,
+        defenders,
+        tackle_range,
     });
-    let attacker_wins = uniform_difference_cdf(-8.0 - margin_without_rolls, 12.0);
-    let defender_wins = 1.0 - uniform_difference_cdf(8.0 - margin_without_rolls, 12.0);
-    let loose_ball = (1.0 - attacker_wins - defender_wins).max(0.0);
-    (attacker_wins, defender_wins, loose_ball)
+    let Some(defender) = contact.defender_index.and_then(|defender_index| {
+        defenders
+            .iter()
+            .find(|defender| defender.index == defender_index)
+    }) else {
+        return ControlContactTransition {
+            contact,
+            retained_probability: 1.0,
+            opposing_control_probability: 0.0,
+            unresolved_probability: 0.0,
+        };
+    };
+    let (_, defender_wins, loose_ball) = duel_outcome_probabilities(
+        attacker_dribbling,
+        defender,
+        holder_action,
+        contact.contact_quality,
+    );
+    let contact_probability = contact.contact_probability.clamp(0.0, 1.0);
+    let opposing_control_probability = contact_probability * defender_wins;
+    let unresolved_probability = contact_probability * loose_ball;
+    ControlContactTransition {
+        contact,
+        retained_probability: (1.0 - opposing_control_probability - unresolved_probability)
+            .clamp(0.0, 1.0),
+        opposing_control_probability,
+        unresolved_probability,
+    }
+}
+
+pub fn carry_contact_transition(
+    holder_pos: (f64, f64),
+    carry_target: (f64, f64),
+    carrier_step_distance: f64,
+    attacker_dribbling: f64,
+    defenders: &[DefenderActionInput],
+    tackle_range: f64,
+) -> ControlContactTransition {
+    control_contact_transition(
+        holder_pos,
+        "carry",
+        carry_target,
+        carrier_step_distance,
+        attacker_dribbling,
+        defenders,
+        tackle_range,
+    )
+}
+
+pub fn pass_release_contact_transition(
+    holder_pos: (f64, f64),
+    pass_target: (f64, f64),
+    release_step_distance: f64,
+    attacker_dribbling: f64,
+    defenders: &[DefenderActionInput],
+    tackle_range: f64,
+) -> PassReleaseContactTransition {
+    let contact = detect_duel(&DuelDetectionInput {
+        holder_pos,
+        holder_action: "pass",
+        carry_target: pass_target,
+        carrier_step_distance: release_step_distance,
+        defenders,
+        tackle_range,
+    });
+    let Some(defender) = contact.defender_index.and_then(|defender_index| {
+        defenders
+            .iter()
+            .find(|defender| defender.index == defender_index)
+    }) else {
+        return PassReleaseContactTransition {
+            contact,
+            released_probability: 1.0,
+            opposing_control_probability: 0.0,
+            unresolved_probability: 0.0,
+        };
+    };
+    let (_, defender_wins, loose_ball) = duel_outcome_probabilities(
+        attacker_dribbling,
+        defender,
+        "pass",
+        contact.contact_quality,
+    );
+    let contact_probability = contact.contact_probability.clamp(0.0, 1.0);
+    let opposing_control_probability = contact_probability * defender_wins;
+    let unresolved_probability = contact_probability * loose_ball;
+    PassReleaseContactTransition {
+        contact,
+        released_probability: (1.0 - opposing_control_probability - unresolved_probability)
+            .clamp(0.0, 1.0),
+        opposing_control_probability,
+        unresolved_probability,
+    }
 }
 
 fn projected_defender_actions(
@@ -561,36 +812,19 @@ fn carry_survival_transition_with_defender_provider<'a>(
             step_distance * (segment + 1) as f64,
         );
         let projected_defenders = defenders_for_segment(segment);
-        let duel = detect_duel(&DuelDetectionInput {
+        let contact = carry_contact_transition(
             holder_pos,
-            holder_action: "carry",
-            carry_target: input.carry_target,
-            carrier_step_distance: step_distance,
-            defenders: &projected_defenders,
-            tackle_range: input.tackle_range,
-        });
-        peak_contact_probability = peak_contact_probability.max(duel.contact_probability);
+            input.carry_target,
+            step_distance,
+            input.attacker_dribbling,
+            &projected_defenders,
+            input.tackle_range,
+        );
+        peak_contact_probability =
+            peak_contact_probability.max(contact.contact.contact_probability);
         let entering_probability = unconstrained_control_probability;
-        let (opposing_increment, unresolved_increment) = duel
-            .defender_index
-            .and_then(|defender_idx| {
-                projected_defenders
-                    .iter()
-                    .find(|defender| defender.index == defender_idx)
-            })
-            .map(|defender| {
-                let (_, defender_wins, loose_ball) = duel_outcome_probabilities(
-                    input.attacker_dribbling,
-                    defender,
-                    "carry",
-                    duel.contact_quality,
-                );
-                (
-                    entering_probability * duel.contact_probability * defender_wins,
-                    entering_probability * duel.contact_probability * loose_ball,
-                )
-            })
-            .unwrap_or((0.0, 0.0));
+        let opposing_increment = entering_probability * contact.opposing_control_probability;
+        let unresolved_increment = entering_probability * contact.unresolved_probability;
         let surviving_after_contact =
             entering_probability - opposing_increment - unresolved_increment;
         let containment = carry_containment_transition(&CarryContainmentInput {
@@ -609,13 +843,13 @@ fn carry_survival_transition_with_defender_provider<'a>(
         weighted_opposing_position.0 += opposing_increment
             * projected_defenders
                 .iter()
-                .find(|defender| Some(defender.index) == duel.defender_index)
+                .find(|defender| Some(defender.index) == contact.contact.defender_index)
                 .map(|defender| defender.pos.0)
                 .unwrap_or(carrier_end.0);
         weighted_opposing_position.1 += opposing_increment
             * projected_defenders
                 .iter()
-                .find(|defender| Some(defender.index) == duel.defender_index)
+                .find(|defender| Some(defender.index) == contact.contact.defender_index)
                 .map(|defender| defender.pos.1)
                 .unwrap_or(carrier_end.1);
         weighted_constrained_position.0 +=
@@ -824,8 +1058,9 @@ pub fn detect_interception(input: &InterceptionDetectionInput<'_>) -> DetectionR
 mod tests {
     use super::{
         carry_containment_transition, carry_survival_transition,
-        carry_survival_transition_with_defender_responses, detect_duel, track_defensive_pressures,
-        track_defensive_pressures_into, resolve_duel, CarryContainmentInput, CarrySurvivalInput,
+        carry_survival_transition_with_defender_responses, detect_duel, duel_outcome_probabilities,
+        pass_release_contact_transition, resolve_duel, track_defensive_pressures,
+        track_defensive_pressures_into, CarryContainmentInput, CarrySurvivalInput,
         DefenderActionInput, DefensivePressureInput, DuelDetectionInput, DuelResolveInput,
     };
     use crate::{temporal_option_value, PossessionTransition, TemporalOptionValueInput};
@@ -1108,6 +1343,125 @@ mod tests {
     }
 
     #[test]
+    fn analytical_duel_probabilities_match_the_live_uniform_resolution_grid() {
+        let defender = DefenderActionInput {
+            index: 0,
+            pos: (1.0, 0.0),
+            new_pos: (0.5, 0.0),
+            action: "tackle",
+            speed: 78.0,
+            defence: 82.0,
+            tackling: 86.0,
+            is_goalkeeper: false,
+        };
+        let contact_quality = 0.72;
+        let expected = duel_outcome_probabilities(79.0, &defender, "carry", contact_quality);
+        let samples = 401usize;
+        let mut attacker_wins = 0usize;
+        let mut defender_wins = 0usize;
+        let mut loose = 0usize;
+        for attacker_index in 0..samples {
+            for defender_index in 0..samples {
+                let attacker_uniform =
+                    -12.0 + 24.0 * (attacker_index as f64 + 0.5) / samples as f64;
+                let defender_uniform =
+                    -12.0 + 24.0 * (defender_index as f64 + 0.5) / samples as f64;
+                match resolve_duel(&DuelResolveInput {
+                    attacker_dribbling: 79.0,
+                    defender_tackling: defender.tackling,
+                    defender_defence: defender.defence,
+                    holder_action: "carry",
+                    defender_action: defender.action,
+                    contact_quality,
+                    attacker_uniform,
+                    defender_uniform,
+                }) {
+                    "attacker_wins" => attacker_wins += 1,
+                    "defender_wins" => defender_wins += 1,
+                    _ => loose += 1,
+                }
+            }
+        }
+        let total = (samples * samples) as f64;
+        let observed = (
+            attacker_wins as f64 / total,
+            defender_wins as f64 / total,
+            loose as f64 / total,
+        );
+
+        assert!((observed.0 - expected.0).abs() < 0.003);
+        assert!((observed.1 - expected.1).abs() < 0.003);
+        assert!((observed.2 - expected.2).abs() < 0.003);
+    }
+
+    #[test]
+    fn pass_release_transition_matches_live_contact_and_duel_sampling_grid() {
+        let defender = DefenderActionInput {
+            index: 3,
+            pos: (0.8, 0.2),
+            new_pos: (0.2, 0.0),
+            action: "tackle",
+            speed: 81.0,
+            defence: 84.0,
+            tackling: 87.0,
+            is_goalkeeper: false,
+        };
+        let transition =
+            pass_release_contact_transition((0.0, 0.0), (12.0, 1.0), 0.54, 78.0, &[defender], 6.0);
+        let samples = 121usize;
+        let mut released = 0usize;
+        let mut opposing = 0usize;
+        let mut unresolved = 0usize;
+        for contact_index in 0..samples {
+            let contact_roll = (contact_index as f64 + 0.5) / samples as f64;
+            for attacker_index in 0..samples {
+                let attacker_uniform =
+                    -12.0 + 24.0 * (attacker_index as f64 + 0.5) / samples as f64;
+                for defender_index in 0..samples {
+                    let defender_uniform =
+                        -12.0 + 24.0 * (defender_index as f64 + 0.5) / samples as f64;
+                    if contact_roll >= transition.contact.contact_probability {
+                        released += 1;
+                        continue;
+                    }
+                    match resolve_duel(&DuelResolveInput {
+                        attacker_dribbling: 78.0,
+                        defender_tackling: defender.tackling,
+                        defender_defence: defender.defence,
+                        holder_action: "pass",
+                        defender_action: defender.action,
+                        contact_quality: transition.contact.contact_quality,
+                        attacker_uniform,
+                        defender_uniform,
+                    }) {
+                        "attacker_wins" => released += 1,
+                        "defender_wins" => opposing += 1,
+                        _ => unresolved += 1,
+                    }
+                }
+            }
+        }
+        let total = samples.pow(3) as f64;
+        let observed = (
+            released as f64 / total,
+            opposing as f64 / total,
+            unresolved as f64 / total,
+        );
+
+        assert!((observed.0 - transition.released_probability).abs() < 0.006);
+        assert!((observed.1 - transition.opposing_control_probability).abs() < 0.006);
+        assert!((observed.2 - transition.unresolved_probability).abs() < 0.006);
+        assert!(
+            (transition.released_probability
+                + transition.opposing_control_probability
+                + transition.unresolved_probability
+                - 1.0)
+                .abs()
+                < 1e-9
+        );
+    }
+
+    #[test]
     fn contact_risk_lowers_the_carry_temporal_value() {
         let defenders = [defender(5, (3.0, 2.0), (2.4, 0.4), "tackle")];
         let safe = carry_survival_transition(&CarrySurvivalInput {
@@ -1138,7 +1492,7 @@ mod tests {
                     opposing_control_probability: opposing,
                     opposing_control_value: 0.18,
                 },
-                duration_ticks: 1,
+                duration_seconds: 2.0,
                 tempo: 0.56,
                 risk_budget: 0.48,
             })

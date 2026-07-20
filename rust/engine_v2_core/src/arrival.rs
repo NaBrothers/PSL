@@ -126,13 +126,15 @@ fn pass_arrival_score(
         target_bias += (1.0 - distance(goal_pos, target) / 16.0).max(0.0) * 0.65;
     }
     let committed_run = smoothstep(0.12, 0.82, target_bias);
-    let movement_target = if player.is_intended {
+    let movement_target = if player.is_intended || !team_side_is_passer {
         target
     } else {
         player.current_goal_pos.unwrap_or(player.target_pos)
     };
     let movement_intent = if player.is_intended {
         "attack_run"
+    } else if !team_side_is_passer {
+        "contest"
     } else {
         player.movement_intent
     };
@@ -160,9 +162,6 @@ fn pass_arrival_score(
     let mut score = effective_dist + raw_dist * occupation_weight;
     if player.is_intended {
         score *= 0.58;
-    }
-    if !team_side_is_passer {
-        score += target_bias.max(0.0) * 0.18;
     }
     score
 }
@@ -281,9 +280,7 @@ fn best_trajectory_contact_player(
     (best_index, best_distance, control)
 }
 
-fn earliest_trajectory_contact(
-    input: &PassArrivalInput<'_>,
-) -> Option<PassArrivalOutput> {
+fn earliest_trajectory_contact(input: &PassArrivalInput<'_>) -> Option<PassArrivalOutput> {
     let flight_ticks = input.flight_ticks_total.max(0);
     if flight_ticks <= 1 || distance(input.flight_origin, input.target_pos) <= 1e-6 {
         return None;
@@ -321,24 +318,23 @@ fn earliest_trajectory_contact(
     None
 }
 
-fn pitch_clamp(pos: (f64, f64), pitch_length: f64, pitch_width: f64) -> (f64, f64) {
-    (
-        pos.0.clamp(0.5, pitch_length - 0.5),
-        pos.1.clamp(0.5, pitch_width - 0.5),
-    )
-}
-
 pub fn resolve_first_touch(input: &FirstTouchInput) -> FirstTouchOutput {
     let error_chance = (100.0 - input.iq) / input.first_touch_error_divisor;
-    let is_error = input.error_roll < error_chance;
-    let loose_pos = pitch_clamp(
-        (
-            input.target_pos.0 + (-4.0 + 8.0 * input.loose_x_roll),
-            input.target_pos.1 + (-4.0 + 8.0 * input.loose_y_roll),
-        ),
-        input.pitch_length,
-        input.pitch_width,
+    let is_error = matches!(
+        crate::execution_transition::BinaryExecutionTransition::from_success_probability(
+            error_chance,
+        )
+        .sample(input.error_roll),
+        crate::execution_transition::BinaryExecutionOutcome::Success
     );
+    let loose_pos = crate::execution_transition::RectangularLooseBallTransition {
+        center: input.target_pos,
+        radius_x: 4.0,
+        radius_y: 4.0,
+        pitch_length: input.pitch_length,
+        pitch_width: input.pitch_width,
+    }
+    .sample(input.loose_x_roll, input.loose_y_roll);
     FirstTouchOutput {
         error_chance,
         is_error,
@@ -560,5 +556,38 @@ mod tests {
         assert_eq!(arrival.receiver_index, Some(receiver.index));
         assert_eq!(arrival.contact_pos, target);
         assert_eq!(arrival.contact_tick, 4);
+    }
+
+    #[test]
+    fn defender_contests_the_destination_during_the_pass_flight() {
+        let target = (90.0, 34.0);
+        let passer = arrival_player(0, (74.0, 34.0), true, false);
+        let receiver = arrival_player(1, (88.0, 34.0), false, true);
+        let mut defender = arrival_player(7, (91.0, 37.0), false, false);
+        defender.is_passer_team = false;
+        defender.target_pos = (82.0, 46.0);
+        defender.current_goal_pos = Some(defender.target_pos);
+
+        let arrival = resolve_pass_arrival(&PassArrivalInput {
+            flight_origin: passer.pos,
+            target_pos: target,
+            flight_ticks_total: 2,
+            passer_team_is_receiver_team: true,
+            contest_radius: 2.5,
+            player_max_speed: 5.5,
+            player_min_speed: 2.5,
+            target_occupation_weight: 0.18,
+            receivers: &[passer, receiver],
+            opponents: &[defender],
+        });
+
+        assert!(
+            arrival.opponent_control > 0.0,
+            "a nearby defender must react to the destination instead of continuing away from it"
+        );
+        assert!(
+            arrival.opponent_score < distance(defender.target_pos, target),
+            "the pass flight must let the defender close the destination"
+        );
     }
 }

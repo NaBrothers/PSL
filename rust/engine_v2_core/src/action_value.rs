@@ -92,45 +92,41 @@ pub fn estimate_second_ball_control(
 }
 
 pub fn shot_possession_transition(input: &ShotPossessionTransitionInput) -> PossessionTransition {
-    let execution_probability = input.execution_probability.clamp(0.0, 1.0);
-    let unreleased_probability = 1.0 - execution_probability;
-    let declared_release_probability = input.release_probability.clamp(0.0, 1.0);
-    let declared_block_probability = input.block_probability.clamp(0.0, 1.0);
-    let contest_probability_mass = declared_release_probability + declared_block_probability;
-    let (release_probability, block_probability) = if contest_probability_mass > 1e-9 {
-        (
-            declared_release_probability / contest_probability_mass,
-            declared_block_probability / contest_probability_mass,
-        )
-    } else {
-        (1.0, 0.0)
-    };
+    let execution = crate::execution_transition::ShotExecutionTransition::new(
+        input.execution_probability,
+        input.release_probability,
+        input.block_probability,
+    );
+    shot_possession_transition_from_execution(input, execution)
+}
+
+pub fn shot_possession_transition_from_execution(
+    input: &ShotPossessionTransitionInput,
+    execution: crate::execution_transition::ShotExecutionTransition,
+) -> PossessionTransition {
+    let execution = execution.mass();
     let conditional_on_target_probability = input.conditional_on_target_probability.clamp(0.0, 1.0);
-    let on_target_probability =
-        execution_probability * release_probability * conditional_on_target_probability;
+    let on_target_probability = execution.released * conditional_on_target_probability;
     let goal_probability =
-        (execution_probability * input.goal_probability).clamp(0.0, on_target_probability);
+        ((1.0 - execution.mishit) * input.goal_probability).clamp(0.0, on_target_probability);
     let saved_probability = (on_target_probability - goal_probability).max(0.0);
-    let off_target_probability =
-        execution_probability * release_probability * (1.0 - conditional_on_target_probability);
-    let unreleased_retained_probability = unreleased_probability
+    let off_target_probability = execution.released * (1.0 - conditional_on_target_probability);
+    let unreleased_retained_probability = execution.mishit
         * input
             .unreleased_second_ball
             .attacking_control_probability
             .clamp(0.0, 1.0);
-    let unreleased_opposing_probability = unreleased_probability
+    let unreleased_opposing_probability = execution.mishit
         * input
             .unreleased_second_ball
             .defending_control_probability
             .clamp(0.0, 1.0);
-    let blocked_retained_probability = execution_probability
-        * block_probability
+    let blocked_retained_probability = execution.blocked
         * input
             .blocked_second_ball
             .attacking_control_probability
             .clamp(0.0, 1.0);
-    let blocked_opposing_probability = execution_probability
-        * block_probability
+    let blocked_opposing_probability = execution.blocked
         * input
             .blocked_second_ball
             .defending_control_probability
@@ -171,7 +167,7 @@ pub fn shot_possession_transition(input: &ShotPossessionTransitionInput) -> Poss
 pub struct TemporalOptionValueInput {
     pub current_control_value: f64,
     pub transition: PossessionTransition,
-    pub duration_ticks: i32,
+    pub duration_seconds: f64,
     pub tempo: f64,
     pub risk_budget: f64,
 }
@@ -191,6 +187,7 @@ pub struct TemporalOptionValueOutput {
 pub struct ActionOutcomeValueInput {
     pub temporal: TemporalOptionValueOutput,
     pub policy_alignment: f64,
+    pub current_control_value: f64,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -198,10 +195,48 @@ pub struct ActionOutcomeValueOutput {
     pub score: f64,
     pub outcome_value: f64,
     pub policy_value: f64,
+    pub policy_budget: f64,
+}
+
+pub fn action_policy_budget(current_control_value: f64, outcome_value: f64) -> f64 {
+    let current_control_value = current_control_value.clamp(0.0, 1.0);
+    let outcome_value = outcome_value.clamp(-1.0, 1.0);
+    let outcome_advantage = (outcome_value - current_control_value).abs();
+    let tie_break_resolution = 0.002 * current_control_value;
+    (0.12 * outcome_advantage + tie_break_resolution).min(0.012)
+}
+
+pub fn merge_action_policy_alignment(
+    policy_budget: f64,
+    current_policy_value: f64,
+    additional_alignment: f64,
+) -> f64 {
+    if policy_budget <= 1e-12 {
+        return 0.0;
+    }
+    let current_alignment = current_policy_value / policy_budget;
+    policy_budget * (current_alignment + additional_alignment).clamp(-0.25, 1.0)
+}
+
+pub fn merge_action_outcome_policy(
+    current: ActionOutcomeValueOutput,
+    additional_alignment: f64,
+) -> ActionOutcomeValueOutput {
+    let policy_value = merge_action_policy_alignment(
+        current.policy_budget,
+        current.policy_value,
+        additional_alignment,
+    );
+    ActionOutcomeValueOutput {
+        score: current.outcome_value + policy_value,
+        outcome_value: current.outcome_value,
+        policy_value,
+        policy_budget: current.policy_budget,
+    }
 }
 
 pub fn temporal_option_value(input: &TemporalOptionValueInput) -> TemporalOptionValueOutput {
-    let duration = input.duration_ticks.max(1) as f64;
+    let duration = input.duration_seconds.max(0.1);
     let tempo = input.tempo.clamp(0.0, 1.0);
     let risk_budget = input.risk_budget.clamp(0.0, 1.0);
     let temporal_discount = (-(0.0015 + 0.0060 * tempo) * duration).exp();
@@ -241,19 +276,22 @@ pub fn temporal_option_value(input: &TemporalOptionValueInput) -> TemporalOption
 
 pub fn action_outcome_value(input: &ActionOutcomeValueInput) -> ActionOutcomeValueOutput {
     let outcome_value = input.temporal.score;
-    let policy_value = 0.035 * input.policy_alignment.clamp(-0.25, 1.25);
+    let policy_budget = action_policy_budget(input.current_control_value, outcome_value);
+    let policy_value = policy_budget * input.policy_alignment.clamp(-0.25, 1.0);
     ActionOutcomeValueOutput {
         score: outcome_value + policy_value,
         outcome_value,
         policy_value,
+        policy_budget,
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::{
-        action_outcome_value, estimate_second_ball_control, shot_possession_transition,
-        temporal_option_value, ActionOutcomeValueInput, PossessionTransition,
+        action_outcome_value, action_policy_budget, estimate_second_ball_control,
+        merge_action_outcome_policy, shot_possession_transition, temporal_option_value,
+        ActionOutcomeValueInput, ActionOutcomeValueOutput, PossessionTransition,
         SecondBallControlEstimate, SecondBallControlInput, SecondBallPlayerInput,
         ShotPossessionTransitionInput, TemporalOptionValueInput,
     };
@@ -413,7 +451,7 @@ mod tests {
                 opposing_control_probability: 0.16,
                 opposing_control_value: 0.11,
             },
-            duration_ticks: 1,
+            duration_seconds: 2.0,
             tempo: 0.38,
             risk_budget: 0.28,
         });
@@ -426,7 +464,7 @@ mod tests {
                 opposing_control_probability: 0.85,
                 opposing_control_value: 0.06,
             },
-            duration_ticks: 1,
+            duration_seconds: 2.0,
             tempo: 0.38,
             risk_budget: 0.28,
         });
@@ -447,12 +485,12 @@ mod tests {
                 opposing_control_probability: 0.28,
                 opposing_control_value: 0.08,
             },
-            duration_ticks: 1,
+            duration_seconds: 2.0,
             tempo: 0.55,
             risk_budget: 0.50,
         });
         let long = temporal_option_value(&TemporalOptionValueInput {
-            duration_ticks: 4,
+            duration_seconds: 8.0,
             ..TemporalOptionValueInput {
                 current_control_value: 0.12,
                 transition: PossessionTransition {
@@ -462,7 +500,7 @@ mod tests {
                     opposing_control_probability: 0.28,
                     opposing_control_value: 0.08,
                 },
-                duration_ticks: 1,
+                duration_seconds: 2.0,
                 tempo: 0.55,
                 risk_budget: 0.50,
             }
@@ -470,6 +508,34 @@ mod tests {
 
         assert!(long.temporal_discount < short.temporal_discount);
         assert!(long.score < short.score);
+    }
+
+    #[test]
+    fn temporal_value_depends_on_elapsed_time_not_simulation_tick_granularity() {
+        let transition = PossessionTransition {
+            goal_probability: 0.0,
+            retained_control_probability: 0.92,
+            retained_control_value: 0.18,
+            opposing_control_probability: 0.08,
+            opposing_control_value: 0.07,
+        };
+        let evaluate_discretization = |ticks: i32, tick_duration: f64| {
+            temporal_option_value(&TemporalOptionValueInput {
+                current_control_value: 0.15,
+                transition,
+                duration_seconds: ticks as f64 * tick_duration,
+                tempo: 0.55,
+                risk_budget: 0.50,
+            })
+        };
+        let two_one_second_ticks = evaluate_discretization(2, 1.0);
+        let one_two_second_tick = evaluate_discretization(1, 2.0);
+
+        assert_eq!(
+            two_one_second_ticks.temporal_discount,
+            one_two_second_tick.temporal_discount
+        );
+        assert_eq!(two_one_second_ticks.score, one_two_second_tick.score);
     }
 
     #[test]
@@ -483,7 +549,7 @@ mod tests {
                 opposing_control_probability: 0.62,
                 opposing_control_value: 0.12,
             },
-            duration_ticks: 2,
+            duration_seconds: 4.0,
             tempo: 0.72,
             risk_budget: 0.68,
         });
@@ -496,7 +562,7 @@ mod tests {
                 opposing_control_probability: 0.53,
                 opposing_control_value: 0.05,
             },
-            duration_ticks: 1,
+            duration_seconds: 2.0,
             tempo: 0.72,
             risk_budget: 0.68,
         });
@@ -515,7 +581,7 @@ mod tests {
                 opposing_control_probability: 0.45,
                 opposing_control_value: 0.10,
             },
-            duration_ticks: 1,
+            duration_seconds: 2.0,
             tempo: 0.64,
             risk_budget: 0.62,
         });
@@ -528,7 +594,7 @@ mod tests {
                 opposing_control_probability: 0.70,
                 opposing_control_value: 0.05,
             },
-            duration_ticks: 1,
+            duration_seconds: 2.0,
             tempo: 0.64,
             risk_budget: 0.62,
         });
@@ -547,7 +613,7 @@ mod tests {
                 opposing_control_probability: 0.72,
                 opposing_control_value: 0.05,
             },
-            duration_ticks: 1,
+            duration_seconds: 2.0,
             tempo: 0.62,
             risk_budget: 0.58,
         });
@@ -560,17 +626,19 @@ mod tests {
                 opposing_control_probability: 0.18,
                 opposing_control_value: 0.08,
             },
-            duration_ticks: 2,
+            duration_seconds: 4.0,
             tempo: 0.62,
             risk_budget: 0.58,
         });
         let terminal_value = action_outcome_value(&ActionOutcomeValueInput {
             temporal: direct_terminal,
             policy_alignment: 0.0,
+            current_control_value: 0.12,
         });
         let control_value = action_outcome_value(&ActionOutcomeValueInput {
             temporal: safe_control,
             policy_alignment: 1.25,
+            current_control_value: 0.12,
         });
 
         assert!(
@@ -582,8 +650,83 @@ mod tests {
             "the bounded team policy term must not overturn a materially better executed result"
         );
         assert!(
-            control_value.policy_value <= 0.04375 + 1e-12,
+            control_value.policy_value <= control_value.policy_budget + 1e-12,
             "team policy must stay a coordination term instead of a replacement action value"
+        );
+    }
+
+    #[test]
+    fn policy_budget_scales_with_action_advantage_not_absolute_state_value() {
+        let temporal = temporal_option_value(&TemporalOptionValueInput {
+            current_control_value: 0.72,
+            transition: PossessionTransition {
+                goal_probability: 0.0,
+                retained_control_probability: 1.0,
+                retained_control_value: 0.54,
+                opposing_control_probability: 0.0,
+                opposing_control_value: 0.0,
+            },
+            duration_seconds: 2.0,
+            tempo: 0.5,
+            risk_budget: 0.5,
+        });
+        let aligned = action_outcome_value(&ActionOutcomeValueInput {
+            temporal,
+            policy_alignment: 1.0,
+            current_control_value: 0.72,
+        });
+        let opposed = action_outcome_value(&ActionOutcomeValueInput {
+            temporal,
+            policy_alignment: -0.25,
+            current_control_value: 0.72,
+        });
+
+        let expected_advantage = (aligned.outcome_value - 0.72).abs();
+        assert!(
+            (aligned.policy_budget - (0.12 * expected_advantage + 0.002 * 0.72).min(0.012)).abs()
+                < 1e-12
+        );
+        assert!(aligned.policy_budget <= 0.012);
+        assert_eq!(aligned.policy_value, aligned.policy_budget);
+        assert_eq!(opposed.policy_value, -0.25 * opposed.policy_budget);
+        assert!(
+            aligned.score - opposed.score <= 0.015 + f64::EPSILON,
+            "policy preference must stay a bounded tie-breaker on the action-advantage scale"
+        );
+    }
+
+    #[test]
+    fn near_indifferent_outcome_receives_only_a_small_policy_tie_break() {
+        let budget = action_policy_budget(0.1170, 0.1174);
+
+        assert!(budget < 0.0003);
+        assert!(
+            budget < (0.1174_f64 - 0.1170_f64).abs(),
+            "policy must not be larger than the executed advantage it is meant to break"
+        );
+    }
+
+    #[test]
+    fn multiple_policy_sources_share_one_budget_instead_of_stacking_bonuses() {
+        let budget = action_policy_budget(0.40, 0.36);
+        let team_policy_value = budget * 0.70;
+        let current = ActionOutcomeValueOutput {
+            score: 0.36 + team_policy_value,
+            outcome_value: 0.36,
+            policy_value: team_policy_value,
+            policy_budget: budget,
+        };
+        let merged = merge_action_outcome_policy(current, 0.80);
+        let opposed = merge_action_outcome_policy(current, -1.0);
+
+        assert_eq!(merged.policy_value, budget);
+        assert_eq!(opposed.policy_value, -0.25 * budget);
+        assert_eq!(merged.outcome_value, current.outcome_value);
+        assert_eq!(opposed.outcome_value, current.outcome_value);
+        assert_eq!(merged.policy_budget, current.policy_budget);
+        assert!(
+            merged.score - opposed.score <= 1.25 * budget + f64::EPSILON,
+            "team-plan and goal alignment must compete inside one policy budget"
         );
     }
 
@@ -598,7 +741,7 @@ mod tests {
                 opposing_control_probability: 0.02,
                 opposing_control_value: 0.10,
             },
-            duration_ticks: 2,
+            duration_seconds: 4.0,
             tempo: 0.70,
             risk_budget: 0.62,
         });
@@ -611,7 +754,7 @@ mod tests {
                 opposing_control_probability: 0.09,
                 opposing_control_value: 0.06,
             },
-            duration_ticks: 2,
+            duration_seconds: 4.0,
             tempo: 0.36,
             risk_budget: 0.24,
         });
@@ -632,7 +775,7 @@ mod tests {
                 opposing_control_probability: 1.0,
                 opposing_control_value: 0.14,
             },
-            duration_ticks: 1,
+            duration_seconds: 2.0,
             tempo: 0.50,
             risk_budget: 0.50,
         });
@@ -645,7 +788,7 @@ mod tests {
                 opposing_control_probability: 1.0,
                 opposing_control_value: 0.05,
             },
-            duration_ticks: 1,
+            duration_seconds: 2.0,
             tempo: 0.50,
             risk_budget: 0.50,
         });

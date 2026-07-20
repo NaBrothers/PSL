@@ -5,7 +5,7 @@ use crate::goalkeeper::{
     compute_gk_save_probability_for_attributes, compute_gk_save_probability_with_context,
     gk_save_context_for_goal, GkSaveAttributes,
 };
-use crate::physics::{distance, smoothstep};
+use crate::physics::{angle_to_goal, distance, smoothstep};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct ShotQualityCacheKey {
@@ -348,10 +348,8 @@ pub fn estimate_shot_outcome(input: &ShotQualityInput<'_>) -> ShotOutcomeEstimat
         0.45 * (-(dist - 30.0) / 14.0).exp()
     };
 
-    let dx = (goal.0 - pos.0).abs();
-    let dy = (goal.1 - pos.1).abs();
-    let directness = dx / (dx * dx + dy * dy).sqrt().max(1.0);
-    let angle_factor = directness.clamp(0.15, 1.0);
+    let visible_goal_angle = angle_to_goal(pos, goal, 7.32);
+    let angle_factor = smoothstep(0.0, std::f64::consts::FRAC_PI_4, visible_goal_angle);
 
     let contest = if let Some(defenders) = input.contest_defenders {
         estimate_shot_contest(pos, goal, defenders)
@@ -793,7 +791,11 @@ mod tests {
     fn expected_goalkeeper_save_probability_matches_individual_target_estimates() {
         let opponents = [];
         for (gk_attributes, gk_pos, attacking_right) in [
-            (Some(test_goalkeeper_attributes()), Some((100.5, 31.8)), true),
+            (
+                Some(test_goalkeeper_attributes()),
+                Some((100.5, 31.8)),
+                true,
+            ),
             (None, None, false),
         ] {
             let input = ShotQualityInput {
@@ -824,8 +826,7 @@ mod tests {
             let expected = [0.10, 0.30, 0.50, 0.70, 0.90]
                 .into_iter()
                 .map(|sample| {
-                    let target_y =
-                        goal_y_min + 0.5 + (goal_y_max - goal_y_min - 1.0) * sample;
+                    let target_y = goal_y_min + 0.5 + (goal_y_max - goal_y_min - 1.0) * sample;
                     estimate_goalkeeper_save_probability(&input, (target_x, target_y))
                 })
                 .sum::<f64>()
@@ -874,6 +875,7 @@ mod tests {
                 pitch_width: 68.0,
                 goal_width: 7.32,
                 ball_shot_speed: 28.0,
+                tick_duration: 2.0,
                 random_1: 0.0,
                 random_2: target_roll,
                 random_3: 0.5,

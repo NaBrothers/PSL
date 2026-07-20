@@ -340,12 +340,25 @@ pub fn continuation_control_readiness(state: PossessionControlState) -> f64 {
         .clamp(0.0, 1.0)
 }
 
+pub fn directional_control_readiness(state: PossessionControlState, target_heading: f64) -> f64 {
+    let continuation = continuation_control_readiness(state);
+    let turn_demand =
+        (angle_diff(state.facing_direction, target_heading).abs() / 180.0).clamp(0.0, 1.0);
+    let turn_access = 1.0
+        - turn_demand
+            * (1.0
+                - 0.75
+                    * state.turn_readiness.clamp(0.0, 1.0)
+                    * (1.0 - 0.45 * state.containment_load));
+    (continuation * turn_access).clamp(0.0, 1.0)
+}
+
 #[cfg(test)]
 mod tests {
     use super::{
-        angle_diff, observe_possession_control, shot_release_readiness, team_shape_readiness,
-        transition_possession_control, PossessionControlObservation, PossessionControlState,
-        PossessionControlTransitionInput,
+        angle_diff, directional_control_readiness, observe_possession_control,
+        shot_release_readiness, team_shape_readiness, transition_possession_control,
+        PossessionControlObservation, PossessionControlState, PossessionControlTransitionInput,
     };
     use crate::physics::{distance, smoothstep};
 
@@ -486,6 +499,28 @@ mod tests {
                 < 1e-12,
             "body preparation must remain separate from shot-line contest quality"
         );
+    }
+
+    #[test]
+    fn directional_control_requires_more_turning_capacity_for_a_reverse_carry() {
+        let control = PossessionControlState {
+            facing_direction: 0.0,
+            pressure_load: 0.25,
+            containment_load: 0.15,
+            forward_control: 0.45,
+            turn_readiness: 0.55,
+            release_window: 0.60,
+            shape_readiness: 0.65,
+            release_preparation: 0.58,
+            stagnation_load: 0.10,
+        };
+
+        let aligned = directional_control_readiness(control, 0.0);
+        let lateral = directional_control_readiness(control, 90.0);
+        let reverse = directional_control_readiness(control, 180.0);
+
+        assert!(aligned > lateral);
+        assert!(lateral > reverse);
     }
 
     #[test]

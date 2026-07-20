@@ -8,6 +8,15 @@ pub struct SoftmaxSelectionOutput {
 }
 
 #[derive(Clone, Copy, Debug)]
+pub struct BoundedRationalSelectionOutput {
+    pub index: usize,
+    pub near_optimal_count: usize,
+    pub discrimination_tolerance: f64,
+    pub temperature: f64,
+    pub used_random_choice: bool,
+}
+
+#[derive(Clone, Copy, Debug)]
 pub struct IqNoiseScoreInput {
     pub score: f64,
     pub iq: f64,
@@ -744,6 +753,100 @@ pub fn softmax_select_index(
     })
 }
 
+pub fn bounded_rational_select_index(
+    scores: &[f64],
+    iq: f64,
+    pressure: f64,
+    roll: f64,
+) -> Option<BoundedRationalSelectionOutput> {
+    bounded_rational_select_index_with_fatigue(scores, iq, pressure, 0.0, roll)
+}
+
+pub fn bounded_rational_select_index_with_fatigue(
+    scores: &[f64],
+    iq: f64,
+    pressure: f64,
+    fatigue: f64,
+    roll: f64,
+) -> Option<BoundedRationalSelectionOutput> {
+    let (best_index, best_score) = scores
+        .iter()
+        .enumerate()
+        .filter(|(_, score)| score.is_finite())
+        .max_by(|(_, left), (_, right)| left.total_cmp(right))
+        .map(|(index, score)| (index, *score))
+        .or_else(|| (!scores.is_empty()).then_some((0, f64::NEG_INFINITY)))?;
+    if !best_score.is_finite() {
+        return Some(BoundedRationalSelectionOutput {
+            index: best_index,
+            near_optimal_count: 1,
+            discrimination_tolerance: 0.0,
+            temperature: 0.0,
+            used_random_choice: false,
+        });
+    }
+
+    let cognitive_noise = crate::goal::iq_decision_noise(iq);
+    let pressure_load = pressure.clamp(0.0, 1.0);
+    let fatigue_load = fatigue.clamp(0.0, 1.0);
+    let load_tolerance = (0.003
+        + cognitive_noise * 0.014
+        + pressure_load * (0.0035 + cognitive_noise * 0.010)
+        + fatigue_load * (0.0025 + cognitive_noise * 0.006))
+        .clamp(0.003, 0.032);
+    let relative_value_tolerance = (best_score.abs() * 0.35).max(0.003);
+    let discrimination_tolerance = load_tolerance.min(relative_value_tolerance);
+    let minimum_near_optimal_score = best_score - discrimination_tolerance;
+    let near_optimal_count = scores
+        .iter()
+        .filter(|score| score.is_finite() && **score >= minimum_near_optimal_score)
+        .count();
+    if near_optimal_count <= 1 {
+        return Some(BoundedRationalSelectionOutput {
+            index: best_index,
+            near_optimal_count: 1,
+            discrimination_tolerance,
+            temperature: 0.0,
+            used_random_choice: false,
+        });
+    }
+
+    let temperature =
+        (discrimination_tolerance * (0.55 + pressure_load * 0.30 + fatigue_load * 0.20)).max(1e-9);
+    let total_weight: f64 = scores
+        .iter()
+        .filter(|score| score.is_finite() && **score >= minimum_near_optimal_score)
+        .map(|score| ((score - best_score) / temperature).exp())
+        .sum();
+    let threshold = roll.clamp(0.0, 1.0) * total_weight;
+    let mut cumulative = 0.0;
+    let mut last_near_optimal_index = best_index;
+    for (index, score) in scores.iter().enumerate() {
+        if !score.is_finite() || *score < minimum_near_optimal_score {
+            continue;
+        }
+        last_near_optimal_index = index;
+        cumulative += ((*score - best_score) / temperature).exp();
+        if threshold <= cumulative {
+            return Some(BoundedRationalSelectionOutput {
+                index,
+                near_optimal_count,
+                discrimination_tolerance,
+                temperature,
+                used_random_choice: true,
+            });
+        }
+    }
+
+    Some(BoundedRationalSelectionOutput {
+        index: last_near_optimal_index,
+        near_optimal_count,
+        discrimination_tolerance,
+        temperature,
+        used_random_choice: true,
+    })
+}
+
 pub fn softmax_select_index_signed(
     scores: &[f64],
     iq: f64,
@@ -857,6 +960,7 @@ pub fn softmax_select_index_with_temperature(
 #[cfg(test)]
 mod tests {
     use super::{
+        bounded_rational_select_index, bounded_rational_select_index_with_fatigue,
         select_hold_support, softmax_select_index, softmax_select_index_signed,
         softmax_select_index_with_temperature, HoldSupportHoldInput, HoldSupportSelectionInput,
         SoftmaxSelectionOutput,
@@ -926,6 +1030,87 @@ mod tests {
 
         assert_eq!(selection.index, 1);
         assert!(selection.total_weight > 1.0);
+    }
+
+    #[test]
+    fn bounded_rational_selection_only_samples_actions_the_player_cannot_reliably_distinguish() {
+        let clear_winner = bounded_rational_select_index(&[0.18, 0.14, 0.08], 100.0, 0.0, 0.99)
+            .expect("non-empty options should be selectable");
+        assert_eq!(clear_winner.index, 0);
+        assert_eq!(clear_winner.near_optimal_count, 1);
+        assert!(!clear_winner.used_random_choice);
+
+        let pressured_low_iq =
+            bounded_rational_select_index(&[0.180, 0.169, 0.090], 35.0, 1.0, 0.99)
+                .expect("non-empty options should be selectable");
+        assert_eq!(pressured_low_iq.index, 1);
+        assert_eq!(pressured_low_iq.near_optimal_count, 2);
+        assert!(pressured_low_iq.used_random_choice);
+
+        for roll in [0.0, 0.25, 0.5, 0.75, 1.0] {
+            let selection = bounded_rational_select_index(&[0.180, 0.169, 0.090], 35.0, 1.0, roll)
+                .expect("non-empty options should be selectable");
+            assert_ne!(
+                selection.index, 2,
+                "bounded rationality must not turn a clearly inferior action into a candidate"
+            );
+        }
+    }
+
+    #[test]
+    fn fatigue_expands_only_the_near_optimal_decision_set() {
+        let fresh = bounded_rational_select_index_with_fatigue(
+            &[0.180, 0.175, 0.120],
+            100.0,
+            0.0,
+            0.0,
+            0.99,
+        )
+        .expect("non-empty options should be selectable");
+        let fatigued = bounded_rational_select_index_with_fatigue(
+            &[0.180, 0.175, 0.120],
+            100.0,
+            0.0,
+            1.0,
+            0.99,
+        )
+        .expect("non-empty options should be selectable");
+
+        assert_eq!(fresh.near_optimal_count, 1);
+        assert!(!fresh.used_random_choice);
+        assert_eq!(fatigued.near_optimal_count, 2);
+        assert!(fatigued.used_random_choice);
+        for roll in [0.0, 0.25, 0.5, 0.75, 1.0] {
+            let selection = bounded_rational_select_index_with_fatigue(
+                &[0.180, 0.175, 0.120],
+                100.0,
+                0.0,
+                1.0,
+                roll,
+            )
+            .expect("non-empty options should be selectable");
+            assert_ne!(
+                selection.index, 2,
+                "fatigue must not admit a materially inferior action"
+            );
+        }
+    }
+
+    #[test]
+    fn low_value_decisions_use_relative_discrimination_not_the_full_absolute_noise_budget() {
+        let selection = bounded_rational_select_index_with_fatigue(
+            &[0.0109, -0.0007, -0.041],
+            70.0,
+            0.5,
+            0.5,
+            0.99,
+        )
+        .expect("non-empty options should be selectable");
+
+        assert_eq!(selection.index, 0);
+        assert_eq!(selection.near_optimal_count, 1);
+        assert!(!selection.used_random_choice);
+        assert!(selection.discrimination_tolerance <= 0.0109 * 0.35);
     }
 
     #[test]

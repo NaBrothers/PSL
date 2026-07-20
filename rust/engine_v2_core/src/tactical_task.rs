@@ -4,6 +4,7 @@ use crate::vision::VisionContext;
 
 pub const MAX_PLAYER_OBSERVED_ENTITIES: usize = 22;
 pub const MAX_TASK_OUTLET_COVERAGE: usize = 11;
+pub const MAX_TASK_DEPTH_PROTECTION_BANDS: usize = 3;
 pub const MAX_FIXED_TEAM_TACTICAL_TASKS: usize = 11;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -35,6 +36,7 @@ pub struct TacticalTaskCoordination {
     pub carrier_engagement: f64,
     pub cover: f64,
     pub lane_screen: f64,
+    pub depth_protection: [f64; MAX_TASK_DEPTH_PROTECTION_BANDS],
     pub wide_balance: [f64; 2],
     pub outlet_coverage: [f64; MAX_TASK_OUTLET_COVERAGE],
 }
@@ -51,6 +53,9 @@ impl TacticalTaskCoordination {
             carrier_engagement: self.carrier_engagement.clamp(0.0, 1.0),
             cover: self.cover.clamp(0.0, 1.0),
             lane_screen: self.lane_screen.clamp(0.0, 1.0),
+            depth_protection: self
+                .depth_protection
+                .map(|protection| protection.clamp(0.0, 1.0)),
             wide_balance: [
                 self.wide_balance[0].clamp(0.0, 1.0),
                 self.wide_balance[1].clamp(0.0, 1.0),
@@ -234,10 +239,7 @@ pub fn spatial_claim_conflict(left: SpatialClaim, right: SpatialClaim) -> bool {
     if !(same_depth_band && same_width_band) {
         return false;
     }
-    let left_route = (
-        left.target.0 - left.origin.0,
-        left.target.1 - left.origin.1,
-    );
+    let left_route = (left.target.0 - left.origin.0, left.target.1 - left.origin.1);
     let right_route = (
         right.target.0 - right.origin.0,
         right.target.1 - right.origin.1,
@@ -247,8 +249,8 @@ pub fn spatial_claim_conflict(left: SpatialClaim, right: SpatialClaim) -> bool {
     if left_length <= 1e-6 || right_length <= 1e-6 {
         return target_distance < occupied_distance * 1.4;
     }
-    let route_alignment =
-        (left_route.0 * right_route.0 + left_route.1 * right_route.1) / (left_length * right_length);
+    let route_alignment = (left_route.0 * right_route.0 + left_route.1 * right_route.1)
+        / (left_length * right_length);
     let corridor_width = left.corridor_half_width + right.corridor_half_width;
     route_alignment > 0.90 && target_distance < occupied_distance * 1.65 + corridor_width
 }
@@ -274,7 +276,8 @@ fn team_spatial_conflict_count(
                 .filter(|(player_index, _)| *player_index == right_index)
                 .map(|(_, candidate_index)| candidate_index)
                 .unwrap_or_else(|| selections.get(right_index).copied().unwrap_or(0));
-            let Some(right_candidate) = right_player.candidates.get(right_selection).copied() else {
+            let Some(right_candidate) = right_player.candidates.get(right_selection).copied()
+            else {
                 continue;
             };
             conflicts += usize::from(spatial_claim_conflict(
@@ -312,8 +315,7 @@ pub fn coordinate_team_spatial_tasks_into(
     for (player_index, player) in input.players.iter().copied().enumerate() {
         selections[player_index] = preferred_team_spatial_candidate(player);
     }
-    let conflicts_before =
-        team_spatial_conflict_count(input, &selections[..player_count], None);
+    let conflicts_before = team_spatial_conflict_count(input, &selections[..player_count], None);
 
     let mut order = [0usize; MAX_FIXED_TEAM_TACTICAL_TASKS];
     for player_index in 0..player_count {
@@ -369,8 +371,10 @@ pub fn coordinate_team_spatial_tasks_into(
             else {
                 continue;
             };
-            best_conflicts +=
-                usize::from(spatial_claim_conflict(candidate.claim, other_candidate.claim));
+            best_conflicts += usize::from(spatial_claim_conflict(
+                candidate.claim,
+                other_candidate.claim,
+            ));
         }
         let mut best_value = player
             .candidates
@@ -392,12 +396,13 @@ pub fn coordinate_team_spatial_tasks_into(
                 else {
                     continue;
                 };
-                conflicts +=
-                    usize::from(spatial_claim_conflict(candidate.claim, other_candidate.claim));
+                conflicts += usize::from(spatial_claim_conflict(
+                    candidate.claim,
+                    other_candidate.claim,
+                ));
             }
             if conflicts < best_conflicts
-                || (conflicts == best_conflicts
-                    && candidate.local_value > best_value + 1e-9)
+                || (conflicts == best_conflicts && candidate.local_value > best_value + 1e-9)
             {
                 best_candidate_index = candidate_index;
                 best_conflicts = conflicts;
@@ -453,8 +458,7 @@ pub fn coordinate_team_spatial_tasks_into(
         }
     }
 
-    let conflicts_after =
-        team_spatial_conflict_count(input, &selections[..player_count], None);
+    let conflicts_after = team_spatial_conflict_count(input, &selections[..player_count], None);
     let mut displaced_count = 0;
     for player_index in 0..player_count {
         let player = input.players[player_index];
@@ -464,8 +468,7 @@ pub fn coordinate_team_spatial_tasks_into(
             .get(candidate_index)
             .map(|candidate| candidate.local_value)
             .unwrap_or(f64::NEG_INFINITY);
-        let displaced_from_preference =
-            candidate_index != preferred_team_spatial_candidate(player);
+        let displaced_from_preference = candidate_index != preferred_team_spatial_candidate(player);
         displaced_count += usize::from(displaced_from_preference);
         assignments[player_index] = TeamSpatialAssignment {
             index: player.index,
@@ -793,18 +796,12 @@ fn intent_commitment(intent: TacticalTaskIntent) -> f64 {
     }
 }
 
-fn target_support_from_belief(
-    target: (f64, f64),
-    belief: &PlayerBelief,
-    is_teammate: bool,
-) -> f64 {
+fn target_support_from_belief(target: (f64, f64), belief: &PlayerBelief, is_teammate: bool) -> f64 {
     belief
         .entities()
         .iter()
         .filter(|entity| entity.is_teammate == is_teammate)
-        .map(|entity| {
-            entity.confidence * (1.0 - distance(target, entity.pos) / 28.0).max(0.0)
-        })
+        .map(|entity| entity.confidence * (1.0 - distance(target, entity.pos) / 28.0).max(0.0))
         .fold(0.0, f64::max)
 }
 
@@ -906,14 +903,15 @@ pub fn accept_task(input: &TaskAcceptanceInput<'_>) -> TaskAcceptance {
         input.plan_signals,
     );
     let confidence = (0.42 + 0.58 * input.observation.ball_confidence).clamp(0.0, 1.0);
-    let candidate_value = input.proposal.local_value * confidence + policy_utility * 0.18 - debt * 0.26;
+    let candidate_local_value = input.proposal.local_value.max(0.0);
+    let candidate_value =
+        candidate_local_value * (confidence + 0.10 * policy_utility - 0.14 * debt);
     let active_current = input.current.active(input.proposal.accepted_tick);
     let same_intent = active_current && input.current.intent == intent;
     let retained_value = if active_current {
         input.current.local_value
-            + input.current.policy_utility * 0.18
-            - input.current.formation_debt * 0.26
-            + input.current.commitment * 0.06
+            * (1.0 + 0.10 * input.current.policy_utility - 0.14 * input.current.formation_debt
+                + 0.04 * input.current.commitment)
     } else {
         f64::NEG_INFINITY
     };
@@ -933,16 +931,15 @@ pub fn accept_task(input: &TaskAcceptanceInput<'_>) -> TaskAcceptance {
             phase: TacticalTaskPhase::Active,
             raw_target: input.proposal.raw_target,
             accepted_tick: input.current.accepted_tick,
-            expires_tick: input
-                .current
-                .expires_tick
-                .max(input.proposal.accepted_tick + input.proposal.expected_duration_ticks.clamp(1, 12)),
+            expires_tick: input.current.expires_tick.max(
+                input.proposal.accepted_tick + input.proposal.expected_duration_ticks.clamp(1, 12),
+            ),
             commitment: (0.60 * input.current.commitment
                 + 0.40
                     * intent_commitment(intent)
                     * (0.58 + 0.42 * confidence)
                     * (1.0 - 0.30 * input.proposal.pressure_interrupt.clamp(0.0, 1.0)))
-                .clamp(0.0, 1.0),
+            .clamp(0.0, 1.0),
             local_value: input.proposal.local_value.max(0.0),
             policy_utility,
             formation_debt: debt,
@@ -958,9 +955,10 @@ pub fn accept_task(input: &TaskAcceptanceInput<'_>) -> TaskAcceptance {
             accepted_tick: input.proposal.accepted_tick,
             expires_tick: input.proposal.accepted_tick
                 + input.proposal.expected_duration_ticks.clamp(1, 12),
-            commitment: (intent_commitment(intent) * (0.58 + 0.42 * confidence)
+            commitment: (intent_commitment(intent)
+                * (0.58 + 0.42 * confidence)
                 * (1.0 - 0.30 * input.proposal.pressure_interrupt.clamp(0.0, 1.0)))
-                .clamp(0.0, 1.0),
+            .clamp(0.0, 1.0),
             local_value: input.proposal.local_value.max(0.0),
             policy_utility,
             formation_debt: debt,
@@ -1038,8 +1036,14 @@ mod tests {
             (2, (28.0, 34.0), (0.0, 0.0), false, false),
         ];
         let mut visible = [EMPTY_VISIBLE_ENTITY; MAX_PLAYER_OBSERVED_ENTITIES];
-        let (_, count) =
-            observe_entities_into(0, (45.0, 34.0), (52.0, 34.0), vision(55.0), &entities, &mut visible);
+        let (_, count) = observe_entities_into(
+            0,
+            (45.0, 34.0),
+            (52.0, 34.0),
+            vision(55.0),
+            &entities,
+            &mut visible,
+        );
         let mut belief = PlayerBelief::default();
         update_player_belief(&mut belief, &observation(&visible[..count]), 55.0);
         assert!(belief.entities().iter().any(|entity| entity.index == 1));
@@ -1108,14 +1112,14 @@ mod tests {
         }
 
         assert_eq!(
-            belief.observed_carrier().map(|(index, ticks, _)| (index, ticks)),
-            Some((12, 3))
-        );
-        assert!(
             belief
                 .observed_carrier()
-                .is_some_and(|(_, _, readiness)| readiness > 0.9)
+                .map(|(index, ticks, _)| (index, ticks)),
+            Some((12, 3))
         );
+        assert!(belief
+            .observed_carrier()
+            .is_some_and(|(_, _, readiness)| readiness > 0.9));
 
         let hidden = PlayerObservation {
             ball_pos: (52.0, 34.0),
@@ -1245,12 +1249,7 @@ mod tests {
         TeamSpatialCandidate {
             target,
             local_value,
-            claim: spatial_claim_for_task(
-                origin,
-                target,
-                TacticalTaskIntent::Support,
-                true,
-            ),
+            claim: spatial_claim_for_task(origin, target, TacticalTaskIntent::Support, true),
         }
     }
 
@@ -1305,14 +1304,10 @@ mod tests {
                 preferred_candidate_index: 0,
             },
         ];
-        let mut assignments = [TeamSpatialAssignment::default();
-            MAX_FIXED_TEAM_TACTICAL_TASKS];
+        let mut assignments = [TeamSpatialAssignment::default(); MAX_FIXED_TEAM_TACTICAL_TASKS];
         let input = TeamSpatialAssignmentInput { players: &players };
 
-        let summary = coordinate_team_spatial_tasks_into(
-            &input,
-            &mut assignments[..players.len()],
-        );
+        let summary = coordinate_team_spatial_tasks_into(&input, &mut assignments[..players.len()]);
 
         assert_eq!(summary.conflicts_before, 10);
         assert_eq!(summary.conflicts_after, 0);
@@ -1355,8 +1350,7 @@ mod tests {
                 preferred_candidate_index: 0,
             },
         ];
-        let mut assignments = [TeamSpatialAssignment::default();
-            MAX_FIXED_TEAM_TACTICAL_TASKS];
+        let mut assignments = [TeamSpatialAssignment::default(); MAX_FIXED_TEAM_TACTICAL_TASKS];
 
         let summary = coordinate_team_spatial_tasks_into(
             &TeamSpatialAssignmentInput { players: &players },

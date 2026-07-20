@@ -75,6 +75,7 @@ pub struct OnBallGenericContinuityOutput {
     pub value_advantage: f64,
     pub reason: String,
     pub biased_scores: Vec<f64>,
+    pub alignments: Vec<f64>,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -108,6 +109,7 @@ pub struct OnBallSpecializedBiasInput<'a> {
 #[derive(Clone, Debug)]
 pub struct OnBallSpecializedBiasOutput {
     pub biased_scores: Vec<f64>,
+    pub alignments: Vec<f64>,
     pub opportunity_target_indices: Vec<usize>,
 }
 
@@ -696,21 +698,25 @@ pub fn apply_generic_on_ball_goal_continuity(
             .unwrap_or(candidate_value)
     };
 
-    let continuity_bias = input.goal_cut_inside_bias.max(0.0) * 0.35;
+    let continuity_strength = input.goal_cut_inside_bias.max(0.0).clamp(0.0, 1.0);
     let target_action = action_name(selected_action_code);
     let mut biased_scores = Vec::with_capacity(input.candidates.len());
+    let mut alignments = Vec::with_capacity(input.candidates.len());
     for candidate in input.candidates {
-        let mut score = candidate.score;
-        if continuity_bias > 0.0 && action_name(candidate.action_code) == target_action {
-            let target_fit = candidate
-                .target
-                .map(|target| {
-                    (1.0 - crate::physics::distance(target, selected_target) / 18.0).max(0.0)
-                })
-                .unwrap_or(1.0);
-            score += continuity_bias * selected_value.max(0.0) * (0.35 + 0.65 * target_fit);
-        }
-        biased_scores.push(score);
+        let alignment =
+            if continuity_strength > 0.0 && action_name(candidate.action_code) == target_action {
+                let target_fit = candidate
+                    .target
+                    .map(|target| {
+                        (1.0 - crate::physics::distance(target, selected_target) / 18.0).max(0.0)
+                    })
+                    .unwrap_or(1.0);
+                continuity_strength * (0.35 + 0.65 * target_fit)
+            } else {
+                0.0
+            };
+        alignments.push(alignment.clamp(0.0, 1.0));
+        biased_scores.push(candidate.score);
     }
 
     Some(OnBallGenericContinuityOutput {
@@ -727,6 +733,7 @@ pub fn apply_generic_on_ball_goal_continuity(
         value_advantage: selection.value_advantage,
         reason: selection.reason.to_string(),
         biased_scores,
+        alignments,
     })
 }
 
@@ -734,24 +741,21 @@ pub fn apply_specialized_on_ball_bias(
     input: &OnBallSpecializedBiasInput<'_>,
 ) -> OnBallSpecializedBiasOutput {
     let mut biased_scores = Vec::with_capacity(input.candidates.len());
+    let mut alignments = Vec::with_capacity(input.candidates.len());
     let mut opportunity_target_indices = Vec::new();
     for (idx, candidate) in input.candidates.iter().enumerate() {
-        let mut score = candidate.score;
+        let mut affinity = 0.0;
         let action = action_name(candidate.action_code);
         match input.goal_type {
             "cut_inside_to_shoot" if action == "carry" => {
-                let window = candidate
-                    .carry_to_shoot_window
-                    .max(candidate.wide_second_line_carry_window);
                 let target_fit = candidate
                     .target
                     .map(|target| {
                         (1.0 - crate::physics::distance(target, input.goal_target) / 16.0).max(0.0)
                     })
                     .unwrap_or(0.0);
-                if input.goal_phase == "drive" && (window > 0.0 || target_fit > 0.0) {
-                    score +=
-                        input.bias * window + input.bias * input.goal_value * target_fit * 1.20;
+                if input.goal_phase == "drive" && target_fit > 0.0 {
+                    affinity += input.goal_value * target_fit;
                 }
             }
             "cut_inside_to_shoot" if action == "shoot" => {
@@ -765,14 +769,12 @@ pub fn apply_specialized_on_ball_bias(
                     .max(candidate.clean_second_line_shot)
                     .max(finish_window);
                 if readiness > 0.0 {
-                    let goal_bonus = (input.bias * readiness * (1.0 + second_touch_window)).max(
-                        if input.goal_phase == "finish" {
-                            0.10
+                    affinity += readiness
+                        * if input.goal_phase == "finish" {
+                            1.0
                         } else {
-                            0.035
-                        } * finish_window,
-                    );
-                    score += goal_bonus;
+                            0.65
+                        };
                 }
             }
             "wide_byline_attack" if input.goal_phase == "drive" && action == "carry" => {
@@ -782,21 +784,20 @@ pub fn apply_specialized_on_ball_bias(
                         (1.0 - crate::physics::distance(target, input.goal_target) / 16.0).max(0.0)
                     })
                     .unwrap_or(0.0);
-                if candidate.byline_carry_window > 0.0 || target_fit > 0.0 {
-                    score += input.bias * candidate.byline_carry_window * 3.40
-                        + input.bias * input.goal_value * target_fit * 3.25;
+                if target_fit > 0.0 {
+                    affinity += input.goal_value * target_fit;
                 }
             }
             "wide_hold_for_overlap" => {
                 if action == "hold" {
-                    score += input.bias * input.goal_value;
+                    affinity += input.goal_value;
                 } else if action == "pass" {
                     if let Some(target) = candidate.target {
                         let overlap_fit = (1.0
                             - crate::physics::distance(target, input.goal_target) / 16.0)
                             .max(0.0);
                         if overlap_fit > 0.0 {
-                            score += input.bias * overlap_fit * input.goal_value;
+                            affinity += overlap_fit * input.goal_value;
                         }
                     }
                 }
@@ -806,7 +807,7 @@ pub fn apply_specialized_on_ball_bias(
                     let release_fit =
                         (1.0 - crate::physics::distance(target, input.goal_target) / 18.0).max(0.0);
                     if release_fit > 0.0 {
-                        score += input.bias * release_fit * input.goal_value * 3.10;
+                        affinity += release_fit * input.goal_value;
                     }
                 }
             }
@@ -815,56 +816,49 @@ pub fn apply_specialized_on_ball_bias(
                     let release_fit =
                         (1.0 - crate::physics::distance(target, input.goal_target) / 14.0).max(0.0);
                     if release_fit > 0.0 {
-                        score += input.bias * release_fit * input.goal_value * 2.35;
+                        affinity += release_fit * input.goal_value;
                     }
                 }
             }
             "release_pressure_with_layoff" => {
                 if action == "hold" {
-                    score += input.bias * input.goal_value * 0.35;
+                    affinity += input.goal_value * 0.35;
                 } else if action == "pass" {
                     if let Some(target) = candidate.target {
                         let layoff_fit = (1.0
                             - crate::physics::distance(target, input.goal_target) / 12.0)
                             .max(0.0);
                         if layoff_fit > 0.0 {
-                            score += input.bias * layoff_fit * input.goal_value;
+                            affinity += layoff_fit * input.goal_value;
                         }
                     }
                 }
             }
             "release_to_arriving_support" => {
                 if action == "hold" {
-                    score += input.bias * input.goal_value * 0.22;
+                    affinity += input.goal_value * 0.22;
                 } else if action == "pass" {
                     if let Some(target) = candidate.target {
                         let support_fit = (1.0
                             - crate::physics::distance(target, input.goal_target) / 12.0)
                             .max(0.0);
                         if support_fit > 0.0 {
-                            score += input.bias * support_fit * input.goal_value * 1.45;
+                            affinity += support_fit * input.goal_value;
                         }
                     }
                 }
             }
             "hold_for_opportunity" => {
                 if action == "hold" {
-                    score += input.bias * input.goal_value * 0.34;
+                    affinity += input.goal_value * 0.34;
                     opportunity_target_indices.push(idx);
                 } else if action == "carry" {
                     if let Some(target) = candidate.target {
                         let stretch_fit = (1.0
                             - crate::physics::distance(target, input.goal_target) / 14.0)
                             .max(0.0);
-                        let manipulation = candidate
-                            .space_manipulation
-                            .max(candidate.pressure_draw)
-                            .max(candidate.carry_to_shoot_window * 0.80)
-                            .max(candidate.wide_second_line_carry_window * 0.65);
-                        if stretch_fit > 0.0 || manipulation > 0.0 {
-                            score += input.bias
-                                * input.goal_value
-                                * (0.80 * stretch_fit + 0.55 * manipulation);
+                        if stretch_fit > 0.0 {
+                            affinity += input.goal_value * 0.80 * stretch_fit;
                         }
                     }
                 } else if action == "pass" {
@@ -873,17 +867,20 @@ pub fn apply_specialized_on_ball_bias(
                             - crate::physics::distance(target, input.goal_target) / 13.0)
                             .max(0.0);
                         if support_fit > 0.0 {
-                            score += input.bias * support_fit * input.goal_value * 1.15;
+                            affinity += support_fit * input.goal_value;
                         }
                     }
                 }
             }
             _ => {}
         }
-        biased_scores.push(score);
+        let alignment = affinity.clamp(0.0, 1.0);
+        alignments.push(alignment);
+        biased_scores.push(candidate.score + input.bias.max(0.0) * alignment);
     }
     OnBallSpecializedBiasOutput {
         biased_scores,
+        alignments,
         opportunity_target_indices,
     }
 }
@@ -1624,5 +1621,103 @@ mod tests {
             "an opportunity task must wait for a reachable support line, not its own location"
         );
         assert_eq!(output.target_pos, (72.0, 34.0));
+    }
+
+    #[test]
+    fn specialized_goal_produces_normalized_alignment_not_unbounded_action_value() {
+        let candidates = [
+            OnBallSpecializedBiasCandidateInput {
+                score: 0.42,
+                action_code: 0,
+                target: Some((92.0, 10.0)),
+                carry_to_shoot_window: 0.0,
+                wide_second_line_carry_window: 0.0,
+                future_shot_gain: 0.0,
+                byline_carry_window: 1.0,
+                xg: 0.0,
+                shot_readiness: 0.0,
+                open_medium_window: 0.0,
+                clean_second_line_shot: 0.0,
+                space_manipulation: 0.0,
+                pressure_draw: 0.0,
+            },
+            OnBallSpecializedBiasCandidateInput {
+                score: 0.46,
+                action_code: 3,
+                target: Some((82.0, 34.0)),
+                carry_to_shoot_window: 0.0,
+                wide_second_line_carry_window: 0.0,
+                future_shot_gain: 0.0,
+                byline_carry_window: 0.0,
+                xg: 0.0,
+                shot_readiness: 0.0,
+                open_medium_window: 0.0,
+                clean_second_line_shot: 0.0,
+                space_manipulation: 0.0,
+                pressure_draw: 0.0,
+            },
+        ];
+        let output = apply_specialized_on_ball_bias(&OnBallSpecializedBiasInput {
+            candidates: &candidates,
+            goal_type: "wide_byline_attack",
+            goal_phase: "drive",
+            goal_target: (92.0, 10.0),
+            goal_value: 1.0,
+            bias: 0.0,
+            consecutive_carries: 0,
+        });
+
+        assert_eq!(output.alignments, vec![1.0, 0.0]);
+        assert_eq!(output.biased_scores, vec![0.42, 0.46]);
+    }
+
+    #[test]
+    fn specialized_goal_alignment_does_not_reprice_successor_value_metadata() {
+        let candidate = OnBallSpecializedBiasCandidateInput {
+            score: 0.42,
+            action_code: 0,
+            target: Some((92.0, 10.0)),
+            carry_to_shoot_window: 0.0,
+            wide_second_line_carry_window: 0.0,
+            future_shot_gain: 0.0,
+            byline_carry_window: 0.0,
+            xg: 0.0,
+            shot_readiness: 0.0,
+            open_medium_window: 0.0,
+            clean_second_line_shot: 0.0,
+            space_manipulation: 0.0,
+            pressure_draw: 0.0,
+        };
+        let metadata_rich = OnBallSpecializedBiasCandidateInput {
+            carry_to_shoot_window: 1.0,
+            wide_second_line_carry_window: 1.0,
+            future_shot_gain: 1.0,
+            byline_carry_window: 1.0,
+            space_manipulation: 1.0,
+            pressure_draw: 1.0,
+            ..candidate
+        };
+
+        for (goal_type, goal_phase) in [
+            ("cut_inside_to_shoot", "drive"),
+            ("wide_byline_attack", "drive"),
+            ("hold_for_opportunity", "scan"),
+        ] {
+            let candidates = [candidate, metadata_rich];
+            let output = apply_specialized_on_ball_bias(&OnBallSpecializedBiasInput {
+                candidates: &candidates,
+                goal_type,
+                goal_phase,
+                goal_target: (92.0, 10.0),
+                goal_value: 1.0,
+                bias: 0.0,
+                consecutive_carries: 0,
+            });
+
+            assert_eq!(
+                output.alignments[0], output.alignments[1],
+                "{goal_type} must use successor metadata to form the goal, not repay it as policy"
+            );
+        }
     }
 }

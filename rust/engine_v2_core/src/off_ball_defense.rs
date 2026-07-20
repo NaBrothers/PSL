@@ -317,8 +317,8 @@ fn closest_distance_to_motion_segment(
     if length_squared <= 1e-9 {
         return distance(point, start);
     }
-    let projected = ((point.0 - start.0) * direction.0 + (point.1 - start.1) * direction.1)
-        / length_squared;
+    let projected =
+        ((point.0 - start.0) * direction.0 + (point.1 - start.1) * direction.1) / length_squared;
     let fraction = projected.clamp(0.0, 1.0);
     distance(
         point,
@@ -336,13 +336,8 @@ fn close_down_contact_window(
     tackle_range: f64,
     movement: DefenseMovementInput<'_>,
 ) -> f64 {
-    let motion = project_defense_action_motion(
-        defender_pos,
-        carrier_pos,
-        anchor,
-        "close_down",
-        movement,
-    );
+    let motion =
+        project_defense_action_motion(defender_pos, carrier_pos, anchor, "close_down", movement);
     let approach_reach = (0.75 + 0.36 * tackle_range.max(0.0)) * 0.94;
     let closest_distance =
         closest_distance_to_motion_segment(carrier_pos, defender_pos, motion.pos);
@@ -398,8 +393,7 @@ fn carrier_control_threat(input: &DefenseScoreInput<'_>) -> f64 {
         .chain(input.teammates.iter().map(|teammate| teammate.pos))
         .map(|defender_pos| distance(defender_pos, carrier_pos))
         .fold(f64::INFINITY, f64::min);
-    let settled_control =
-        1.0 - (-(input.ball_carrier_possession_ticks.max(0) as f64) / 4.0).exp();
+    let settled_control = 1.0 - (-(input.ball_carrier_possession_ticks.max(0) as f64) / 4.0).exp();
     let receiving_window =
         (1.0 - settled_control) * (0.30 + 0.70 * input.carrier_control_readiness.clamp(0.0, 1.0));
     let control_duration = settled_control.max(receiving_window);
@@ -451,8 +445,7 @@ pub(crate) fn fixed_defense_team_context(
             .iter()
             .map(|defender| distance(defender.pos, carrier_pos))
             .fold(f64::INFINITY, f64::min);
-        let settled_control =
-            1.0 - (-(ball_carrier_possession_ticks.max(0) as f64) / 4.0).exp();
+        let settled_control = 1.0 - (-(ball_carrier_possession_ticks.max(0) as f64) / 4.0).exp();
         let receiving_window =
             (1.0 - settled_control) * (0.30 + 0.70 * carrier_control_readiness.clamp(0.0, 1.0));
         let control_duration = settled_control.max(receiving_window);
@@ -754,15 +747,14 @@ fn candidate_defense_action_type(
         );
     let target_access = (-carrier_distance / press_radius.max(0.1)).exp();
     let physical_contact_range = 0.75 + 0.36 * tackle_range.max(0.0);
-    let contact_window = close_down_contact_window(
-        defender_pos,
-        carrier_pos,
-        anchor,
-        tackle_range,
-        movement,
-    );
-    let tackle_target_alignment =
-        1.0 - smoothstep(physical_contact_range * 0.35, physical_contact_range, carrier_distance);
+    let contact_window =
+        close_down_contact_window(defender_pos, carrier_pos, anchor, tackle_range, movement);
+    let tackle_target_alignment = 1.0
+        - smoothstep(
+            physical_contact_range * 0.35,
+            physical_contact_range,
+            carrier_distance,
+        );
     let tackle_immediacy = 1.0
         - smoothstep(
             physical_contact_range * 0.30,
@@ -780,10 +772,8 @@ fn candidate_defense_action_type(
         * target_access
         * (1.0 - tackle_immediacy)
         * (0.20 + 0.80 * defender_access);
-    let close_down_value = carrier_urgency
-        * defender_access
-        * (0.34 + 0.66 * target_access)
-        * (1.0 - contact_window);
+    let close_down_value =
+        carrier_urgency * defender_access * (0.34 + 0.66 * target_access) * (1.0 - contact_window);
     let immediate_closure = defender_access.max(contact_window);
     let pursuit_reachability = defensive_pursuit_reachability(
         defender_pos,
@@ -793,17 +783,15 @@ fn candidate_defense_action_type(
         movement,
         4,
     );
-    let pursuit_value = if target_access >= 0.72
-        && immediate_closure < 0.10
-        && pursuit_reachability > 0.10
-    {
-        carrier_urgency
-            * pursuit_reachability
-            * target_access
-            * (0.42 + 0.58 * (1.0 - immediate_closure))
-    } else {
-        0.0
-    };
+    let pursuit_value =
+        if target_access >= 0.72 && immediate_closure < 0.10 && pursuit_reachability > 0.10 {
+            carrier_urgency
+                * pursuit_reachability
+                * target_access
+                * (0.42 + 0.58 * (1.0 - immediate_closure))
+        } else {
+            0.0
+        };
     let non_contact_target = 1.0 - tackle_target_alignment;
     let mark_value = dangerous_receivers
         .iter()
@@ -1823,10 +1811,10 @@ mod tests {
     use super::{
         best_fixed_team_defense_candidate, best_fixed_team_defense_candidate_with_team_context,
         choose_defense_action, close_down_contact_window, defense_action_type,
-        defensive_approach_reachability, defensive_pursuit_reachability, fixed_defense_random_branch,
-        fixed_defense_team_context, prepare_defense_choice, prepare_fixed_defense_choice,
-        prepare_fixed_defense_choice_with_team_context, score_defense_candidates,
-        select_fixed_defense_action, select_prepared_defense_action,
+        defensive_approach_reachability, defensive_pursuit_reachability,
+        fixed_defense_random_branch, fixed_defense_team_context, prepare_defense_choice,
+        prepare_fixed_defense_choice, prepare_fixed_defense_choice_with_team_context,
+        score_defense_candidates, select_fixed_defense_action, select_prepared_defense_action,
         select_prepared_defense_candidate, DefenseChoiceInput, DefenseMovementInput,
         DefenseRandomSample, DefenseScoreInput, DefenseScoreOutput, DefenseTeammateInput,
         FixedDefensePreparedChoice,
@@ -2266,12 +2254,11 @@ mod tests {
             teammates: &[],
             ..with_teammates
         };
-        let with_teammates_choice =
-            score_defense_candidates(&DefenseScoreInput {
-                candidates: &[carrier],
-                ..with_teammates
-            })
-            .remove(0);
+        let with_teammates_choice = score_defense_candidates(&DefenseScoreInput {
+            candidates: &[carrier],
+            ..with_teammates
+        })
+        .remove(0);
         let isolated_choice = score_defense_candidates(&DefenseScoreInput {
             candidates: &[carrier],
             ..isolated
@@ -2283,8 +2270,7 @@ mod tests {
             "nearby visible teammates must not suppress this player's executable press: {with_teammates_choice:?}"
         );
         assert_eq!(
-            with_teammates_choice.action_type,
-            isolated_choice.action_type,
+            with_teammates_choice.action_type, isolated_choice.action_type,
             "candidate semantics are local; team responsibility is assigned later"
         );
         assert_eq!(
@@ -2654,9 +2640,7 @@ mod tests {
 
         let carrier_task = scored
             .iter()
-            .find(|candidate| {
-                matches!(candidate.action_type, "close_down" | "tackle" | "approach")
-            })
+            .find(|candidate| matches!(candidate.action_type, "close_down" | "tackle" | "approach"))
             .expect("the nearby defender must receive a carrier-closing task");
 
         assert_eq!(carrier_task.action_type, "close_down");

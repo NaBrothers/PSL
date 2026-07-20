@@ -119,6 +119,49 @@ def _action_target(event: dict[str, Any]) -> list[float] | None:
     return target if isinstance(target, list) and len(target) == 2 else None
 
 
+def _group_possessions(
+    events: Iterable[dict[str, Any]],
+) -> dict[int, list[dict[str, Any]]]:
+    grouped: dict[int, list[dict[str, Any]]] = defaultdict(list)
+    for event in events:
+        possession_id = event.get("possession_id")
+        if isinstance(possession_id, int):
+            grouped[possession_id].append(event)
+    return grouped
+
+
+def _terminal_cause(
+    event: dict[str, Any],
+    previous_event: dict[str, Any] | None = None,
+) -> str:
+    event_type = str(event.get("event_type", "unknown"))
+    outcome = str(event.get("outcome", "unknown"))
+    tags = event.get("tags")
+    if not isinstance(tags, list):
+        tags = []
+    if event_type == "recovery":
+        if previous_event is None:
+            return "recovery:unknown"
+        previous_type = str(previous_event.get("event_type", "unknown"))
+        previous_outcome = str(previous_event.get("outcome", "unknown"))
+        return f"recovery:after_{previous_type}_{previous_outcome}"
+    if event_type == "interception":
+        subtype = (
+            "delivery_error"
+            if "delivery_error" in tags
+            else "arrival"
+            if "arrival_interception" in tags
+            else "other"
+        )
+        return f"interception:{subtype}"
+    if event_type in {"tackle", "duel"}:
+        context = "pass_release" if "pass_release" in tags else "carry"
+        return f"{event_type}:{context}:{outcome}"
+    if event_type in {"pass", "carry", "clearance", "shot", "restart", "offside"}:
+        return f"{event_type}:{outcome}"
+    return f"{event_type}:{outcome}"
+
+
 def _attack_pattern_summary(
     events: Iterable[dict[str, Any]],
     home_attacking_right: bool,
@@ -131,22 +174,20 @@ def _attack_pattern_summary(
     byline_entry_types: Counter[str] = Counter()
     byline_exit_actions: Counter[str] = Counter()
     shot_origin_regions: Counter[str] = Counter()
-    grouped: dict[tuple[str, int], list[dict[str, Any]]] = defaultdict(list)
+    event_list = list(events)
+    grouped = _group_possessions(event_list)
     strict_cutbacks: list[dict[str, Any]] = []
     wide_final_entries = 0
 
-    for event in events:
-        team = event.get("team_side")
-        possession_id = event.get("possession_id")
-        if team in {"home", "away"} and isinstance(possession_id, int):
-            grouped[(team, possession_id)].append(event)
-
+    for event in event_list:
         event_type = event.get("event_type")
         origin = _action_origin(event)
         target = _action_target(event)
         if event_type not in action_types or origin is None:
             continue
         attacking_right = _event_attacking_right(event, home_attacking_right)
+        if event_type == "shot" and event.get("outcome") == "mishit":
+            continue
         if event_type != "shot" and event.get("outcome") != "completed":
             continue
         completed_actions[event_type] += 1
@@ -261,9 +302,7 @@ def _attack_pattern_summary(
                 byline_exit_actions["other_pass"] += 1
 
     for cutback in strict_cutbacks:
-        sequence_events = grouped[
-            (str(cutback["team_side"]), int(cutback["possession_id"]))
-        ]
+        sequence_events = grouped[int(cutback["possession_id"])]
         if any(
             event.get("event_type") == "shot"
             and 0 <= int(event["tick"]) - int(cutback["tick"]) <= 8
@@ -397,32 +436,73 @@ def _sequence_summary(
     home_attacking_right: bool,
     include_sequences: bool = False,
 ) -> dict[str, Any]:
-    grouped: dict[tuple[str, int], list[dict[str, Any]]] = defaultdict(list)
-    for event in events:
-        team = event.get("team_side")
-        possession_id = event.get("possession_id")
-        if team in {"home", "away"} and isinstance(possession_id, int):
-            grouped[(team, possession_id)].append(event)
+    grouped = _group_possessions(events)
 
     sequences = []
     pass_directions: Counter[str] = Counter()
     terminal_events: Counter[str] = Counter()
+    terminal_causes: Counter[str] = Counter()
+    terminal_events_by_pass_band: dict[str, Counter[str]] = defaultdict(Counter)
+    terminal_causes_by_pass_band: dict[str, Counter[str]] = defaultdict(Counter)
+    pass_count_bands: Counter[str] = Counter()
     shots_by_pass_count: list[int] = []
-    for (team, possession_id), sequence_events in grouped.items():
+    possession_ids = sorted(grouped)
+    for possession_index, possession_id in enumerate(possession_ids):
+        sequence_events = grouped[possession_id]
         ordered = sorted(sequence_events, key=lambda event: (event["tick"], event["seq"]))
+        team = next(
+            (
+                str(event["team_side"])
+                for event in ordered
+                if event.get("team_side") in {"home", "away"}
+                and event.get("event_type") in {"carry", "pass", "shot", "clearance", "restart"}
+            ),
+            str(ordered[0].get("team_side", "unknown")),
+        )
         passes = [
             event
             for event in ordered
-            if event["event_type"] == "pass" and event.get("outcome") == "completed"
+            if event["event_type"] == "pass"
+            and event.get("outcome") == "completed"
+            and event.get("team_side") == team
         ]
         for event in passes:
             origin = event.get("origin")
             target = event.get("target")
             if isinstance(origin, list) and isinstance(target, list):
                 pass_directions[_classify_pass(origin, target, team == "home" and home_attacking_right or team == "away" and not home_attacking_right)] += 1
-        terminal = ordered[-1]["event_type"]
+        terminal_event = ordered[-1]
+        terminal = terminal_event["event_type"]
+        terminal_cause = _terminal_cause(
+            terminal_event,
+            ordered[-2] if len(ordered) >= 2 else None,
+        )
+        if terminal_event.get("outcome") == "completed" and terminal in {"pass", "carry"}:
+            if possession_index + 1 >= len(possession_ids):
+                terminal_cause = f"match_end:after_{terminal}"
+            else:
+                next_events = sorted(
+                    grouped[possession_ids[possession_index + 1]],
+                    key=lambda event: (event["tick"], event["seq"]),
+                )
+                if next_events and next_events[0].get("half") != terminal_event.get("half"):
+                    terminal_cause = f"period_end:after_{terminal}"
+                else:
+                    terminal_cause = f"unlogged_control_change:after_{terminal}"
         terminal_events[terminal] += 1
-        shot = next((event for event in ordered if event["event_type"] == "shot"), None)
+        terminal_causes[terminal_cause] += 1
+        pass_band = "0" if not passes else "1" if len(passes) == 1 else "2-4" if len(passes) <= 4 else "5+"
+        pass_count_bands[pass_band] += 1
+        terminal_events_by_pass_band[pass_band][terminal] += 1
+        terminal_causes_by_pass_band[pass_band][terminal_cause] += 1
+        shot = next(
+            (
+                event
+                for event in ordered
+                if event["event_type"] == "shot" and event.get("outcome") != "mishit"
+            ),
+            None,
+        )
         if shot is not None:
             shots_by_pass_count.append(len(passes))
         sequences.append(
@@ -433,6 +513,7 @@ def _sequence_summary(
                 "passes": len(passes),
                 "ended_in_shot": shot is not None,
                 "terminal_event": terminal,
+                "terminal_cause": terminal_cause,
             }
         )
 
@@ -466,6 +547,16 @@ def _sequence_summary(
             for direction, count in sorted(pass_directions.items())
         },
         "terminal_events": dict(sorted(terminal_events.items())),
+        "terminal_causes": dict(sorted(terminal_causes.items())),
+        "pass_count_bands": {
+            band: {
+                "count": pass_count_bands[band],
+                "share": round(pass_count_bands[band] / max(len(sequences), 1), 4),
+                "terminal_events": dict(sorted(terminal_events_by_pass_band[band].items())),
+                "terminal_causes": dict(sorted(terminal_causes_by_pass_band[band].items())),
+            }
+            for band in ("0", "1", "2-4", "5+")
+        },
     }
     if include_sequences:
         summary["sequences"] = sequences
@@ -582,6 +673,10 @@ def _aggregate_summaries(summaries: list[dict[str, Any]]) -> dict[str, Any]:
 
     direction_counts: Counter[str] = Counter()
     terminal_events: Counter[str] = Counter()
+    terminal_causes: Counter[str] = Counter()
+    pass_count_bands: Counter[str] = Counter()
+    terminal_events_by_pass_band: dict[str, Counter[str]] = defaultdict(Counter)
+    terminal_causes_by_pass_band: dict[str, Counter[str]] = defaultdict(Counter)
     completed_attack_actions: Counter[str] = Counter()
     pass_outcomes: Counter[str] = Counter()
     pass_failure_causes: Counter[str] = Counter()
@@ -596,6 +691,11 @@ def _aggregate_summaries(summaries: list[dict[str, Any]]) -> dict[str, Any]:
         for direction, data in summary["sequence"]["pass_directions"].items():
             direction_counts[direction] += data["count"]
         terminal_events.update(summary["sequence"]["terminal_events"])
+        terminal_causes.update(summary["sequence"]["terminal_causes"])
+        for band, data in summary["sequence"]["pass_count_bands"].items():
+            pass_count_bands[band] += data["count"]
+            terminal_events_by_pass_band[band].update(data["terminal_events"])
+            terminal_causes_by_pass_band[band].update(data["terminal_causes"])
         causality = summary["pass_causality"]
         pass_outcomes.update(causality["outcomes"])
         pass_failure_causes.update(
@@ -716,6 +816,23 @@ def _aggregate_summaries(summaries: list[dict[str, Any]]) -> dict[str, Any]:
                 for direction, count in sorted(direction_counts.items())
             },
             "terminal_events": dict(sorted(terminal_events.items())),
+            "terminal_causes": dict(sorted(terminal_causes.items())),
+            "pass_count_bands": {
+                band: {
+                    "count": pass_count_bands[band],
+                    "share": round(
+                        pass_count_bands[band] / max(sum(pass_count_bands.values()), 1),
+                        4,
+                    ),
+                    "terminal_events": dict(
+                        sorted(terminal_events_by_pass_band[band].items())
+                    ),
+                    "terminal_causes": dict(
+                        sorted(terminal_causes_by_pass_band[band].items())
+                    ),
+                }
+                for band in ("0", "1", "2-4", "5+")
+            },
         },
         "attack_patterns": {
             "completed_actions": dict(sorted(completed_attack_actions.items())),

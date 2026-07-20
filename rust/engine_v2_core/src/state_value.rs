@@ -463,8 +463,7 @@ fn terminal_shot_value_at(
 
     TerminalShotValue {
         raw_xg: base.raw_xg,
-        direct_xg: (base.body_release_xg * controller_release_readiness)
-            .clamp(0.0, 1.0),
+        direct_xg: (base.body_release_xg * controller_release_readiness).clamp(0.0, 1.0),
         finishing: base.finishing,
         long_shot: base.long_shot,
     }
@@ -538,21 +537,19 @@ struct PassReceiveTeamStaticNode {
     direct_xg: Option<f64>,
 }
 
-const EMPTY_PASS_RECEIVE_TEAM_STATIC_NODE: PassReceiveTeamStaticNode =
-    PassReceiveTeamStaticNode {
-        player_index: 0,
-        pos: (0.0, 0.0),
-        pressure: 0.0,
-        direct_xg: None,
-    };
+const EMPTY_PASS_RECEIVE_TEAM_STATIC_NODE: PassReceiveTeamStaticNode = PassReceiveTeamStaticNode {
+    player_index: 0,
+    pos: (0.0, 0.0),
+    pressure: 0.0,
+    direct_xg: None,
+};
 
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct PassReceiveTeamValueContext {
     static_nodes: [PassReceiveTeamStaticNode; MAX_POSSESSION_NETWORK_NODES],
     static_node_count: usize,
-    static_connection_geometries:
-        [[ControlledConnectionGeometry; MAX_POSSESSION_NETWORK_NODES];
-            MAX_POSSESSION_NETWORK_NODES],
+    static_connection_geometries: [[ControlledConnectionGeometry; MAX_POSSESSION_NETWORK_NODES];
+        MAX_POSSESSION_NETWORK_NODES],
     opponent_positions: [(f64, f64); MAX_POSSESSION_NETWORK_NODES],
     opponent_count: usize,
 }
@@ -581,8 +578,7 @@ pub(crate) struct PossessionBellmanGeometry {
     node_count: usize,
     teammate_static_nodes: [PassReceiveTeammateStaticNode; MAX_POSSESSION_NETWORK_NODES],
     teammate_static_node_count: usize,
-    connection_probabilities:
-        [[f64; MAX_POSSESSION_NETWORK_NODES]; MAX_POSSESSION_NETWORK_NODES],
+    connection_probabilities: [[f64; MAX_POSSESSION_NETWORK_NODES]; MAX_POSSESSION_NETWORK_NODES],
     residual_values: [f64; MAX_POSSESSION_NETWORK_NODES],
     static_terminal_values: [f64; MAX_POSSESSION_NETWORK_NODES],
     one_link_xg: f64,
@@ -609,9 +605,8 @@ pub struct PassReceiveValueContext {
     teammate_static_nodes: [PassReceiveTeammateStaticNode; MAX_POSSESSION_NETWORK_NODES],
     teammate_static_node_count: usize,
     support_structure_static: SupportStructureStatic,
-    static_connection_geometries:
-        [[ControlledConnectionGeometry; MAX_POSSESSION_NETWORK_NODES];
-            MAX_POSSESSION_NETWORK_NODES],
+    static_connection_geometries: [[ControlledConnectionGeometry; MAX_POSSESSION_NETWORK_NODES];
+        MAX_POSSESSION_NETWORK_NODES],
 }
 
 pub type PossessionValueContext = PassReceiveValueContext;
@@ -623,15 +618,14 @@ fn teammate_snapshot_matches(
     goalkeeper_indices: &[usize],
 ) -> bool {
     static_node_count == teammates.len()
-        && static_nodes[..static_node_count]
-            .iter()
-            .zip(teammates)
-            .all(|(stored, (player_index, x, y))| {
+        && static_nodes[..static_node_count].iter().zip(teammates).all(
+            |(stored, (player_index, x, y))| {
                 stored.player_index == *player_index
                     && stored.pos.0.to_bits() == x.to_bits()
                     && stored.pos.1.to_bits() == y.to_bits()
                     && stored.is_goalkeeper == goalkeeper_indices.contains(player_index)
-            })
+            },
+        )
 }
 
 impl PassReceiveValueContext {
@@ -649,11 +643,10 @@ fn static_connection_geometries(
     input: &StateValueInput<'_>,
     static_nodes: &[PassReceiveStaticNode; MAX_POSSESSION_NETWORK_NODES],
     static_node_count: usize,
-) -> [[ControlledConnectionGeometry; MAX_POSSESSION_NETWORK_NODES];
-    MAX_POSSESSION_NETWORK_NODES] {
-    let mut static_connection_geometries =
-        [[EMPTY_CONTROLLED_CONNECTION_GEOMETRY; MAX_POSSESSION_NETWORK_NODES];
-            MAX_POSSESSION_NETWORK_NODES];
+) -> [[ControlledConnectionGeometry; MAX_POSSESSION_NETWORK_NODES]; MAX_POSSESSION_NETWORK_NODES] {
+    let mut static_connection_geometries = [[EMPTY_CONTROLLED_CONNECTION_GEOMETRY;
+        MAX_POSSESSION_NETWORK_NODES];
+        MAX_POSSESSION_NETWORK_NODES];
     for source_index in 0..static_node_count {
         let source = static_nodes[source_index];
         for target_index in 0..static_node_count {
@@ -679,11 +672,10 @@ fn team_static_connection_geometries(
     static_node_count: usize,
     pitch_length: f64,
     attacking_right: bool,
-) -> [[ControlledConnectionGeometry; MAX_POSSESSION_NETWORK_NODES];
-    MAX_POSSESSION_NETWORK_NODES] {
-    let mut static_connection_geometries =
-        [[EMPTY_CONTROLLED_CONNECTION_GEOMETRY; MAX_POSSESSION_NETWORK_NODES];
-            MAX_POSSESSION_NETWORK_NODES];
+) -> [[ControlledConnectionGeometry; MAX_POSSESSION_NETWORK_NODES]; MAX_POSSESSION_NETWORK_NODES] {
+    let mut static_connection_geometries = [[EMPTY_CONTROLLED_CONNECTION_GEOMETRY;
+        MAX_POSSESSION_NETWORK_NODES];
+        MAX_POSSESSION_NETWORK_NODES];
     for source_index in 0..static_node_count {
         let source = static_nodes[source_index];
         for target_index in 0..static_node_count {
@@ -714,8 +706,7 @@ fn teammate_static_nodes(
         input.teammate_positions.len() <= MAX_POSSESSION_NETWORK_NODES,
         "pass receive context cannot contain more than {MAX_POSSESSION_NETWORK_NODES} teammates"
     );
-    let mut static_nodes =
-        [EMPTY_PASS_RECEIVE_TEAMMATE_STATIC_NODE; MAX_POSSESSION_NETWORK_NODES];
+    let mut static_nodes = [EMPTY_PASS_RECEIVE_TEAMMATE_STATIC_NODE; MAX_POSSESSION_NETWORK_NODES];
     for (node_index, (player_index, x, y)) in input.teammate_positions.iter().enumerate() {
         let pos = (*x, *y);
         static_nodes[node_index] = PassReceiveTeammateStaticNode {
@@ -835,8 +826,7 @@ pub(crate) fn pass_receive_team_value_context(
         state_input.teammate_positions.len() <= MAX_POSSESSION_NETWORK_NODES,
         "pass receive team context cannot contain more than {MAX_POSSESSION_NETWORK_NODES} players"
     );
-    let mut static_nodes =
-        [EMPTY_PASS_RECEIVE_TEAM_STATIC_NODE; MAX_POSSESSION_NETWORK_NODES];
+    let mut static_nodes = [EMPTY_PASS_RECEIVE_TEAM_STATIC_NODE; MAX_POSSESSION_NETWORK_NODES];
     let mut opponent_positions = [(0.0, 0.0); MAX_POSSESSION_NETWORK_NODES];
     let opponent_count = state_input.opponent_positions.len();
     if opponent_count <= opponent_positions.len() {
@@ -898,10 +888,14 @@ pub(crate) fn pass_receive_value_context_with_team_context(
             player_index: *player_index,
             pos,
             pressure,
-            is_goalkeeper: state_input.teammate_goalkeeper_indices.contains(player_index),
+            is_goalkeeper: state_input
+                .teammate_goalkeeper_indices
+                .contains(player_index),
         };
         if *player_index == state_input.player_index
-            || state_input.teammate_goalkeeper_indices.contains(player_index)
+            || state_input
+                .teammate_goalkeeper_indices
+                .contains(player_index)
         {
             continue;
         }
@@ -936,18 +930,17 @@ pub(crate) fn pass_receive_value_context_with_team_context(
             state_input.teammate_goalkeeper_indices,
         ),
         static_connection_geometries: if all_team_nodes_match {
-            let mut static_connection_geometries =
-                [[EMPTY_CONTROLLED_CONNECTION_GEOMETRY; MAX_POSSESSION_NETWORK_NODES];
-                    MAX_POSSESSION_NETWORK_NODES];
+            let mut static_connection_geometries = [[EMPTY_CONTROLLED_CONNECTION_GEOMETRY;
+                MAX_POSSESSION_NETWORK_NODES];
+                MAX_POSSESSION_NETWORK_NODES];
             for source_index in 0..static_node_count {
                 for target_index in 0..static_node_count {
                     if source_index == target_index {
                         continue;
                     }
-                    static_connection_geometries[source_index][target_index] =
-                        team_context.static_connection_geometries
-                            [static_node_team_indices[source_index]]
-                            [static_node_team_indices[target_index]];
+                    static_connection_geometries[source_index][target_index] = team_context
+                        .static_connection_geometries[static_node_team_indices[source_index]]
+                        [static_node_team_indices[target_index]];
                 }
             }
             static_connection_geometries
@@ -1119,8 +1112,7 @@ pub(crate) fn possession_bellman_geometry(
         let direct_xg = node_index
             .checked_sub(1)
             .map_or(0.0, |offset| context.static_nodes[offset].direct_xg);
-        one_link_xg =
-            one_link_xg.max(connection_probabilities[0][node_index] * direct_xg);
+        one_link_xg = one_link_xg.max(connection_probabilities[0][node_index] * direct_xg);
         let mut outlet_access: f64 = 0.0;
         for target_index in 0..node_count {
             outlet_access = outlet_access.max(connection_probabilities[node_index][target_index]);
@@ -1204,8 +1196,7 @@ fn finite_horizon_continuation_value(
             context.receiver_index, input.player_index,
             "pass receive context receiver does not match state controller"
         );
-        if let Some(geometry) = bellman_geometry.filter(|geometry| geometry.applies_to(input))
-        {
+        if let Some(geometry) = bellman_geometry.filter(|geometry| geometry.applies_to(input)) {
             let node_count = context.static_node_count + 1;
             assert_eq!(
                 geometry.node_count, node_count,
@@ -1362,7 +1353,8 @@ pub fn possession_state_value_with_context(
     input: &StateValueInput<'_>,
     context: &PossessionValueContext,
 ) -> PossessionStateValue {
-    possession_state_value_evaluation_with_pass_receive_context(input, Some(context), None, None).state
+    possession_state_value_evaluation_with_pass_receive_context(input, Some(context), None, None)
+        .state
 }
 
 pub(crate) fn possession_state_value_with_context_and_bellman_geometry(
@@ -1436,8 +1428,7 @@ fn possession_state_value_evaluation_with_pass_receive_context(
         forward_access = forward_access.max(quality * smoothstep(-0.04, 0.20, relative_progress));
         recycle_access = recycle_access.max(quality * smoothstep(0.03, 0.22, -relative_progress));
     }
-    let pass_receive_context =
-        pass_receive_context.filter(|_| context_matches_teammate_snapshot);
+    let pass_receive_context = pass_receive_context.filter(|_| context_matches_teammate_snapshot);
 
     let (support_width, structure) = bellman_geometry.map_or_else(
         || {
@@ -1505,7 +1496,9 @@ fn possession_state_value_evaluation_with_pass_receive_context(
             pass_receive_context,
             bellman_geometry,
         );
-    let value = (continuation_value * (0.24 + 0.76 * control_readiness)).clamp(0.0002, 0.65);
+    let readiness_factor = 0.24 + 0.76 * control_readiness;
+    let continuation_surplus = (continuation_value - direct_xg).max(0.0);
+    let value = (direct_xg + continuation_surplus * readiness_factor).clamp(0.0002, 0.65);
 
     PossessionStateValueEvaluation {
         state: PossessionStateValue {
@@ -1600,11 +1593,8 @@ fn pass_receive_value_breakdown_with_optional_target_pressures(
     pass_receive_context: Option<&PassReceiveValueContext>,
     precomputed_target_pressures: Option<PassReceiveTargetPressure>,
 ) -> PassReceiveValueBreakdown {
-    let target_pressures =
-        precomputed_target_pressures.unwrap_or_else(|| pass_receive_target_pressures(
-            input.pos,
-            input.opponent_positions,
-        ));
+    let target_pressures = precomputed_target_pressures
+        .unwrap_or_else(|| pass_receive_target_pressures(input.pos, input.opponent_positions));
     let possession = possession_state_value_evaluation_with_pass_receive_context(
         &state_value_input_from_pass_receive(input),
         pass_receive_context,
@@ -1971,6 +1961,34 @@ mod tests {
     }
 
     #[test]
+    fn possession_value_never_discounts_its_already_releasable_direct_shot_twice() {
+        let opponents = [(101.0, 18.0), (101.0, 50.0)];
+        let teammates = [(1, 94.0, 34.0), (2, 70.0, 18.0)];
+        let mut input = state_input((90.0, 34.0), 0, &teammates, &opponents);
+        input.control_state = Some(PossessionControlState {
+            facing_direction: 0.0,
+            pressure_load: 0.15,
+            containment_load: 0.10,
+            forward_control: 0.70,
+            turn_readiness: 0.55,
+            release_window: 0.75,
+            shape_readiness: 0.40,
+            release_preparation: 0.65,
+            stagnation_load: 0.10,
+        });
+        let possession = possession_state_value(&input);
+
+        assert!(
+            possession.value + 1e-12 >= possession.direct_xg,
+            "possession value must contain the already readiness-adjusted direct shot branch: {possession:?}"
+        );
+        assert!(
+            possession.value <= possession.continuation_value + 1e-12,
+            "readiness may discount only the continuation surplus: {possession:?}"
+        );
+    }
+
+    #[test]
     fn structure_and_outlets_raise_controllable_state_value() {
         let opponents = [(62.0, 34.0), (68.0, 42.0)];
         let compressed = [(1, 48.0, 33.0), (2, 49.0, 35.0), (3, 47.0, 34.0)];
@@ -2068,7 +2086,7 @@ mod tests {
                 opposing_control_probability: 0.09,
                 opposing_control_value: 0.03,
             },
-            duration_ticks: 1,
+            duration_seconds: 2.0,
             tempo: 0.42,
             risk_budget: 0.34,
         });
@@ -2081,7 +2099,7 @@ mod tests {
                 opposing_control_probability: 1.0 - deep.direct_xg,
                 opposing_control_value: 0.03,
             },
-            duration_ticks: 4,
+            duration_seconds: 8.0,
             tempo: 0.42,
             risk_budget: 0.34,
         });
@@ -2569,10 +2587,9 @@ mod tests {
         };
         let team_context = pass_receive_team_value_context(&seed);
 
-        for (receiver_index, pos, finishing, long_shot) in [
-            (1, (58.0, 24.0), 0.78, 0.71),
-            (2, (68.0, 18.0), 0.64, 0.59),
-        ] {
+        for (receiver_index, pos, finishing, long_shot) in
+            [(1, (58.0, 24.0), 0.78, 0.71), (2, (68.0, 18.0), 0.64, 0.59)]
+        {
             let input = PassReceiveValueInput {
                 pos,
                 receiver_index,
@@ -2583,7 +2600,8 @@ mod tests {
                 ..seed
             };
             let uncached_context = pass_receive_value_context(&input);
-            let shared_context = pass_receive_value_context_with_team_context(&input, &team_context);
+            let shared_context =
+                pass_receive_value_context_with_team_context(&input, &team_context);
             let uncached =
                 pass_receive_value_breakdown_with_context(&input, Some(&uncached_context));
             let shared = pass_receive_value_breakdown_with_context(&input, Some(&shared_context));
@@ -2670,8 +2688,7 @@ mod tests {
 
         let uncached_context = pass_receive_value_context(&input);
         let shared_context = pass_receive_value_context_with_team_context(&input, &team_context);
-        let uncached =
-            pass_receive_value_breakdown_with_context(&input, Some(&uncached_context));
+        let uncached = pass_receive_value_breakdown_with_context(&input, Some(&uncached_context));
         let shared = pass_receive_value_breakdown_with_context(&input, Some(&shared_context));
 
         assert_eq!(shared.value.to_bits(), uncached.value.to_bits());
