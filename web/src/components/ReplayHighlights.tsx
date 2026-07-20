@@ -57,22 +57,63 @@ const PITCH_W = 68, PITCH_H = 105
 const CANVAS_W = 300, CANVAS_H = Math.round(CANVAS_W * (PITCH_H / PITCH_W))
 const SCALE_X = CANVAS_W / PITCH_W, SCALE_Y = CANVAS_H / PITCH_H
 const PLAYER_R = 7, BALL_R = 4
+const OPEN_PLAY_TIME_COMPRESSION = 2
+const REPLAY_CUT_INTERVAL_MS = 300
+const MIN_FRAME_INTERVAL_MS = 40
 
 const COLOR_MAP: Record<string, string> = { w:'#b8b8b8', g:'#4caf50', b:'#4fc3f7', p:'#b45cff', o:'#ff9800', r:'#ef5350', f:'#ff69b4', x:'#a52a2a', '$':'#fbbf24' }
 
 function lerp(a: number, b: number, t: number) { return a + (b - a) * t }
-function catmullRom(p0: number, p1: number, p2: number, p3: number, t: number) {
-  const t2 = t * t
-  const t3 = t2 * t
-  return 0.5 * (
-    2 * p1 +
-    (-p0 + p2) * t +
-    (2 * p0 - 5 * p1 + 4 * p2 - p3) * t2 +
-    (-p0 + 3 * p1 - 3 * p2 + p3) * t3
-  )
-}
 function pointDist(a: [number, number], b: [number, number]) {
   return Math.hypot(a[0] - b[0], a[1] - b[1])
+}
+function interpolatePoint(
+  left: [number, number],
+  right: [number, number],
+  leftTime: number,
+  rightTime: number,
+  time: number,
+): [number, number] {
+  const span = rightTime - leftTime
+  const progress = span > 1e-9 ? (time - leftTime) / span : 0
+  return [
+    lerp(left[0], right[0], progress),
+    lerp(left[1], right[1], progress),
+  ]
+}
+function centripetalCatmullRom(
+  p0: [number, number],
+  p1: [number, number],
+  p2: [number, number],
+  p3: [number, number],
+  progress: number,
+): [number, number] {
+  const knotStep = (left: [number, number], right: [number, number]) =>
+    Math.max(Math.sqrt(pointDist(left, right)), 1e-4)
+  const t0 = 0
+  const t1 = t0 + knotStep(p0, p1)
+  const t2 = t1 + knotStep(p1, p2)
+  const t3 = t2 + knotStep(p2, p3)
+  const time = lerp(t1, t2, progress)
+  const a1 = interpolatePoint(p0, p1, t0, t1, time)
+  const a2 = interpolatePoint(p1, p2, t1, t2, time)
+  const a3 = interpolatePoint(p2, p3, t2, t3, time)
+  const b1 = interpolatePoint(a1, a2, t0, t2, time)
+  const b2 = interpolatePoint(a2, a3, t1, t3, time)
+  const curved = interpolatePoint(b1, b2, t1, t2, time)
+  const linear: [number, number] = [
+    lerp(p1[0], p2[0], progress),
+    lerp(p1[1], p2[1], progress),
+  ]
+  const deviation = pointDist(curved, linear)
+  const maxDeviation = Math.min(1.5, pointDist(p1, p2) * 0.25)
+  const deviationScale = deviation > maxDeviation && deviation > 1e-9
+    ? maxDeviation / deviation
+    : 1
+  return [
+    Math.min(Math.max(lerp(linear[0], curved[0], deviationScale), 0), PITCH_W),
+    Math.min(Math.max(lerp(linear[1], curved[1], deviationScale), 0), PITCH_H),
+  ]
 }
 
 function isContinuousFlightEnd(flight: ReplayFrame['ball_flight']) {
@@ -86,6 +127,31 @@ function hasHardReplayCut(frame: ReplayFrame) {
 
 function blocksReplayExit(frame: ReplayFrame) {
   return hasHardReplayCut(frame)
+}
+
+function blocksReplayEntry(frame: ReplayFrame) {
+  return frame.cut === true && frame.ball_flight?.complete !== true
+}
+
+function blocksReplayTransition(frame: ReplayFrame, nextFrame?: ReplayFrame) {
+  return blocksReplayExit(frame) || (nextFrame ? blocksReplayEntry(nextFrame) : false)
+}
+
+function replayFrameInterval(frame: ReplayFrame, nextFrame: ReplayFrame, speed: number) {
+  if (frame.pause_ms && (frame.ball_flight || frame.event_text)) {
+    return frame.pause_ms / speed
+  }
+  if (blocksReplayTransition(frame, nextFrame)) {
+    return REPLAY_CUT_INTERVAL_MS / speed
+  }
+  const matchTimeMs = (nextFrame.t - frame.t) * 1000
+  if (matchTimeMs <= 0) {
+    return 0
+  }
+  return Math.max(
+    MIN_FRAME_INTERVAL_MS,
+    matchTimeMs / OPEN_PLAY_TIME_COMPRESSION / speed,
+  )
 }
 
 function flightProgress(flight: NonNullable<ReplayFrame['ball_flight']>) {
@@ -149,10 +215,16 @@ function ballFlightPosition(
   const interpolation = Math.min(Math.max(interpT, 0), 1)
 
   if (flight && (!flight.complete || !isContinuousFlightEnd(flight))) {
-    const startProgress = flightProgress(flight)
     const continuesSameFlight = flight.id !== undefined
       && nextFlight?.id === flight.id
       && nextFlight.total_ticks === flight.total_ticks
+    if (continuesSameFlight && frame.ball && nextFrame.ball) {
+      return [
+        lerp(frame.ball[0], nextFrame.ball[0], interpolation),
+        lerp(frame.ball[1], nextFrame.ball[1], interpolation),
+      ]
+    }
+    const startProgress = flightProgress(flight)
     const endProgress = continuesSameFlight
       ? Math.max(startProgress, flightProgress(nextFlight))
       : 1
@@ -165,7 +237,7 @@ function ballFlightPosition(
   if (
     frame.ball
     && nextFlight
-    && !hasHardReplayCut(frame)
+    && !blocksReplayTransition(frame, nextFrame)
   ) {
     const target = pointAlongFlightPath(
       flightPath(frames, idx + 1, nextFlight),
@@ -191,25 +263,32 @@ function smoothPoint(
   const next = frames[idx + 1]
   const current = side === 'home' ? frame.home[playerIdx] : frame.away[playerIdx]
   const target = next ? (side === 'home' ? next.home[playerIdx] : next.away[playerIdx]) : current
-  if (!next || blocksReplayExit(frame)) return current
+  if (!next || blocksReplayTransition(frame, next)) return current
 
-  const prev = idx > 0 && !hasHardReplayCut(frames[idx - 1])
-    ? (side === 'home' ? frames[idx - 1].home[playerIdx] : frames[idx - 1].away[playerIdx])
+  const previousFrame = frames[idx - 1]
+  const followingFrame = frames[idx + 2]
+  const previous = previousFrame && !blocksReplayTransition(previousFrame, frame)
+    ? (side === 'home' ? previousFrame.home[playerIdx] : previousFrame.away[playerIdx])
     : current
-  const after = !hasHardReplayCut(next)
-    && idx + 2 < frames.length
-    && !hasHardReplayCut(frames[idx + 2])
-    ? (side === 'home' ? frames[idx + 2].home[playerIdx] : frames[idx + 2].away[playerIdx])
+  const following = followingFrame && !blocksReplayTransition(next, followingFrame)
+    ? (side === 'home' ? followingFrame.home[playerIdx] : followingFrame.away[playerIdx])
     : target
-  const segment = pointDist(current, target)
-  const prevSegment = pointDist(prev, current)
-  const nextSegment = pointDist(target, after)
-  const abnormalJump = segment > Math.max(10, prevSegment * 2.6 + 2, nextSegment * 2.6 + 2)
-  if (abnormalJump) return [lerp(current[0], target[0], t), lerp(current[1], target[1], t)]
-  return [
-    catmullRom(prev[0], current[0], target[0], after[0], t),
-    catmullRom(prev[1], current[1], target[1], after[1], t),
-  ]
+  const segmentDistance = pointDist(current, target)
+  const previousDistance = pointDist(previous, current)
+  const followingDistance = pointDist(target, following)
+  const abnormalJump = segmentDistance > Math.max(
+    10,
+    previousDistance * 2.6 + 2,
+    followingDistance * 2.6 + 2,
+  )
+  if (abnormalJump) {
+    return [
+      lerp(current[0], target[0], t),
+      lerp(current[1], target[1], t),
+    ]
+  }
+
+  return centripetalCatmullRom(previous, current, target, following, t)
 }
 function extractHighlights(frames: ReplayFrame[], header: ReplayHeader | null): Clip[] {
   const clips: Clip[] = []
@@ -297,6 +376,7 @@ export default function ReplayHighlights({ replayUrl }: Props) {
   const speedRef = useRef(1)
   const animRef = useRef(0)
   const lastRenderTimeRef = useRef(0)
+  const segmentProgressRef = useRef(0)
   const currentFramesRef = useRef({ start: 0, end: 0 })
   const currentClipRef = useRef(0)
   const clipsRef = useRef<Clip[]>([])
@@ -322,7 +402,12 @@ export default function ReplayHighlights({ replayUrl }: Props) {
       const f = parsed.filter(l => l.type === 'frame') as ReplayFrame[]
       setHeader(h); setFrames(f)
       const hl = extractHighlights(f, h); setClips(hl); setLoading(false)
-      if (hl.length > 0) { setFrameIdx(hl[0].startIdx); setPlaying(true) }
+      if (hl.length > 0) {
+        frameIdxRef.current = hl[0].startIdx
+        segmentProgressRef.current = 0
+        setFrameIdx(hl[0].startIdx)
+        setPlaying(true)
+      }
     })
   }, [replayUrl])
 
@@ -332,12 +417,7 @@ export default function ReplayHighlights({ replayUrl }: Props) {
   const getInterval = useCallback((idx: number): number => {
     const f = framesRef.current
     if (idx >= f.length - 1) return 500
-    const frame = f[idx]
-    if (frame.pause_ms && (frame.ball_flight || frame.event_text)) return frame.pause_ms / speedRef.current
-    const nextFrame = f[idx + 1]
-    const raw = (nextFrame.t - frame.t) * 1000
-    const base = raw === 0 ? (nextFrame.pause_ms || 300) : Math.max(100, Math.min(2000, raw))
-    return Math.max(40, base / speedRef.current)
+    return replayFrameInterval(f[idx], f[idx + 1], speedRef.current)
   }, [])
 
   const drawFrame = useCallback((idx: number, interpT: number = 0) => {
@@ -349,7 +429,11 @@ export default function ReplayHighlights({ replayUrl }: Props) {
     if (!frame) return
 
     let home = frame.home.map(p => [...p] as [number, number]), away = frame.away.map(p => [...p] as [number, number])
-    if (idx < f.length - 1 && interpT > 0 && !blocksReplayExit(frame)) {
+    if (
+      idx < f.length - 1
+      && interpT > 0
+      && !blocksReplayTransition(frame, f[idx + 1])
+    ) {
       home = frame.home.map((_, i) => smoothPoint(f, idx, 'home', i, interpT))
       away = frame.away.map((_, i) => smoothPoint(f, idx, 'away', i, interpT))
     }
@@ -441,21 +525,40 @@ export default function ReplayHighlights({ replayUrl }: Props) {
     const loop = (ts: number) => {
       if (!playingRef.current) return
       if (!lastRenderTimeRef.current) lastRenderTimeRef.current = ts
-      const elapsed = ts - lastRenderTimeRef.current
-      const interval = getInterval(frameIdxRef.current)
-      const interpT = Math.min(elapsed / interval, 1)
-      drawFrame(frameIdxRef.current, interpT)
-      if (elapsed >= interval) {
-        lastRenderTimeRef.current = ts
-        const nextIdx = frameIdxRef.current + 1
+      let elapsed = ts - lastRenderTimeRef.current
+      lastRenderTimeRef.current = ts
+      let idx = frameIdxRef.current
+      let progress = segmentProgressRef.current
+
+      while (elapsed > 0) {
+        const interval = getInterval(idx)
+        const remaining = (1 - progress) * interval
+        if (elapsed < remaining) {
+          progress += elapsed / interval
+          elapsed = 0
+          break
+        }
+        elapsed -= remaining
+        progress = 0
+        const nextIdx = idx + 1
         if (nextIdx > currentFramesRef.current.end) {
           if (!fullReplayRef.current && !singleClipRef.current && currentClipRef.current < clipsRef.current.length-1) {
-            const next = currentClipRef.current + 1; setCurrentClip(next); setFrameIdx(clipsRef.current[next].startIdx)
+            const next = currentClipRef.current + 1
+            const nextStart = clipsRef.current[next].startIdx
+            currentClipRef.current = next
+            frameIdxRef.current = nextStart
+            segmentProgressRef.current = 0
+            setCurrentClip(next)
+            setFrameIdx(nextStart)
           } else { setPlaying(false); setSingleClip(false) }
           return
         }
-        setFrameIdx(nextIdx)
+        idx = nextIdx
+        frameIdxRef.current = idx
+        setFrameIdx(idx)
       }
+      segmentProgressRef.current = progress
+      drawFrame(idx, progress)
       animRef.current = requestAnimationFrame(loop)
     }
     animRef.current = requestAnimationFrame(loop)
@@ -464,7 +567,25 @@ export default function ReplayHighlights({ replayUrl }: Props) {
 
   useEffect(() => { if (!playing) drawFrame(frameIdx, 0) }, [frameIdx, playing, drawFrame])
 
-  const goToClip = (idx: number) => { setPlaying(false); setTimeout(() => { setCurrentClip(idx); setFrameIdx(clips[idx].startIdx); setSingleClip(true); setPlaying(true) }, 0) }
+  const goToClip = (idx: number) => {
+    setPlaying(false)
+    setTimeout(() => {
+      const startIdx = clips[idx].startIdx
+      currentClipRef.current = idx
+      frameIdxRef.current = startIdx
+      segmentProgressRef.current = 0
+      setCurrentClip(idx)
+      setFrameIdx(startIdx)
+      setSingleClip(true)
+      setPlaying(true)
+    }, 0)
+  }
+  const seekToFrame = (idx: number) => {
+    frameIdxRef.current = idx
+    segmentProgressRef.current = 0
+    lastRenderTimeRef.current = 0
+    setFrameIdx(idx)
+  }
   const currentFrame = frames[frameIdx]
   const selectedMeta = selectedPlayer && header
     ? selectedPlayer.team === 'home'
@@ -506,7 +627,7 @@ export default function ReplayHighlights({ replayUrl }: Props) {
   if (clips.length === 0 && !fullReplay) return (
     <div className="text-center py-8">
       <p className="text-slate-500 text-sm mb-3">本场没有精彩集锦</p>
-      <Button variant="ghost" size="sm" className="text-xs text-slate-500" onClick={() => { setFullReplay(true); setFrameIdx(0) }}><Maximize2 size={12} className="mr-1" />查看完整回放</Button>
+      <Button variant="ghost" size="sm" className="text-xs text-slate-500" onClick={() => { setFullReplay(true); seekToFrame(0) }}><Maximize2 size={12} className="mr-1" />查看完整回放</Button>
     </div>
   )
 
@@ -524,16 +645,16 @@ export default function ReplayHighlights({ replayUrl }: Props) {
       </div>
       <canvas ref={canvasRef} width={CANVAS_W} height={CANVAS_H} onClick={handleCanvasClick} className="rounded-lg border border-slate-700 shadow-lg cursor-pointer" style={{ width: '100%', maxWidth: 300 }} />
       <div className="flex items-center gap-2">
-        <Button variant="ghost" size="sm" onClick={() => setFrameIdx(Math.max(currentFrames.start, frameIdx-5))}><SkipBack size={14} /></Button>
+        <Button variant="ghost" size="sm" onClick={() => seekToFrame(Math.max(currentFrames.start, frameIdx-5))}><SkipBack size={14} /></Button>
         <Button variant="outline" size="sm" onClick={() => setPlaying(!playing)}>{playing ? <Pause size={14} /> : <Play size={14} />}</Button>
-        <Button variant="ghost" size="sm" onClick={() => { if (!fullReplay && currentClip < clips.length-1) goToClip(currentClip+1); else setFrameIdx(Math.min(currentFrames.end, frameIdx+5)) }}><SkipForward size={14} /></Button>
+        <Button variant="ghost" size="sm" onClick={() => { if (!fullReplay && currentClip < clips.length-1) goToClip(currentClip+1); else seekToFrame(Math.min(currentFrames.end, frameIdx+5)) }}><SkipForward size={14} /></Button>
         <div className="flex gap-1 ml-2">
           {[1,2,4].map(s => <Button key={s} variant={speed===s?'default':'ghost'} size="sm" className="text-[10px] px-2 h-6" onClick={() => setSpeed(s)}>{s}x</Button>)}
         </div>
       </div>
       {fullReplay && frames.length > 0 && (
         <input type="range" min={0} max={frames.length - 1} value={frameIdx} className="w-full max-w-[300px] h-1 cursor-pointer accent-accent"
-          onChange={e => { setFrameIdx(parseInt(e.target.value)); setPlaying(false) }} />
+          onChange={e => { seekToFrame(parseInt(e.target.value)); setPlaying(false) }} />
       )}
       {!fullReplay && clips.length > 0 && (
         <div className="w-full">
@@ -548,7 +669,16 @@ export default function ReplayHighlights({ replayUrl }: Props) {
           </div>
         </div>
       )}
-      <Button variant="ghost" size="sm" className="text-xs text-slate-500" onClick={() => { setFullReplay(!fullReplay); if (!fullReplay) setFrameIdx(0); else if (clips.length > 0) { setFrameIdx(clips[0].startIdx); setCurrentClip(0) } }}>
+      <Button variant="ghost" size="sm" className="text-xs text-slate-500" onClick={() => {
+        setFullReplay(!fullReplay)
+        if (!fullReplay) {
+          seekToFrame(0)
+        } else if (clips.length > 0) {
+          currentClipRef.current = 0
+          setCurrentClip(0)
+          seekToFrame(clips[0].startIdx)
+        }
+      }}>
         <Maximize2 size={12} className="mr-1" />{fullReplay ? '返回集锦' : '完整回放'}
       </Button>
     </div>

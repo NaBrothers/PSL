@@ -1,5 +1,5 @@
 use crate::goalkeeper::{compute_gk_save_probability_for_attributes, GkSaveAttributes};
-use crate::match_flow::{player_move_tick, PlayerMoveTickInput};
+use crate::match_flow::{player_move_tick, player_move_tick_fraction, PlayerMoveTickInput};
 use crate::physics::{distance, smoothstep};
 
 #[derive(Clone, Copy, Debug)]
@@ -22,6 +22,7 @@ pub struct PassArrivalInput<'a> {
     pub flight_origin: (f64, f64),
     pub target_pos: (f64, f64),
     pub flight_ticks_total: i32,
+    pub flight_speed: f64,
     pub passer_team_is_receiver_team: bool,
     pub contest_radius: f64,
     pub player_max_speed: f64,
@@ -217,7 +218,8 @@ fn best_arrival_player(
 fn projected_contact_distance(
     player: ArrivalPlayerInput,
     contact_pos: (f64, f64),
-    contact_tick: i32,
+    completed_ticks: i32,
+    current_tick_fraction: f64,
     player_max_speed_value: f64,
     player_min_speed_value: f64,
 ) -> f64 {
@@ -232,21 +234,29 @@ fn projected_contact_distance(
     };
     let mut projected_pos = player.pos;
     let mut projected_velocity = player.velocity;
-    for _ in 0..contact_tick.max(0) {
-        let movement = player_move_tick(&PlayerMoveTickInput {
-            pos: projected_pos,
-            velocity: projected_velocity,
-            speed_ability: player.speed,
-            target_pos: contact_pos,
-            movement_intent,
-            state: "off_ball",
-            player_max_speed: player_max_speed_value,
-            player_min_speed: player_min_speed_value,
-            pitch_length: f64::MAX,
-            pitch_width: f64::MAX,
-        });
+    let movement_input = |pos, velocity| PlayerMoveTickInput {
+        pos,
+        velocity,
+        speed_ability: player.speed,
+        target_pos: contact_pos,
+        movement_intent,
+        state: "off_ball",
+        player_max_speed: player_max_speed_value,
+        player_min_speed: player_min_speed_value,
+        pitch_length: f64::MAX,
+        pitch_width: f64::MAX,
+    };
+    for _ in 0..completed_ticks.max(0) {
+        let movement = player_move_tick(&movement_input(projected_pos, projected_velocity));
         projected_pos = movement.pos;
         projected_velocity = movement.velocity;
+    }
+    if current_tick_fraction > 0.0 {
+        let movement = player_move_tick_fraction(
+            &movement_input(projected_pos, projected_velocity),
+            current_tick_fraction,
+        );
+        projected_pos = movement.pos;
     }
     distance(projected_pos, contact_pos)
 }
@@ -254,7 +264,8 @@ fn projected_contact_distance(
 fn best_trajectory_contact_player(
     players: &[ArrivalPlayerInput],
     contact_pos: (f64, f64),
-    contact_tick: i32,
+    completed_ticks: i32,
+    current_tick_fraction: f64,
     player_max_speed_value: f64,
     player_min_speed_value: f64,
     contest_radius: f64,
@@ -265,7 +276,8 @@ fn best_trajectory_contact_player(
         let contact_distance = projected_contact_distance(
             *player,
             contact_pos,
-            contact_tick,
+            completed_ticks,
+            current_tick_fraction,
             player_max_speed_value,
             player_min_speed_value,
         );
@@ -286,34 +298,50 @@ fn earliest_trajectory_contact(input: &PassArrivalInput<'_>) -> Option<PassArriv
         return None;
     }
 
+    let mut segment_start = input.flight_origin;
     for contact_tick in 1..flight_ticks {
-        let progress = contact_tick as f64 / flight_ticks as f64;
-        let contact_pos = (
-            input.flight_origin.0 + (input.target_pos.0 - input.flight_origin.0) * progress,
-            input.flight_origin.1 + (input.target_pos.1 - input.flight_origin.1) * progress,
-        );
-        let (opponent_index, opponent_score, opponent_control) = best_trajectory_contact_player(
-            input.opponents,
-            contact_pos,
-            contact_tick,
-            input.player_max_speed,
-            input.player_min_speed,
-            input.contest_radius,
-        );
-        if opponent_control > 0.0 {
-            return Some(PassArrivalOutput {
-                winner_code: 1,
-                receiver_index: None,
-                receiver_score: f64::INFINITY,
-                receiver_control: 0.0,
-                opponent_index,
-                opponent_score,
-                opponent_control,
-                loose_control: pass_loose_control_strength(0.0, opponent_control),
+        let segment_end =
+            crate::match_flow::tick_ball_flight(&crate::match_flow::FlightTickInput {
+                origin: input.flight_origin,
+                target: input.target_pos,
+                ticks_elapsed: contact_tick - 1,
+                ticks_total: flight_ticks,
+                speed: input.flight_speed,
+            })
+            .position;
+        let segment_distance = distance(segment_start, segment_end);
+        let sample_count = (segment_distance / 0.5).ceil().max(1.0) as i32;
+        for sample in 1..=sample_count {
+            let tick_fraction = sample as f64 / sample_count as f64;
+            let contact_pos = (
+                segment_start.0 + (segment_end.0 - segment_start.0) * tick_fraction,
+                segment_start.1 + (segment_end.1 - segment_start.1) * tick_fraction,
+            );
+            let (opponent_index, opponent_score, opponent_control) = best_trajectory_contact_player(
+                input.opponents,
                 contact_pos,
-                contact_tick,
-            });
+                contact_tick - 1,
+                tick_fraction,
+                input.player_max_speed,
+                input.player_min_speed,
+                input.contest_radius,
+            );
+            if opponent_control > 0.0 {
+                return Some(PassArrivalOutput {
+                    winner_code: 1,
+                    receiver_index: None,
+                    receiver_score: f64::INFINITY,
+                    receiver_control: 0.0,
+                    opponent_index,
+                    opponent_score,
+                    opponent_control,
+                    loose_control: pass_loose_control_strength(0.0, opponent_control),
+                    contact_pos,
+                    contact_tick,
+                });
+            }
         }
+        segment_start = segment_end;
     }
     None
 }
@@ -489,6 +517,7 @@ mod tests {
             flight_origin: passer.pos,
             target_pos: target,
             flight_ticks_total: 2,
+            flight_speed: 18.0,
             passer_team_is_receiver_team: true,
             contest_radius: 2.5,
             player_max_speed: 5.5,
@@ -518,6 +547,7 @@ mod tests {
             flight_origin: passer.pos,
             target_pos: target,
             flight_ticks_total: 4,
+            flight_speed: 18.0,
             passer_team_is_receiver_team: true,
             contest_radius: 2.5,
             player_max_speed: 8.0,
@@ -543,6 +573,7 @@ mod tests {
             flight_origin: passer.pos,
             target_pos: target,
             flight_ticks_total: 4,
+            flight_speed: 18.0,
             passer_team_is_receiver_team: true,
             contest_radius: 2.5,
             player_max_speed: 8.0,
@@ -572,6 +603,7 @@ mod tests {
             flight_origin: passer.pos,
             target_pos: target,
             flight_ticks_total: 2,
+            flight_speed: 18.0,
             passer_team_is_receiver_team: true,
             contest_radius: 2.5,
             player_max_speed: 5.5,

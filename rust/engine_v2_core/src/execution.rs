@@ -418,9 +418,7 @@ pub fn execute_pass(input: &PassExecutionInput) -> PassExecutionOutput {
         input.ball_pass_speed
     };
     let dist = distance(input.passer_pos, target);
-    let ticks_needed = (dist / (speed * input.tick_duration).max(0.1))
-        .ceil()
-        .max(1.0) as i32;
+    let ticks_needed = (dist / speed.max(0.1)).ceil().max(1.0) as i32;
 
     PassExecutionOutput {
         transition,
@@ -464,9 +462,7 @@ pub fn execute_shot(input: &ShotExecutionInput) -> ShotExecutionOutput {
         (target_x, target_y)
     };
     let dist = distance(input.shooter_pos, target);
-    let ticks_needed = (dist / (input.ball_shot_speed * input.tick_duration).max(0.1))
-        .ceil()
-        .max(1.0) as i32;
+    let ticks_needed = (dist / input.ball_shot_speed.max(0.1)).ceil().max(1.0) as i32;
     ShotExecutionOutput {
         on_target,
         target,
@@ -484,9 +480,7 @@ pub fn execute_clear(input: &ClearExecutionInput) -> ClearExecutionOutput {
         origin: input.clearer_pos,
         target: input.target,
         speed: input.ball_long_pass_speed,
-        ticks_needed: (dist / (input.ball_long_pass_speed * input.tick_duration).max(0.1))
-            .ceil()
-            .max(1.0) as i32,
+        ticks_needed: (dist / input.ball_long_pass_speed.max(0.1)).ceil().max(1.0) as i32,
         flight_type_code: 2,
     }
 }
@@ -733,7 +727,7 @@ mod tests {
     }
 
     #[test]
-    fn ball_speed_is_measured_per_second_and_tick_duration_only_changes_discretization() {
+    fn ball_speed_is_measured_per_tick_like_player_speed() {
         let two_second_ticks = execute_pass(&PassExecutionInput {
             ideal_target: (66.0, 34.0),
             technical_roll: 0.0,
@@ -750,13 +744,10 @@ mod tests {
             ..pass_input(1.0, 1.0)
         });
 
-        assert_eq!(two_second_ticks.ticks_needed, 1);
+        assert_eq!(two_second_ticks.ticks_needed, 2);
         assert_eq!(one_second_ticks.ticks_needed, 2);
         assert_eq!(two_second_ticks.target, one_second_ticks.target);
-        assert_eq!(
-            two_second_ticks.ticks_needed as f64 * 2.0,
-            one_second_ticks.ticks_needed as f64
-        );
+        assert_eq!(two_second_ticks.ticks_needed, one_second_ticks.ticks_needed);
     }
 
     #[test]

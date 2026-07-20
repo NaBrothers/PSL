@@ -6,7 +6,11 @@ from typing import Any, Optional
 from psl_core.engine_v2.config import (
     ENGINE_CONFIG_ADMIN_ITEMS,
     ENGINE_CONFIG_DEFAULTS,
+    ENGINE_CONFIG_SPEED_SCALE_MIGRATION,
 )
+
+ENGINE_CONFIG_SPEED_SCALE_VERSION_KEY = "engine_v2.speed_scale_version"
+ENGINE_CONFIG_SPEED_SCALE_VERSION = 1
 
 # Default values for all configurable parameters
 DEFAULTS = {
@@ -176,6 +180,52 @@ class GameConfigService:
     def __init__(self, db):
         self.db = db
         self._cache = {}
+        self._migrate_engine_speed_scale()
+
+    def _migrate_engine_speed_scale(self):
+        version_name = f"config:{ENGINE_CONFIG_SPEED_SCALE_VERSION_KEY}"
+        version_row = self.db.query_one(
+            'SELECT Value FROM "global" WHERE Name = ?', (version_name,)
+        )
+        if version_row:
+            try:
+                if int(json.loads(version_row[0])) >= ENGINE_CONFIG_SPEED_SCALE_VERSION:
+                    return
+            except (TypeError, ValueError, json.JSONDecodeError):
+                pass
+
+        for key, (old_default, new_default) in ENGINE_CONFIG_SPEED_SCALE_MIGRATION.items():
+            name = f"config:{key}"
+            row = self.db.query_one(
+                'SELECT Value FROM "global" WHERE Name = ?', (name,)
+            )
+            if not row:
+                continue
+            try:
+                current_value = json.loads(row[0])
+            except (TypeError, json.JSONDecodeError):
+                continue
+            if (
+                isinstance(current_value, (int, float))
+                and not isinstance(current_value, bool)
+                and float(current_value) == old_default
+            ):
+                self.db.execute(
+                    'UPDATE "global" SET Value = ? WHERE Name = ?',
+                    (json.dumps(new_default), name),
+                )
+
+        version_value = json.dumps(ENGINE_CONFIG_SPEED_SCALE_VERSION)
+        if version_row:
+            self.db.execute(
+                'UPDATE "global" SET Value = ? WHERE Name = ?',
+                (version_value, version_name),
+            )
+        else:
+            self.db.execute(
+                'INSERT INTO "global" (Name, Value) VALUES (?, ?)',
+                (version_name, version_value),
+            )
 
     def get(self, key: str) -> Any:
         if key in self._cache:

@@ -154,6 +154,23 @@ fn player_acceleration(speed_ability: i32, max_speed: f64, min_speed: f64) -> f6
 }
 
 pub fn advance_player_motion(input: &PlayerMotionInput) -> PlayerMotionOutput {
+    advance_player_motion_fraction(input, 1.0)
+}
+
+pub fn advance_player_motion_fraction(
+    input: &PlayerMotionInput,
+    tick_fraction: f64,
+) -> PlayerMotionOutput {
+    let tick_fraction = tick_fraction.clamp(0.0, 1.0);
+    if tick_fraction <= 1e-9 {
+        return PlayerMotionOutput {
+            pos: input.pos,
+            unclamped_pos: input.pos,
+            velocity: input.velocity,
+            distance_covered: 0.0,
+            facing_direction: None,
+        };
+    }
     let max_speed = player_speed(
         input.speed_ability,
         input.player_max_speed,
@@ -205,7 +222,7 @@ pub fn advance_player_motion(input: &PlayerMotionInput) -> PlayerMotionOutput {
     } else {
         (1.0 - alignment) * 0.5
     };
-    let velocity_response = accel + (brake_accel - accel) * turn_severity;
+    let velocity_response = (accel + (brake_accel - accel) * turn_severity) * tick_fraction;
     let mut delta_velocity = (
         desired_velocity.0 - current_velocity.0,
         desired_velocity.1 - current_velocity.1,
@@ -230,8 +247,8 @@ pub fn advance_player_motion(input: &PlayerMotionInput) -> PlayerMotionOutput {
     }
 
     let displacement = (
-        (current_velocity.0 + velocity.0) * 0.5,
-        (current_velocity.1 + velocity.1) * 0.5,
+        (current_velocity.0 + velocity.0) * 0.5 * tick_fraction,
+        (current_velocity.1 + velocity.1) * 0.5 * tick_fraction,
     );
     let along_target = displacement.0 * target_direction.0 + displacement.1 * target_direction.1;
     if target_distance > 1e-6 && along_target >= target_distance {
@@ -416,6 +433,33 @@ mod tests {
         assert!(output.velocity.0 > 0.0);
         assert!(output.velocity.0 < 5.0);
         assert!(output.distance_covered < output.velocity.0);
+    }
+
+    #[test]
+    fn fractional_motion_preserves_the_requested_tick_budget() {
+        let input = PlayerMotionInput {
+            pos: (20.0, 30.0),
+            target: (80.0, 30.0),
+            velocity: (2.0, 0.0),
+            speed_ability: 80,
+            desired_speed: 6.0,
+            acceleration_scale: 1.0,
+            player_max_speed: 8.0,
+            player_min_speed: 2.5,
+            pitch_length: 105.0,
+            pitch_width: 68.0,
+        };
+
+        let stopped = advance_player_motion_fraction(&input, 0.0);
+        let half = advance_player_motion_fraction(&input, 0.5);
+        let full = advance_player_motion(&input);
+
+        assert_eq!(stopped.pos, input.pos);
+        assert_eq!(stopped.velocity, input.velocity);
+        assert_eq!(stopped.distance_covered, 0.0);
+        assert!(half.distance_covered > 0.0);
+        assert!(half.distance_covered < full.distance_covered);
+        assert!(half.distance_covered <= player_speed(80, 8.0, 2.5) * 0.5);
     }
 
     #[test]

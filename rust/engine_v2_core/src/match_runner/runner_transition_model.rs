@@ -434,7 +434,7 @@ pub(super) fn projected_clearance_execution_outcomes_into(
     }
     Some(RunnerClearanceTransition {
         arrival,
-        winner_pos,
+        contact_pos: winner_pos,
     })
 }
 
@@ -633,10 +633,7 @@ fn append_projected_pass_spatial_outcome(
     } else {
         config.ball_pass_speed
     };
-    let sampled_duration_ticks = (distance(origin, target)
-        / (speed * config.tick_duration).max(0.1))
-    .ceil()
-    .max(1.0) as i32;
+    let sampled_duration_ticks = (distance(origin, target) / speed.max(0.1)).ceil().max(1.0) as i32;
     let arrival = runner_pass_arrival_plan(
         holder_idx,
         Some(receiver_idx),

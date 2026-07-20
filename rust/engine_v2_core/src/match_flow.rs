@@ -746,6 +746,7 @@ pub fn pass_arrival_plan(input: &PassArrivalPlanInput<'_>) -> PassArrivalPlanOut
         flight_origin: input.flight_origin,
         target_pos: input.target_pos,
         flight_ticks_total: input.flight_ticks_total,
+        flight_speed: input.flight_speed,
         passer_team_is_receiver_team: true,
         contest_radius: input.contest_radius,
         player_max_speed: input.player_max_speed,
@@ -1319,6 +1320,13 @@ pub fn player_move_speed(input: &PlayerMoveSpeedInput<'_>) -> PlayerMoveSpeedOut
 }
 
 pub fn player_move_tick(input: &PlayerMoveTickInput<'_>) -> PlayerMoveTickOutput {
+    player_move_tick_fraction(input, 1.0)
+}
+
+pub fn player_move_tick_fraction(
+    input: &PlayerMoveTickInput<'_>,
+    tick_fraction: f64,
+) -> PlayerMoveTickOutput {
     if input.state == "on_ball" || input.state == "stunned" {
         return PlayerMoveTickOutput {
             moved: false,
@@ -1341,22 +1349,28 @@ pub fn player_move_tick(input: &PlayerMoveTickInput<'_>) -> PlayerMoveTickOutput
     })
     .speed;
 
-    let movement = crate::physics::advance_player_motion(&crate::physics::PlayerMotionInput {
-        pos: input.pos,
-        target: input.target_pos,
-        velocity: input.velocity,
-        speed_ability: input.speed_ability,
-        desired_speed,
-        acceleration_scale: if matches!(input.movement_intent, "press" | "contest" | "attack_run") {
-            1.15
-        } else {
-            1.0
+    let movement = crate::physics::advance_player_motion_fraction(
+        &crate::physics::PlayerMotionInput {
+            pos: input.pos,
+            target: input.target_pos,
+            velocity: input.velocity,
+            speed_ability: input.speed_ability,
+            desired_speed,
+            acceleration_scale: if matches!(
+                input.movement_intent,
+                "press" | "contest" | "attack_run"
+            ) {
+                1.15
+            } else {
+                1.0
+            },
+            player_max_speed: input.player_max_speed,
+            player_min_speed: input.player_min_speed,
+            pitch_length: input.pitch_length,
+            pitch_width: input.pitch_width,
         },
-        player_max_speed: input.player_max_speed,
-        player_min_speed: input.player_min_speed,
-        pitch_length: input.pitch_length,
-        pitch_width: input.pitch_width,
-    });
+        tick_fraction,
+    );
     PlayerMoveTickOutput {
         moved: movement.distance_covered > 1e-6,
         pos: movement.pos,
@@ -1774,6 +1788,7 @@ pub struct FlightTickInput {
     pub target: (f64, f64),
     pub ticks_elapsed: i32,
     pub ticks_total: i32,
+    pub speed: f64,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -1848,10 +1863,11 @@ pub fn build_ball_flight_frame(input: &BallFlightFrameInput<'_>) -> BallFlightFr
 
 pub fn tick_ball_flight(input: &FlightTickInput) -> FlightTickOutput {
     let ticks_elapsed = input.ticks_elapsed + 1;
-    let progress = if input.ticks_total <= 0 {
+    let total_distance = crate::physics::distance(input.origin, input.target);
+    let progress = if input.ticks_total <= 0 || total_distance <= f64::EPSILON {
         1.0
     } else {
-        (ticks_elapsed as f64 / input.ticks_total as f64).min(1.0)
+        (ticks_elapsed as f64 * input.speed.max(0.0) / total_distance).min(1.0)
     };
     FlightTickOutput {
         position: (
@@ -2940,6 +2956,53 @@ pub fn track_carry_stats(input: &CarryStatInput) -> CarryStatOutput {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn ball_flight_advances_by_speed_per_tick() {
+        let first_tick = tick_ball_flight(&FlightTickInput {
+            origin: (0.0, 0.0),
+            target: (50.0, 0.0),
+            ticks_elapsed: 0,
+            ticks_total: 3,
+            speed: 22.0,
+        });
+        assert_eq!(first_tick.position, (22.0, 0.0));
+        assert!(!first_tick.complete);
+
+        let final_tick = tick_ball_flight(&FlightTickInput {
+            ticks_elapsed: 2,
+            ..FlightTickInput {
+                origin: (0.0, 0.0),
+                target: (50.0, 0.0),
+                ticks_elapsed: 0,
+                ticks_total: 3,
+                speed: 22.0,
+            }
+        });
+        assert_eq!(final_tick.position, (50.0, 0.0));
+        assert!(final_tick.complete);
+    }
+
+    #[test]
+    fn ball_flight_distance_only_depends_on_elapsed_ticks() {
+        let first_tick = tick_ball_flight(&FlightTickInput {
+            origin: (0.0, 0.0),
+            target: (70.0, 0.0),
+            ticks_elapsed: 0,
+            ticks_total: 3,
+            speed: 28.0,
+        });
+        let second_tick = tick_ball_flight(&FlightTickInput {
+            origin: (0.0, 0.0),
+            target: (70.0, 0.0),
+            ticks_elapsed: 1,
+            ticks_total: 3,
+            speed: 28.0,
+        });
+
+        assert_eq!(first_tick.position, (28.0, 0.0));
+        assert_eq!(second_tick.position, (56.0, 0.0));
+    }
 
     #[test]
     fn retained_pass_control_is_not_reversed_by_arrival_geometry() {
