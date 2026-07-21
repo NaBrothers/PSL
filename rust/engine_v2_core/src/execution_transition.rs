@@ -740,6 +740,7 @@ impl ExecutionTransitionBranches {
 
 #[derive(Clone, Copy, Debug)]
 pub struct ExecutionTransitionDistribution {
+    pub goal_probability: f64,
     pub retained: ExecutionTransitionBranches,
     pub opposing: ExecutionTransitionBranches,
     pub unresolved_probability: f64,
@@ -756,6 +757,7 @@ pub struct ExecutionTransitionExpectedValues {
 impl ExecutionTransitionDistribution {
     pub fn new() -> Self {
         Self {
+            goal_probability: 0.0,
             retained: ExecutionTransitionBranches::new(),
             opposing: ExecutionTransitionBranches::new(),
             unresolved_probability: 0.0,
@@ -763,25 +765,31 @@ impl ExecutionTransitionDistribution {
     }
 
     pub fn clear(&mut self) {
+        self.goal_probability = 0.0;
         self.retained.clear();
         self.opposing.clear();
         self.unresolved_probability = 0.0;
     }
 
     pub fn retained_probability(&self) -> f64 {
-        self.retained.probability().clamp(0.0, 1.0)
+        self.retained
+            .probability()
+            .clamp(0.0, 1.0 - self.goal_probability.clamp(0.0, 1.0))
     }
 
     pub fn opposing_probability(&self) -> f64 {
-        self.opposing
-            .probability()
-            .clamp(0.0, 1.0 - self.retained_probability())
+        self.opposing.probability().clamp(
+            0.0,
+            1.0 - self.goal_probability.clamp(0.0, 1.0) - self.retained_probability(),
+        )
     }
 
     pub fn unresolved_probability(&self) -> f64 {
-        self.unresolved_probability
-            .max(0.0)
-            .min(1.0 - self.retained_probability() - self.opposing_probability())
+        self.unresolved_probability.max(0.0).min(
+            1.0 - self.goal_probability.clamp(0.0, 1.0)
+                - self.retained_probability()
+                - self.opposing_probability(),
+        )
     }
 
     pub fn sample(&self, roll: f64) -> (ExecutionControlSide, Option<ExecutionTransitionBranch>) {

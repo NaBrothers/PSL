@@ -336,6 +336,7 @@ pub struct PassTraceOutput {
 pub struct CarryPhasePlanInput<'a> {
     pub transition: Option<crate::execution_transition::CarrySegmentTransition>,
     pub holder_pos: (f64, f64),
+    pub terminal_touch_origin: Option<(f64, f64)>,
     pub target: (f64, f64),
     pub velocity: (f64, f64),
     pub speed_ability: i32,
@@ -345,6 +346,7 @@ pub struct CarryPhasePlanInput<'a> {
     pub attacking_right: bool,
     pub pitch_length: f64,
     pub pitch_width: f64,
+    pub goal_width: f64,
     pub player_max_speed: f64,
     pub player_min_speed: f64,
     pub carrier_speed: f64,
@@ -508,6 +510,7 @@ pub struct PassReceivePlanInput {
     pub receiver_pos: (f64, f64),
     pub target_pos: (f64, f64),
     pub receiver_iq: f64,
+    pub defensive_interference: f64,
     pub receiver_offside_flagged: bool,
     pub pitch_length: f64,
     pub pitch_width: f64,
@@ -643,6 +646,7 @@ pub fn carry_phase_plan(input: &CarryPhasePlanInput<'_>) -> CarryPhasePlanOutput
     let carry = execute_carry(&CarryExecutionInput {
         transition: input.transition,
         holder_pos: input.holder_pos,
+        terminal_touch_origin: input.terminal_touch_origin,
         target: input.target,
         velocity: input.velocity,
         speed_ability: input.speed_ability,
@@ -652,6 +656,7 @@ pub fn carry_phase_plan(input: &CarryPhasePlanInput<'_>) -> CarryPhasePlanOutput
         attacking_right: input.attacking_right,
         pitch_length: input.pitch_length,
         pitch_width: input.pitch_width,
+        goal_width: input.goal_width,
         player_max_speed: input.player_max_speed,
         player_min_speed: input.player_min_speed,
         carrier_speed: input.carrier_speed,
@@ -718,6 +723,7 @@ pub fn pass_receive_plan(input: &PassReceivePlanInput) -> PassReceivePlanOutput 
     let first_touch = resolve_first_touch(&FirstTouchInput {
         target_pos: input.target_pos,
         iq: input.receiver_iq,
+        defensive_interference: input.defensive_interference,
         pitch_length: input.pitch_length,
         pitch_width: input.pitch_width,
         first_touch_error_divisor: input.first_touch_error_divisor,
@@ -1327,7 +1333,7 @@ pub fn player_move_tick_fraction(
     input: &PlayerMoveTickInput<'_>,
     tick_fraction: f64,
 ) -> PlayerMoveTickOutput {
-    if input.state == "on_ball" || input.state == "stunned" {
+    if input.state == "on_ball" || input.state == "stunned" || input.state == "recovering" {
         return PlayerMoveTickOutput {
             moved: false,
             pos: input.pos,
@@ -3049,6 +3055,7 @@ mod tests {
             receiver_pos: (42.0, 30.0),
             target_pos: (44.0, 31.5),
             receiver_iq: 100.0,
+            defensive_interference: 0.0,
             receiver_offside_flagged: false,
             pitch_length: 105.0,
             pitch_width: 68.0,
@@ -3240,5 +3247,22 @@ mod tests {
         });
         assert_eq!(next_tick_end.state, "off_ball");
         assert_eq!(next_tick_end.stun_ticks_remaining, 0);
+    }
+
+    #[test]
+    fn goalkeeper_recovery_uses_its_own_state_and_expires_after_one_tick() {
+        let current_tick_end = player_tick_stun(&PlayerTickStunInput {
+            state: "recovering",
+            stun_ticks_remaining: 2,
+        });
+        assert_eq!(current_tick_end.state, "recovering");
+        assert_eq!(current_tick_end.stun_ticks_remaining, 1);
+        let recovered = player_tick_stun(&PlayerTickStunInput {
+            state: current_tick_end.state.as_str(),
+            stun_ticks_remaining: current_tick_end.stun_ticks_remaining,
+        });
+
+        assert_eq!(recovered.state, "off_ball");
+        assert_eq!(recovered.stun_ticks_remaining, 0);
     }
 }

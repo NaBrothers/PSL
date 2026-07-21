@@ -58,7 +58,9 @@ pub struct GkPositioningOutput {
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct GkSaveContext {
     attributes: GkSaveAttributes,
+    goalkeeper_x: f64,
     goalkeeper_y: f64,
+    goal_x: f64,
     position_error: f64,
     depth_error: f64,
     reaction_factor: f64,
@@ -226,7 +228,9 @@ pub(crate) fn gk_save_context_for_goal(
     let saving_ability = attributes.gk_saving / 100.0;
     GkSaveContext {
         attributes,
+        goalkeeper_x: gk_pos.0,
         goalkeeper_y: gk_pos.1,
+        goal_x,
         position_error,
         depth_error,
         reaction_factor,
@@ -239,6 +243,20 @@ pub(crate) fn compute_gk_save_probability_with_context(
     shot_origin: (f64, f64),
     shot_target: (f64, f64),
 ) -> f64 {
+    let shot_dx = shot_target.0 - shot_origin.0;
+    let goal_direction = (context.goal_x - shot_origin.0).signum();
+    let goalkeeper_goalward_depth = (context.goalkeeper_x - shot_origin.0) * goal_direction;
+    let shot_goalward_depth = shot_dx.abs().max(1e-9);
+    let longitudinal_access = smoothstep(
+        -0.15,
+        (1.2 + 0.12 * shot_goalward_depth).min(3.0),
+        goalkeeper_goalward_depth,
+    ) * (1.0
+        - smoothstep(
+            shot_goalward_depth,
+            shot_goalward_depth + 0.8,
+            goalkeeper_goalward_depth,
+        ));
     let lateral_dist = (context.goalkeeper_y - shot_target.1).abs();
     let effective_dist = lateral_dist + context.depth_error + context.position_error;
     let reach_factor = (1.0 - effective_dist / 9.0).max(0.25);
@@ -246,7 +264,7 @@ pub(crate) fn compute_gk_save_probability_with_context(
     let reaction_window = 0.52 + 0.48 * smoothstep(9.0, 30.0, shot_dist);
     let long_shot_read = 1.0 + 0.18 * smoothstep(24.0, 42.0, shot_dist);
 
-    ((0.08
+    (((0.08
         + context.attributes.gk_save_base * 0.25
         + context.saving_ability * 0.18
         + reach_factor * 0.18
@@ -254,6 +272,8 @@ pub(crate) fn compute_gk_save_probability_with_context(
         + reaction_window * 0.10)
         * long_shot_read)
         .clamp(0.10, 0.90)
+        * longitudinal_access)
+        .clamp(0.0, 0.90)
 }
 
 pub fn should_rush_out(input: &GkRushInput) -> bool {
@@ -400,8 +420,21 @@ mod tests {
         let shot_dist = distance(shot_origin, shot_target);
         let reaction_window = 0.52 + 0.48 * smoothstep(9.0, 30.0, shot_dist);
         let long_shot_read = 1.0 + 0.18 * smoothstep(24.0, 42.0, shot_dist);
+        let goal_direction = (goal_x - shot_origin.0).signum();
+        let goalkeeper_goalward_depth = (gk_pos.0 - shot_origin.0) * goal_direction;
+        let shot_goalward_depth = (shot_target.0 - shot_origin.0).abs().max(1e-9);
+        let longitudinal_access = smoothstep(
+            -0.15,
+            (1.2 + 0.12 * shot_goalward_depth).min(3.0),
+            goalkeeper_goalward_depth,
+        ) * (1.0
+            - smoothstep(
+                shot_goalward_depth,
+                shot_goalward_depth + 0.8,
+                goalkeeper_goalward_depth,
+            ));
 
-        ((0.08
+        (((0.08
             + attributes.gk_save_base * 0.25
             + saving_ability * 0.18
             + reach_factor * 0.18
@@ -409,6 +442,8 @@ mod tests {
             + reaction_window * 0.10)
             * long_shot_read)
             .clamp(0.10, 0.90)
+            * longitudinal_access)
+            .clamp(0.0, 0.90)
     }
 
     #[test]
@@ -437,5 +472,36 @@ mod tests {
             );
             assert_eq!(actual.to_bits(), expected.to_bits());
         }
+    }
+
+    #[test]
+    fn goalkeeper_behind_the_shooter_cannot_save_through_the_shooter() {
+        let attributes = GkSaveAttributes {
+            gk_saving: 90.0,
+            gk_positioning: 90.0,
+            gk_reaction: 90.0,
+            gk_position_error_factor: 0.05,
+            gk_reaction_delay_factor: 0.005,
+            gk_save_base: 0.66,
+        };
+        let shot_origin = (103.8, 34.0);
+        let shot_target = (105.0, 34.0);
+        let behind = compute_gk_save_probability_for_attributes(
+            attributes,
+            (102.5, 34.0),
+            shot_origin,
+            shot_target,
+            105.0,
+        );
+        let goal_side = compute_gk_save_probability_for_attributes(
+            attributes,
+            (104.4, 34.0),
+            shot_origin,
+            shot_target,
+            105.0,
+        );
+
+        assert!(behind < 0.02);
+        assert!(goal_side > behind + 0.30);
     }
 }

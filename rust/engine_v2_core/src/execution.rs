@@ -1,5 +1,6 @@
 use crate::interactions::{
-    carry_containment_transition, CarryContainmentInput, DefenderActionInput,
+    carrier_body_collision_position, carry_containment_transition, CarryContainmentInput,
+    DefenderActionInput,
 };
 use crate::physics::{
     advance_player_motion, distance, player_speed, segment_pitch_boundary_crossing,
@@ -16,6 +17,7 @@ pub struct ExecutionOpponent {
 pub struct CarryExecutionInput<'a> {
     pub transition: Option<crate::execution_transition::CarrySegmentTransition>,
     pub holder_pos: (f64, f64),
+    pub terminal_touch_origin: Option<(f64, f64)>,
     pub target: (f64, f64),
     pub velocity: (f64, f64),
     pub speed_ability: i32,
@@ -25,6 +27,7 @@ pub struct CarryExecutionInput<'a> {
     pub attacking_right: bool,
     pub pitch_length: f64,
     pub pitch_width: f64,
+    pub goal_width: f64,
     pub player_max_speed: f64,
     pub player_min_speed: f64,
     pub carrier_speed: f64,
@@ -267,7 +270,16 @@ pub fn execute_carry(input: &CarryExecutionInput<'_>) -> CarryExecutionOutput {
         carrier_end: motion.pos,
         defenders: input.defender_responses,
     });
-    let unconstrained_control_pos = motion.unclamped_pos;
+    let unconstrained_control_pos = carrier_body_collision_position(
+        input.holder_pos,
+        motion.unclamped_pos,
+        input.defender_responses,
+    );
+    let constrained_control_pos = carrier_body_collision_position(
+        input.holder_pos,
+        containment.constrained_control_position,
+        input.defender_responses,
+    );
     let containment_transition =
         crate::execution_transition::BinaryExecutionTransition::from_success_probability(
             containment.constrained_control_probability,
@@ -278,7 +290,7 @@ pub fn execute_carry(input: &CarryExecutionInput<'_>) -> CarryExecutionOutput {
         input.pitch_width,
     );
     let constrained_new_pos = pitch_clamp(
-        containment.constrained_control_position,
+        constrained_control_pos,
         input.pitch_length,
         input.pitch_width,
     );
@@ -296,7 +308,7 @@ pub fn execute_carry(input: &CarryExecutionInput<'_>) -> CarryExecutionOutput {
     };
     let (_, unconstrained_velocity) = branch_motion(unconstrained_new_pos);
     let (_, constrained_velocity) = branch_motion(constrained_new_pos);
-    let error_chance_at = |new_pos: (f64, f64)| {
+    let error_chance_at = |end_pos: (f64, f64), new_pos: (f64, f64)| {
         let progress = if input.attacking_right {
             new_pos.0 / input.pitch_length
         } else {
@@ -308,20 +320,55 @@ pub fn execute_carry(input: &CarryExecutionInput<'_>) -> CarryExecutionOutput {
             ((progress - 0.72) / 0.18).clamp(0.0, 1.0) * centrality.clamp(0.0, 1.0);
         let stale_carry_difficulty =
             1.0 + (input.consecutive_carries - 1).max(0) as f64 * 0.24 * final_third_control;
-        ((100.0 - input.dribbling) / input.carry_error_divisor)
+        let base_error = ((100.0 - input.dribbling) / input.carry_error_divisor)
             * difficulty
-            * stale_carry_difficulty
+            * stale_carry_difficulty;
+        let goal_touch_error = crate::physics::attacking_goal_line_crossing(
+            input.holder_pos,
+            end_pos,
+            input.attacking_right,
+            input.pitch_length,
+            input.pitch_width,
+            input.goal_width,
+        )
+        .map(|crossing| {
+            let terminal_touch_origin = input.terminal_touch_origin.unwrap_or(input.holder_pos);
+            let goal_depth = if input.attacking_right {
+                input.pitch_length - terminal_touch_origin.0
+            } else {
+                terminal_touch_origin.0
+            }
+            .max(0.0);
+            let depth_load = (goal_depth / 8.0).clamp(0.0, 1.0).powf(1.25);
+            let speed_load = ((speed / input.carrier_speed.max(0.1)) - 1.0).clamp(0.0, 1.0);
+            let technique_relief = 1.0 - 0.32 * dribbling_factor.clamp(0.0, 1.0);
+            let goal_half_width = input.goal_width * 0.5;
+            let post_margin =
+                (goal_half_width - (crossing.point.1 - input.pitch_width * 0.5).abs()).max(0.0);
+            let post_proximity = 1.0 - crate::physics::smoothstep(0.35, 2.0, post_margin);
+            let lateral_touch =
+                ((crossing.point.1 - terminal_touch_origin.1).abs() / 6.0).clamp(0.0, 1.0);
+            (0.045
+                + 0.16 * depth_load
+                + 0.10 * (1.0 - control_readiness)
+                + 0.06 * speed_load
+                + 0.18 * post_proximity
+                + 0.06 * lateral_touch)
+                * technique_relief
+        })
+        .unwrap_or(0.0);
+        (base_error + goal_touch_error).clamp(0.0, 0.95)
     };
     let computed_transition = crate::execution_transition::CarrySegmentTransition::new(
         containment_transition,
         unconstrained_control_pos,
         unconstrained_new_pos,
         unconstrained_velocity,
-        containment.constrained_control_position,
+        constrained_control_pos,
         constrained_new_pos,
         constrained_velocity,
-        error_chance_at(unconstrained_new_pos),
-        error_chance_at(constrained_new_pos),
+        error_chance_at(unconstrained_control_pos, unconstrained_new_pos),
+        error_chance_at(constrained_control_pos, constrained_new_pos),
     );
     let transition = input.transition.unwrap_or(computed_transition);
     let sample = transition.sample(input.error_roll, input.containment_roll);
@@ -371,7 +418,7 @@ pub fn execute_carry(input: &CarryExecutionInput<'_>) -> CarryExecutionOutput {
         loose_pos,
         constrained_control: sample.constrained_control,
         constrained_control_probability: containment.constrained_control_probability,
-        constrained_control_position: containment.constrained_control_position,
+        constrained_control_position: constrained_control_pos,
     }
 }
 
@@ -805,6 +852,7 @@ mod tests {
         CarryExecutionInput {
             transition: None,
             holder_pos: (20.0, 34.0),
+            terminal_touch_origin: None,
             target: (80.0, 34.0),
             velocity: (0.0, 0.0),
             speed_ability: 99,
@@ -814,6 +862,7 @@ mod tests {
             attacking_right: true,
             pitch_length: 105.0,
             pitch_width: 68.0,
+            goal_width: 7.32,
             player_max_speed: 5.5,
             player_min_speed: 2.5,
             carrier_speed: 3.0,
@@ -860,6 +909,9 @@ mod tests {
             speed: 80.0,
             defence: 80.0,
             tackling: 80.0,
+            gk_saving: 0.0,
+            gk_positioning: 0.0,
+            gk_reaction: 0.0,
             is_goalkeeper: false,
         }];
         let free = execute_carry(&carry_input(&[]));
@@ -878,7 +930,41 @@ mod tests {
         );
         assert!(contained.distance_covered < free.distance_covered);
         assert!(contained.new_pos.0 < free.new_pos.0);
-        assert_eq!(unconstrained.new_pos, free.new_pos);
+        assert!(
+            unconstrained.new_pos.0 < free.new_pos.0,
+            "missing the probabilistic containment roll must not allow the carrier to pass through an occupied body"
+        );
+        assert!(contained.new_pos.0 <= unconstrained.new_pos.0);
+    }
+
+    #[test]
+    fn physical_body_blocking_applies_even_without_containment_or_duel_sampling() {
+        let positioned_defender = [DefenderActionInput {
+            index: 3,
+            pos: (21.2, 34.0),
+            new_pos: (21.2, 34.0),
+            action: "hold_position",
+            speed: 80.0,
+            defence: 80.0,
+            tackling: 80.0,
+            gk_saving: 0.0,
+            gk_positioning: 0.0,
+            gk_reaction: 0.0,
+            is_goalkeeper: false,
+        }];
+
+        let output = execute_carry(&carry_input(&positioned_defender));
+
+        assert!(!output.constrained_control);
+        assert!(
+            output.constrained_control_probability > 0.0,
+            "a positioned defender must create a probabilistic interference field even when the sampled branch stays unconstrained"
+        );
+        assert!(
+            output.new_pos.0 <= 20.3 + 1e-9,
+            "a carrier cannot pass through a defender who has already occupied the lane"
+        );
+        assert_eq!(output.new_pos.1, 34.0);
     }
 
     #[test]
@@ -929,6 +1015,75 @@ mod tests {
     }
 
     #[test]
+    fn goal_line_carry_has_a_distinct_terminal_touch_risk() {
+        let mut goal_line_input = carry_input(&[]);
+        goal_line_input.holder_pos = (104.0, 34.0);
+        goal_line_input.target = (116.0, 34.0);
+        goal_line_input.velocity = (4.0, 0.0);
+        goal_line_input.dribbling = 100.0;
+        let mut field_input = goal_line_input;
+        field_input.holder_pos = (70.0, 34.0);
+        field_input.target = (82.0, 34.0);
+
+        let goal_line = execute_carry(&goal_line_input);
+        let field = execute_carry(&field_input);
+
+        assert!(goal_line.boundary_crossing.is_some());
+        assert!(field.boundary_crossing.is_none());
+        assert!(
+            goal_line.error_chance > field.error_chance + 0.03,
+            "a carry used as a terminal goal touch must model overrun risk separately from ordinary field control"
+        );
+    }
+
+    #[test]
+    fn terminal_touch_risk_preserves_the_full_committed_carry_depth() {
+        let mut short_touch = carry_input(&[]);
+        short_touch.holder_pos = (104.0, 34.0);
+        short_touch.target = (116.0, 34.0);
+        short_touch.velocity = (4.0, 0.0);
+        short_touch.dribbling = 100.0;
+        let long_commitment = CarryExecutionInput {
+            terminal_touch_origin: Some((94.0, 34.0)),
+            ..short_touch
+        };
+
+        let short_touch = execute_carry(&short_touch);
+        let long_commitment = execute_carry(&long_commitment);
+
+        assert!(short_touch.boundary_crossing.is_some());
+        assert!(long_commitment.boundary_crossing.is_some());
+        assert!(
+            long_commitment.error_chance > short_touch.error_chance + 0.08,
+            "the final segment must retain the depth of the whole committed carry"
+        );
+    }
+
+    #[test]
+    fn terminal_touch_near_a_post_is_less_precise_than_a_central_touch() {
+        let mut central = carry_input(&[]);
+        central.holder_pos = (104.0, 34.0);
+        central.target = (116.0, 34.0);
+        central.velocity = (4.0, 0.0);
+        central.dribbling = 100.0;
+        let near_post = CarryExecutionInput {
+            holder_pos: (104.0, 37.3),
+            target: (116.0, 37.3),
+            ..central
+        };
+
+        let central = execute_carry(&central);
+        let near_post = execute_carry(&near_post);
+
+        assert!(central.boundary_crossing.is_some());
+        assert!(near_post.boundary_crossing.is_some());
+        assert!(
+            near_post.error_chance > central.error_chance + 0.08,
+            "the terminal touch must account for the lateral margin to the post"
+        );
+    }
+
+    #[test]
     fn containment_prevents_an_intended_crossing_from_becoming_a_dead_ball() {
         let block_lane = [DefenderActionInput {
             index: 3,
@@ -938,6 +1093,9 @@ mod tests {
             speed: 90.0,
             defence: 90.0,
             tackling: 90.0,
+            gk_saving: 0.0,
+            gk_positioning: 0.0,
+            gk_reaction: 0.0,
             is_goalkeeper: false,
         }];
         let mut input = carry_input(&block_lane);

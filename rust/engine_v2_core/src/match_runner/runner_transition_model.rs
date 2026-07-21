@@ -800,10 +800,16 @@ fn append_projected_pass_spatial_outcome(
         let receiver = &teammates[receiver_idx];
         let receiver_pos =
             projected_position(projected_teammates.slice(), receiver_idx, receiver.pos);
+        let defensive_interference = runner_control_interference_probability(
+            receiver_pos,
+            opponents,
+            projected_opponents.slice(),
+        );
         let clean_receive = pass_receive_plan(&PassReceivePlanInput {
             receiver_pos,
             target_pos: target,
             receiver_iq: receiver.iq,
+            defensive_interference,
             receiver_offside_flagged: false,
             pitch_length: config.pitch_length,
             pitch_width: config.pitch_width,
@@ -830,6 +836,7 @@ fn append_projected_pass_spatial_outcome(
                 receiver_pos,
                 target_pos: target,
                 receiver_iq: receiver.iq,
+                defensive_interference,
                 receiver_offside_flagged: false,
                 pitch_length: config.pitch_length,
                 pitch_width: config.pitch_width,
@@ -893,7 +900,8 @@ pub(super) fn projected_carry_execution_outcomes_into(
     shape_inputs: Option<&RunnerProjectedExecutionShapeInputs>,
     second_ball_inputs: &mut RunnerSecondBallInputs,
     outcomes: &mut ExecutionTransitionDistribution,
-) -> Option<crate::execution_transition::CarrySegmentTransition> {
+) -> [Option<crate::execution_transition::CarrySegmentTransition>; RUNNER_MAX_CARRY_RESPONSE_SEGMENTS]
+{
     outcomes.clear();
     let baseline_survival = action.carry_survival.unwrap_or(CarrySurvivalTransition {
         retained_control_probability: action.success_prob.clamp(0.0, 1.0),
@@ -910,7 +918,7 @@ pub(super) fn projected_carry_execution_outcomes_into(
     });
     let Some(holder) = teammates.get(holder_idx) else {
         outcomes.unresolved_probability = 1.0;
-        return None;
+        return [None; RUNNER_MAX_CARRY_RESPONSE_SEGMENTS];
     };
     let stored_defender_responses = action
         .carry_defender_response_index
@@ -936,11 +944,27 @@ pub(super) fn projected_carry_execution_outcomes_into(
         .expect("carry projection requires defender responses");
     let mut response_slices = [&[][..]; RUNNER_MAX_CARRY_RESPONSE_SEGMENTS];
     for segment in 0..baseline_survival.segment_count.max(1) as usize {
-        response_slices[segment] = if segment == 0 && !immediate_defender_responses.is_empty() {
-            immediate_defender_responses
-        } else {
-            defender_responses.segment(segment)
-        };
+        response_slices[segment] = defender_responses.segment(segment);
+    }
+    let mut merged_immediate_responses = [RUNNER_EMPTY_DEFENDER_ACTION; RUNNER_TEAM_SIZE];
+    let mut merged_immediate_count = response_slices[0].len();
+    if !immediate_defender_responses.is_empty() {
+        merged_immediate_responses[..merged_immediate_count].copy_from_slice(response_slices[0]);
+        for immediate in immediate_defender_responses {
+            if immediate.action == "hold_position" {
+                continue;
+            }
+            if let Some(existing) = merged_immediate_responses[..merged_immediate_count]
+                .iter_mut()
+                .find(|response| response.index == immediate.index)
+            {
+                *existing = *immediate;
+            } else if merged_immediate_count < RUNNER_TEAM_SIZE {
+                merged_immediate_responses[merged_immediate_count] = *immediate;
+                merged_immediate_count += 1;
+            }
+        }
+        response_slices[0] = &merged_immediate_responses[..merged_immediate_count];
     }
     let survival = carry_survival_transition_with_defender_response_slices(
         &CarrySurvivalInput {
@@ -963,7 +987,7 @@ pub(super) fn projected_carry_execution_outcomes_into(
     let mut technical_transition =
         crate::execution_transition::SequentialExecutionTransition::new();
     let mut technical_error_positions = [(0.0, 0.0); 4];
-    let mut first_segment_transition = None;
+    let mut carry_transitions = [None; RUNNER_MAX_CARRY_RESPONSE_SEGMENTS];
     for segment in 0..survival.segment_count.max(1) {
         let response = response_slices[segment as usize];
         let control_readiness = if (segment as usize) < defender_responses.control_readiness_count {
@@ -974,6 +998,7 @@ pub(super) fn projected_carry_execution_outcomes_into(
         let carry = carry_phase_plan(&CarryPhasePlanInput {
             transition: None,
             holder_pos: carry_pos,
+            terminal_touch_origin: Some(defender_responses.action_origin),
             target,
             velocity: carry_velocity,
             speed_ability: holder.speed.round() as i32,
@@ -983,6 +1008,7 @@ pub(super) fn projected_carry_execution_outcomes_into(
             attacking_right,
             pitch_length: config.pitch_length,
             pitch_width: config.pitch_width,
+            goal_width: config.goal_width,
             player_max_speed: config.player_max_speed,
             player_min_speed: config.player_min_speed,
             carrier_speed: config.carrier_speed,
@@ -994,9 +1020,7 @@ pub(super) fn projected_carry_execution_outcomes_into(
             loose_x_roll: 0.5,
             loose_y_roll: 0.5,
         });
-        if first_segment_transition.is_none() {
-            first_segment_transition = Some(carry.transition);
-        }
+        carry_transitions[segment as usize] = Some(carry.transition);
         let entering_mass = technical_transition.success_probability;
         let (unconstrained_error_mass, constrained_error_mass) =
             carry.transition.technical_failure_masses();
@@ -1098,17 +1122,30 @@ pub(super) fn projected_carry_execution_outcomes_into(
         projected_teammates.slice(),
         projected_opponents.slice(),
     );
-    outcomes.retained.push(ExecutionTransitionBranch {
-        probability: transition_mass.retained_unconstrained,
-        controller_idx: Some(holder_idx),
-        pos: survival.unconstrained_control_position,
-        arrival_heading: projected_carry_arrival_heading(
-            origin,
-            survival.unconstrained_control_position,
-        ),
-        ownership_continuity: 1.0,
-        contact_load: 0.0,
-    });
+    if crate::physics::attacking_goal_line_crossing(
+        origin,
+        survival.unconstrained_control_position,
+        attacking_right,
+        config.pitch_length,
+        config.pitch_width,
+        config.goal_width,
+    )
+    .is_none()
+    {
+        outcomes.retained.push(ExecutionTransitionBranch {
+            probability: transition_mass.retained_unconstrained,
+            controller_idx: Some(holder_idx),
+            pos: survival.unconstrained_control_position,
+            arrival_heading: projected_carry_arrival_heading(
+                origin,
+                survival.unconstrained_control_position,
+            ),
+            ownership_continuity: 1.0,
+            contact_load: 0.0,
+        });
+    } else {
+        outcomes.unresolved_probability += transition_mass.retained_unconstrained;
+    }
     outcomes.retained.push(ExecutionTransitionBranch {
         probability: transition_mass.retained_constrained,
         controller_idx: Some(holder_idx),
@@ -1157,7 +1194,7 @@ pub(super) fn projected_carry_execution_outcomes_into(
             );
         }
     }
-    first_segment_transition
+    carry_transitions
 }
 
 pub(super) fn projected_execution_transition_values(
@@ -1253,11 +1290,13 @@ pub(super) fn projected_execution_transition_values(
     };
     let expected = outcomes.expected_values(&mut value_for_retained, &mut value_for_opposing);
     RunnerProjectedTransitionValues {
+        goal_probability: outcomes.goal_probability.clamp(0.0, 1.0),
         retained_control_probability: expected.retained_control_probability,
         retained_control_value: expected.retained_control_value.clamp(0.0, 1.0),
         opposing_control_probability: expected.opposing_control_probability,
         opposing_control_value: expected.opposing_control_value.clamp(0.0, 1.0),
         carry_transition: None,
+        carry_transitions: [None; RUNNER_MAX_CARRY_RESPONSE_SEGMENTS],
         pass_transition: None,
         control_transition: None,
         clearance_transition: None,
@@ -1313,7 +1352,7 @@ pub(super) fn projected_transition_values(
         ..
     } = value_contexts;
     execution_second_ball_inputs.prepare_projected_players(teammates, opponents, config);
-    let (carry_transition, pass_transition, control_transition, clearance_transition) =
+    let (carry_transitions, pass_transition, control_transition, clearance_transition) =
         match action.action {
             RunnerHeldAction::Pass { .. } => {
                 let transition = projected_pass_execution_outcomes_into(
@@ -1336,7 +1375,12 @@ pub(super) fn projected_transition_values(
                     execution_second_ball_inputs,
                     execution_outcomes,
                 );
-                (None, transition, None, None)
+                (
+                    [None; RUNNER_MAX_CARRY_RESPONSE_SEGMENTS],
+                    transition,
+                    None,
+                    None,
+                )
             }
             RunnerHeldAction::Carry { .. } => (
                 projected_carry_execution_outcomes_into(
@@ -1428,7 +1472,12 @@ pub(super) fn projected_transition_values(
                     target,
                     current_control,
                 );
-                (None, None, Some(transition), None)
+                (
+                    [None; RUNNER_MAX_CARRY_RESPONSE_SEGMENTS],
+                    None,
+                    Some(transition),
+                    None,
+                )
             }
             RunnerHeldAction::Clear { .. } => {
                 let transition = projected_clearance_execution_outcomes_into(
@@ -1446,7 +1495,12 @@ pub(super) fn projected_transition_values(
                     Some(execution_shape_inputs),
                     execution_outcomes,
                 );
-                (None, None, None, transition)
+                (
+                    [None; RUNNER_MAX_CARRY_RESPONSE_SEGMENTS],
+                    None,
+                    None,
+                    transition,
+                )
             }
             RunnerHeldAction::Shoot { .. } => return None,
         };
@@ -1476,7 +1530,8 @@ pub(super) fn projected_transition_values(
         opposing,
         config,
     );
-    values.carry_transition = carry_transition;
+    values.carry_transition = carry_transitions[0];
+    values.carry_transitions = carry_transitions;
     values.pass_transition = pass_transition;
     values.control_transition = control_transition;
     values.clearance_transition = clearance_transition;

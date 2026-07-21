@@ -11,6 +11,9 @@ pub struct DefenderActionInput {
     pub speed: f64,
     pub defence: f64,
     pub tackling: f64,
+    pub gk_saving: f64,
+    pub gk_positioning: f64,
+    pub gk_reaction: f64,
     pub is_goalkeeper: bool,
 }
 
@@ -79,6 +82,8 @@ pub struct CarryContainmentTransition {
     pub constrained_control_position: (f64, f64),
 }
 
+pub const PLAYER_BODY_SEPARATION: f64 = 0.9;
+
 #[derive(Debug, Clone, Copy)]
 pub struct CarrySurvivalTransition {
     pub retained_control_probability: f64,
@@ -146,6 +151,16 @@ pub struct DuelOutcomeProbabilities {
     pub loose_ball: f64,
 }
 
+#[derive(Debug, Clone, Copy)]
+pub struct GoalkeeperSmotherTransition {
+    attacker_control: f64,
+    goalkeeper_saving: f64,
+    goalkeeper_positioning: f64,
+    goalkeeper_reaction: f64,
+    goalkeeper_speed: f64,
+    contact_quality: f64,
+}
+
 impl DuelOutcomeTransition {
     pub fn new(
         attacker_dribbling: f64,
@@ -153,6 +168,10 @@ impl DuelOutcomeTransition {
         holder_action: &'static str,
         contact_quality: f64,
     ) -> Self {
+        assert_ne!(
+            defender.action, "smother",
+            "goalkeeper smothers must use GoalkeeperSmotherTransition"
+        );
         Self {
             attacker_dribbling,
             defender_tackling: defender.tackling,
@@ -201,6 +220,69 @@ impl DuelOutcomeTransition {
     }
 }
 
+impl GoalkeeperSmotherTransition {
+    pub fn new(
+        attacker_control: f64,
+        goalkeeper: DefenderActionInput,
+        contact_quality: f64,
+    ) -> Self {
+        assert!(
+            goalkeeper.is_goalkeeper && goalkeeper.action == "smother",
+            "smother transitions require a goalkeeper committed to smother"
+        );
+        Self {
+            attacker_control,
+            goalkeeper_saving: goalkeeper.gk_saving,
+            goalkeeper_positioning: goalkeeper.gk_positioning,
+            goalkeeper_reaction: goalkeeper.gk_reaction,
+            goalkeeper_speed: goalkeeper.speed,
+            contact_quality,
+        }
+    }
+
+    fn margin_without_rolls(self) -> f64 {
+        let handling = self.goalkeeper_saving * 0.46
+            + self.goalkeeper_reaction * 0.32
+            + self.goalkeeper_positioning * 0.22;
+        let control_margin = (handling - self.attacker_control) * 0.30;
+        let contact_margin = (self.contact_quality.clamp(0.0, 1.0) - 0.5) * 15.0;
+        let arrival_margin = ((self.goalkeeper_speed / 100.0).clamp(0.0, 1.0) - 0.5) * 3.0;
+        control_margin + contact_margin + arrival_margin + 8.0
+    }
+
+    fn contest_band(self) -> f64 {
+        (2.2 + 3.8 * self.contact_quality.clamp(0.0, 1.0)).clamp(2.2, 6.0)
+    }
+
+    pub fn sample(self, attacker_uniform: f64, goalkeeper_uniform: f64) -> DuelOutcome {
+        let margin = self.margin_without_rolls() + goalkeeper_uniform - attacker_uniform;
+        let contest_band = self.contest_band();
+        if margin > contest_band {
+            DuelOutcome::DefenderWins
+        } else if margin < -contest_band {
+            DuelOutcome::AttackerWins
+        } else {
+            DuelOutcome::LooseBall
+        }
+    }
+
+    pub fn probabilities(self) -> DuelOutcomeProbabilities {
+        let margin = self.margin_without_rolls();
+        let contest_band = self.contest_band();
+        let attacker_wins = uniform_difference_cdf(-contest_band - margin, 12.0);
+        let defender_wins = 1.0 - uniform_difference_cdf(contest_band - margin, 12.0);
+        DuelOutcomeProbabilities {
+            attacker_wins,
+            defender_wins,
+            loose_ball: (1.0 - attacker_wins - defender_wins).max(0.0),
+        }
+    }
+
+    pub fn margin(self, attacker_uniform: f64, goalkeeper_uniform: f64) -> f64 {
+        self.margin_without_rolls() + goalkeeper_uniform - attacker_uniform
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct InterceptionResolveInput {
     pub defender_defence: f64,
@@ -227,6 +309,10 @@ pub struct DefensivePressureOutput {
 }
 
 pub fn duel_margin(input: &DuelResolveInput<'_>) -> f64 {
+    assert_ne!(
+        input.defender_action, "smother",
+        "goalkeeper smothers must not use the outfield duel margin"
+    );
     let defender_skill = input.defender_tackling * 0.78 + input.defender_defence * 0.22;
     let skill_margin = (defender_skill - input.attacker_dribbling) * 0.34;
     let contact_margin = (input.contact_quality.clamp(0.0, 1.0) - 0.5) * 12.0;
@@ -300,7 +386,16 @@ struct ContactEngagementProfile {
     containment_reach_scale: f64,
 }
 
-const CONTACT_ENGAGEMENT_PROFILES: [ContactEngagementProfile; 5] = [
+const CONTACT_ENGAGEMENT_PROFILES: [ContactEngagementProfile; 8] = [
+    ContactEngagementProfile {
+        action: "smother",
+        reach_scale: 1.32,
+        engagement_weight: 0.92,
+        outcome_commitment: 0.94,
+        records_tackle_attempt: false,
+        containment_weight: 0.88,
+        containment_reach_scale: 1.42,
+    },
     ContactEngagementProfile {
         action: "tackle",
         reach_scale: 1.08,
@@ -346,6 +441,24 @@ const CONTACT_ENGAGEMENT_PROFILES: [ContactEngagementProfile; 5] = [
         containment_weight: 0.60,
         containment_reach_scale: 1.16,
     },
+    ContactEngagementProfile {
+        action: "pursuit",
+        reach_scale: 0.0,
+        engagement_weight: 0.0,
+        outcome_commitment: 0.0,
+        records_tackle_attempt: false,
+        containment_weight: 0.38,
+        containment_reach_scale: 1.08,
+    },
+    ContactEngagementProfile {
+        action: "hold_position",
+        reach_scale: 0.0,
+        engagement_weight: 0.0,
+        outcome_commitment: 0.0,
+        records_tackle_attempt: false,
+        containment_weight: 0.34,
+        containment_reach_scale: 1.0,
+    },
 ];
 
 fn engagement_profile(action: &str) -> ContactEngagementProfile {
@@ -362,6 +475,11 @@ fn engagement_profile(action: &str) -> ContactEngagementProfile {
             containment_weight: 0.0,
             containment_reach_scale: 0.0,
         })
+}
+
+pub fn defender_action_physical_reach(tackle_range: f64, action: &str) -> f64 {
+    let profile = engagement_profile(action);
+    (0.75 + 0.36 * tackle_range.max(0.0)) * profile.reach_scale
 }
 
 pub fn records_tackle_attempt(action: &str) -> bool {
@@ -409,6 +527,88 @@ fn simultaneous_closest_distance(
     (separation.0 * separation.0 + separation.1 * separation.1).sqrt()
 }
 
+fn moving_circle_first_contact_time(
+    left_start: (f64, f64),
+    left_end: (f64, f64),
+    right_start: (f64, f64),
+    right_end: (f64, f64),
+    minimum_separation: f64,
+) -> Option<f64> {
+    let relative_start = (left_start.0 - right_start.0, left_start.1 - right_start.1);
+    let relative_velocity = (
+        (left_end.0 - left_start.0) - (right_end.0 - right_start.0),
+        (left_end.1 - left_start.1) - (right_end.1 - right_start.1),
+    );
+    let velocity_norm =
+        relative_velocity.0 * relative_velocity.0 + relative_velocity.1 * relative_velocity.1;
+    if velocity_norm <= 1e-12 {
+        return None;
+    }
+    let radius = minimum_separation.max(0.0);
+    let start_clearance =
+        relative_start.0 * relative_start.0 + relative_start.1 * relative_start.1 - radius * radius;
+    let approach = relative_start.0 * relative_velocity.0 + relative_start.1 * relative_velocity.1;
+    if start_clearance <= 0.0 {
+        return (approach < 0.0).then_some(0.0);
+    }
+    let discriminant = approach * approach - velocity_norm * start_clearance;
+    if discriminant < 0.0 {
+        return None;
+    }
+    let contact_time = (-approach - discriminant.sqrt()) / velocity_norm;
+    (contact_time >= 0.0 && contact_time <= 1.0).then_some(contact_time)
+}
+
+pub fn carrier_body_collision_position(
+    carrier_start: (f64, f64),
+    carrier_end: (f64, f64),
+    defenders: &[DefenderActionInput],
+) -> (f64, f64) {
+    let carrier_delta = (
+        carrier_end.0 - carrier_start.0,
+        carrier_end.1 - carrier_start.1,
+    );
+    let carrier_distance =
+        (carrier_delta.0 * carrier_delta.0 + carrier_delta.1 * carrier_delta.1).sqrt();
+    if carrier_distance <= 1e-9 {
+        return carrier_end;
+    }
+    let carrier_direction = (
+        carrier_delta.0 / carrier_distance,
+        carrier_delta.1 / carrier_distance,
+    );
+    let mut first_contact_time: f64 = 1.0;
+    for defender in defenders {
+        let Some(contact_time) = moving_circle_first_contact_time(
+            carrier_start,
+            carrier_end,
+            defender.pos,
+            defender.new_pos,
+            PLAYER_BODY_SEPARATION,
+        ) else {
+            continue;
+        };
+        let carrier_at_contact = (
+            carrier_start.0 + carrier_delta.0 * contact_time,
+            carrier_start.1 + carrier_delta.1 * contact_time,
+        );
+        let defender_at_contact = (
+            defender.pos.0 + (defender.new_pos.0 - defender.pos.0) * contact_time,
+            defender.pos.1 + (defender.new_pos.1 - defender.pos.1) * contact_time,
+        );
+        let defender_forward_offset = (defender_at_contact.0 - carrier_at_contact.0)
+            * carrier_direction.0
+            + (defender_at_contact.1 - carrier_at_contact.1) * carrier_direction.1;
+        if defender_forward_offset >= -1e-9 {
+            first_contact_time = first_contact_time.min(contact_time);
+        }
+    }
+    (
+        carrier_start.0 + carrier_delta.0 * first_contact_time,
+        carrier_start.1 + carrier_delta.1 * first_contact_time,
+    )
+}
+
 #[derive(Clone, Copy)]
 struct CarryContainment {
     probability: f64,
@@ -420,12 +620,6 @@ fn defender_carry_containment(
     carrier_end: (f64, f64),
     defender: &DefenderActionInput,
 ) -> CarryContainment {
-    if defender.is_goalkeeper {
-        return CarryContainment {
-            probability: 0.0,
-            constrained_position: carrier_end,
-        };
-    }
     let profile = engagement_profile(defender.action);
     if profile.containment_weight <= 0.0 {
         return CarryContainment {
@@ -464,14 +658,24 @@ fn defender_carry_containment(
         path_distance * 0.38,
         forward_occupation,
     );
+    let intervention_timing = if defender.is_goalkeeper && defender.action == "smother" {
+        0.55 * defender.gk_positioning + 0.45 * defender.gk_reaction
+    } else {
+        defender.defence
+    };
+    let intervention_control = if defender.is_goalkeeper && defender.action == "smother" {
+        defender.gk_saving
+    } else {
+        defender.defence
+    };
     let anticipation = 0.68
         + 0.18 * (defender.speed / 100.0).clamp(0.0, 1.0)
-        + 0.14 * (defender.defence / 100.0).clamp(0.0, 1.0);
+        + 0.14 * (intervention_timing / 100.0).clamp(0.0, 1.0);
     let probability =
         (profile.containment_weight * corridor_occupation * forward_coverage * anticipation)
             .clamp(0.0, 0.98);
     let control_gap = 0.52
-        + 0.42 * (defender.defence / 100.0).clamp(0.0, 1.0)
+        + 0.42 * (intervention_control / 100.0).clamp(0.0, 1.0)
         + 0.18 * (defender.speed / 100.0).clamp(0.0, 1.0);
     let constrained_progress = (forward_occupation - control_gap).clamp(0.0, path_distance);
 
@@ -513,6 +717,40 @@ pub fn carry_containment_transition(
     }
 }
 
+pub fn control_interference_probability(
+    control_pos: (f64, f64),
+    defenders: &[DefenderActionInput],
+) -> f64 {
+    let mut no_interference_probability = 1.0;
+    for defender in defenders {
+        let profile = engagement_profile(defender.action);
+        if profile.containment_weight <= 0.0 {
+            continue;
+        }
+        let defender_pos = defender.new_pos;
+        let separation = distance(control_pos, defender_pos);
+        let interference_radius = PLAYER_BODY_SEPARATION + 3.60 * profile.containment_reach_scale;
+        let spatial_occupation = 1.0
+            - smoothstep(
+                PLAYER_BODY_SEPARATION * 0.72,
+                interference_radius,
+                separation,
+            );
+        let intervention_reading = if defender.is_goalkeeper && defender.action == "smother" {
+            0.55 * defender.gk_positioning + 0.45 * defender.gk_reaction
+        } else {
+            defender.defence
+        };
+        let ability = 0.60
+            + 0.22 * (intervention_reading / 100.0).clamp(0.0, 1.0)
+            + 0.18 * (defender.speed / 100.0).clamp(0.0, 1.0);
+        let action_presence = 0.30 + 0.70 * profile.containment_weight;
+        let probability = (spatial_occupation * ability * action_presence).clamp(0.0, 0.90);
+        no_interference_probability *= 1.0 - probability;
+    }
+    (1.0 - no_interference_probability).clamp(0.0, 1.0)
+}
+
 fn uniform_difference_cdf(value: f64, bound: f64) -> f64 {
     let bound = bound.max(1e-9);
     if value <= -2.0 * bound {
@@ -542,13 +780,18 @@ fn duel_outcome_probabilities(
     holder_action: &str,
     contact_quality: f64,
 ) -> (f64, f64, f64) {
-    let probabilities = DuelOutcomeTransition::new(
-        attacker_dribbling,
-        *defender,
-        canonical_duel_holder_action(holder_action),
-        contact_quality,
-    )
-    .probabilities();
+    let probabilities = if defender.is_goalkeeper && defender.action == "smother" {
+        GoalkeeperSmotherTransition::new(attacker_dribbling, *defender, contact_quality)
+            .probabilities()
+    } else {
+        DuelOutcomeTransition::new(
+            attacker_dribbling,
+            *defender,
+            canonical_duel_holder_action(holder_action),
+            contact_quality,
+        )
+        .probabilities()
+    };
     (
         probabilities.attacker_wins,
         probabilities.defender_wins,
@@ -692,6 +935,9 @@ fn projected_defender_actions(
                 speed: defender.speed,
                 defence: defender.defence,
                 tackling: defender.tackling,
+                gk_saving: defender.gk_saving,
+                gk_positioning: defender.gk_positioning,
+                gk_reaction: defender.gk_reaction,
                 is_goalkeeper: defender.is_goalkeeper,
             }
         })
@@ -726,14 +972,11 @@ pub fn detect_duel(input: &DuelDetectionInput<'_>) -> DetectionResult {
         contact_quality: 0.0,
     };
     for defender in input.defenders {
-        if defender.is_goalkeeper {
-            continue;
-        }
         let profile = engagement_profile(defender.action);
         if profile.engagement_weight <= 0.0 {
             continue;
         }
-        let physical_reach = (0.75 + 0.36 * input.tackle_range.max(0.0)) * profile.reach_scale;
+        let physical_reach = defender_action_physical_reach(input.tackle_range, defender.action);
         if physical_reach <= 0.0 {
             continue;
         }
@@ -755,7 +998,12 @@ pub fn detect_duel(input: &DuelDetectionInput<'_>) -> DetectionResult {
             start_distance - end_distance,
         );
         let speed_factor = 0.78 + 0.22 * (defender.speed / 100.0).clamp(0.0, 1.0);
-        let defensive_timing = 0.76 + 0.24 * (defender.defence / 100.0).clamp(0.0, 1.0);
+        let intervention_timing = if defender.is_goalkeeper && defender.action == "smother" {
+            0.55 * defender.gk_positioning + 0.45 * defender.gk_reaction
+        } else {
+            defender.defence
+        };
+        let defensive_timing = 0.76 + 0.24 * (intervention_timing / 100.0).clamp(0.0, 1.0);
         let exposure_multiplier = if defender.action == "tackle" {
             base_exposure.max(0.78)
         } else {
@@ -1057,11 +1305,12 @@ pub fn detect_interception(input: &InterceptionDetectionInput<'_>) -> DetectionR
 #[cfg(test)]
 mod tests {
     use super::{
-        carry_containment_transition, carry_survival_transition,
-        carry_survival_transition_with_defender_responses, detect_duel, duel_outcome_probabilities,
-        pass_release_contact_transition, resolve_duel, track_defensive_pressures,
-        track_defensive_pressures_into, CarryContainmentInput, CarrySurvivalInput,
-        DefenderActionInput, DefensivePressureInput, DuelDetectionInput, DuelResolveInput,
+        carrier_body_collision_position, carry_containment_transition, carry_survival_transition,
+        carry_survival_transition_with_defender_responses, control_interference_probability,
+        detect_duel, duel_outcome_probabilities, pass_release_contact_transition, resolve_duel,
+        track_defensive_pressures, track_defensive_pressures_into, CarryContainmentInput,
+        CarrySurvivalInput, DefenderActionInput, DefensivePressureInput, DuelDetectionInput,
+        DuelOutcome, DuelResolveInput, GoalkeeperSmotherTransition, PLAYER_BODY_SEPARATION,
     };
     use crate::{temporal_option_value, PossessionTransition, TemporalOptionValueInput};
 
@@ -1079,6 +1328,9 @@ mod tests {
             speed: 80.0,
             defence: 80.0,
             tackling: 80.0,
+            gk_saving: 0.0,
+            gk_positioning: 0.0,
+            gk_reaction: 0.0,
             is_goalkeeper: false,
         }
     }
@@ -1219,6 +1471,91 @@ mod tests {
     }
 
     #[test]
+    fn positioned_defenders_create_a_distance_decaying_carry_interference_field() {
+        let near = [defender(3, (3.0, 1.4), (3.0, 1.4), "hold_position")];
+        let far = [defender(3, (3.0, 5.5), (3.0, 5.5), "hold_position")];
+        let near_field = carry_containment_transition(&CarryContainmentInput {
+            holder_pos: (0.0, 0.0),
+            carrier_end: (6.0, 0.0),
+            defenders: &near,
+        });
+        let far_field = carry_containment_transition(&CarryContainmentInput {
+            holder_pos: (0.0, 0.0),
+            carrier_end: (6.0, 0.0),
+            defenders: &far,
+        });
+
+        assert!(near_field.constrained_control_probability > 0.0);
+        assert!(
+            near_field.constrained_control_probability > far_field.constrained_control_probability
+        );
+    }
+
+    #[test]
+    fn multiple_defender_interference_fields_combine_with_diminishing_returns() {
+        let left = defender(3, (3.0, -1.5), (3.0, -1.2), "block_lane");
+        let right = defender(4, (3.0, 1.5), (3.0, 1.2), "block_lane");
+        let single = carry_containment_transition(&CarryContainmentInput {
+            holder_pos: (0.0, 0.0),
+            carrier_end: (6.0, 0.0),
+            defenders: &[left],
+        });
+        let double = carry_containment_transition(&CarryContainmentInput {
+            holder_pos: (0.0, 0.0),
+            carrier_end: (6.0, 0.0),
+            defenders: &[left, right],
+        });
+
+        assert!(double.constrained_control_probability > single.constrained_control_probability);
+        assert!(
+            double.constrained_control_probability < 2.0 * single.constrained_control_probability
+        );
+        assert!(double.constrained_control_probability < 1.0);
+    }
+
+    #[test]
+    fn reception_interference_is_distance_decaying_and_combines_with_diminishing_returns() {
+        let left = defender(3, (40.0, 32.7), (40.0, 32.7), "mark_runner");
+        let right = defender(4, (40.0, 35.3), (40.0, 35.3), "mark_runner");
+        let outer_field = defender(5, (40.0, 38.2), (40.0, 38.2), "hold_position");
+        let far = defender(6, (40.0, 40.0), (40.0, 40.0), "hold_position");
+        let single = control_interference_probability((40.0, 34.0), &[left]);
+        let double = control_interference_probability((40.0, 34.0), &[left, right]);
+        let outer = control_interference_probability((40.0, 34.0), &[outer_field]);
+        let distant = control_interference_probability((40.0, 34.0), &[far]);
+
+        assert!(outer > 0.0);
+        assert!(single > distant);
+        assert!(outer > distant);
+        assert!(double > single);
+        assert!(double < 2.0 * single);
+        assert!(double < 1.0);
+    }
+
+    #[test]
+    fn body_occupation_stops_a_carrier_before_a_stationary_defender() {
+        let defenders = [defender(3, (3.0, 0.0), (3.0, 0.0), "hold_position")];
+
+        let blocked_position = carrier_body_collision_position((0.0, 0.0), (5.0, 0.0), &defenders);
+
+        assert!((blocked_position.0 - (3.0 - PLAYER_BODY_SEPARATION)).abs() <= 1e-9);
+        assert_eq!(blocked_position.1, 0.0);
+    }
+
+    #[test]
+    fn swept_body_collision_detects_crossing_paths_between_tick_endpoints() {
+        let defenders = [defender(4, (2.5, 2.0), (2.5, -2.0), "hold_position")];
+
+        let blocked_position = carrier_body_collision_position((0.0, 0.0), (5.0, 0.0), &defenders);
+
+        assert!(
+            blocked_position.0 < 2.5,
+            "continuous collision detection must stop paths that intersect mid-tick even when both endpoints are clear"
+        );
+        assert_eq!(blocked_position.1, 0.0);
+    }
+
+    #[test]
     fn distant_future_path_crossing_is_not_a_current_tick_duel() {
         let defenders = [defender(4, (8.0, 0.0), (7.0, 0.0), "tackle")];
         let result = detect_duel(&DuelDetectionInput {
@@ -1343,6 +1680,166 @@ mod tests {
     }
 
     #[test]
+    fn goalkeeper_smother_contests_a_carry_and_preserves_probability_mass() {
+        let goalkeeper = [DefenderActionInput {
+            index: 1,
+            pos: (102.65, 35.24),
+            new_pos: (101.75, 34.45),
+            action: "smother",
+            speed: 82.0,
+            defence: 84.0,
+            tackling: 78.0,
+            gk_saving: 78.0,
+            gk_positioning: 84.0,
+            gk_reaction: 86.0,
+            is_goalkeeper: true,
+        }];
+        let transition = carry_survival_transition(&CarrySurvivalInput {
+            holder_pos: (99.77, 30.74),
+            carry_target: (104.5, 37.12),
+            carrier_step_distance: 3.0,
+            attacker_dribbling: 88.0,
+            defenders: &goalkeeper,
+            tackle_range: 6.0,
+            segment_count: 2,
+        });
+        let probability_mass = transition.retained_control_probability
+            + transition.opposing_control_probability
+            + transition.unresolved_probability;
+        let mut unrelated_outfield_attributes = goalkeeper;
+        unrelated_outfield_attributes[0].tackling = 1.0;
+        unrelated_outfield_attributes[0].defence = 1.0;
+        let unchanged_transition = carry_survival_transition(&CarrySurvivalInput {
+            holder_pos: (99.77, 30.74),
+            carry_target: (104.5, 37.12),
+            carrier_step_distance: 3.0,
+            attacker_dribbling: 88.0,
+            defenders: &unrelated_outfield_attributes,
+            tackle_range: 6.0,
+            segment_count: 2,
+        });
+
+        assert!((probability_mass - 1.0).abs() < 1e-9);
+        assert_eq!(
+            transition.retained_control_probability,
+            unchanged_transition.retained_control_probability
+        );
+        assert_eq!(
+            transition.opposing_control_probability,
+            unchanged_transition.opposing_control_probability
+        );
+        assert_eq!(
+            transition.unresolved_probability,
+            unchanged_transition.unresolved_probability
+        );
+        assert_eq!(
+            transition.peak_contact_probability,
+            unchanged_transition.peak_contact_probability
+        );
+        assert_eq!(
+            transition.peak_containment_probability,
+            unchanged_transition.peak_containment_probability
+        );
+        assert!(transition.peak_contact_probability > 0.0);
+        assert!(transition.peak_containment_probability > 0.0);
+        assert!(transition.retained_control_probability < 1.0);
+        assert!(transition.opposing_control_probability > 0.0);
+        assert!(crate::distance(transition.constrained_control_position, (104.5, 37.12)) > 0.5);
+        let contact_quality = transition.peak_contact_probability;
+        let baseline = duel_outcome_probabilities(88.0, &goalkeeper[0], "carry", contact_quality);
+        let unrelated_outfield_attributes = unrelated_outfield_attributes[0];
+        let unchanged = duel_outcome_probabilities(
+            88.0,
+            &unrelated_outfield_attributes,
+            "carry",
+            contact_quality,
+        );
+        assert_eq!(baseline, unchanged);
+    }
+
+    #[test]
+    fn goalkeeper_smother_dominates_a_carry_started_inside_hand_control_range() {
+        let goalkeeper = [DefenderActionInput {
+            index: 0,
+            pos: (102.23435314992551, 33.907401995425786),
+            new_pos: (101.40816367949262, 34.461003364433864),
+            action: "smother",
+            speed: 37.0,
+            defence: 84.9,
+            tackling: 80.0,
+            gk_saving: 80.0,
+            gk_positioning: 84.0,
+            gk_reaction: 86.0,
+            is_goalkeeper: true,
+        }];
+        let transition = carry_survival_transition(&CarrySurvivalInput {
+            holder_pos: (101.2480674577346, 34.50490559332317),
+            carry_target: (106.0, 33.20181156745394),
+            carrier_step_distance: 6.0,
+            attacker_dribbling: 106.0,
+            defenders: &goalkeeper,
+            tackle_range: 6.0,
+            segment_count: 1,
+        });
+
+        assert!(
+            transition.unconstrained_control_probability < 0.25,
+            "a keeper already within hand-control range must usually stop the carrier before the goal line: {transition:?}"
+        );
+        assert!(
+            transition.opposing_control_probability > transition.unconstrained_control_probability,
+            "close frontal smothering should favor goalkeeper control over an untouched carry: {transition:?}"
+        );
+    }
+
+    #[test]
+    fn goalkeeper_smother_probabilities_match_live_sampling_and_ignore_tackle_attributes() {
+        let mut goalkeeper = DefenderActionInput {
+            index: 0,
+            pos: (102.2, 34.0),
+            new_pos: (101.2, 34.0),
+            action: "smother",
+            speed: 82.0,
+            defence: 12.0,
+            tackling: 8.0,
+            gk_saving: 86.0,
+            gk_positioning: 84.0,
+            gk_reaction: 88.0,
+            is_goalkeeper: true,
+        };
+        let transition = GoalkeeperSmotherTransition::new(92.0, goalkeeper, 0.76);
+        let expected = transition.probabilities();
+        goalkeeper.defence = 99.0;
+        goalkeeper.tackling = 99.0;
+        let unchanged = GoalkeeperSmotherTransition::new(92.0, goalkeeper, 0.76).probabilities();
+        assert_eq!(expected.attacker_wins, unchanged.attacker_wins);
+        assert_eq!(expected.defender_wins, unchanged.defender_wins);
+        assert_eq!(expected.loose_ball, unchanged.loose_ball);
+
+        let samples = 401usize;
+        let mut attacker_wins = 0usize;
+        let mut defender_wins = 0usize;
+        let mut loose = 0usize;
+        for attacker_index in 0..samples {
+            for goalkeeper_index in 0..samples {
+                let attacker_uniform =
+                    -12.0 + 24.0 * (attacker_index as f64 + 0.5) / samples as f64;
+                let goalkeeper_uniform =
+                    -12.0 + 24.0 * (goalkeeper_index as f64 + 0.5) / samples as f64;
+                match transition.sample(attacker_uniform, goalkeeper_uniform) {
+                    DuelOutcome::AttackerWins => attacker_wins += 1,
+                    DuelOutcome::DefenderWins => defender_wins += 1,
+                    DuelOutcome::LooseBall => loose += 1,
+                }
+            }
+        }
+        let total = (samples * samples) as f64;
+        assert!((attacker_wins as f64 / total - expected.attacker_wins).abs() < 0.003);
+        assert!((defender_wins as f64 / total - expected.defender_wins).abs() < 0.003);
+        assert!((loose as f64 / total - expected.loose_ball).abs() < 0.003);
+    }
+
+    #[test]
     fn analytical_duel_probabilities_match_the_live_uniform_resolution_grid() {
         let defender = DefenderActionInput {
             index: 0,
@@ -1352,6 +1849,9 @@ mod tests {
             speed: 78.0,
             defence: 82.0,
             tackling: 86.0,
+            gk_saving: 0.0,
+            gk_positioning: 0.0,
+            gk_reaction: 0.0,
             is_goalkeeper: false,
         };
         let contact_quality = 0.72;
@@ -1404,6 +1904,9 @@ mod tests {
             speed: 81.0,
             defence: 84.0,
             tackling: 87.0,
+            gk_saving: 0.0,
+            gk_positioning: 0.0,
+            gk_reaction: 0.0,
             is_goalkeeper: false,
         };
         let transition =

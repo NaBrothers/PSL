@@ -114,15 +114,16 @@ pub use goalkeeper::{
 pub use interactions::{
     carry_contact_transition, carry_survival_transition,
     carry_survival_transition_with_defender_response_slices,
-    carry_survival_transition_with_defender_responses, control_contact_transition, detect_duel,
-    detect_interception, detect_wasted_tackle, duel_contest_margin_band, duel_margin,
-    duel_outcome_code_from_margin, interception_chance, pass_release_contact_transition,
-    records_tackle_attempt, resolve_duel, resolve_interception, track_defensive_pressures,
-    track_defensive_pressures_into, CarrySurvivalInput, CarrySurvivalTransition,
-    ControlContactTransition, DefenderActionInput, DefensivePressureInput, DefensivePressureOutput,
-    DetectionResult, DuelDetectionInput, DuelOutcome, DuelOutcomeProbabilities,
-    DuelOutcomeTransition, DuelResolveInput, InterceptionDetectionInput, InterceptionResolveInput,
-    PassReleaseContactTransition, WastedTackleInput,
+    carry_survival_transition_with_defender_responses, control_contact_transition,
+    defender_action_physical_reach, detect_duel, detect_interception, detect_wasted_tackle,
+    duel_contest_margin_band, duel_margin, duel_outcome_code_from_margin, interception_chance,
+    pass_release_contact_transition, records_tackle_attempt, resolve_duel, resolve_interception,
+    track_defensive_pressures, track_defensive_pressures_into, CarrySurvivalInput,
+    CarrySurvivalTransition, ControlContactTransition, DefenderActionInput, DefensivePressureInput,
+    DefensivePressureOutput, DetectionResult, DuelDetectionInput, DuelOutcome,
+    DuelOutcomeProbabilities, DuelOutcomeTransition, DuelResolveInput, GoalkeeperSmotherTransition,
+    InterceptionDetectionInput, InterceptionResolveInput, PassReleaseContactTransition,
+    WastedTackleInput,
 };
 pub use match_clock::{MatchClock, MatchClockPhase, MatchClockSnapshot};
 pub use match_flow::{

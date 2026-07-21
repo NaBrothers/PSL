@@ -199,6 +199,7 @@ pub struct ReceiverBaseTargetsInput<'a> {
     pub receiver: PassSpacePlayer,
     pub receiver_goal: Option<ReceiverGoalInput<'a>>,
     pub vision: VisionContext,
+    pub opponent_positions: &'a [(f64, f64)],
     pub attacking_right: bool,
     pub pitch_length: f64,
     pub pitch_width: f64,
@@ -971,14 +972,21 @@ fn receiver_base_pass_targets_into(
     );
     let forward_dir = if input.attacking_right { 1.0 } else { -1.0 };
     let tm = input.receiver;
-    let receiver_visibility = input.vision.confidence(input.passer_pos, tm.pos);
+    let receiver_visibility =
+        input
+            .vision
+            .confidence_with_occluders(input.passer_pos, tm.pos, input.opponent_positions);
     let mut target_visibility = receiver_visibility
-        .max(input.vision.confidence(input.passer_pos, tm.target_pos))
-        .max(
-            input
-                .vision
-                .confidence(input.passer_pos, tm.tactical_anchor),
-        );
+        .max(input.vision.confidence_with_occluders(
+            input.passer_pos,
+            tm.target_pos,
+            input.opponent_positions,
+        ))
+        .max(input.vision.confidence_with_occluders(
+            input.passer_pos,
+            tm.tactical_anchor,
+            input.opponent_positions,
+        ));
     let mut low_visibility = target_visibility < 0.18;
     let mut receiver_goal_fit = 0.0;
     let mut target_count = 0;
@@ -990,7 +998,11 @@ fn receiver_base_pass_targets_into(
 
     if let Some(goal) = input.receiver_goal {
         if goal.goal_type == "arc_arrival_for_cutback" || goal.goal_type == "attack_far_post" {
-            let goal_visibility = input.vision.confidence(input.passer_pos, goal.target_pos);
+            let goal_visibility = input.vision.confidence_with_occluders(
+                input.passer_pos,
+                goal.target_pos,
+                input.opponent_positions,
+            );
             let goal_dist = distance(tm.pos, goal.target_pos);
             let target_progress_hint = if input.attacking_right {
                 goal.target_pos.0 / input.pitch_length
@@ -1909,7 +1921,11 @@ fn receiver_spatial_candidates_into(
                         input.pitch_length,
                         input.pitch_width,
                     );
-                    let point_visibility = input.vision.confidence(input.passer_pos, pos);
+                    let point_visibility = input.vision.confidence_with_occluders(
+                        input.passer_pos,
+                        pos,
+                        input.opponent_positions,
+                    );
                     if point_visibility <= 0.0 {
                         continue;
                     }
@@ -1965,7 +1981,11 @@ fn receiver_spatial_candidates_into(
                         input.pitch_length,
                         input.pitch_width,
                     );
-                    let point_visibility = input.vision.confidence(input.passer_pos, pos);
+                    let point_visibility = input.vision.confidence_with_occluders(
+                        input.passer_pos,
+                        pos,
+                        input.opponent_positions,
+                    );
                     if point_visibility <= 0.0 {
                         continue;
                     }
@@ -2112,7 +2132,11 @@ fn evaluate_raw_pass_target_prevalue_with_motion_context_and_geometry(
     if d < 3.0 || d > 55.0 {
         return (invalid, None);
     }
-    let perception = input.vision.confidence(input.passer_pos, input.target);
+    let perception = input.vision.confidence_with_occluder_iter(
+        input.passer_pos,
+        input.target,
+        input.opponents.iter().map(|opponent| opponent.pos),
+    );
     if perception <= 0.0 && target_kind_space {
         return (invalid, None);
     }
@@ -2563,6 +2587,7 @@ fn receiver_pass_candidates_batch_into(
         receiver: input.receiver_space,
         receiver_goal: input.receiver_goal,
         vision: input.vision,
+        opponent_positions: input.opponent_positions,
         attacking_right: input.attacking_right,
         pitch_length: input.pitch_length,
         pitch_width: input.pitch_width,

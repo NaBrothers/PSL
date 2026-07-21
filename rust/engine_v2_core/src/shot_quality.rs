@@ -84,6 +84,7 @@ pub struct ShotOutcomeEstimate {
     pub block_point: (f64, f64),
     pub on_target_prob: f64,
     pub save_prob: f64,
+    pub open_goal_window: f64,
     pub xg: f64,
 }
 
@@ -384,7 +385,13 @@ pub fn estimate_shot_outcome(input: &ShotQualityInput<'_>) -> ShotOutcomeEstimat
     }
     on_target = on_target.clamp(0.0, 0.78);
     let save_prob = expected_goalkeeper_save_probability(input);
-    let xg = (contest.release_probability * on_target * (1.0 - save_prob)).clamp(0.0, 0.65);
+    let open_goal_window = (1.0 - smoothstep(3.0, 10.0, dist))
+        * angle_factor
+        * (1.0 - smoothstep(0.04, 0.32, save_prob));
+    on_target += (0.995 - on_target).max(0.0) * open_goal_window;
+    on_target = on_target.clamp(0.0, 0.995);
+    let xg_cap = 0.65 + 0.345 * open_goal_window;
+    let xg = (on_target * (1.0 - save_prob)).clamp(0.0, xg_cap);
     let outcome = ShotOutcomeEstimate {
         body_release_probability: contest.body_release_probability,
         release_probability: contest.release_probability,
@@ -393,6 +400,7 @@ pub fn estimate_shot_outcome(input: &ShotQualityInput<'_>) -> ShotOutcomeEstimat
         block_point: contest.block_point,
         on_target_prob: on_target,
         save_prob,
+        open_goal_window,
         xg,
     };
     if input.gk_attributes.is_none() {
@@ -575,6 +583,50 @@ mod tests {
         assert_eq!(closing_estimate.blocker_index, Some(4));
         assert!(closing_estimate.block_point.0 > origin.0);
         assert!(closing_estimate.block_point.0 < target.0);
+    }
+
+    #[test]
+    fn lane_block_probability_is_not_already_folded_into_conditional_xg() {
+        let opponents = [];
+        let blocker = [ShotContestDefender {
+            index: 4,
+            pos: (94.0, 34.0),
+            projected_pos: (94.0, 34.0),
+            speed: 82.0,
+            defence: 88.0,
+            intent: ShotContestIntent::BlockLane,
+            engagement_weight: 0.0,
+            engagement_reach: 0.0,
+            is_goalkeeper: false,
+        }];
+        let input = ShotQualityInput {
+            x: 88.0,
+            y: 34.0,
+            finishing: 0.86,
+            long_shot: 0.80,
+            opponents: &opponents,
+            pitch_length: 105.0,
+            pitch_width: 68.0,
+            attacking_right: true,
+            shot_ideal_distance: 20.0,
+            shot_on_target_base: 0.52,
+            gk_save_base: 0.66,
+            gk_attributes: Some(test_goalkeeper_attributes()),
+            gk_pos: Some((102.0, 34.0)),
+            contest_defenders: None,
+            cache: None,
+            cache_key: None,
+        };
+        let clear_lane = estimate_shot_outcome(&input);
+        let blocked_lane = estimate_shot_outcome(&ShotQualityInput {
+            contest_defenders: Some(&blocker),
+            ..input
+        });
+
+        assert!(blocked_lane.release_probability < clear_lane.release_probability);
+        assert_eq!(blocked_lane.on_target_prob, clear_lane.on_target_prob);
+        assert_eq!(blocked_lane.save_prob, clear_lane.save_prob);
+        assert_eq!(blocked_lane.xg, clear_lane.xg);
     }
 
     #[test]

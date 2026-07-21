@@ -128,6 +128,7 @@ pub struct CarryInput<'a> {
     pub gk_save_base: f64,
     pub gk_attributes: Option<crate::goalkeeper::GkSaveAttributes>,
     pub gk_pos: Option<(f64, f64)>,
+    pub successor_control_state: Option<PossessionControlState>,
     pub contest_defenders: Option<&'a [ShotContestDefender]>,
     pub shot_quality_cache: Option<&'a ShotQualityCache>,
 }
@@ -659,11 +660,13 @@ pub fn evaluate_shot(input: &ShotInput<'_>) -> ShotOutput {
     });
     let on_target_prob = shot_outcome.on_target_prob;
     let save_estimate = shot_outcome.save_prob;
-    let body_release_probability = input
+    let control_release_readiness = input
         .control_state
         .map(shot_release_readiness)
-        .unwrap_or(1.0)
-        * shot_outcome.body_release_probability;
+        .unwrap_or(1.0);
+    let tap_in_release_readiness = control_release_readiness
+        + (0.99 - control_release_readiness).max(0.0) * shot_outcome.open_goal_window;
+    let body_release_probability = tap_in_release_readiness * shot_outcome.body_release_probability;
     let xg = shot_outcome.xg;
     let first_time_window = (1.0 - smoothstep(2.0, 5.0, input.possession_ticks.max(0) as f64))
         * (1.0 - smoothstep(1.0, 3.0, input.consecutive_carries.max(0) as f64));
@@ -914,17 +917,21 @@ pub fn evaluate_carry_with_context(
             tick: input.tick,
             team_home: input.carrier_team_home,
             shot_quality_cache: input.shot_quality_cache,
-            control_state: None,
+            control_state: input.successor_control_state,
         },
         &context.possession_value,
     );
     let after_state = after_evaluation.state;
+    let shot_readiness = input
+        .successor_control_state
+        .map(shot_release_readiness)
+        .unwrap_or(1.0);
     let target_shot = if after_evaluation.raw_shot_matches_profile(input.finishing, input.long_shot)
     {
         after_evaluation.raw_shot_xg
     } else {
         carry_target_shot_quality(input)
-    };
+    } * shot_readiness;
     evaluate_carry_from_state(input, context, after_state, target_shot)
 }
 
@@ -1000,7 +1007,7 @@ fn evaluate_carry_from_state(
     let mut future_shot = target_shot;
     for point in future_points {
         let fpos = clamp_pitch(point, input.pitch_length, input.pitch_width);
-        future_shot = future_shot.max(shot_quality_at(&ShotQualityInput {
+        let future_point_shot = shot_quality_at(&ShotQualityInput {
             x: fpos.0,
             y: fpos.1,
             finishing: input.finishing,
@@ -1027,7 +1034,11 @@ fn evaluate_carry_from_state(
                     )
                 })
             }),
-        }));
+        }) * input
+            .successor_control_state
+            .map(shot_release_readiness)
+            .unwrap_or(1.0);
+        future_shot = future_shot.max(future_point_shot);
     }
     let future_shot_gain = (future_shot - current_shot).max(0.0);
     let new_width_ratio = new_angle_width / context.width_base;
@@ -1439,6 +1450,7 @@ mod tests {
             gk_save_base: 0.66,
             gk_attributes: Some(gk_attributes),
             gk_pos: Some((99.0, 34.0)),
+            successor_control_state: None,
             contest_defenders: None,
             shot_quality_cache: None,
         };
@@ -1563,6 +1575,7 @@ mod tests {
                 gk_save_base: 0.66,
                 gk_attributes: None,
                 gk_pos: Some((100.0, 34.0)),
+                successor_control_state: None,
                 contest_defenders: None,
                 shot_quality_cache: None,
             })
@@ -1580,6 +1593,93 @@ mod tests {
             low_post_carry_shooting.score.to_bits(),
             "candidate-local carry value must not prepay post-carry continuation or terminal value; Temporal evaluates that state after the carry"
         );
+    }
+
+    #[test]
+    fn carry_successor_control_state_reduces_immediate_post_carry_shot_value() {
+        let teammates = [
+            CarrySupportPlayer {
+                index: 0,
+                pos: (99.0, 31.0),
+                base: (84.0, 34.0),
+                finishing: 0.88,
+                long_shot: 0.78,
+                is_goalkeeper: false,
+            },
+            CarrySupportPlayer {
+                index: 1,
+                pos: (91.0, 43.0),
+                base: (84.0, 42.0),
+                finishing: 0.72,
+                long_shot: 0.68,
+                is_goalkeeper: false,
+            },
+            CarrySupportPlayer {
+                index: 2,
+                pos: (78.0, 22.0),
+                base: (74.0, 22.0),
+                finishing: 0.62,
+                long_shot: 0.62,
+                is_goalkeeper: false,
+            },
+            CarrySupportPlayer {
+                index: 3,
+                pos: (7.0, 34.0),
+                base: (6.0, 34.0),
+                finishing: 0.22,
+                long_shot: 0.18,
+                is_goalkeeper: true,
+            },
+        ];
+        let opponents = [(102.0, 34.0), (94.0, 25.0), (92.0, 50.0)];
+        let template = CarryInput {
+            tick: 1,
+            carrier_index: 0,
+            carrier_team_home: true,
+            carrier_pos: (99.0, 31.0),
+            target: (102.0, 34.0),
+            finishing: 0.88,
+            long_shot: 0.78,
+            consecutive_carries: 1,
+            possession_ticks: 2,
+            current_state_value: 0.10,
+            path_feasibility: 0.72,
+            teammates: &teammates,
+            opponents: &opponents,
+            pitch_length: 105.0,
+            pitch_width: 68.0,
+            attacking_right: true,
+            carrier_speed: 4.4,
+            shot_ideal_distance: 20.0,
+            shot_on_target_base: 0.52,
+            gk_save_base: 0.66,
+            gk_attributes: None,
+            gk_pos: Some((102.0, 34.0)),
+            successor_control_state: None,
+            contest_defenders: None,
+            shot_quality_cache: None,
+        };
+        let ready = evaluate_carry(&CarryInput {
+            successor_control_state: Some(PossessionControlState::default()),
+            ..template.clone()
+        });
+        let pressured = evaluate_carry(&CarryInput {
+            successor_control_state: Some(PossessionControlState {
+                pressure_load: 0.86,
+                containment_load: 0.78,
+                forward_control: 0.28,
+                turn_readiness: 0.34,
+                release_window: 0.22,
+                shape_readiness: 0.52,
+                release_preparation: 0.18,
+                stagnation_load: 0.24,
+                ..PossessionControlState::default()
+            }),
+            ..template
+        });
+
+        assert!(pressured.after_direct_xg < ready.after_direct_xg);
+        assert!(pressured.after_value < ready.after_value);
     }
 
     #[test]
@@ -1617,6 +1717,69 @@ mod tests {
             }
         });
         assert!(calm.score > pressed.score);
+    }
+
+    #[test]
+    fn open_goal_tap_in_relaxes_control_readiness_only_after_beating_goalkeeper() {
+        let opponents = [];
+        let control_state = PossessionControlState {
+            turn_readiness: 0.22,
+            release_preparation: 0.18,
+            containment_load: 0.42,
+            ..PossessionControlState::default()
+        };
+        let goalkeeper_attributes = GkSaveAttributes {
+            gk_saving: 84.0,
+            gk_positioning: 82.0,
+            gk_reaction: 86.0,
+            gk_position_error_factor: 0.05,
+            gk_reaction_delay_factor: 0.005,
+            gk_save_base: 0.66,
+        };
+        let input = |goalkeeper_pos| ShotInput {
+            tick: 1,
+            shooter_index: 1,
+            shooter_team_home: true,
+            shooter_pos: (100.0, 34.0),
+            finishing: 0.82,
+            long_shot: 0.72,
+            possession_ticks: 4,
+            consecutive_carries: 2,
+            last_receive_origin: (96.0, 34.0),
+            opponents: &opponents,
+            pitch_length: 105.0,
+            pitch_width: 68.0,
+            attacking_right: true,
+            shot_on_target_base: 0.52,
+            gk_save_base: 0.66,
+            gk_attributes: Some(goalkeeper_attributes),
+            gk_pos: Some(goalkeeper_pos),
+            contest_defenders: None,
+            shot_ideal_distance: 20.0,
+            shot_quality_cache: None,
+            control_state: Some(control_state),
+        };
+
+        let goalkeeper_behind = evaluate_shot(&input((97.5, 34.0)));
+        let goalkeeper_goal_side = evaluate_shot(&input((103.0, 34.0)));
+        let ordinary_release_readiness = shot_release_readiness(control_state);
+
+        assert!(
+            goalkeeper_behind.body_release_probability
+                > goalkeeper_goal_side.body_release_probability + 0.45,
+            "beating the goalkeeper should create a natural low-complexity tap-in release: behind={}, goal_side={}",
+            goalkeeper_behind.body_release_probability,
+            goalkeeper_goal_side.body_release_probability
+        );
+        assert!(
+            (goalkeeper_goal_side.body_release_probability - ordinary_release_readiness).abs()
+                < 0.03,
+            "a goalkeeper still between shooter and goal must not receive the tap-in release benefit"
+        );
+        assert!(
+            goalkeeper_behind.terminal_value > goalkeeper_goal_side.terminal_value,
+            "the open-goal terminal value should naturally exceed the still-contested shot"
+        );
     }
 
     #[test]

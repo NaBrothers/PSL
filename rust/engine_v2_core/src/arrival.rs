@@ -91,6 +91,7 @@ pub struct ClearanceArrivalOutput {
 pub struct FirstTouchInput {
     pub target_pos: (f64, f64),
     pub iq: f64,
+    pub defensive_interference: f64,
     pub pitch_length: f64,
     pub pitch_width: f64,
     pub first_touch_error_divisor: f64,
@@ -347,7 +348,10 @@ fn earliest_trajectory_contact(input: &PassArrivalInput<'_>) -> Option<PassArriv
 }
 
 pub fn resolve_first_touch(input: &FirstTouchInput) -> FirstTouchOutput {
-    let error_chance = (100.0 - input.iq) / input.first_touch_error_divisor;
+    let technical_error = (100.0 - input.iq) / input.first_touch_error_divisor;
+    let error_chance = 1.0
+        - (1.0 - technical_error.clamp(0.0, 1.0))
+            * (1.0 - input.defensive_interference.clamp(0.0, 1.0));
     let is_error = matches!(
         crate::execution_transition::BinaryExecutionTransition::from_success_probability(
             error_chance,
@@ -367,6 +371,34 @@ pub fn resolve_first_touch(input: &FirstTouchInput) -> FirstTouchOutput {
         error_chance,
         is_error,
         loose_pos,
+    }
+}
+
+#[cfg(test)]
+mod first_touch_tests {
+    use super::{resolve_first_touch, FirstTouchInput};
+
+    fn first_touch(defensive_interference: f64) -> super::FirstTouchOutput {
+        resolve_first_touch(&FirstTouchInput {
+            target_pos: (40.0, 34.0),
+            iq: 82.0,
+            defensive_interference,
+            pitch_length: 105.0,
+            pitch_width: 68.0,
+            first_touch_error_divisor: 700.0,
+            error_roll: 1.0,
+            loose_x_roll: 0.5,
+            loose_y_roll: 0.5,
+        })
+    }
+
+    #[test]
+    fn defensive_interference_increases_first_touch_error_without_replacing_technique() {
+        let unopposed = first_touch(0.0);
+        let pressured = first_touch(0.35);
+
+        assert!(pressured.error_chance > unopposed.error_chance);
+        assert!(pressured.error_chance < 1.0);
     }
 }
 

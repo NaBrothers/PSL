@@ -65,6 +65,61 @@ impl VisionContext {
     pub fn visible(&self, origin: (f64, f64), target: (f64, f64)) -> bool {
         self.confidence(origin, target) > 0.0
     }
+
+    pub fn confidence_with_occluders(
+        &self,
+        origin: (f64, f64),
+        target: (f64, f64),
+        occluders: &[(f64, f64)],
+    ) -> f64 {
+        self.confidence_with_occluder_iter(origin, target, occluders.iter().copied())
+    }
+
+    pub fn confidence_with_occluder_iter(
+        &self,
+        origin: (f64, f64),
+        target: (f64, f64),
+        occluders: impl IntoIterator<Item = (f64, f64)>,
+    ) -> f64 {
+        self.confidence(origin, target)
+            * (1.0 - vision_occlusion_probability(origin, target, occluders))
+    }
+}
+
+pub fn vision_occlusion_probability(
+    origin: (f64, f64),
+    target: (f64, f64),
+    occluders: impl IntoIterator<Item = (f64, f64)>,
+) -> f64 {
+    let ray = (target.0 - origin.0, target.1 - origin.1);
+    let ray_length_squared = ray.0 * ray.0 + ray.1 * ray.1;
+    if ray_length_squared <= 1e-9 {
+        return 0.0;
+    }
+    let ray_length = ray_length_squared.sqrt();
+    let mut clear_probability = 1.0;
+    for occluder in occluders {
+        let offset = (occluder.0 - origin.0, occluder.1 - origin.1);
+        let projection = (offset.0 * ray.0 + offset.1 * ray.1) / ray_length_squared;
+        if projection <= 0.0 || projection >= 1.0 {
+            continue;
+        }
+        let closest = (origin.0 + ray.0 * projection, origin.1 + ray.1 * projection);
+        let lateral_distance = distance(occluder, closest);
+        let observer_distance = distance(origin, occluder);
+        let angular_width = (0.55 + 0.018 * observer_distance).clamp(0.55, 1.35);
+        let alignment =
+            1.0 - crate::physics::smoothstep(angular_width * 0.35, angular_width, lateral_distance);
+        let proximity = 1.0
+            - crate::physics::smoothstep(
+                (ray_length * 0.18).max(1.5),
+                (ray_length * 0.82).max(4.0),
+                observer_distance,
+            );
+        let occlusion = (alignment * (0.32 + 0.52 * proximity)).clamp(0.0, 0.84);
+        clear_probability *= 1.0 - occlusion;
+    }
+    (1.0 - clear_probability).clamp(0.0, 0.92)
 }
 
 pub fn build_vision_context(input: &VisionContextInput) -> VisionContext {
@@ -157,5 +212,25 @@ mod tests {
     #[test]
     fn zero_degree_is_a_valid_explicit_facing_direction() {
         assert_eq!(compute_player_facing(0.0, false), 0.0);
+    }
+
+    #[test]
+    fn nearby_defender_occludes_only_the_direction_behind_them() {
+        let vision = build_vision_context(&VisionContextInput {
+            iq: 80.0,
+            facing_direction: 0.0,
+            attacking_right: true,
+            vision_base_fov: 180.0,
+            vision_iq_bonus_factor: 0.5,
+            vision_base_distance: 42.0,
+            vision_iq_distance_bonus_factor: 0.35,
+            vision_max_distance: 65.0,
+        });
+        let blocker = [(2.0, 0.0)];
+        let blocked = vision.confidence_with_occluders((0.0, 0.0), (20.0, 0.0), &blocker);
+        let clear = vision.confidence_with_occluders((0.0, 0.0), (20.0, 8.0), &blocker);
+
+        assert!(blocked < clear);
+        assert!(blocked < vision.confidence((0.0, 0.0), (20.0, 0.0)));
     }
 }

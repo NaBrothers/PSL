@@ -220,7 +220,7 @@ fn pitch_clamp(pos: (f64, f64), pitch_length: f64, pitch_width: f64) -> (f64, f6
 
 pub fn defense_action_movement_intent(action: &str) -> &'static str {
     match action {
-        "close_down" | "tackle" | "approach" | "pursuit" => "press",
+        "close_down" | "tackle" | "approach" | "pursuit" | "smother" => "press",
         "mark_runner" => "mark",
         "block_lane" => "block_lane",
         _ => "defend_shape",
@@ -870,6 +870,18 @@ fn defense_score_context(input: &DefenseScoreInput<'_>) -> DefenseScoreContext {
     }
 }
 
+fn defense_task_target(
+    action: &str,
+    candidate_target: (f64, f64),
+    ball_carrier_pos: Option<(f64, f64)>,
+) -> (f64, f64) {
+    if matches!(action, "close_down" | "tackle") {
+        ball_carrier_pos.unwrap_or(candidate_target)
+    } else {
+        candidate_target
+    }
+}
+
 fn score_defense_candidate(
     input: &DefenseScoreInput<'_>,
     context: DefenseScoreContext,
@@ -895,14 +907,7 @@ fn score_defense_candidate(
         input.local_attackers,
         input.movement,
     );
-    let task_target = if matches!(
-        candidate_action,
-        "close_down" | "tackle" | "approach" | "pursuit"
-    ) {
-        input.ball_carrier_pos.unwrap_or(point)
-    } else {
-        point
-    };
+    let task_target = defense_task_target(candidate_action, point, input.ball_carrier_pos);
     let motion = project_defense_action_motion(
         input.defender_pos,
         task_target,
@@ -1810,7 +1815,7 @@ pub fn choose_defense_action(input: &DefenseChoiceInput<'_>) -> Option<DefenseCh
 mod tests {
     use super::{
         best_fixed_team_defense_candidate, best_fixed_team_defense_candidate_with_team_context,
-        choose_defense_action, close_down_contact_window, defense_action_type,
+        choose_defense_action, close_down_contact_window, defense_action_type, defense_task_target,
         defensive_approach_reachability, defensive_pursuit_reachability,
         fixed_defense_random_branch, fixed_defense_team_context, prepare_defense_choice,
         prepare_fixed_defense_choice, prepare_fixed_defense_choice_with_team_context,
@@ -2646,6 +2651,26 @@ mod tests {
         assert_eq!(carrier_task.action_type, "close_down");
         assert_eq!(carrier_task.target, carrier);
         assert_ne!(carrier_task.target, sampled_shape_point);
+    }
+
+    #[test]
+    fn approach_preserves_its_predicted_interception_target() {
+        let carrier = (95.0, 28.0);
+        let interception = (99.0, 31.0);
+        assert_eq!(
+            defense_task_target("approach", interception, Some(carrier)),
+            interception
+        );
+    }
+
+    #[test]
+    fn pursuit_preserves_its_predicted_interception_target() {
+        let carrier = (95.0, 28.0);
+        let interception = (99.5, 30.0);
+        assert_eq!(
+            defense_task_target("pursuit", interception, Some(carrier)),
+            interception
+        );
     }
 
     #[test]

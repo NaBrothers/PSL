@@ -353,6 +353,41 @@ pub fn is_attacking_box_pos(
     progress > 1.0 - 16.5 / pitch_length && (pos.1 - pitch_width / 2.0).abs() < 20.2
 }
 
+pub fn attacking_goal_line_crossing(
+    origin: (f64, f64),
+    target: (f64, f64),
+    attacking_right: bool,
+    pitch_length: f64,
+    pitch_width: f64,
+    goal_width: f64,
+) -> Option<PitchBoundaryCrossing> {
+    let crossing = segment_pitch_boundary_crossing(origin, target, pitch_length, pitch_width)?;
+    pitch_boundary_crossing_is_attacking_goal(
+        crossing,
+        attacking_right,
+        pitch_length,
+        pitch_width,
+        goal_width,
+    )
+    .then_some(crossing)
+}
+
+pub fn pitch_boundary_crossing_is_attacking_goal(
+    crossing: PitchBoundaryCrossing,
+    attacking_right: bool,
+    pitch_length: f64,
+    pitch_width: f64,
+    goal_width: f64,
+) -> bool {
+    let attacking_goal_x = if attacking_right { pitch_length } else { 0.0 };
+    let goal_y_min = (pitch_width - goal_width) * 0.5;
+    let goal_y_max = (pitch_width + goal_width) * 0.5;
+    crossing.kind == PitchBoundaryKind::GoalLine
+        && (crossing.point.0 - attacking_goal_x).abs() <= 1e-9
+        && crossing.point.1 > goal_y_min
+        && crossing.point.1 < goal_y_max
+}
+
 pub fn residual_ball_velocity(
     origin: (f64, f64),
     target: (f64, f64),
@@ -509,6 +544,19 @@ mod tests {
         assert_eq!(crossing.kind, PitchBoundaryKind::TouchLine);
         assert_eq!(crossing.point.1, 68.0);
         assert!(crossing.point.0 < 105.0);
+    }
+
+    #[test]
+    fn attacking_goal_crossing_requires_the_ball_to_cross_between_the_posts() {
+        let goal =
+            attacking_goal_line_crossing((104.0, 34.0), (106.0, 34.0), true, 105.0, 68.0, 7.32)
+                .expect("a central crossing of the attacking goal line is a goal");
+        let wide =
+            attacking_goal_line_crossing((104.0, 39.0), (106.0, 39.0), true, 105.0, 68.0, 7.32);
+
+        assert_eq!(goal.kind, PitchBoundaryKind::GoalLine);
+        assert_eq!(goal.point, (105.0, 34.0));
+        assert!(wide.is_none());
     }
 
     #[test]
