@@ -1,8 +1,10 @@
 use crate::goalkeeper::GkSaveAttributes;
+use crate::offside::is_offside_position;
 use crate::physics::distance;
 use crate::physics::smoothstep;
 use crate::possession_control::{
-    continuation_control_readiness, shot_release_readiness, PossessionControlState,
+    continuation_control_readiness, directional_control_readiness, shot_release_readiness,
+    PossessionControlState,
 };
 use crate::shot_quality::{
     estimate_shot_outcome, ShotContestDefender, ShotQualityCache, ShotQualityCacheKey,
@@ -20,6 +22,7 @@ pub struct StateValueInput<'a> {
     pub pitch_length: f64,
     pub pitch_width: f64,
     pub attacking_right: bool,
+    pub offside_line: f64,
     pub finishing: f64,
     pub long_shot: f64,
     pub shot_ideal_distance: f64,
@@ -54,6 +57,7 @@ pub struct PassReceiveValueInput<'a> {
     pub pitch_length: f64,
     pub pitch_width: f64,
     pub attacking_right: bool,
+    pub offside_line: f64,
     pub receiver_finishing: f64,
     pub receiver_long_shot: f64,
     pub shot_ideal_distance: f64,
@@ -396,9 +400,19 @@ struct TerminalShotValue {
 #[derive(Clone, Copy)]
 struct TerminalShotBaseValue {
     raw_xg: f64,
-    body_release_xg: f64,
+    body_release_probability: f64,
+    lane_release_probability: f64,
     finishing: f64,
     long_shot: f64,
+}
+
+fn terminal_direct_xg(base: TerminalShotBaseValue, control_release_readiness: f64) -> f64 {
+    (base.raw_xg
+        * base.lane_release_probability
+        * base
+            .body_release_probability
+            .min(control_release_readiness.clamp(0.0, 1.0)))
+    .clamp(0.0, 1.0)
 }
 
 fn terminal_shot_base_value_at(
@@ -439,7 +453,8 @@ fn terminal_shot_base_value_at(
     });
     TerminalShotBaseValue {
         raw_xg: shot.xg,
-        body_release_xg: shot.xg * shot.body_release_probability,
+        body_release_probability: shot.body_release_probability,
+        lane_release_probability: shot.release_probability,
         finishing,
         long_shot,
     }
@@ -463,7 +478,7 @@ fn terminal_shot_value_at(
 
     TerminalShotValue {
         raw_xg: base.raw_xg,
-        direct_xg: (base.body_release_xg * controller_release_readiness).clamp(0.0, 1.0),
+        direct_xg: terminal_direct_xg(base, controller_release_readiness),
         finishing: base.finishing,
         long_shot: base.long_shot,
     }
@@ -571,6 +586,7 @@ impl PassReceiveTeamValueContext {
 #[derive(Clone, Copy)]
 pub(crate) struct PossessionBellmanGeometry {
     source_pos: (f64, f64),
+    offside_line: f64,
     source_pressure: f64,
     source_terminal_shot_base: TerminalShotBaseValue,
     support_width: f64,
@@ -581,13 +597,13 @@ pub(crate) struct PossessionBellmanGeometry {
     connection_probabilities: [[f64; MAX_POSSESSION_NETWORK_NODES]; MAX_POSSESSION_NETWORK_NODES],
     residual_values: [f64; MAX_POSSESSION_NETWORK_NODES],
     static_terminal_values: [f64; MAX_POSSESSION_NETWORK_NODES],
-    one_link_xg: f64,
 }
 
 impl PossessionBellmanGeometry {
     fn applies_to(&self, input: &StateValueInput<'_>) -> bool {
         self.source_pos.0.to_bits() == input.pos.0.to_bits()
             && self.source_pos.1.to_bits() == input.pos.1.to_bits()
+            && self.offside_line.to_bits() == input.offside_line.to_bits()
             && teammate_snapshot_matches(
                 &self.teammate_static_nodes,
                 self.teammate_static_node_count,
@@ -595,6 +611,21 @@ impl PossessionBellmanGeometry {
                 input.teammate_goalkeeper_indices,
             )
     }
+}
+
+fn immediate_connection_is_legal(
+    input: &StateValueInput<'_>,
+    source_index: usize,
+    target: (f64, f64),
+) -> bool {
+    source_index != 0
+        || !is_offside_position(
+            target,
+            input.attacking_right,
+            input.offside_line,
+            input.pitch_length,
+            Some(input.pos.0),
+        )
 }
 
 #[derive(Clone, Copy)]
@@ -1083,6 +1114,9 @@ pub(crate) fn possession_bellman_geometry(
                 continue;
             }
             let target = nodes[target_index];
+            if !immediate_connection_is_legal(input, source_index, target.pos) {
+                continue;
+            }
             connection_probabilities[source_index][target_index] =
                 if source_index > 0 && target_index > 0 {
                     controlled_connection_probability_from_geometry(
@@ -1105,14 +1139,12 @@ pub(crate) fn possession_bellman_geometry(
         }
     }
 
-    let mut one_link_xg: f64 = 0.0;
     let mut residual_values = [0.0; MAX_POSSESSION_NETWORK_NODES];
     let mut static_terminal_values = [0.0; MAX_POSSESSION_NETWORK_NODES];
     for node_index in 0..node_count {
         let direct_xg = node_index
             .checked_sub(1)
             .map_or(0.0, |offset| context.static_nodes[offset].direct_xg);
-        one_link_xg = one_link_xg.max(connection_probabilities[0][node_index] * direct_xg);
         let mut outlet_access: f64 = 0.0;
         for target_index in 0..node_count {
             outlet_access = outlet_access.max(connection_probabilities[node_index][target_index]);
@@ -1132,6 +1164,7 @@ pub(crate) fn possession_bellman_geometry(
 
     PossessionBellmanGeometry {
         source_pos: input.pos,
+        offside_line: input.offside_line,
         source_pressure: pressures[0],
         source_terminal_shot_base: terminal_shot_base_value_at(
             input,
@@ -1146,7 +1179,6 @@ pub(crate) fn possession_bellman_geometry(
         connection_probabilities,
         residual_values,
         static_terminal_values,
-        one_link_xg,
     }
 }
 
@@ -1155,10 +1187,11 @@ fn bellman_continuation_values(
     direct_values: [f64; MAX_POSSESSION_NETWORK_NODES],
     terminal_values: [f64; MAX_POSSESSION_NETWORK_NODES],
     connection_probabilities: &[[f64; MAX_POSSESSION_NETWORK_NODES]; MAX_POSSESSION_NETWORK_NODES],
+    first_link_readiness: [f64; MAX_POSSESSION_NETWORK_NODES],
 ) -> (f64, f64) {
     let mut continuation_xg = direct_values;
     let mut continuation_values = terminal_values;
-    for _ in 0..6 {
+    for _ in 0..5 {
         let mut next_xg = direct_values;
         let mut next_values = terminal_values;
         for source_index in 0..node_count {
@@ -1179,7 +1212,38 @@ fn bellman_continuation_values(
         continuation_xg = next_xg;
         continuation_values = next_values;
     }
-    (continuation_xg[0], continuation_values[0])
+    let mut source_xg = direct_values[0];
+    let mut source_value = terminal_values[0];
+    for target_index in 1..node_count {
+        source_xg = source_xg.max(
+            first_link_readiness[target_index]
+                * connection_probabilities[0][target_index]
+                * continuation_xg[target_index],
+        );
+        source_value = source_value.max(
+            first_link_readiness[target_index]
+                * connection_probabilities[0][target_index]
+                * continuation_values[target_index],
+        );
+    }
+    (source_xg, source_value)
+}
+
+fn immediate_connection_readiness(
+    input: &StateValueInput<'_>,
+    target: (f64, f64),
+) -> f64 {
+    input.control_state.map_or(1.0, |control_state| {
+        let target_heading =
+            (target.1 - input.pos.1).atan2(target.0 - input.pos.0).to_degrees();
+        0.24 + 0.76 * directional_control_readiness(control_state, target_heading)
+    })
+}
+
+fn current_control_readiness_factor(input: &StateValueInput<'_>) -> f64 {
+    input.control_state.map_or(1.0, |control_state| {
+        0.24 + 0.76 * continuation_control_readiness(control_state)
+    })
 }
 
 fn finite_horizon_continuation_value(
@@ -1203,24 +1267,39 @@ fn finite_horizon_continuation_value(
                 "compiled possession geometry node count does not match its context"
             );
             let mut direct_values = [0.0; MAX_POSSESSION_NETWORK_NODES];
+            let mut first_link_readiness = [1.0; MAX_POSSESSION_NETWORK_NODES];
             direct_values[0] = current_direct_xg;
             for (offset, static_node) in context.static_nodes[..context.static_node_count]
                 .iter()
                 .enumerate()
             {
-                direct_values[offset + 1] = static_node.direct_xg;
+                let node_index = offset + 1;
+                direct_values[node_index] = static_node.direct_xg;
+                first_link_readiness[node_index] =
+                    immediate_connection_readiness(input, static_node.pos);
             }
             let mut terminal_values = geometry.static_terminal_values;
-            terminal_values[0] =
-                current_direct_xg + (1.0 - current_direct_xg) * geometry.residual_values[0];
+            terminal_values[0] = current_direct_xg
+                + (1.0 - current_direct_xg)
+                    * geometry.residual_values[0]
+                    * current_control_readiness_factor(input);
             let (continuation_xg, continuation_value) = bellman_continuation_values(
                 node_count,
                 direct_values,
                 terminal_values,
                 &geometry.connection_probabilities,
+                first_link_readiness,
             );
+            let mut one_link_xg: f64 = 0.0;
+            for target_index in 1..node_count {
+                one_link_xg = one_link_xg.max(
+                    first_link_readiness[target_index]
+                        * geometry.connection_probabilities[0][target_index]
+                        * direct_values[target_index],
+                );
+            }
             return (
-                geometry.one_link_xg,
+                one_link_xg,
                 continuation_xg,
                 geometry.residual_values[0],
                 continuation_value,
@@ -1274,6 +1353,7 @@ fn finite_horizon_continuation_value(
     };
     let mut connection_probabilities =
         [[0.0; MAX_POSSESSION_NETWORK_NODES]; MAX_POSSESSION_NETWORK_NODES];
+    let mut first_link_readiness = [1.0; MAX_POSSESSION_NETWORK_NODES];
     for source_index in 0..node_count {
         let source = nodes[source_index];
         for target_index in 0..node_count {
@@ -1281,6 +1361,9 @@ fn finite_horizon_continuation_value(
                 continue;
             }
             let target = nodes[target_index];
+            if !immediate_connection_is_legal(input, source_index, target.pos) {
+                continue;
+            }
             connection_probabilities[source_index][target_index] = pass_receive_context
                 .filter(|_| source_index > 0 && target_index > 0)
                 .map_or_else(
@@ -1305,6 +1388,10 @@ fn finite_horizon_continuation_value(
                         )
                     },
                 );
+            if source_index == 0 {
+                first_link_readiness[target_index] =
+                    immediate_connection_readiness(input, target.pos);
+            }
         }
     }
 
@@ -1312,8 +1399,11 @@ fn finite_horizon_continuation_value(
     let mut residual_values = [0.0; MAX_POSSESSION_NETWORK_NODES];
     let mut terminal_values = [0.0; MAX_POSSESSION_NETWORK_NODES];
     for node_index in 0..node_count {
-        one_link_xg =
-            one_link_xg.max(connection_probabilities[0][node_index] * direct_values[node_index]);
+        one_link_xg = one_link_xg.max(
+            first_link_readiness[node_index]
+                * connection_probabilities[0][node_index]
+                * direct_values[node_index],
+        );
         let mut outlet_access: f64 = 0.0;
         for target_index in 0..node_count {
             outlet_access = outlet_access.max(connection_probabilities[node_index][target_index]);
@@ -1327,14 +1417,22 @@ fn finite_horizon_continuation_value(
             input.pitch_length,
             input.attacking_right,
         );
+        let residual_readiness = if node_index == 0 {
+            current_control_readiness_factor(input)
+        } else {
+            1.0
+        };
         terminal_values[node_index] = direct_values[node_index]
-            + (1.0 - direct_values[node_index]) * residual_values[node_index];
+            + (1.0 - direct_values[node_index])
+                * residual_values[node_index]
+                * residual_readiness;
     }
     let (continuation_xg, continuation_value) = bellman_continuation_values(
         node_count,
         direct_values,
         terminal_values,
         &connection_probabilities,
+        first_link_readiness,
     );
 
     (
@@ -1472,12 +1570,13 @@ fn possession_state_value_evaluation_with_pass_receive_context(
         .unwrap_or(1.0);
     let terminal_shot = TerminalShotValue {
         raw_xg: terminal_shot_base.raw_xg,
-        direct_xg: (terminal_shot_base.body_release_xg
-            * input
+        direct_xg: terminal_direct_xg(
+            terminal_shot_base,
+            input
                 .control_state
                 .map(shot_release_readiness)
-                .unwrap_or(1.0))
-        .clamp(0.0, 1.0),
+                .unwrap_or(1.0),
+        ),
         finishing: terminal_shot_base.finishing,
         long_shot: terminal_shot_base.long_shot,
     };
@@ -1496,9 +1595,7 @@ fn possession_state_value_evaluation_with_pass_receive_context(
             pass_receive_context,
             bellman_geometry,
         );
-    let readiness_factor = 0.24 + 0.76 * control_readiness;
-    let continuation_surplus = (continuation_value - direct_xg).max(0.0);
-    let value = (direct_xg + continuation_surplus * readiness_factor).clamp(0.0002, 0.65);
+    let value = continuation_value.clamp(0.0002, 0.65);
 
     PossessionStateValueEvaluation {
         state: PossessionStateValue {
@@ -1725,6 +1822,7 @@ fn state_value_input_from_pass_receive<'a>(
         pitch_length: input.pitch_length,
         pitch_width: input.pitch_width,
         attacking_right: input.attacking_right,
+        offside_line: input.offside_line,
         finishing: input.receiver_finishing,
         long_shot: input.receiver_long_shot,
         shot_ideal_distance: input.shot_ideal_distance,
@@ -1808,6 +1906,7 @@ mod tests {
             pitch_length: 105.0,
             pitch_width: 68.0,
             attacking_right: true,
+            offside_line: 105.0,
             receiver_finishing: 0.78,
             receiver_long_shot: 0.71,
             shot_ideal_distance: 20.0,
@@ -1873,6 +1972,7 @@ mod tests {
             pitch_length: 105.0,
             pitch_width: 68.0,
             attacking_right: true,
+            offside_line: 105.0,
             finishing: 0.80,
             long_shot: 0.74,
             shot_ideal_distance: 20.0,
@@ -1914,6 +2014,100 @@ mod tests {
     }
 
     #[test]
+    fn current_offside_teammate_is_not_an_immediate_bellman_outlet() {
+        let teammates = [(1, 72.0, 34.0), (2, 94.0, 34.0)];
+        let profiles = [
+            PlayerShotProfile {
+                player_index: 1,
+                finishing: 0.60,
+                long_shot: 0.55,
+            },
+            PlayerShotProfile {
+                player_index: 2,
+                finishing: 0.99,
+                long_shot: 0.99,
+            },
+        ];
+        let input = StateValueInput {
+            pos: (70.0, 34.0),
+            player_index: 0,
+            shot_profiles: &profiles,
+            teammate_positions: &teammates,
+            teammate_goalkeeper_indices: &[],
+            opponent_positions: &[],
+            pitch_length: 105.0,
+            pitch_width: 68.0,
+            attacking_right: true,
+            offside_line: 88.0,
+            finishing: 0.40,
+            long_shot: 0.40,
+            shot_ideal_distance: 20.0,
+            shot_on_target_base: 0.50,
+            gk_save_base: 0.78,
+            gk_attributes: None,
+            gk_pos: None,
+            contest_defenders: None,
+            tick: 0,
+            team_home: true,
+            shot_quality_cache: None,
+            control_state: None,
+        };
+        let context = possession_value_context(&input);
+        let geometry = possession_bellman_geometry(&input, &context);
+        let offside_node = context.static_nodes[..context.static_node_count]
+            .iter()
+            .position(|node| node.player_index == 2)
+            .expect("offside teammate must remain in the future network")
+            + 1;
+        let onside_node = context.static_nodes[..context.static_node_count]
+            .iter()
+            .position(|node| node.player_index == 1)
+            .expect("onside teammate must remain in the network")
+            + 1;
+
+        assert_eq!(geometry.connection_probabilities[0][offside_node], 0.0);
+        assert!(
+            geometry.connection_probabilities[onside_node][offside_node] > 0.0,
+            "only the current controller's immediate offside link should be blocked"
+        );
+
+        let uncached = possession_state_value_with_context(&input, &context);
+        let cached = possession_state_value_with_context_and_bellman_geometry(
+            &input,
+            &context,
+            &geometry,
+        );
+        assert_eq!(cached.one_link_xg.to_bits(), uncached.one_link_xg.to_bits());
+        assert_eq!(
+            cached.continuation_value.to_bits(),
+            uncached.continuation_value.to_bits()
+        );
+
+        let moved_line_input = StateValueInput {
+            offside_line: 100.0,
+            ..input
+        };
+        assert!(
+            !geometry.applies_to(&moved_line_input),
+            "compiled geometry must not survive an offside-line change"
+        );
+        let moved_uncached = possession_state_value(&moved_line_input);
+        let moved_cached = possession_state_value_with_context_and_bellman_geometry(
+            &moved_line_input,
+            &context,
+            &geometry,
+        );
+        assert_eq!(
+            moved_cached.one_link_xg.to_bits(),
+            moved_uncached.one_link_xg.to_bits()
+        );
+        assert_eq!(
+            moved_cached.continuation_value.to_bits(),
+            moved_uncached.continuation_value.to_bits()
+        );
+    }
+
+    #[test]
     fn state_value_uses_terminal_geometry_and_finishing() {
         let opponents = [(65.0, 30.0), (69.0, 41.0)];
         let teammates = [
@@ -1935,7 +2129,7 @@ mod tests {
     }
 
     #[test]
-    fn current_controller_terminal_value_respects_release_readiness_only_for_that_player() {
+    fn current_controller_readiness_prices_the_first_release_without_changing_receiver_quality() {
         let opponents = [(101.0, 18.0), (101.0, 50.0)];
         let teammates = [(1, 94.0, 34.0), (2, 70.0, 18.0)];
         let ready = possession_state_value(&state_input((90.0, 34.0), 0, &teammates, &opponents));
@@ -1955,8 +2149,39 @@ mod tests {
 
         assert!(ready.direct_xg > unprepared.direct_xg);
         assert!(
-            (ready.one_link_xg - unprepared.one_link_xg).abs() < 1e-12,
-            "the receiver must not inherit the current controller's body preparation"
+            ready.one_link_xg > unprepared.one_link_xg,
+            "the current controller must first be able to release toward the receiver"
+        );
+        assert!(
+            ready.continuation_xg > unprepared.continuation_xg,
+            "the receiver's unchanged shot quality is reachable only through the readiness-priced first release"
+        );
+    }
+
+    #[test]
+    fn current_controller_readiness_is_applied_once_at_the_first_network_link() {
+        let node_count = 3;
+        let direct_values = [0.0; MAX_POSSESSION_NETWORK_NODES];
+        let mut terminal_values = [0.0; MAX_POSSESSION_NETWORK_NODES];
+        terminal_values[2] = 0.50;
+        let mut connection_probabilities =
+            [[0.0; MAX_POSSESSION_NETWORK_NODES]; MAX_POSSESSION_NETWORK_NODES];
+        connection_probabilities[0][1] = 0.80;
+        connection_probabilities[1][2] = 0.90;
+        let mut first_link_readiness = [1.0; MAX_POSSESSION_NETWORK_NODES];
+        first_link_readiness[1] = 0.40;
+
+        let (_, continuation_value) = bellman_continuation_values(
+            node_count,
+            direct_values,
+            terminal_values,
+            &connection_probabilities,
+            first_link_readiness,
+        );
+
+        assert!(
+            (continuation_value - 0.40 * 0.80 * 0.90 * 0.50).abs() < 1e-12,
+            "current body preparation must price only the first release, not every future team link"
         );
     }
 
@@ -1985,6 +2210,66 @@ mod tests {
         assert!(
             possession.value <= possession.continuation_value + 1e-12,
             "readiness may discount only the continuation surplus: {possession:?}"
+        );
+    }
+
+    #[test]
+    fn possession_direct_xg_matches_the_executable_shot_release_semantics() {
+        let opponents = [(88.2, 34.0)];
+        let teammates = [(1, 80.0, 24.0), (2, 76.0, 46.0)];
+        let defenders = [ShotContestDefender {
+            index: 4,
+            pos: (88.2, 34.0),
+            projected_pos: (87.5, 34.0),
+            speed: 84.0,
+            defence: 86.0,
+            intent: crate::ShotContestIntent::Press,
+            engagement_weight: 0.82,
+            engagement_reach: 4.0,
+            is_goalkeeper: false,
+        }];
+        let control_state = PossessionControlState {
+            pressure_load: 0.64,
+            containment_load: 0.18,
+            forward_control: 0.18,
+            turn_readiness: 0.46,
+            release_window: 0.58,
+            shape_readiness: 0.84,
+            release_preparation: 0.52,
+            stagnation_load: 0.0,
+            ..PossessionControlState::default()
+        };
+        let mut input = state_input((86.0, 34.0), 0, &teammates, &opponents);
+        input.contest_defenders = Some(&defenders);
+        input.control_state = Some(control_state);
+        let possession = possession_state_value(&input);
+        let shot = crate::evaluate_shot(&crate::ShotInput {
+            tick: input.tick,
+            shooter_index: input.player_index,
+            shooter_team_home: input.team_home,
+            shooter_pos: input.pos,
+            finishing: input.finishing,
+            long_shot: input.long_shot,
+            possession_ticks: 2,
+            consecutive_carries: 0,
+            last_receive_origin: (82.0, 34.0),
+            opponents: input.opponent_positions,
+            pitch_length: input.pitch_length,
+            pitch_width: input.pitch_width,
+            attacking_right: input.attacking_right,
+            shot_on_target_base: input.shot_on_target_base,
+            gk_save_base: input.gk_save_base,
+            gk_attributes: input.gk_attributes,
+            gk_pos: input.gk_pos,
+            contest_defenders: input.contest_defenders,
+            shot_ideal_distance: input.shot_ideal_distance,
+            shot_quality_cache: input.shot_quality_cache,
+            control_state: input.control_state,
+        });
+
+        assert!(
+            (possession.direct_xg - shot.terminal_value).abs() <= 1e-12,
+            "state prediction and executable shot evaluation must consume the same body-release transition: possession={possession:?}, shot={shot:?}"
         );
     }
 
@@ -2048,6 +2333,88 @@ mod tests {
         assert!(possession.continuation_xg > possession.one_link_xg);
         assert!(possession.continuation_value > possession.direct_xg);
         assert_eq!(possession.value, possession.continuation_value);
+    }
+
+    #[test]
+    fn cyclic_connections_cannot_create_terminal_value() {
+        let node_count = 3;
+        let mut direct_values = [0.0; MAX_POSSESSION_NETWORK_NODES];
+        direct_values[..node_count].copy_from_slice(&[0.17, 0.03, 0.02]);
+        let mut terminal_values = [0.0; MAX_POSSESSION_NETWORK_NODES];
+        terminal_values[..node_count].copy_from_slice(&[0.19, 0.08, 0.07]);
+        let mut connection_probabilities =
+            [[0.0; MAX_POSSESSION_NETWORK_NODES]; MAX_POSSESSION_NETWORK_NODES];
+        connection_probabilities[0][1] = 0.96;
+        connection_probabilities[1][2] = 0.97;
+        connection_probabilities[2][0] = 0.98;
+        connection_probabilities[1][0] = 0.95;
+        connection_probabilities[2][1] = 0.94;
+
+        let (continuation_xg, continuation_value) = bellman_continuation_values(
+            node_count,
+            direct_values,
+            terminal_values,
+            &connection_probabilities,
+            [1.0; MAX_POSSESSION_NETWORK_NODES],
+        );
+
+        assert!(
+            continuation_xg
+                <= direct_values[..node_count]
+                    .iter()
+                    .copied()
+                    .fold(0.0, f64::max)
+                    + 1e-12
+        );
+        assert!(
+            continuation_value
+                <= terminal_values[..node_count]
+                    .iter()
+                    .copied()
+                    .fold(0.0, f64::max)
+                    + 1e-12,
+            "revisiting a possession node must not manufacture value beyond the best executable terminal"
+        );
+    }
+
+    #[test]
+    fn reachable_danger_beats_an_equally_controllable_recycle_loop() {
+        let node_count = 4;
+        let direct_values = [0.0; MAX_POSSESSION_NETWORK_NODES];
+        let mut terminal_values = [0.0; MAX_POSSESSION_NETWORK_NODES];
+        terminal_values[..node_count].copy_from_slice(&[0.01, 0.08, 0.08, 0.24]);
+        let mut recycle_connections =
+            [[0.0; MAX_POSSESSION_NETWORK_NODES]; MAX_POSSESSION_NETWORK_NODES];
+        recycle_connections[0][1] = 0.95;
+        recycle_connections[1][2] = 0.95;
+        recycle_connections[2][1] = 0.95;
+
+        let (_, recycle_value) = bellman_continuation_values(
+            node_count,
+            direct_values,
+            terminal_values,
+            &recycle_connections,
+            [1.0; MAX_POSSESSION_NETWORK_NODES],
+        );
+
+        let mut dangerous_connections = recycle_connections;
+        dangerous_connections[1][3] = 0.70;
+        let (_, dangerous_value) = bellman_continuation_values(
+            node_count,
+            direct_values,
+            terminal_values,
+            &dangerous_connections,
+            [1.0; MAX_POSSESSION_NETWORK_NODES],
+        );
+
+        assert!(
+            (recycle_value - 0.95 * 0.08).abs() < 1e-12,
+            "a recycle loop must not preserve or amplify value beyond the first controlled release"
+        );
+        assert!(
+            dangerous_value > recycle_value,
+            "a genuinely reachable dangerous continuation must dominate an otherwise identical recycle loop"
+        );
     }
 
     #[test]
@@ -2165,6 +2532,7 @@ mod tests {
             pitch_length: 105.0,
             pitch_width: 68.0,
             attacking_right: true,
+            offside_line: 105.0,
             finishing: 0.82,
             long_shot: 0.74,
             shot_ideal_distance: 20.0,
@@ -2312,6 +2680,7 @@ mod tests {
             pitch_length: 105.0,
             pitch_width: 68.0,
             attacking_right: true,
+            offside_line: 105.0,
             finishing: 0.82,
             long_shot: 0.74,
             shot_ideal_distance: 20.0,
@@ -2414,6 +2783,7 @@ mod tests {
             pitch_length: 105.0,
             pitch_width: 68.0,
             attacking_right: true,
+            offside_line: 105.0,
             receiver_finishing: 0.78,
             receiver_long_shot: 0.71,
             shot_ideal_distance: 20.0,
@@ -2486,6 +2856,7 @@ mod tests {
             pitch_length: 105.0,
             pitch_width: 68.0,
             attacking_right: true,
+            offside_line: 105.0,
             receiver_finishing: 0.78,
             receiver_long_shot: 0.71,
             shot_ideal_distance: 20.0,
@@ -2570,6 +2941,7 @@ mod tests {
             pitch_length: 105.0,
             pitch_width: 68.0,
             attacking_right: true,
+            offside_line: 105.0,
             receiver_finishing: 0.68,
             receiver_long_shot: 0.61,
             shot_ideal_distance: 20.0,
@@ -2659,6 +3031,7 @@ mod tests {
             pitch_length: 105.0,
             pitch_width: 68.0,
             attacking_right: true,
+            offside_line: 105.0,
             receiver_finishing: 0.68,
             receiver_long_shot: 0.61,
             shot_ideal_distance: 20.0,

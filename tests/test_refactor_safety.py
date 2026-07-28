@@ -261,11 +261,11 @@ class TestStatsFormatting:
 
         stats_msg = str(matcher.sent[1][0])
         required_labels = [
-            "控球率", "射正", "射门", "传球", "传球成功率",
-            "过人", "带球推进", "抢断", "拦截", "封堵", "扑救",
-            "xG", "关键传球", "禁区触球", "绝对机会",
+            "稳定控制占比", "射正", "射门", "传球", "传球成功率",
+            "成功过人", "带球推进", "成功抢断", "拦截", "封堵", "扑救",
+            "xG", "关键传球", "禁区进入合计", "xG≥0.30机会",
             "禁区射门", "进攻三区进入", "禁区进入", "推进传球",
-            "传中", "角球", "逼抢", "丢失球权", "PSxG"
+            "传中", "角球", "逼抢", "失去稳定控制", "射正前xG代理"
         ]
         for label in required_labels:
             assert label in stats_msg, f"Missing stat label: {label}"

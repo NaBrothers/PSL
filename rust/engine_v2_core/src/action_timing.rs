@@ -2,6 +2,8 @@
 pub enum TemporalActionKind {
     Carry,
     Hold,
+    Reorient,
+    Shoot,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -37,7 +39,7 @@ struct ActionTimingProfile {
     requires_target_completion: bool,
 }
 
-const ACTION_TIMING_PROFILES: [ActionTimingProfile; 2] = [
+const ACTION_TIMING_PROFILES: [ActionTimingProfile; 4] = [
     ActionTimingProfile {
         kind: TemporalActionKind::Carry,
         base_ticks: 0.72,
@@ -61,6 +63,32 @@ const ACTION_TIMING_PROFILES: [ActionTimingProfile; 2] = [
         pressure_ticks: 0.88,
         min_ticks: 1.0,
         max_ticks: 4.0,
+        completion_step_fraction: 0.0,
+        requires_target_completion: false,
+    },
+    ActionTimingProfile {
+        kind: TemporalActionKind::Reorient,
+        base_ticks: 1.0,
+        distance_ticks: 0.0,
+        low_tempo_ticks: 0.0,
+        low_risk_ticks: 0.0,
+        opportunity_ticks: 0.0,
+        pressure_ticks: 0.0,
+        min_ticks: 1.0,
+        max_ticks: 1.0,
+        completion_step_fraction: 0.0,
+        requires_target_completion: false,
+    },
+    ActionTimingProfile {
+        kind: TemporalActionKind::Shoot,
+        base_ticks: 1.0,
+        distance_ticks: 0.0,
+        low_tempo_ticks: 0.0,
+        low_risk_ticks: 0.0,
+        opportunity_ticks: 0.0,
+        pressure_ticks: 0.0,
+        min_ticks: 1.0,
+        max_ticks: 1.0,
         completion_step_fraction: 0.0,
         requires_target_completion: false,
     },
@@ -158,6 +186,40 @@ mod tests {
         });
 
         assert!(protected_window.initial_ticks > urgent_pressure.initial_ticks);
+    }
+
+    #[test]
+    fn reorientation_is_one_control_contact() {
+        let reorientation = action_timing_plan(&ActionTimingInput {
+            kind: TemporalActionKind::Reorient,
+            target_distance: 0.0,
+            nominal_step_distance: 3.0,
+            pressure: 0.1,
+            tempo: 0.25,
+            risk_budget: 0.25,
+            opportunity: 1.0,
+        });
+
+        assert_eq!(reorientation.initial_ticks, 1);
+        assert!(!reorientation.requires_target_completion);
+    }
+
+    #[test]
+    fn shot_is_a_single_rolling_horizon_execution_step() {
+        let shot = action_timing_plan(&ActionTimingInput {
+            kind: TemporalActionKind::Shoot,
+            target_distance: 18.0,
+            nominal_step_distance: 3.0,
+            pressure: 0.8,
+            tempo: 0.2,
+            risk_budget: 0.2,
+            opportunity: 0.0,
+        });
+
+        assert_eq!(shot.initial_ticks, 1);
+        assert!(!shot.requires_target_completion);
+        assert!(should_continue_action(shot, 1, 18.0));
+        assert!(!should_continue_action(shot, 0, 18.0));
     }
 
     #[test]

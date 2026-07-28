@@ -762,6 +762,27 @@ pub fn bounded_rational_select_index(
     bounded_rational_select_index_with_fatigue(scores, iq, pressure, 0.0, roll)
 }
 
+pub fn bounded_rational_discrimination_tolerance(
+    best_score: f64,
+    iq: f64,
+    pressure: f64,
+    fatigue: f64,
+) -> f64 {
+    if !best_score.is_finite() {
+        return 0.0;
+    }
+    let cognitive_noise = crate::goal::iq_decision_noise(iq);
+    let pressure_load = pressure.clamp(0.0, 1.0);
+    let fatigue_load = fatigue.clamp(0.0, 1.0);
+    let load_tolerance = (0.003
+        + cognitive_noise * 0.014
+        + pressure_load * (0.0035 + cognitive_noise * 0.010)
+        + fatigue_load * (0.0025 + cognitive_noise * 0.006))
+        .clamp(0.003, 0.032);
+    let relative_value_tolerance = (best_score.abs() * 0.35).max(0.003);
+    load_tolerance.min(relative_value_tolerance)
+}
+
 pub fn bounded_rational_select_index_with_fatigue(
     scores: &[f64],
     iq: f64,
@@ -786,16 +807,10 @@ pub fn bounded_rational_select_index_with_fatigue(
         });
     }
 
-    let cognitive_noise = crate::goal::iq_decision_noise(iq);
     let pressure_load = pressure.clamp(0.0, 1.0);
     let fatigue_load = fatigue.clamp(0.0, 1.0);
-    let load_tolerance = (0.003
-        + cognitive_noise * 0.014
-        + pressure_load * (0.0035 + cognitive_noise * 0.010)
-        + fatigue_load * (0.0025 + cognitive_noise * 0.006))
-        .clamp(0.003, 0.032);
-    let relative_value_tolerance = (best_score.abs() * 0.35).max(0.003);
-    let discrimination_tolerance = load_tolerance.min(relative_value_tolerance);
+    let discrimination_tolerance =
+        bounded_rational_discrimination_tolerance(best_score, iq, pressure, fatigue);
     let minimum_near_optimal_score = best_score - discrimination_tolerance;
     let near_optimal_count = scores
         .iter()

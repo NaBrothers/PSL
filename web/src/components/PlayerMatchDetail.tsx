@@ -270,7 +270,7 @@ export default function PlayerMatchDetail({ player: rawPlayer, teamPlayers: _tea
               <StatRow label="助攻" value={player.assists} highlight={player.assists > 0} />
               <StatRow label="射门 / 射正" value={`${player.shots} / ${player.shots_on_target}`} />
               <StatRow label="xG" value={player.xg.toFixed(2)} />
-              <StatRow label="绝对机会" value={player.big_chances} />
+              <StatRow label="xG≥0.30机会" value={player.big_chances} />
               <StatRow label="关键传球" value={player.key_passes} />
               <StatRow label="xA" value={player.xa.toFixed(2)} />
             </div>
@@ -317,8 +317,8 @@ export default function PlayerMatchDetail({ player: rawPlayer, teamPlayers: _tea
               <div className="bg-slate-900/50 rounded-lg p-2 space-y-0.5">
                 <StatRow label="扑救" value={player.saves} />
                 <StatRow label="失球" value={player.goals_conceded} />
-                <StatRow label="PSxG" value={player.psxg_faced.toFixed(2)} />
-                <StatRow label="防止失球" value={player.goals_prevented.toFixed(2)} highlight={player.goals_prevented > 0} />
+                <StatRow label="面对射正前xG代理" value={player.psxg_faced.toFixed(2)} />
+                <StatRow label="内部扑救值" value={player.goals_prevented.toFixed(2)} highlight={player.goals_prevented > 0} />
               </div>
             </div>
           )}
@@ -327,7 +327,7 @@ export default function PlayerMatchDetail({ player: rawPlayer, teamPlayers: _tea
           <div>
             <div className="text-[10px] text-slate-500 font-medium mb-1 uppercase tracking-wide">其他</div>
             <div className="bg-slate-900/50 rounded-lg p-2 space-y-0.5">
-              <StatRow label="丢失球权" value={player.turnovers} />
+              <StatRow label="失去稳定控制" value={player.turnovers} />
               <StatRow label="被断" value={player.dispossessed} />
               <StatRow label="越位" value={player.offsides} />
             </div>

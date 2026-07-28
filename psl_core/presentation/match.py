@@ -811,7 +811,11 @@ def _build_stats_text(result: Any, home_name: str, away_name: str) -> str:
     home_pass_rate = home.get("pass_success_rate", 0)
     away_pass_rate = away.get("pass_success_rate", 0)
     rows = [
-        (_format_percent(home.get("possession")), "控球率", _format_percent(away.get("possession"))),
+        (
+            _format_percent(home.get("possession")),
+            "稳定控制占比",
+            _format_percent(away.get("possession")),
+        ),
         (home.get("shots", 0), "射门", away.get("shots", 0)),
         (home.get("shots_on_target", 0), "射正", away.get("shots_on_target", 0)),
         (home.get("shots_in_box", 0), "禁区射门", away.get("shots_in_box", 0)),
@@ -822,28 +826,32 @@ def _build_stats_text(result: Any, home_name: str, away_name: str) -> str:
         (home.get("passes_into_box", 0), "禁区进入", away.get("passes_into_box", 0)),
         (home.get("crosses", 0), "传中", away.get("crosses", 0)),
         (home.get("corners", 0), "角球", away.get("corners", 0)),
-        (home.get("dribbles", 0), "过人", away.get("dribbles", 0)),
+        (home.get("dribbles", 0), "成功过人", away.get("dribbles", 0)),
         (home.get("carries", 0), "带球推进", away.get("carries", 0)),
         (home.get("progressive_carries", 0), "推进带球", away.get("progressive_carries", 0)),
-        (home.get("tackles", 0), "抢断", away.get("tackles", 0)),
+        (home.get("tackles", 0), "成功抢断", away.get("tackles", 0)),
         (home.get("interceptions", 0), "拦截", away.get("interceptions", 0)),
         (home.get("blocks", 0), "封堵", away.get("blocks", 0)),
         (home.get("clearances", 0), "解围", away.get("clearances", 0)),
         (home.get("pressures", 0), "逼抢", away.get("pressures", 0)),
-        (home.get("turnovers", 0), "丢失球权", away.get("turnovers", 0)),
+        (home.get("turnovers", 0), "失去稳定控制", away.get("turnovers", 0)),
         (home.get("offsides", 0), "越位", away.get("offsides", 0)),
         (home.get("saves", 0), "扑救", away.get("saves", 0)),
         ("{:.2f}".format(float(home.get("xg", 0) or 0)), "xG", "{:.2f}".format(float(away.get("xg", 0) or 0))),
-        ("{:.2f}".format(float(home.get("post_shot_xg", 0) or 0)), "PSxG", "{:.2f}".format(float(away.get("post_shot_xg", 0) or 0))),
+        (
+            "{:.2f}".format(float(home.get("post_shot_xg", 0) or 0)),
+            "射正前xG代理",
+            "{:.2f}".format(float(away.get("post_shot_xg", 0) or 0)),
+        ),
         (home.get("key_passes", 0), "关键传球", away.get("key_passes", 0)),
         (
             int(home.get("passes_into_box", 0) or 0)
             + int(home.get("carries_into_box", 0) or 0),
-            "禁区触球",
+            "禁区进入合计",
             int(away.get("passes_into_box", 0) or 0)
             + int(away.get("carries_into_box", 0) or 0),
         ),
-        (home.get("big_chances", 0), "绝对机会", away.get("big_chances", 0)),
+        (home.get("big_chances", 0), "xG≥0.30机会", away.get("big_chances", 0)),
     ]
     lines.append("[数据统计]")
     lines.extend(_stat_line(*row) for row in rows)

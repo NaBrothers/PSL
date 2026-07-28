@@ -7,10 +7,13 @@ from psl_core.engine_v2.config import (
     ENGINE_CONFIG_ADMIN_ITEMS,
     ENGINE_CONFIG_DEFAULTS,
     ENGINE_CONFIG_SPEED_SCALE_MIGRATION,
+    ENGINE_CONFIG_TIME_STEP_MIGRATION,
 )
 
 ENGINE_CONFIG_SPEED_SCALE_VERSION_KEY = "engine_v2.speed_scale_version"
 ENGINE_CONFIG_SPEED_SCALE_VERSION = 1
+ENGINE_CONFIG_TIME_STEP_VERSION_KEY = "engine_v2.time_step_version"
+ENGINE_CONFIG_TIME_STEP_VERSION = 1
 
 # Default values for all configurable parameters
 DEFAULTS = {
@@ -181,20 +184,21 @@ class GameConfigService:
         self.db = db
         self._cache = {}
         self._migrate_engine_speed_scale()
+        self._migrate_engine_time_step()
 
-    def _migrate_engine_speed_scale(self):
-        version_name = f"config:{ENGINE_CONFIG_SPEED_SCALE_VERSION_KEY}"
+    def _migrate_engine_defaults(self, version_key, version, migration):
+        version_name = f"config:{version_key}"
         version_row = self.db.query_one(
             'SELECT Value FROM "global" WHERE Name = ?', (version_name,)
         )
         if version_row:
             try:
-                if int(json.loads(version_row[0])) >= ENGINE_CONFIG_SPEED_SCALE_VERSION:
+                if int(json.loads(version_row[0])) >= version:
                     return
             except (TypeError, ValueError, json.JSONDecodeError):
                 pass
 
-        for key, (old_default, new_default) in ENGINE_CONFIG_SPEED_SCALE_MIGRATION.items():
+        for key, (old_default, new_default) in migration.items():
             name = f"config:{key}"
             row = self.db.query_one(
                 'SELECT Value FROM "global" WHERE Name = ?', (name,)
@@ -215,7 +219,7 @@ class GameConfigService:
                     (json.dumps(new_default), name),
                 )
 
-        version_value = json.dumps(ENGINE_CONFIG_SPEED_SCALE_VERSION)
+        version_value = json.dumps(version)
         if version_row:
             self.db.execute(
                 'UPDATE "global" SET Value = ? WHERE Name = ?',
@@ -226,6 +230,20 @@ class GameConfigService:
                 'INSERT INTO "global" (Name, Value) VALUES (?, ?)',
                 (version_name, version_value),
             )
+
+    def _migrate_engine_speed_scale(self):
+        self._migrate_engine_defaults(
+            ENGINE_CONFIG_SPEED_SCALE_VERSION_KEY,
+            ENGINE_CONFIG_SPEED_SCALE_VERSION,
+            ENGINE_CONFIG_SPEED_SCALE_MIGRATION,
+        )
+
+    def _migrate_engine_time_step(self):
+        self._migrate_engine_defaults(
+            ENGINE_CONFIG_TIME_STEP_VERSION_KEY,
+            ENGINE_CONFIG_TIME_STEP_VERSION,
+            ENGINE_CONFIG_TIME_STEP_MIGRATION,
+        )
 
     def get(self, key: str) -> Any:
         if key in self._cache:

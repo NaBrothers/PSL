@@ -1,7 +1,7 @@
 use crate::decision::softmax_select_index;
 use crate::match_flow::{
-    player_move_tick, score_block_lane_zone, score_mark_runner_zone, DefenseZoneAttackerInput,
-    DefenseZoneHelperInput, PlayerMoveTickInput,
+    player_move_speed, player_move_tick, score_block_lane_zone, score_mark_runner_zone,
+    DefenseZoneAttackerInput, DefenseZoneHelperInput, PlayerMoveSpeedInput, PlayerMoveTickInput,
 };
 use crate::physics::{distance, smoothstep};
 use crate::position_value::{defensive_position_value, DefensivePositionValueInput};
@@ -112,6 +112,7 @@ pub struct DefenseRawInput<'a> {
     pub local_attackers: &'a [(f64, f64)],
     pub dangerous_receivers: &'a [(f64, f64)],
     pub ball_carrier_pos: Option<(f64, f64)>,
+    pub carrier_velocity: (f64, f64),
     pub shot_lane_threat: f64,
     pub random_samples: &'a [DefenseRandomSample],
 }
@@ -123,6 +124,7 @@ pub struct DefenseChoiceInput<'a> {
     pub base_ref: (f64, f64),
     pub ball_pos: (f64, f64),
     pub ball_carrier_pos: Option<(f64, f64)>,
+    pub carrier_velocity: (f64, f64),
     pub ball_carrier_consecutive_carries: i32,
     pub ball_carrier_possession_ticks: i32,
     pub carrier_control_readiness: f64,
@@ -142,6 +144,70 @@ pub struct DefenseChoiceInput<'a> {
     pub score_noises: &'a [f64],
     pub roll_by_count: &'a [f64],
     pub fallback_index_by_count: &'a [usize],
+}
+
+fn predicted_carrier_interception_point(input: &DefenseRawInput<'_>) -> Option<(f64, f64)> {
+    let carrier_pos = input.ball_carrier_pos?;
+    let velocity = input.carrier_velocity;
+    let current_speed = (velocity.0 * velocity.0 + velocity.1 * velocity.1).sqrt();
+    if current_speed <= 1e-6 {
+        return None;
+    }
+    let direction = (velocity.0 / current_speed, velocity.1 / current_speed);
+    let reachable_speed = input.carrier_speed.max(current_speed);
+    let acceleration = (
+        direction.0 * (reachable_speed - current_speed) * 0.35,
+        direction.1 * (reachable_speed - current_speed) * 0.35,
+    );
+    let separation = distance(input.defender_pos, carrier_pos);
+    let horizon = (0.45 + separation / 18.0).clamp(0.45, 1.65);
+    Some(pitch_clamp(
+        (
+            carrier_pos.0 + velocity.0 * horizon + 0.5 * acceleration.0 * horizon * horizon,
+            carrier_pos.1 + velocity.1 * horizon + 0.5 * acceleration.1 * horizon * horizon,
+        ),
+        input.pitch_length,
+        input.pitch_width,
+    ))
+}
+
+fn carrier_breakthrough_basis(input: &DefenseRawInput<'_>) -> ((f64, f64), (f64, f64)) {
+    let own_goal = (
+        if input.attacking_right {
+            0.0
+        } else {
+            input.pitch_length
+        },
+        input.pitch_width * 0.5,
+    );
+    let goal_delta = (own_goal.0 - input.ball_pos.0, own_goal.1 - input.ball_pos.1);
+    let goal_length = (goal_delta.0 * goal_delta.0 + goal_delta.1 * goal_delta.1)
+        .sqrt()
+        .max(1e-6);
+    let goal_direction = (goal_delta.0 / goal_length, goal_delta.1 / goal_length);
+    let carrier_speed = (input.carrier_velocity.0 * input.carrier_velocity.0
+        + input.carrier_velocity.1 * input.carrier_velocity.1)
+        .sqrt();
+    let carrier_direction = if carrier_speed > 1e-6 {
+        (
+            input.carrier_velocity.0 / carrier_speed,
+            input.carrier_velocity.1 / carrier_speed,
+        )
+    } else {
+        goal_direction
+    };
+    let forward_raw = (
+        0.78 * carrier_direction.0 + 0.22 * goal_direction.0,
+        0.78 * carrier_direction.1 + 0.22 * goal_direction.1,
+    );
+    let forward_length = (forward_raw.0 * forward_raw.0 + forward_raw.1 * forward_raw.1)
+        .sqrt()
+        .max(1e-6);
+    let forward = (
+        forward_raw.0 / forward_length,
+        forward_raw.1 / forward_length,
+    );
+    (forward, (-forward.1, forward.0))
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -220,7 +286,8 @@ fn pitch_clamp(pos: (f64, f64), pitch_length: f64, pitch_width: f64) -> (f64, f6
 
 pub fn defense_action_movement_intent(action: &str) -> &'static str {
     match action {
-        "close_down" | "tackle" | "approach" | "pursuit" | "smother" => "press",
+        "smother" => "contest",
+        "close_down" | "tackle" | "approach" | "pursuit" => "press",
         "mark_runner" => "mark",
         "block_lane" => "block_lane",
         _ => "defend_shape",
@@ -235,18 +302,52 @@ pub fn project_defense_action_motion(
     movement: DefenseMovementInput<'_>,
 ) -> DefenseMotionOutput {
     let movement_target = target;
-    let tick = player_move_tick(&PlayerMoveTickInput {
-        pos: defender_pos,
-        target_pos: movement_target,
-        velocity: movement.velocity,
-        speed_ability: movement.speed_ability,
-        movement_intent: defense_action_movement_intent(action),
-        state: movement.state,
-        player_max_speed: movement.player_max_speed,
-        player_min_speed: movement.player_min_speed,
-        pitch_length: movement.pitch_length,
-        pitch_width: movement.pitch_width,
-    });
+    let movement_intent = defense_action_movement_intent(action);
+    let tick = if action == "smother" {
+        let desired_speed = player_move_speed(&PlayerMoveSpeedInput {
+            pos: defender_pos,
+            target_pos: movement_target,
+            speed_ability: movement.speed_ability,
+            movement_intent,
+            state: movement.state,
+            player_max_speed: movement.player_max_speed,
+            player_min_speed: movement.player_min_speed,
+        })
+        .speed;
+        let motion = crate::physics::advance_player_motion(&crate::physics::PlayerMotionInput {
+            pos: defender_pos,
+            target: movement_target,
+            velocity: movement.velocity,
+            speed_ability: movement.speed_ability,
+            desired_speed,
+            acceleration_scale: 1.5,
+            player_max_speed: movement.player_max_speed,
+            player_min_speed: movement.player_min_speed,
+            pitch_length: movement.pitch_length,
+            pitch_width: movement.pitch_width,
+        });
+        crate::match_flow::PlayerMoveTickOutput {
+            moved: motion.distance_covered > 1e-6,
+            pos: motion.pos,
+            velocity: motion.velocity,
+            distance_covered: motion.distance_covered,
+            facing_direction: motion.facing_direction,
+            desired_speed,
+        }
+    } else {
+        player_move_tick(&PlayerMoveTickInput {
+            pos: defender_pos,
+            target_pos: movement_target,
+            velocity: movement.velocity,
+            speed_ability: movement.speed_ability,
+            movement_intent,
+            state: movement.state,
+            player_max_speed: movement.player_max_speed,
+            player_min_speed: movement.player_min_speed,
+            pitch_length: movement.pitch_length,
+            pitch_width: movement.pitch_width,
+        })
+    };
     DefenseMotionOutput {
         movement_target,
         pos: tick.pos,
@@ -305,6 +406,62 @@ pub fn defensive_approach_reachability(
         movement,
         commitment_ticks,
     )
+}
+
+pub fn defensive_interception_reachability(
+    defender_pos: (f64, f64),
+    carrier_pos: (f64, f64),
+    carrier_velocity: (f64, f64),
+    anchor: (f64, f64),
+    press_radius: f64,
+    movement: DefenseMovementInput<'_>,
+    commitment_ticks: i32,
+) -> f64 {
+    let mut projected_defender_pos = defender_pos;
+    let mut projected_defender_velocity = movement.velocity;
+    let mut projected_carrier_pos = carrier_pos;
+    let mut best_reachability = 0.0_f64;
+    let contact_radius = (press_radius.max(0.1) * 0.22).clamp(1.0, 2.8);
+
+    for elapsed_tick in 1..=commitment_ticks.clamp(1, 8) {
+        let next_carrier_pos = pitch_clamp(
+            (
+                projected_carrier_pos.0 + carrier_velocity.0,
+                projected_carrier_pos.1 + carrier_velocity.1,
+            ),
+            movement.pitch_length,
+            movement.pitch_width,
+        );
+        let motion = project_defense_action_motion(
+            projected_defender_pos,
+            next_carrier_pos,
+            anchor,
+            "pursuit",
+            DefenseMovementInput {
+                velocity: projected_defender_velocity,
+                ..movement
+            },
+        );
+        let relative_start = (
+            projected_defender_pos.0 - projected_carrier_pos.0,
+            projected_defender_pos.1 - projected_carrier_pos.1,
+        );
+        let relative_end = (
+            motion.pos.0 - next_carrier_pos.0,
+            motion.pos.1 - next_carrier_pos.1,
+        );
+        let closest_distance =
+            closest_distance_to_motion_segment((0.0, 0.0), relative_start, relative_end);
+        let contact_access =
+            1.0 - smoothstep(contact_radius * 0.58, contact_radius, closest_distance);
+        let arrival_discount = (-0.24 * (elapsed_tick - 1) as f64).exp();
+        best_reachability = best_reachability.max(contact_access * arrival_discount);
+        projected_defender_pos = motion.pos;
+        projected_defender_velocity = motion.velocity;
+        projected_carrier_pos = next_carrier_pos;
+    }
+
+    best_reachability
 }
 
 fn closest_distance_to_motion_segment(
@@ -635,18 +792,28 @@ fn generate_defense_raw_candidates_into(
             input.pitch_width,
         ));
         let lead = input.carrier_speed * 0.45;
-        push(pitch_clamp(
-            (input.ball_pos.0 + goal_side * lead, input.ball_pos.1),
-            input.pitch_length,
-            input.pitch_width,
-        ));
+        push(
+            predicted_carrier_interception_point(input).unwrap_or_else(|| {
+                pitch_clamp(
+                    (input.ball_pos.0 + goal_side * lead, input.ball_pos.1),
+                    input.pitch_length,
+                    input.pitch_width,
+                )
+            }),
+        );
         let contain_depth = 2.2 + 1.6 * input.carrier_control_threat;
         let contain_width = 3.0 + 2.0 * input.carrier_control_threat;
-        for oy in [-contain_width, 0.0, contain_width] {
+        let (breakthrough_direction, breakthrough_perpendicular) =
+            carrier_breakthrough_basis(input);
+        for lateral_offset in [-contain_width, 0.0, contain_width] {
             push(pitch_clamp(
                 (
-                    input.ball_pos.0 + goal_side * contain_depth,
-                    input.ball_pos.1 + oy,
+                    input.ball_pos.0
+                        + breakthrough_direction.0 * contain_depth
+                        + breakthrough_perpendicular.0 * lateral_offset,
+                    input.ball_pos.1
+                        + breakthrough_direction.1 * contain_depth
+                        + breakthrough_perpendicular.1 * lateral_offset,
                 ),
                 input.pitch_length,
                 input.pitch_width,
@@ -968,6 +1135,19 @@ fn score_defense_candidate(
         * (1.0 - cover_cost * 0.28)
         * (1.0 - context.immediate_threat.clamp(0.0, 1.0));
     let mut score = immediate_denial + structural_value;
+    if matches!(candidate_action, "close_down" | "approach" | "tackle") {
+        let projected_carrier_access = input.ball_carrier_pos.map_or(0.0, |carrier_pos| {
+            1.0 - smoothstep(
+                input.press_radius.max(0.1) * 0.30,
+                input.press_radius.max(0.1),
+                distance(motion.pos, carrier_pos),
+            )
+        });
+        score += context.immediate_threat
+            * context.press_access
+            * projected_carrier_access
+            * (0.12 + 0.10 * input.press_intensity.clamp(0.0, 1.0));
+    }
     if candidate_action == "pursuit" {
         let future_closure = input.ball_carrier_pos.map_or(0.0, |carrier_pos| {
             defensive_pursuit_reachability(
@@ -1139,6 +1319,7 @@ pub(crate) fn best_fixed_team_defense_candidate_with_team_context(
             local_attackers,
             dangerous_receivers,
             ball_carrier_pos: input.ball_carrier_pos,
+            carrier_velocity: input.carrier_velocity,
             shot_lane_threat,
             random_samples: &[],
         },
@@ -1371,6 +1552,7 @@ pub(crate) fn prepare_fixed_defense_choice_with_team_context(
             local_attackers,
             dangerous_receivers,
             ball_carrier_pos: input.ball_carrier_pos,
+            carrier_velocity: input.carrier_velocity,
             shot_lane_threat,
             random_samples: input.random_samples,
         },
@@ -1622,6 +1804,7 @@ pub fn prepare_defense_choice(input: &DefenseChoiceInput<'_>) -> Option<DefenseP
         local_attackers: &local_attackers,
         dangerous_receivers: &dangerous_receivers,
         ball_carrier_pos: input.ball_carrier_pos,
+        carrier_velocity: input.carrier_velocity,
         shot_lane_threat,
         random_samples: input.random_samples,
     });
@@ -1815,14 +1998,19 @@ pub fn choose_defense_action(input: &DefenseChoiceInput<'_>) -> Option<DefenseCh
 mod tests {
     use super::{
         best_fixed_team_defense_candidate, best_fixed_team_defense_candidate_with_team_context,
-        choose_defense_action, close_down_contact_window, defense_action_type, defense_task_target,
-        defensive_approach_reachability, defensive_pursuit_reachability,
-        fixed_defense_random_branch, fixed_defense_team_context, prepare_defense_choice,
-        prepare_fixed_defense_choice, prepare_fixed_defense_choice_with_team_context,
+        choose_defense_action, close_down_contact_window, defense_action_movement_intent,
+        defense_action_type, defense_task_target, defensive_approach_reachability,
+        defensive_interception_reachability, defensive_pursuit_reachability,
+        fixed_defense_random_branch, fixed_defense_team_context, generate_defense_raw_candidates,
+        predicted_carrier_interception_point, prepare_defense_choice, prepare_fixed_defense_choice,
+        prepare_fixed_defense_choice_with_team_context, project_defense_action_motion,
         score_defense_candidates, select_fixed_defense_action, select_prepared_defense_action,
         select_prepared_defense_candidate, DefenseChoiceInput, DefenseMovementInput,
-        DefenseRandomSample, DefenseScoreInput, DefenseScoreOutput, DefenseTeammateInput,
-        FixedDefensePreparedChoice,
+        DefenseRandomSample, DefenseRawInput, DefenseScoreInput, DefenseScoreOutput,
+        DefenseTeammateInput, FixedDefensePreparedChoice,
+    };
+    use crate::match_flow::{
+        player_move_speed, player_move_tick, PlayerMoveSpeedInput, PlayerMoveTickInput,
     };
     use crate::team_plan::TeamPlanSignals;
 
@@ -1989,6 +2177,37 @@ mod tests {
     }
 
     #[test]
+    fn moving_carrier_cannot_be_claimed_by_a_distant_non_intercepting_pursuer() {
+        let unreachable = defensive_interception_reachability(
+            (52.0, 34.0),
+            (88.0, 34.0),
+            (5.0, 0.0),
+            (52.0, 34.0),
+            12.0,
+            movement(),
+            4,
+        );
+        let converging = defensive_interception_reachability(
+            (86.0, 28.0),
+            (88.0, 34.0),
+            (2.0, 0.0),
+            (86.0, 28.0),
+            12.0,
+            movement(),
+            4,
+        );
+
+        assert!(
+            unreachable < 0.05,
+            "distance alone must not let a defender claim a moving carrier they cannot intercept: {unreachable}"
+        );
+        assert!(
+            converging > unreachable + 0.20,
+            "a genuinely converging trajectory must produce materially more closure: unreachable={unreachable}, converging={converging}"
+        );
+    }
+
+    #[test]
     fn pursuit_requires_future_closure_without_claiming_immediate_contact() {
         let teammates = teammates();
         let carrier = (57.0, 34.0);
@@ -1998,6 +2217,7 @@ mod tests {
             base_ref: (42.0, 34.0),
             ball_pos: carrier,
             ball_carrier_pos: Some(carrier),
+            carrier_velocity: (0.0, 0.0),
             ball_carrier_consecutive_carries: 0,
             ball_carrier_possession_ticks: 3,
             carrier_control_readiness: 0.88,
@@ -2059,6 +2279,7 @@ mod tests {
             base_ref: (42.0, 34.0),
             ball_pos: carrier,
             ball_carrier_pos: Some(carrier),
+            carrier_velocity: (0.0, 0.0),
             ball_carrier_consecutive_carries: 0,
             ball_carrier_possession_ticks: 3,
             carrier_control_readiness: 0.88,
@@ -2155,6 +2376,7 @@ mod tests {
                 base_ref: defender.anchor,
                 ball_pos: carrier,
                 ball_carrier_pos: Some(carrier),
+                carrier_velocity: (0.0, 0.0),
                 ball_carrier_consecutive_carries: 3,
                 ball_carrier_possession_ticks: 5,
                 carrier_control_readiness: 0.83,
@@ -2189,6 +2411,7 @@ mod tests {
                 base_ref: defender.anchor,
                 ball_pos: carrier,
                 ball_carrier_pos: Some(carrier),
+                carrier_velocity: (0.0, 0.0),
                 ball_carrier_consecutive_carries: 3,
                 ball_carrier_possession_ticks: 5,
                 carrier_control_readiness: 0.83,
@@ -2294,6 +2517,7 @@ mod tests {
             base_ref: (80.0, 34.0),
             ball_pos: carrier,
             ball_carrier_pos: Some(carrier),
+            carrier_velocity: (0.0, 0.0),
             ball_carrier_consecutive_carries: 3,
             ball_carrier_possession_ticks: 4,
             carrier_control_readiness: 0.80,
@@ -2329,6 +2553,7 @@ mod tests {
             base_ref: (80.0, 34.0),
             ball_pos: (84.0, 34.0),
             ball_carrier_pos: Some((84.0, 34.0)),
+            carrier_velocity: (0.0, 0.0),
             ball_carrier_consecutive_carries: 3,
             ball_carrier_possession_ticks: 4,
             carrier_control_readiness: 0.80,
@@ -2366,6 +2591,7 @@ mod tests {
             base_ref: (80.0, 34.0),
             ball_pos: (84.0, 34.0),
             ball_carrier_pos: Some((84.0, 34.0)),
+            carrier_velocity: (0.0, 0.0),
             ball_carrier_consecutive_carries: 3,
             ball_carrier_possession_ticks: 4,
             carrier_control_readiness: 0.80,
@@ -2415,6 +2641,7 @@ mod tests {
             base_ref: (50.0, 34.0),
             ball_pos: carrier,
             ball_carrier_pos: Some(carrier),
+            carrier_velocity: (0.0, 0.0),
             ball_carrier_consecutive_carries: 0,
             ball_carrier_possession_ticks: 8,
             carrier_control_readiness: 0.95,
@@ -2468,6 +2695,7 @@ mod tests {
             base_ref: (50.0, 34.0),
             ball_pos: carrier,
             ball_carrier_pos: Some(carrier),
+            carrier_velocity: (0.0, 0.0),
             ball_carrier_consecutive_carries: 0,
             ball_carrier_possession_ticks: 0,
             carrier_control_readiness: 0.95,
@@ -2526,6 +2754,7 @@ mod tests {
             base_ref: (78.0, 34.0),
             ball_pos: carrier,
             ball_carrier_pos: Some(carrier),
+            carrier_velocity: (0.0, 0.0),
             ball_carrier_consecutive_carries: 3,
             ball_carrier_possession_ticks: 4,
             carrier_control_readiness: 0.83,
@@ -2674,6 +2903,225 @@ mod tests {
     }
 
     #[test]
+    fn moving_carrier_interception_follows_velocity_vector_instead_of_goal_axis() {
+        let carrier = (72.0, 27.0);
+        let input = DefenseRawInput {
+            defender_pos: (66.0, 34.0),
+            anchor: (66.0, 34.0),
+            ball_pos: carrier,
+            attacking_right: false,
+            pitch_length: 105.0,
+            pitch_width: 68.0,
+            carrier_speed: 6.0,
+            carrier_control_threat: 0.8,
+            shot_danger: 0.4,
+            local_attackers: &[],
+            dangerous_receivers: &[],
+            ball_carrier_pos: Some(carrier),
+            carrier_velocity: (2.4, 2.0),
+            shot_lane_threat: 0.0,
+            random_samples: &[],
+        };
+
+        let interception =
+            predicted_carrier_interception_point(&input).expect("moving carrier interception");
+
+        assert!(interception.0 > carrier.0);
+        assert!(
+            interception.1 > carrier.1,
+            "a carrier cutting laterally must create a lateral interception lead, not a fixed goal-axis point"
+        );
+        assert_eq!(
+            defense_task_target("pursuit", interception, Some(carrier)),
+            interception
+        );
+    }
+
+    #[test]
+    fn moving_carrier_interception_projects_acceleration_not_only_current_velocity() {
+        let carrier = (72.0, 27.0);
+        let mut input = DefenseRawInput {
+            defender_pos: (66.0, 34.0),
+            anchor: (66.0, 34.0),
+            ball_pos: carrier,
+            attacking_right: false,
+            pitch_length: 105.0,
+            pitch_width: 68.0,
+            carrier_speed: 2.0,
+            carrier_control_threat: 0.8,
+            shot_danger: 0.4,
+            local_attackers: &[],
+            dangerous_receivers: &[],
+            ball_carrier_pos: Some(carrier),
+            carrier_velocity: (2.0, 0.0),
+            shot_lane_threat: 0.0,
+            random_samples: &[],
+        };
+        let constant_velocity =
+            predicted_carrier_interception_point(&input).expect("constant-speed interception");
+        input.carrier_speed = 6.0;
+        let accelerating =
+            predicted_carrier_interception_point(&input).expect("accelerating interception");
+
+        assert!(
+            accelerating.0 > constant_velocity.0,
+            "the interception horizon must include the carrier's reachable acceleration instead of extrapolating only current velocity"
+        );
+        assert_eq!(accelerating.1, constant_velocity.1);
+    }
+
+    #[test]
+    fn containment_candidates_rotate_into_the_carriers_breakthrough_corridor() {
+        let carrier = (84.0, 32.0);
+        let input = DefenseRawInput {
+            defender_pos: (89.0, 38.0),
+            anchor: (90.0, 40.0),
+            ball_pos: carrier,
+            attacking_right: false,
+            pitch_length: 105.0,
+            pitch_width: 68.0,
+            carrier_speed: 6.0,
+            carrier_control_threat: 0.8,
+            shot_danger: 0.4,
+            local_attackers: &[],
+            dangerous_receivers: &[],
+            ball_carrier_pos: Some(carrier),
+            carrier_velocity: (4.0, -2.0),
+            shot_lane_threat: 0.0,
+            random_samples: &[],
+        };
+
+        let candidates = generate_defense_raw_candidates(&input);
+        let contain_center = candidates[5];
+
+        assert!(
+            contain_center.0 > carrier.0 && contain_center.1 < carrier.1,
+            "the central containment point must rotate with a carrier cutting diagonally toward goal: {contain_center:?}"
+        );
+    }
+
+    #[test]
+    fn defensive_motion_uses_the_same_player_physics_kernel_without_a_speed_bonus() {
+        let movement = DefenseMovementInput {
+            velocity: (0.8, -0.2),
+            speed_ability: 86,
+            defence: 92.0,
+            state: "off_ball",
+            plan_signals: TeamPlanSignals::default(),
+            player_max_speed: 8.0,
+            player_min_speed: 2.5,
+            pitch_length: 105.0,
+            pitch_width: 68.0,
+        };
+        let defender = project_defense_action_motion(
+            (50.0, 30.0),
+            (58.0, 35.0),
+            (48.0, 30.0),
+            "pursuit",
+            movement,
+        );
+        let shared = player_move_tick(&PlayerMoveTickInput {
+            pos: (50.0, 30.0),
+            target_pos: (58.0, 35.0),
+            velocity: movement.velocity,
+            speed_ability: movement.speed_ability,
+            movement_intent: defense_action_movement_intent("pursuit"),
+            state: movement.state,
+            player_max_speed: movement.player_max_speed,
+            player_min_speed: movement.player_min_speed,
+            pitch_length: movement.pitch_length,
+            pitch_width: movement.pitch_width,
+        });
+
+        assert_eq!(defender.pos, shared.pos);
+        assert_eq!(defender.velocity, shared.velocity);
+        assert_eq!(defender.distance_covered, shared.distance_covered);
+        assert_eq!(defender.facing_direction, shared.facing_direction);
+    }
+
+    #[test]
+    fn goalkeeper_smother_uses_contest_urgency_without_bypassing_shared_motion() {
+        let movement = DefenseMovementInput {
+            velocity: (-4.4, 1.6),
+            speed_ability: 96,
+            defence: 24.0,
+            state: "off_ball",
+            plan_signals: TeamPlanSignals::default(),
+            player_max_speed: 18.0,
+            player_min_speed: 4.0,
+            pitch_length: 105.0,
+            pitch_width: 68.0,
+        };
+        let origin = (98.1, 35.5);
+        let target = (103.7, 32.8);
+        let smother =
+            project_defense_action_motion(origin, target, (102.7, 34.0), "smother", movement);
+        let desired_speed = player_move_speed(&PlayerMoveSpeedInput {
+            pos: origin,
+            target_pos: target,
+            speed_ability: movement.speed_ability,
+            movement_intent: "contest",
+            state: movement.state,
+            player_max_speed: movement.player_max_speed,
+            player_min_speed: movement.player_min_speed,
+        })
+        .speed;
+        let shared = crate::physics::advance_player_motion(&crate::physics::PlayerMotionInput {
+            pos: origin,
+            target,
+            velocity: movement.velocity,
+            speed_ability: movement.speed_ability,
+            desired_speed,
+            acceleration_scale: 1.5,
+            player_max_speed: movement.player_max_speed,
+            player_min_speed: movement.player_min_speed,
+            pitch_length: movement.pitch_length,
+            pitch_width: movement.pitch_width,
+        });
+        let press = player_move_tick(&PlayerMoveTickInput {
+            movement_intent: "press",
+            ..PlayerMoveTickInput {
+                pos: origin,
+                target_pos: target,
+                velocity: movement.velocity,
+                speed_ability: movement.speed_ability,
+                movement_intent: "contest",
+                state: movement.state,
+                player_max_speed: movement.player_max_speed,
+                player_min_speed: movement.player_min_speed,
+                pitch_length: movement.pitch_length,
+                pitch_width: movement.pitch_width,
+            }
+        });
+
+        assert_eq!(defense_action_movement_intent("smother"), "contest");
+        assert_eq!(smother.pos, shared.pos);
+        assert_eq!(smother.velocity, shared.velocity);
+        assert!(
+            (smother.velocity.0 * smother.velocity.0 + smother.velocity.1 * smother.velocity.1)
+                .sqrt()
+                <= crate::physics::player_speed(
+                    movement.speed_ability,
+                    movement.player_max_speed,
+                    movement.player_min_speed
+                ) * 0.98
+                    + 1e-9
+        );
+        let target_delta = (target.0 - origin.0, target.1 - origin.1);
+        let target_length =
+            (target_delta.0 * target_delta.0 + target_delta.1 * target_delta.1).sqrt();
+        let smother_target_speed = (smother.velocity.0 * target_delta.0
+            + smother.velocity.1 * target_delta.1)
+            / target_length;
+        let press_target_speed =
+            (press.velocity.0 * target_delta.0 + press.velocity.1 * target_delta.1) / target_length;
+        assert!(
+            smother_target_speed > press_target_speed,
+            "a committed smother must redirect velocity toward the live interception faster than ordinary pressure: smother={smother_target_speed}, press={press_target_speed}"
+        );
+    }
+
+    #[test]
     fn high_danger_primary_engagement_outweighs_a_retreating_lane_cover() {
         let teammates = [
             DefenseTeammateInput {
@@ -2719,6 +3167,45 @@ mod tests {
             scored[1].score > scored[0].score,
             "the nearby primary defender must prefer carrier engagement over retreating lane cover: {:?}",
             scored
+        );
+    }
+
+    #[test]
+    fn reachable_box_defender_values_shrinking_the_carriers_control_window() {
+        let carrier = (100.1, 30.6);
+        let candidates = [(104.4, 29.0), carrier];
+        let scored = score_defense_candidates(&DefenseScoreInput {
+            defender_pos: (90.9, 27.8),
+            anchor: (88.0, 28.0),
+            base_ref: (88.0, 28.0),
+            ball_pos: carrier,
+            ball_carrier_pos: Some(carrier),
+            ball_carrier_consecutive_carries: 2,
+            ball_carrier_possession_ticks: 3,
+            carrier_control_readiness: 0.84,
+            attacking_right: false,
+            pitch_length: 105.0,
+            pitch_width: 68.0,
+            press_radius: 12.0,
+            tackle_range: 6.0,
+            carrier_speed: 6.0,
+            press_intensity: 0.68,
+            compactness: 0.64,
+            movement: movement(),
+            candidates: &candidates,
+            attackers: &[carrier],
+            local_attackers: &[],
+            dangerous_receivers: &[],
+            teammates: &[],
+        });
+
+        assert!(matches!(
+            scored[1].action_type,
+            "close_down" | "approach" | "tackle"
+        ));
+        assert!(
+            scored[1].score > scored[0].score,
+            "a reachable defender must value reducing the carrier's live action window over a retreating lane point: {scored:?}"
         );
     }
 }

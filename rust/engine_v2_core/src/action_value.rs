@@ -36,10 +36,8 @@ pub struct ShotPossessionTransitionInput {
     pub block_probability: f64,
     pub conditional_on_target_probability: f64,
     pub goal_probability: f64,
-    pub unreleased_second_ball: SecondBallControlEstimate,
     pub blocked_second_ball: SecondBallControlEstimate,
     pub unreleased_retained_control_value: f64,
-    pub unreleased_opposing_control_value: f64,
     pub blocked_retained_control_value: f64,
     pub blocked_opposing_control_value: f64,
     pub saved_opposing_control_value: f64,
@@ -108,19 +106,10 @@ pub fn shot_possession_transition_from_execution(
     let conditional_on_target_probability = input.conditional_on_target_probability.clamp(0.0, 1.0);
     let on_target_probability = execution.released * conditional_on_target_probability;
     let goal_probability =
-        ((1.0 - execution.mishit) * input.goal_probability).clamp(0.0, on_target_probability);
+        ((1.0 - execution.unreleased) * input.goal_probability).clamp(0.0, on_target_probability);
     let saved_probability = (on_target_probability - goal_probability).max(0.0);
     let off_target_probability = execution.released * (1.0 - conditional_on_target_probability);
-    let unreleased_retained_probability = execution.mishit
-        * input
-            .unreleased_second_ball
-            .attacking_control_probability
-            .clamp(0.0, 1.0);
-    let unreleased_opposing_probability = execution.mishit
-        * input
-            .unreleased_second_ball
-            .defending_control_probability
-            .clamp(0.0, 1.0);
+    let unreleased_retained_probability = execution.unreleased;
     let blocked_retained_probability = execution.blocked
         * input
             .blocked_second_ball
@@ -133,10 +122,8 @@ pub fn shot_possession_transition_from_execution(
             .clamp(0.0, 1.0);
     let retained_control_probability =
         unreleased_retained_probability + blocked_retained_probability;
-    let opposing_control_probability = unreleased_opposing_probability
-        + saved_probability
-        + off_target_probability
-        + blocked_opposing_probability;
+    let opposing_control_probability =
+        saved_probability + off_target_probability + blocked_opposing_probability;
     let retained_control_value = if retained_control_probability > 0.0 {
         (unreleased_retained_probability * input.unreleased_retained_control_value.clamp(0.0, 1.0)
             + blocked_retained_probability * input.blocked_retained_control_value.clamp(0.0, 1.0))
@@ -145,8 +132,7 @@ pub fn shot_possession_transition_from_execution(
         0.0
     };
     let opposing_control_value = if opposing_control_probability > 0.0 {
-        (unreleased_opposing_probability * input.unreleased_opposing_control_value.clamp(0.0, 1.0)
-            + saved_probability * input.saved_opposing_control_value.clamp(0.0, 1.0)
+        (saved_probability * input.saved_opposing_control_value.clamp(0.0, 1.0)
             + off_target_probability * input.off_target_opposing_control_value.clamp(0.0, 1.0)
             + blocked_opposing_probability * input.blocked_opposing_control_value.clamp(0.0, 1.0))
             / opposing_control_probability
@@ -334,18 +320,12 @@ mod tests {
             block_probability: 0.08,
             conditional_on_target_probability: 0.58,
             goal_probability: 0.16,
-            unreleased_second_ball: SecondBallControlEstimate {
-                attacking_control_probability: 0.0,
-                defending_control_probability: 0.0,
-                unresolved_probability: 1.0,
-            },
             blocked_second_ball: SecondBallControlEstimate {
                 attacking_control_probability: 0.52,
                 defending_control_probability: 0.34,
                 unresolved_probability: 0.14,
             },
             unreleased_retained_control_value: 0.0,
-            unreleased_opposing_control_value: 0.0,
             blocked_retained_control_value: 0.18,
             blocked_opposing_control_value: 0.08,
             saved_opposing_control_value: 0.06,
@@ -362,18 +342,12 @@ mod tests {
                 block_probability: 0.08,
                 conditional_on_target_probability: 0.58,
                 goal_probability: 0.16,
-                unreleased_second_ball: SecondBallControlEstimate {
-                    attacking_control_probability: 0.0,
-                    defending_control_probability: 0.0,
-                    unresolved_probability: 1.0,
-                },
                 blocked_second_ball: SecondBallControlEstimate {
                     attacking_control_probability: 0.52,
                     defending_control_probability: 0.34,
                     unresolved_probability: 0.14,
                 },
                 unreleased_retained_control_value: 0.0,
-                unreleased_opposing_control_value: 0.0,
                 blocked_retained_control_value: 0.18,
                 blocked_opposing_control_value: 0.08,
                 saved_opposing_control_value: 0.06,
@@ -399,25 +373,19 @@ mod tests {
     }
 
     #[test]
-    fn unreleased_shot_becomes_a_second_ball_not_a_prepare_option() {
+    fn unreleased_shot_preserves_control_without_manufacturing_a_second_ball() {
         let transition = shot_possession_transition(&ShotPossessionTransitionInput {
             execution_probability: 0.35,
             release_probability: 1.0,
             block_probability: 0.0,
             conditional_on_target_probability: 0.60,
             goal_probability: 0.10,
-            unreleased_second_ball: SecondBallControlEstimate {
-                attacking_control_probability: 0.20,
-                defending_control_probability: 0.55,
-                unresolved_probability: 0.25,
-            },
             blocked_second_ball: SecondBallControlEstimate {
                 attacking_control_probability: 0.0,
                 defending_control_probability: 0.0,
                 unresolved_probability: 1.0,
             },
             unreleased_retained_control_value: 0.14,
-            unreleased_opposing_control_value: 0.14,
             blocked_retained_control_value: 0.0,
             blocked_opposing_control_value: 0.0,
             saved_opposing_control_value: 0.06,
@@ -425,15 +393,14 @@ mod tests {
         });
 
         assert!((transition.goal_probability - 0.035).abs() < 1e-12);
-        assert!((transition.retained_control_probability - 0.13).abs() < 1e-12);
+        assert!((transition.retained_control_probability - 0.65).abs() < 1e-12);
         assert!((transition.retained_control_value - 0.14).abs() < 1e-12);
-        assert!((transition.opposing_control_probability - 0.6725).abs() < 1e-12);
-        assert!((transition.opposing_control_value - 0.100_446_096_654_275_09).abs() < 1e-12);
+        assert!((transition.opposing_control_probability - 0.315).abs() < 1e-12);
+        assert!((transition.opposing_control_value - 0.055_555_555_555_555_55).abs() < 1e-12);
         assert!(
             (transition.goal_probability
                 + transition.retained_control_probability
                 + transition.opposing_control_probability
-                + 0.65 * 0.25
                 - 1.0)
                 .abs()
                 < 1e-12

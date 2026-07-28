@@ -5,6 +5,7 @@ use crate::vision::VisionContext;
 pub const MAX_PLAYER_OBSERVED_ENTITIES: usize = 22;
 pub const MAX_TASK_OUTLET_COVERAGE: usize = 11;
 pub const MAX_TASK_DEPTH_PROTECTION_BANDS: usize = 3;
+pub const MAX_TASK_SPATIAL_SUPPRESSION_SAMPLES: usize = 8;
 pub const MAX_FIXED_TEAM_TACTICAL_TASKS: usize = 11;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -39,6 +40,7 @@ pub struct TacticalTaskCoordination {
     pub depth_protection: [f64; MAX_TASK_DEPTH_PROTECTION_BANDS],
     pub wide_balance: [f64; 2],
     pub outlet_coverage: [f64; MAX_TASK_OUTLET_COVERAGE],
+    pub spatial_suppression: [f64; MAX_TASK_SPATIAL_SUPPRESSION_SAMPLES],
 }
 
 impl TacticalTaskCoordination {
@@ -63,6 +65,9 @@ impl TacticalTaskCoordination {
             outlet_coverage: self
                 .outlet_coverage
                 .map(|coverage| coverage.clamp(0.0, 1.0)),
+            spatial_suppression: self
+                .spatial_suppression
+                .map(|suppression| suppression.clamp(0.0, 1.0)),
         }
     }
 }
@@ -707,23 +712,66 @@ pub fn update_player_belief(
             (previous.ball_confidence * retained_confidence).clamp(0.0, 1.0),
         )
     };
-    let observed_carrier = (observation.ball_confidence >= 0.18)
+    let observed_carrier = (observation.ball_confidence > 0.0)
         .then(|| {
-            observation
+            let carrier_radius = 2.0 + 3.0 * observation.ball_confidence;
+            let ball_distance = |entity: &VisibleEntity| {
+                let dx = entity.pos.0 - observation.ball_pos.0;
+                let dy = entity.pos.1 - observation.ball_pos.1;
+                (dx * dx + dy * dy).sqrt()
+            };
+            let nearest = observation
                 .visible_entities
                 .iter()
-                .filter(|entity| !entity.is_teammate && !entity.is_goalkeeper)
+                .filter(|entity| {
+                    !entity.is_teammate && !entity.is_goalkeeper && entity.confidence >= 0.18
+                })
                 .filter_map(|entity| {
-                    let carrier_radius = 2.0 + 3.0 * observation.ball_confidence;
-                    let dx = entity.pos.0 - observation.ball_pos.0;
-                    let dy = entity.pos.1 - observation.ball_pos.1;
-                    let ball_distance = (dx * dx + dy * dy).sqrt();
-                    (ball_distance <= carrier_radius).then_some((entity.index, ball_distance))
+                    let distance = ball_distance(entity);
+                    (distance <= carrier_radius).then_some((entity.index, distance))
                 })
                 .min_by(|(_, left), (_, right)| {
                     left.partial_cmp(right).unwrap_or(std::cmp::Ordering::Equal)
+                });
+            let retained = previous
+                .observed_carrier_index
+                .filter(|_| previous.observed_carrier_ticks >= 2)
+                .and_then(|index| {
+                    observation
+                        .visible_entities
+                        .iter()
+                        .find(|entity| {
+                            entity.index == index
+                                && !entity.is_teammate
+                                && !entity.is_goalkeeper
+                                && entity.confidence >= 0.18
+                        })
+                        .map(|entity| {
+                            let speed =
+                                (entity.velocity.0.powi(2) + entity.velocity.1.powi(2)).sqrt();
+                            (index, ball_distance(entity), speed)
+                        })
                 })
-                .map(|(index, _)| index)
+                .filter(|(_, distance, speed)| {
+                    let association_slack = (0.35 + 0.30 * speed).clamp(0.35, 1.25);
+                    *distance <= carrier_radius + association_slack
+                });
+            match (nearest, retained) {
+                (
+                    Some((nearest_index, nearest_distance)),
+                    Some((retained_index, retained_distance, speed)),
+                ) if nearest_index != retained_index => {
+                    let switch_margin = (0.35 + 0.25 * speed).clamp(0.35, 0.95);
+                    if nearest_distance + switch_margin < retained_distance {
+                        Some(nearest_index)
+                    } else {
+                        Some(retained_index)
+                    }
+                }
+                (Some((nearest_index, _)), _) => Some(nearest_index),
+                (None, Some((retained_index, _, _))) => Some(retained_index),
+                (None, None) => None,
+            }
         })
         .flatten();
     let (observed_carrier_index, observed_carrier_ticks, observed_carrier_control_readiness) =
@@ -753,7 +801,9 @@ pub fn update_player_belief(
 }
 
 pub fn task_intent_from_goal(goal_type: &str, phase: &str) -> TacticalTaskIntent {
-    if goal_type.starts_with("defend_close_down") {
+    if goal_type == "contest_ball" {
+        TacticalTaskIntent::Pursuit
+    } else if goal_type.starts_with("defend_close_down") {
         TacticalTaskIntent::CloseDown
     } else if goal_type.starts_with("defend_pursuit") {
         TacticalTaskIntent::Pursuit
@@ -1090,6 +1140,62 @@ mod tests {
     }
 
     #[test]
+    fn visible_opponent_and_weak_ball_glimpse_form_a_carrier_observation() {
+        let carrier = VisibleEntity {
+            index: 12,
+            pos: (52.4, 34.1),
+            velocity: (1.2, 0.2),
+            confidence: 0.92,
+            is_teammate: false,
+            is_goalkeeper: false,
+        };
+        let weakly_visible_ball = PlayerObservation {
+            ball_pos: (52.0, 34.0),
+            ball_confidence: 0.001,
+            visible_entities: &[carrier],
+            ..observation(&[])
+        };
+        let mut belief = PlayerBelief::default();
+
+        update_player_belief(&mut belief, &weakly_visible_ball, 82.0);
+
+        assert_eq!(
+            belief
+                .observed_carrier()
+                .map(|(index, ticks, _)| (index, ticks)),
+            Some((12, 1)),
+            "a visible player's body may occlude the ball without hiding that they carry it"
+        );
+    }
+
+    #[test]
+    fn visible_opponent_does_not_reveal_a_completely_hidden_ball() {
+        let carrier_shaped_decoy = VisibleEntity {
+            index: 12,
+            pos: (86.2, 12.1),
+            velocity: (1.2, 0.2),
+            confidence: 0.92,
+            is_teammate: false,
+            is_goalkeeper: false,
+        };
+        let hidden_ball = PlayerObservation {
+            ball_pos: (86.0, 12.0),
+            ball_confidence: 0.0,
+            visible_entities: &[carrier_shaped_decoy],
+            ..observation(&[])
+        };
+        let mut belief = PlayerBelief::default();
+
+        update_player_belief(&mut belief, &hidden_ball, 82.0);
+
+        assert_eq!(
+            belief.observed_carrier(),
+            None,
+            "a visible player must not reveal the truth position of an entirely unseen ball"
+        );
+    }
+
+    #[test]
     fn visible_carrier_observation_accumulates_only_while_the_same_opponent_is_seen() {
         let carrier = VisibleEntity {
             index: 12,
@@ -1133,6 +1239,111 @@ mod tests {
             belief.observed_carrier(),
             None,
             "remembering an old ball position must not fabricate a current carrier"
+        );
+    }
+
+    #[test]
+    fn visible_carrier_association_survives_brief_spatial_jitter_and_nearby_opponents() {
+        let carrier = VisibleEntity {
+            index: 12,
+            pos: (52.0, 34.0),
+            velocity: (1.6, 0.4),
+            confidence: 0.92,
+            is_teammate: false,
+            is_goalkeeper: false,
+        };
+        let mut belief = PlayerBelief::default();
+        let established = PlayerObservation {
+            ball_pos: (52.0, 34.0),
+            ball_confidence: 0.72,
+            visible_entities: &[carrier],
+            ..observation(&[])
+        };
+        for _ in 0..3 {
+            update_player_belief(&mut belief, &established, 82.0);
+        }
+
+        let jittered_carrier = VisibleEntity {
+            pos: (55.6, 34.4),
+            ..carrier
+        };
+        let nearby_opponent = VisibleEntity {
+            index: 13,
+            pos: (55.0, 34.1),
+            velocity: (0.5, 0.0),
+            confidence: 0.95,
+            is_teammate: false,
+            is_goalkeeper: false,
+        };
+        let jittered = PlayerObservation {
+            ball_pos: (52.2, 34.0),
+            ball_confidence: 0.42,
+            visible_entities: &[jittered_carrier, nearby_opponent],
+            ..observation(&[])
+        };
+
+        update_player_belief(&mut belief, &jittered, 82.0);
+
+        assert_eq!(
+            belief
+                .observed_carrier()
+                .map(|(index, ticks, _)| (index, ticks)),
+            Some((12, 4)),
+            "a still-visible established carrier should not be reclassified by one noisy frame"
+        );
+    }
+
+    #[test]
+    fn visible_carrier_association_switches_when_a_new_opponent_clearly_controls_the_ball() {
+        let previous_carrier = VisibleEntity {
+            index: 12,
+            pos: (52.0, 34.0),
+            velocity: (1.4, 0.0),
+            confidence: 0.95,
+            is_teammate: false,
+            is_goalkeeper: false,
+        };
+        let mut belief = PlayerBelief::default();
+        update_player_belief(
+            &mut belief,
+            &PlayerObservation {
+                ball_pos: (52.0, 34.0),
+                ball_confidence: 0.9,
+                visible_entities: &[previous_carrier],
+                ..observation(&[])
+            },
+            82.0,
+        );
+
+        let old_carrier_after_release = VisibleEntity {
+            pos: (55.0, 34.0),
+            ..previous_carrier
+        };
+        let receiver = VisibleEntity {
+            index: 13,
+            pos: (52.1, 34.0),
+            velocity: (0.3, 0.0),
+            confidence: 0.95,
+            is_teammate: false,
+            is_goalkeeper: false,
+        };
+        update_player_belief(
+            &mut belief,
+            &PlayerObservation {
+                ball_pos: (52.0, 34.0),
+                ball_confidence: 0.9,
+                visible_entities: &[old_carrier_after_release, receiver],
+                ..observation(&[])
+            },
+            82.0,
+        );
+
+        assert_eq!(
+            belief
+                .observed_carrier()
+                .map(|(index, ticks, _)| (index, ticks)),
+            Some((13, 1)),
+            "clear current ball control must override the previous association"
         );
     }
 

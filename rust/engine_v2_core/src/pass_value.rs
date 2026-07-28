@@ -52,6 +52,7 @@ pub struct ExpectedPassInput<'a> {
     pub pitch_length: f64,
     pub pitch_width: f64,
     pub attacking_right: bool,
+    pub offside_line: f64,
     pub interception_reach: f64,
     pub shot_ideal_distance: f64,
     pub shot_on_target_base: f64,
@@ -193,6 +194,29 @@ pub fn turnover_consequence(input: &TurnoverConsequenceInput<'_>) -> f64 {
     (goal_danger * 0.55 + central * 0.20 + (nearby_opps * 0.25).min(1.0)).clamp(0.05, 1.0)
 }
 
+fn pass_turnover_consequence(
+    origin: (f64, f64),
+    target: (f64, f64),
+    opponents: &[(f64, f64)],
+    pitch_length: f64,
+    pitch_width: f64,
+    attacking_right: bool,
+) -> f64 {
+    let midpoint = ((origin.0 + target.0) * 0.5, (origin.1 + target.1) * 0.5);
+    [midpoint, target]
+        .into_iter()
+        .map(|loss_pos| {
+            turnover_consequence(&TurnoverConsequenceInput {
+                loss_pos,
+                opponents,
+                pitch_length,
+                pitch_width,
+                attacking_right,
+            })
+        })
+        .fold(0.0, f64::max)
+}
+
 #[derive(Clone, Copy)]
 struct PassRiskEvaluation {
     lane_risk: f64,
@@ -289,11 +313,23 @@ pub fn pass_retention_probability(
     receiver_pressure: f64,
 ) -> f64 {
     let technical = base_accuracy.clamp(0.0, 1.0);
-    let arrival_factor = 0.84 + 0.16 * receiver_arrival.clamp(0.0, 1.0);
+    let arrival_factor = 0.55 + 0.45 * receiver_arrival.clamp(0.0, 1.0);
     let lane_factor = 1.0 - 0.50 * lane_risk.clamp(0.0, 1.0);
     let pressure_factor = 1.0 - 0.30 * receiver_pressure.clamp(0.0, 1.0);
 
     (technical * arrival_factor * lane_factor * pressure_factor).clamp(0.05, 0.98)
+}
+
+pub fn pass_technical_accuracy(
+    base_success: f64,
+    passing: f64,
+    _distance: f64,
+    _is_long: bool,
+) -> f64 {
+    let passing = (passing / 100.0).clamp(0.0, 1.0);
+    let technical_accuracy =
+        base_success.clamp(0.0, 1.0) + (1.0 - base_success.clamp(0.0, 1.0)) * passing;
+    technical_accuracy.clamp(0.05, 0.995)
 }
 
 pub fn passer_pass_value_context(
@@ -430,7 +466,7 @@ fn expected_pass_value_with_optional_receiver_pressure(
         (input.passer_pos.0 + input.target.0) / 2.0,
         (input.passer_pos.1 + input.target.1) / 2.0,
     );
-    let risk = pass_risk_evaluation(
+    let mut risk = pass_risk_evaluation(
         input.passer_pos,
         input.target,
         input.opponent_positions,
@@ -440,6 +476,14 @@ fn expected_pass_value_with_optional_receiver_pressure(
         input.pitch_width,
         input.attacking_right,
         precomputed_receiver_pressure,
+    );
+    risk.turnover_consequence = pass_turnover_consequence(
+        input.passer_pos,
+        input.target,
+        input.opponent_positions,
+        input.pitch_length,
+        input.pitch_width,
+        input.attacking_right,
     );
     let success_prob = pass_retention_probability(
         input.base_accuracy,
@@ -460,6 +504,7 @@ fn expected_pass_value_with_optional_receiver_pressure(
         pitch_length: input.pitch_length,
         pitch_width: input.pitch_width,
         attacking_right: input.attacking_right,
+        offside_line: input.offside_line,
         receiver_finishing: input.receiver_finishing,
         receiver_long_shot: input.receiver_long_shot,
         shot_ideal_distance: input.shot_ideal_distance,
@@ -832,10 +877,51 @@ mod tests {
     fn pass_retention_calibration_rewards_clean_short_options_and_penalizes_risk() {
         let clean_short = pass_retention_probability(0.92, 0.90, 0.04, 0.06);
         let contested_long = pass_retention_probability(0.72, 0.45, 0.58, 0.62);
+        let unreachable_delivery = pass_retention_probability(0.92, 0.0, 0.04, 0.06);
 
         assert!(clean_short > 0.80);
         assert!(contested_long < 0.55);
+        assert!(unreachable_delivery < 0.55);
         assert!(clean_short > contested_long);
+        assert!(clean_short > unreachable_delivery);
+    }
+
+    #[test]
+    fn technical_accuracy_uses_ability_to_improve_the_base_rate() {
+        let goalkeeper_short = pass_technical_accuracy(0.80, 60.0, 12.0, false);
+        let defender_short = pass_technical_accuracy(0.80, 80.0, 12.0, false);
+        let defender_long = pass_technical_accuracy(0.55, 80.0, 42.0, true);
+
+        assert!(goalkeeper_short > 0.88);
+        assert!(defender_short > goalkeeper_short);
+        assert!(defender_long < defender_short);
+    }
+
+    #[test]
+    fn technical_accuracy_does_not_duplicate_spatial_distance_error() {
+        let short = pass_technical_accuracy(0.80, 80.0, 8.0, false);
+        let distant = pass_technical_accuracy(0.80, 80.0, 28.0, false);
+
+        assert!((short - distant).abs() <= f64::EPSILON);
+    }
+
+    #[test]
+    fn pass_turnover_risk_keeps_the_more_dangerous_target_region() {
+        let opponents = [(10.0, 34.0), (18.0, 31.0)];
+        let combined =
+            pass_turnover_consequence((45.0, 34.0), (12.0, 34.0), &opponents, 105.0, 68.0, true);
+        let midpoint_only = turnover_consequence(&TurnoverConsequenceInput {
+            loss_pos: (28.5, 34.0),
+            opponents: &opponents,
+            pitch_length: 105.0,
+            pitch_width: 68.0,
+            attacking_right: true,
+        });
+
+        assert!(
+            combined > midpoint_only,
+            "a backward pass into the defensive goal channel must retain its dangerous target-region turnover tail"
+        );
     }
 
     #[test]
@@ -902,6 +988,7 @@ mod tests {
                 pitch_length: 105.0,
                 pitch_width: 68.0,
                 attacking_right: true,
+                offside_line: 105.0,
                 interception_reach: 3.5,
                 shot_ideal_distance: 20.0,
                 shot_on_target_base: 0.52,

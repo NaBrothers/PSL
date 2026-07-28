@@ -259,7 +259,6 @@ class MatchService:
             "xg": stats.get("xg", 0),
             "post_shot_xg": stats.get("post_shot_xg", 0),
             "key_passes": stats.get("key_passes", 0),
-            "box_touches": passes_into_box + carries_into_box,
             "big_chances": stats.get("big_chances", 0),
             "offsides": stats.get("offsides", 0),
         }

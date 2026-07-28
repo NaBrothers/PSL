@@ -80,6 +80,19 @@ def test_engine_config_serializes_rust_runtime_contract():
     assert "trace" not in payload
 
 
+def test_default_engine_config_preserves_ninety_minutes_at_one_second_resolution():
+    config = EngineConfig()
+
+    assert config.tick_duration == 1.0
+    assert config.total_ticks == 5400
+    assert config.half_ticks == 2700
+    assert config.total_ticks * config.tick_duration == 90 * 60
+    assert config.half_ticks * config.tick_duration == 45 * 60
+    assert config.player_max_speed == 9.0
+    assert config.ball_pass_speed == 12.0
+    assert config.carrier_speed == 3.0
+
+
 def test_match_facade_runs_rust_contract_deterministically():
     config = EngineConfig(total_ticks=8, half_ticks=4, frame_interval=1)
     first = MatchV2(_cards(), _cards(), "433", "442", config=config, seed=42)
@@ -139,6 +152,14 @@ def test_match_clock_separates_active_play_from_dead_ball():
         "match_seconds"
     ]
     assert clock["active_play_ticks"] + clock["dead_ball_ticks"] == clock["match_ticks"]
+    assert sum(clock["ball_state_ticks"].values()) == clock["match_ticks"]
+    assert clock["ball_state_ticks"]["dead"] == clock["dead_ball_ticks"]
+    assert (
+        clock["ball_state_ticks"]["held"]
+        + clock["ball_state_ticks"]["in_flight"]
+        + clock["ball_state_ticks"]["free_ball"]
+        == clock["active_play_ticks"]
+    )
     assert 0 <= clock["active_play_ratio"] <= 1
 
     for event in result.events:
@@ -187,6 +208,7 @@ def test_match_result_preserves_goal_assister_identity():
         "assist_player",
         "outcome",
         "xg",
+        "xg_exact",
         "score_before",
         "score_after",
         "origin",
@@ -213,9 +235,14 @@ def test_match_result_preserves_goal_assister_identity():
         assert event["minute"] == event["match_second"] // 60
         assert event["second"] == event["match_second"] % 60
         assert event["team_side"] in {"home", "away"}
-        assert identity_fields <= event["player"].keys()
+        if event["player"] is None:
+            assert event["event_type"] == "loose_ball"
+        else:
+            assert identity_fields <= event["player"].keys()
         assert isinstance(event["tags"], list)
         assert event["xg"] >= 0
+        assert event["xg_exact"] >= 0
+        assert abs(event["xg"] - round(event["xg_exact"], 2)) <= 1e-12
         for position_key in ("origin", "target"):
             position = event[position_key]
             assert position is None or (
@@ -333,6 +360,14 @@ def test_match_presentation_is_deterministic_and_rng_isolated():
     second = build_match_presentation(result, "Home", "Away")
 
     assert first == second
+    assert "稳定控制占比" in first.stats_text
+    assert "控球率" not in first.stats_text
+    assert "失去稳定控制" in first.stats_text
+    assert "丢失球权" not in first.stats_text
+    assert "射正前xG代理" in first.stats_text
+    assert "PSxG" not in first.stats_text
+    assert "xG≥0.30机会" in first.stats_text
+    assert "绝对机会" not in first.stats_text
     assert first.events
     assert first.broadcasts
     assert "直塞" in "\n".join(

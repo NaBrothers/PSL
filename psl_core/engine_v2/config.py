@@ -20,19 +20,19 @@ class EngineConfig:
 
     pitch_length: float = 105.0
     pitch_width: float = 68.0
-    tick_duration: float = 2.0
-    total_ticks: int = 2700
-    half_ticks: int = 1350
-    frame_interval: int = 2
-    transition_ticks: int = 3
-    goal_kick_restart_ticks: int = 8
-    throw_in_restart_ticks: int = 4
+    tick_duration: float = 1.0
+    total_ticks: int = 5400
+    half_ticks: int = 2700
+    frame_interval: int = 4
+    transition_ticks: int = 6
+    goal_kick_restart_ticks: int = 16
+    throw_in_restart_ticks: int = 8
 
-    player_max_speed: float = 18.0
-    player_min_speed: float = 4.0
-    ball_pass_speed: float = 24.0
-    ball_long_pass_speed: float = 30.0
-    ball_shot_speed: float = 40.0
+    player_max_speed: float = 9.0
+    player_min_speed: float = 2.0
+    ball_pass_speed: float = 12.0
+    ball_long_pass_speed: float = 15.0
+    ball_shot_speed: float = 20.0
     goal_width: float = 7.32
 
     contest_radius: float = 2.5
@@ -48,7 +48,7 @@ class EngineConfig:
     gk_position_error_factor: float = 0.05
     gk_reaction_delay_factor: float = 0.005
     clear_reward_base: float = 0.3
-    carrier_speed: float = 6.0
+    carrier_speed: float = 3.0
     iq_noise_scale: float = 0.3
     goal_noise_scale: float = 0.008
 
@@ -57,7 +57,7 @@ class EngineConfig:
     vision_base_distance: float = 42.0
     vision_iq_distance_bonus_factor: float = 0.35
     vision_max_distance: float = 65.0
-    pass_to_space_ball_speed: float = 24.0
+    pass_to_space_ball_speed: float = 12.0
     receive_reachability_scale: float = 0.2
     space_creation_radius: float = 10.0
 
@@ -90,7 +90,7 @@ class EngineConfig:
 ENGINE_CONFIG_FIELDS = (
     {
         "name": "tick_duration",
-        "default": 2.0,
+        "default": 1.0,
         "label": "Tick时长(秒)",
         "type": "float",
     },
@@ -114,43 +114,43 @@ ENGINE_CONFIG_FIELDS = (
     },
     {
         "name": "player_max_speed",
-        "default": 18.0,
+        "default": 9.0,
         "label": "球员最大速度(米/tick)",
         "type": "float",
     },
     {
         "name": "player_min_speed",
-        "default": 4.0,
+        "default": 2.0,
         "label": "球员最低移动速度(米/tick)",
         "type": "float",
     },
     {
         "name": "ball_pass_speed",
-        "default": 24.0,
+        "default": 12.0,
         "label": "短传球速(米/tick)",
         "type": "float",
     },
     {
         "name": "ball_long_pass_speed",
-        "default": 30.0,
+        "default": 15.0,
         "label": "长传球速(米/tick)",
         "type": "float",
     },
     {
         "name": "ball_shot_speed",
-        "default": 40.0,
+        "default": 20.0,
         "label": "射门球速(米/tick)",
         "type": "float",
     },
     {
         "name": "carrier_speed",
-        "default": 6.0,
+        "default": 3.0,
         "label": "带球基础速度(米/tick)",
         "type": "float",
     },
     {
         "name": "pass_to_space_ball_speed",
-        "default": 24.0,
+        "default": 12.0,
         "label": "空间传球球速(米/tick)",
         "type": "float",
     },
@@ -180,6 +180,16 @@ ENGINE_CONFIG_SPEED_SCALE_MIGRATION = {
     "engine_v2.ball_shot_speed": (28.0, 40.0),
     "engine_v2.carrier_speed": (3.0, 6.0),
     "engine_v2.pass_to_space_ball_speed": (15.0, 24.0),
+}
+ENGINE_CONFIG_TIME_STEP_MIGRATION = {
+    "engine_v2.tick_duration": (2.0, 1.0),
+    "engine_v2.player_max_speed": (18.0, 9.0),
+    "engine_v2.player_min_speed": (4.0, 2.0),
+    "engine_v2.ball_pass_speed": (24.0, 12.0),
+    "engine_v2.ball_long_pass_speed": (30.0, 15.0),
+    "engine_v2.ball_shot_speed": (40.0, 20.0),
+    "engine_v2.carrier_speed": (6.0, 3.0),
+    "engine_v2.pass_to_space_ball_speed": (24.0, 12.0),
 }
 ENGINE_CONFIG_ADMIN_ITEMS = [
     {

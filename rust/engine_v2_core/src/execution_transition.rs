@@ -121,6 +121,7 @@ pub fn control_execution_transition_mass(
 
 #[derive(Clone, Copy, Debug)]
 pub struct CarrySegmentTransition {
+    pub origin: (f64, f64),
     pub containment: BinaryExecutionTransition,
     pub unconstrained: CarrySegmentBranch,
     pub constrained: CarrySegmentBranch,
@@ -164,6 +165,7 @@ pub struct CarrySegmentSample {
 
 impl CarrySegmentTransition {
     pub fn new(
+        origin: (f64, f64),
         containment: BinaryExecutionTransition,
         unconstrained_end_pos: (f64, f64),
         unconstrained_control_pos: (f64, f64),
@@ -175,6 +177,7 @@ impl CarrySegmentTransition {
         constrained_error_chance: f64,
     ) -> Self {
         Self {
+            origin,
             containment,
             unconstrained: CarrySegmentBranch {
                 end_pos: unconstrained_end_pos,
@@ -395,14 +398,14 @@ impl ShotActionModel {
 
 #[derive(Clone, Copy, Debug, Default)]
 pub struct ShotExecutionTransitionMass {
-    pub mishit: f64,
+    pub unreleased: f64,
     pub blocked: f64,
     pub released: f64,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ShotExecutionOutcome {
-    Mishit,
+    Unreleased,
     Blocked,
     Released,
 }
@@ -436,7 +439,7 @@ impl ShotExecutionTransition {
 
     pub fn mass(self) -> ShotExecutionTransitionMass {
         ShotExecutionTransitionMass {
-            mishit: self.body_release.failure_probability,
+            unreleased: self.body_release.failure_probability,
             blocked: self.body_release.success_probability
                 * self.blocked_probability_given_body_release,
             released: self.body_release.success_probability
@@ -446,7 +449,7 @@ impl ShotExecutionTransition {
 
     pub fn sample(self, body_release_roll: f64, contest_roll: f64) -> ShotExecutionOutcome {
         if self.body_release.fails(body_release_roll) {
-            ShotExecutionOutcome::Mishit
+            ShotExecutionOutcome::Unreleased
         } else if contest_roll.clamp(0.0, 1.0) < self.blocked_probability_given_body_release {
             ShotExecutionOutcome::Blocked
         } else {
@@ -523,7 +526,7 @@ impl PassSpatialTransition {
             ideal_target,
             successful_delivery_error_radius,
             failed_delivery_error_radius: successful_delivery_error_radius
-                * (3.0 + (distance / 45.0).min(0.8)),
+                * (1.85 + (distance / 90.0).min(0.45)),
             pitch_length,
             pitch_width,
         }
@@ -897,6 +900,7 @@ mod tests {
     #[test]
     fn carry_segment_prediction_marginalizes_the_same_conditional_tree_sampled_live() {
         let transition = CarrySegmentTransition::new(
+            (20.0, 34.0),
             BinaryExecutionTransition::from_success_probability(0.25),
             (24.0, 34.0),
             (24.0, 34.0),
@@ -1024,6 +1028,10 @@ mod tests {
             failed.error_radius > successful.error_radius,
             "failed delivery must use the same amplified spatial error in prediction and execution"
         );
+        assert!(
+            failed.error_radius < successful.error_radius * 2.5,
+            "a technical miss should remain a continuous pass error rather than an extreme random redirection"
+        );
         assert!((successful.target.0 - 50.0).abs() <= 1e-12);
         assert!(successful.target.1 > 34.0);
         assert!(quadrature
@@ -1089,10 +1097,13 @@ mod tests {
         let transition = ShotExecutionTransition::new(0.80, 0.75, 0.25);
         let mass = transition.mass();
 
-        assert!((mass.mishit - 0.20).abs() <= f64::EPSILON);
+        assert!((mass.unreleased - 0.20).abs() <= f64::EPSILON);
         assert!((mass.blocked - 0.20).abs() <= f64::EPSILON);
         assert!((mass.released - 0.60).abs() <= f64::EPSILON);
-        assert_eq!(transition.sample(0.80, 0.99), ShotExecutionOutcome::Mishit);
+        assert_eq!(
+            transition.sample(0.80, 0.99),
+            ShotExecutionOutcome::Unreleased
+        );
         assert_eq!(transition.sample(0.20, 0.24), ShotExecutionOutcome::Blocked);
         assert_eq!(
             transition.sample(0.20, 0.25),

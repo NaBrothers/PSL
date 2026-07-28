@@ -247,15 +247,15 @@ export default function MatchPage() {
   }
 
   const STAT_LABELS: Record<string, string> = {
-    possession: '控球率', shots: '射门', shots_on_target: '射正',
+    possession: '稳定控制占比', shots: '射门', shots_on_target: '射正',
     shots_in_box: '禁区射门', passes: '传球', pass_success_rate: '传球成功率',
     final_third_entries: '进攻三区', box_entries: '禁区进入',
     progressive_passes: '推进传球', crosses: '传中', corners: '角球',
-    dribbles: '过人', carries: '带球推进', tackles: '抢断',
+    dribbles: '成功过人', carries: '带球推进', tackles: '成功抢断',
     pressures: '逼抢', interceptions: '拦截', blocks: '封堵',
-    turnovers: '丢失球权', saves: '扑救', xg: 'xG',
-    post_shot_xg: 'PSxG', key_passes: '关键传球',
-    box_touches: '禁区触球', big_chances: '绝对机会', offsides: '越位',
+    turnovers: '失去稳定控制', saves: '扑救', xg: 'xG',
+    post_shot_xg: '射正前xG代理', key_passes: '关键传球',
+    box_touches: '禁区触球', big_chances: 'xG≥0.30机会', offsides: '越位',
   }
 
   // Kickoff animation

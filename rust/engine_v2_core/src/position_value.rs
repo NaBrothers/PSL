@@ -238,7 +238,7 @@ pub fn receive_reachability(
 ) -> f64 {
     let dist_runner = distance(runner_pos, target_pos);
     let time_runner = dist_runner / runner_speed.max(0.1);
-    let _time_ball = distance(ball_pos, target_pos) / ball_speed.max(0.1);
+    let time_ball = distance(ball_pos, target_pos) / ball_speed.max(0.1);
 
     let mut time_def = f64::INFINITY;
     for (idx, opponent_pos) in opponent_positions.iter().enumerate() {
@@ -251,7 +251,11 @@ pub fn receive_reachability(
     }
 
     let advantage = time_def - time_runner;
-    (0.5 + advantage * receive_reachability_scale).clamp(0.0, 1.0)
+    let competitive_reach =
+        (0.5 + advantage * receive_reachability_scale).clamp(0.0, 1.0);
+    let arrival_lateness = (time_runner - time_ball).max(0.0);
+    let arrival_compatibility = (-arrival_lateness / time_ball.max(0.1)).exp();
+    (competitive_reach * arrival_compatibility).clamp(0.0, 1.0)
 }
 
 pub fn space_creation_value(
@@ -360,5 +364,36 @@ mod tests {
             });
             assert_eq!(legacy.to_bits(), shared_snapshot.to_bits());
         }
+    }
+
+    #[test]
+    fn receive_reachability_requires_the_runner_to_match_the_ball_arrival_window() {
+        let opponents = [(40.0, 34.0)];
+        let opponent_speeds = [5.0];
+        let synchronized = receive_reachability(
+            (24.0, 34.0),
+            (12.0, 34.0),
+            12.0,
+            &opponents,
+            &opponent_speeds,
+            (0.0, 34.0),
+            24.0,
+            0.2,
+        );
+        let runner_arrives_late = receive_reachability(
+            (24.0, 34.0),
+            (0.0, 34.0),
+            12.0,
+            &opponents,
+            &opponent_speeds,
+            (0.0, 34.0),
+            24.0,
+            0.2,
+        );
+
+        assert!(
+            synchronized > runner_arrives_late + 0.25,
+            "defensive arrival advantage cannot make a target immediately reachable when the ball arrives well before the runner: synchronized={synchronized}, late={runner_arrives_late}"
+        );
     }
 }

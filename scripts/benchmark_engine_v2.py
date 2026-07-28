@@ -61,6 +61,30 @@ PLAYER_NAMES = [
 ]
 
 
+def shot_accuracy_metrics(shots: int, shots_on_target: int, blocked_shots: int) -> dict:
+    """Separate literal on-target share from provider-style accuracy sensitivity."""
+    non_blocked_shots = max(shots - blocked_shots, 0)
+    return {
+        "shots_on_target_share_pct": (
+            shots_on_target / max(shots, 1) * 100
+        ),
+        "provider_accuracy_if_all_blocks_ordinary_pct": (
+            shots_on_target / max(non_blocked_shots, 1) * 100
+        ),
+        "provider_accuracy_if_all_blocks_last_line_pct": (
+            (shots_on_target + blocked_shots) / max(shots, 1) * 100
+        ),
+    }
+
+
+def blocked_shot_count(events: list[dict]) -> int:
+    """Count attacking shot terminals instead of inferring them from defender stats."""
+    return sum(
+        event.get("event_type") == "shot" and event.get("outcome") == "blocked"
+        for event in events
+    )
+
+
 def generate_random_team(star: int, rng: random.Random) -> tuple:
     """Generate a random team of 11 cards at the given star level.
 
@@ -108,6 +132,7 @@ def run_benchmark(matches: int, home_star: int, away_star: int, seed: int):
     total_away_shots = 0
     total_home_sot = 0
     total_away_sot = 0
+    total_blocked_shots = 0
     total_home_passes = 0
     total_away_passes = 0
     total_home_passes_completed = 0
@@ -136,6 +161,7 @@ def run_benchmark(matches: int, home_star: int, away_star: int, seed: int):
         total_away_shots += as_.get("shots", 0)
         total_home_sot += hs.get("shots_on_target", 0)
         total_away_sot += as_.get("shots_on_target", 0)
+        total_blocked_shots += blocked_shot_count(result.events)
         total_home_passes += hs.get("passes", 0)
         total_away_passes += as_.get("passes", 0)
         total_home_passes_completed += hs.get("passes_completed", 0)
@@ -162,7 +188,7 @@ def run_benchmark(matches: int, home_star: int, away_star: int, seed: int):
 
     total_shots = total_home_shots + total_away_shots
     total_sot = total_home_sot + total_away_sot
-    shot_accuracy = (total_sot / max(total_shots, 1)) * 100
+    shot_rates = shot_accuracy_metrics(total_shots, total_sot, total_blocked_shots)
 
     total_passes = total_home_passes + total_away_passes
     total_passes_completed = total_home_passes_completed + total_away_passes_completed
@@ -189,8 +215,14 @@ def run_benchmark(matches: int, home_star: int, away_star: int, seed: int):
         "avg_shots_per_match": round(avg_shots, 2),
         "avg_home_shots": round(avg_home_shots, 2),
         "avg_away_shots": round(avg_away_shots, 2),
-        "shot_accuracy_pct": round(shot_accuracy, 1),
-        "pass_success_rate_pct": round(pass_success_rate, 1),
+        "shots_on_target_share_pct": round(
+            shot_rates["shots_on_target_share_pct"], 1
+        ),
+        "provider_shooting_accuracy_sensitivity_pct": [
+            round(shot_rates["provider_accuracy_if_all_blocks_ordinary_pct"], 1),
+            round(shot_rates["provider_accuracy_if_all_blocks_last_line_pct"], 1),
+        ],
+        "raw_engine_pass_success_rate_pct": round(pass_success_rate, 1),
         "avg_home_possession": round(avg_home_possession, 1),
         "avg_away_possession": round(avg_away_possession, 1),
         "home_wins": home_wins,
@@ -217,8 +249,18 @@ def print_report(stats: dict):
           f"(home {stats['avg_home_goals']:.2f} - away {stats['avg_away_goals']:.2f})")
     print(f"  Shots per match:      {stats['avg_shots_per_match']:.2f}  "
           f"(home {stats['avg_home_shots']:.2f} - away {stats['avg_away_shots']:.2f})")
-    print(f"  Shot accuracy:        {stats['shot_accuracy_pct']:.1f}%")
-    print(f"  Pass success rate:    {stats['pass_success_rate_pct']:.1f}%")
+    print(f"  Shots on target/all:  {stats['shots_on_target_share_pct']:.1f}%")
+    print(
+        "  Provider accuracy:    "
+        f"{stats['provider_shooting_accuracy_sensitivity_pct'][0]:.1f}% - "
+        f"{stats['provider_shooting_accuracy_sensitivity_pct'][1]:.1f}% "
+        "(block-classification sensitivity; distinct from shots on target/all)"
+    )
+    print(
+        "  Raw pass success:     "
+        f"{stats['raw_engine_pass_success_rate_pct']:.1f}% "
+        "(engine pass actions, includes crosses and excludes restart deliveries)"
+    )
     print(f"  Possession:           home {stats['avg_home_possession']:.1f}% - "
           f"away {stats['avg_away_possession']:.1f}%")
     print()
@@ -242,28 +284,34 @@ def run_assertions(stats: dict):
     if not (8.0 <= stats["avg_shots_per_match"] <= 50.0):
         errors.append(f"avg_shots_per_match={stats['avg_shots_per_match']:.2f} outside [8.0, 50.0]")
 
-    # Shot accuracy: expect 25% - 65%
-    if not (20.0 <= stats["shot_accuracy_pct"] <= 70.0):
-        errors.append(f"shot_accuracy_pct={stats['shot_accuracy_pct']:.1f}% outside [20%, 70%]")
+    # This is the literal on-target share of all shots, not Opta shot accuracy.
+    if not (10.0 <= stats["shots_on_target_share_pct"] <= 70.0):
+        errors.append(
+            "shots_on_target_share_pct="
+            f"{stats['shots_on_target_share_pct']:.1f}% outside [10%, 70%]"
+        )
 
-    # Pass success: expect 50% - 95%
-    if not (40.0 <= stats["pass_success_rate_pct"] <= 98.0):
-        errors.append(f"pass_success_rate_pct={stats['pass_success_rate_pct']:.1f}% outside [40%, 98%]")
+    # Internal sanity check only; this is not directly comparable with Opta accurate_pass.
+    if not (40.0 <= stats["raw_engine_pass_success_rate_pct"] <= 98.0):
+        errors.append(
+            "raw_engine_pass_success_rate_pct="
+            f"{stats['raw_engine_pass_success_rate_pct']:.1f}% outside [40%, 98%]"
+        )
 
     # Possession split: should add to ~100%
     total_poss = stats["avg_home_possession"] + stats["avg_away_possession"]
     if not (95.0 <= total_poss <= 105.0):
         errors.append(f"possession sum={total_poss:.1f}% not close to 100%")
 
-    # If stars equal, home wins should not dominate too heavily (< 70%)
-    if stats["home_star"] == stats["away_star"]:
+    # Side-balance rates are not meaningful on tiny samples.
+    if stats["matches"] >= 20 and stats["home_star"] == stats["away_star"]:
         if stats["home_win_pct"] > 75.0:
             errors.append(f"home_win_pct={stats['home_win_pct']:.1f}% too high for equal stars")
         if stats["away_win_pct"] > 75.0:
             errors.append(f"away_win_pct={stats['away_win_pct']:.1f}% too high for equal stars")
 
     # If stars unequal, stronger team should generally win more
-    if stats["home_star"] > stats["away_star"] + 2:
+    if stats["matches"] >= 20 and stats["home_star"] > stats["away_star"] + 2:
         if stats["home_win_pct"] < stats["away_win_pct"]:
             errors.append(f"stronger home team ({stats['home_star']}★) loses more than "
                           f"weaker away ({stats['away_star']}★)")

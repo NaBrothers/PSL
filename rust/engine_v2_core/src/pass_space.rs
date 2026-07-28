@@ -184,6 +184,41 @@ fn append_raw_pass_targets(
     }
 }
 
+fn compact_raw_pass_targets(targets: &mut [RawPassTargetMeta], target_count: usize) -> usize {
+    let mut compact_count = 0;
+    for source_index in 0..target_count {
+        let source = targets[source_index];
+        let source_key = dedupe_key(source.target);
+        let existing_index = targets[..compact_count]
+            .iter()
+            .position(|target| dedupe_key(target.target) == source_key);
+        if let Some(existing_index) = existing_index {
+            let existing = &mut targets[existing_index];
+            existing.arrival = existing.arrival.max(source.arrival);
+            existing.tactical_space |= source.tactical_space;
+            existing.tactical_space_prior = existing
+                .tactical_space_prior
+                .max(source.tactical_space_prior);
+            existing.tactical_space_value = existing
+                .tactical_space_value
+                .max(source.tactical_space_value);
+            existing.tactical_space_visibility = existing
+                .tactical_space_visibility
+                .max(source.tactical_space_visibility);
+            existing.expected_arrival_confidence = existing
+                .expected_arrival_confidence
+                .max(source.expected_arrival_confidence);
+            existing.expected_arrival_fit = existing
+                .expected_arrival_fit
+                .max(source.expected_arrival_fit);
+        } else {
+            targets[compact_count] = source;
+            compact_count += 1;
+        }
+    }
+    compact_count
+}
+
 #[derive(Clone, Debug)]
 pub struct ReceiverBaseTargetsOutput {
     pub targets: Vec<RawPassTarget>,
@@ -218,10 +253,18 @@ pub struct ValueFieldRawTarget {
 
 #[derive(Debug)]
 pub struct ValueFieldTargetsInput<'a> {
+    pub passer_pos: (f64, f64),
     pub receiver: PassSpacePlayer,
+    pub receiver_velocity: (f64, f64),
+    pub receiver_speed: i32,
     pub receiver_goal_target: Option<(f64, f64)>,
     pub attacking_right: bool,
     pub pitch_length: f64,
+    pub pitch_width: f64,
+    pub player_max_speed: f64,
+    pub player_min_speed: f64,
+    pub short_pass_speed: f64,
+    pub long_pass_speed: f64,
     pub is_defender: bool,
     pub generic_candidates: &'a [GenericPassSpaceCandidate],
 }
@@ -291,11 +334,17 @@ pub struct ReceiverSpatialCandidate {
 pub struct ReceiverSpatialCandidatesInput<'a> {
     pub passer_pos: (f64, f64),
     pub receiver: PassSpacePlayer,
+    pub receiver_velocity: (f64, f64),
+    pub receiver_speed: i32,
     pub vision: VisionContext,
     pub attacking_right: bool,
     pub pitch_length: f64,
     pub pitch_width: f64,
     pub offside_line: f64,
+    pub player_max_speed: f64,
+    pub player_min_speed: f64,
+    pub short_pass_speed: f64,
+    pub long_pass_speed: f64,
     pub low_visibility: bool,
     pub front_center: Option<(f64, f64)>,
     pub opponent_positions: &'a [(f64, f64)],
@@ -315,6 +364,7 @@ pub struct RawPassPreValueInput<'a> {
     pub passer_index: usize,
     pub passer_pos: (f64, f64),
     pub receiver: PassRiskPlayer,
+    pub receiver_velocity: (f64, f64),
     pub target: (f64, f64),
     pub initial_receiver_arrival: f64,
     pub receiver_visibility: f64,
@@ -328,6 +378,8 @@ pub struct RawPassPreValueInput<'a> {
     pub offside_line: f64,
     pub player_max_speed: f64,
     pub player_min_speed: f64,
+    pub short_pass_speed: f64,
+    pub long_pass_speed: f64,
     pub short_passing: f64,
     pub long_passing: f64,
     pub short_pass_base_success: f64,
@@ -527,6 +579,7 @@ pub struct ReceiverPassBatchInput<'a> {
     pub passer_consecutive_carries: i32,
     pub receiver_space: PassSpacePlayer,
     pub receiver_risk: PassRiskPlayer,
+    pub receiver_velocity: (f64, f64),
     pub receiver_index: usize,
     pub receiver_team_home: bool,
     pub receiver_finishing: f64,
@@ -542,6 +595,8 @@ pub struct ReceiverPassBatchInput<'a> {
     pub offside_line: f64,
     pub player_max_speed: f64,
     pub player_min_speed: f64,
+    pub short_pass_speed: f64,
+    pub long_pass_speed: f64,
     pub short_pass_base_success: f64,
     pub long_pass_base_success: f64,
     pub interception_reach: f64,
@@ -568,6 +623,7 @@ pub struct ReceiverPassBatchInput<'a> {
 pub struct PassTeamPlayer<'a> {
     pub space: PassSpacePlayer,
     pub risk: PassRiskPlayer,
+    pub velocity: (f64, f64),
     pub finishing: f64,
     pub long_shot: f64,
     pub base: (f64, f64),
@@ -688,6 +744,8 @@ pub struct TeamPassBatchInput<'a> {
     pub offside_line: f64,
     pub player_max_speed: f64,
     pub player_min_speed: f64,
+    pub short_pass_speed: f64,
+    pub long_pass_speed: f64,
     pub short_pass_base_success: f64,
     pub long_pass_base_success: f64,
     pub interception_reach: f64,
@@ -1120,39 +1178,29 @@ fn receiver_base_pass_targets_into(
 }
 
 pub fn value_field_raw_targets(input: &ValueFieldTargetsInput<'_>) -> Vec<ValueFieldRawTarget> {
-    let role_progress = if input.attacking_right {
-        input.receiver.tactical_anchor.0 / input.pitch_length
-    } else {
-        (input.pitch_length - input.receiver.tactical_anchor.0) / input.pitch_length
-    };
-    let role_fit = crate::physics::smoothstep(0.38, 0.76, role_progress)
-        * if input.is_defender { 0.55 } else { 1.0 };
     let mut results = Vec::new();
     for candidate in input.generic_candidates {
-        let goal_fit = if let Some(goal_target) = input.receiver_goal_target {
-            1.0 - distance(goal_target, candidate.target) / 18.0
-        } else {
-            0.0
-        };
-        let arrival_fit = 0.0_f64
-            .max(1.0 - distance(input.receiver.pos, candidate.target) / 28.0)
-            .max(1.0 - distance(input.receiver.target_pos, candidate.target) / 24.0)
-            .max(1.0 - distance(input.receiver.tactical_anchor, candidate.target) / 22.0)
-            .max(goal_fit);
-        let expected_arrival =
-            (candidate.score * (0.30 + 0.48 * arrival_fit + 0.22 * role_fit) * 1.35)
-                .clamp(0.0, 1.0);
-        if expected_arrival < 0.18 {
-            continue;
-        }
+        let expected_arrival = receiver_flight_arrival_fit(
+            input.passer_pos,
+            input.receiver.pos,
+            input.receiver_velocity,
+            input.receiver_speed,
+            candidate.target,
+            input.player_max_speed,
+            input.player_min_speed,
+            input.short_pass_speed,
+            input.long_pass_speed,
+            input.pitch_length,
+            input.pitch_width,
+        );
         results.push(ValueFieldRawTarget {
             target: candidate.target,
-            arrival: expected_arrival.max(0.42),
+            arrival: 1.0,
             tactical_space_prior: candidate.score,
             tactical_space_value: candidate.position_value,
             tactical_space_visibility: candidate.visibility,
             expected_arrival_confidence: expected_arrival,
-            expected_arrival_fit: arrival_fit,
+            expected_arrival_fit: expected_arrival,
         });
     }
     results
@@ -1166,39 +1214,29 @@ fn value_field_raw_targets_into(
         output.len() >= input.generic_candidates.len(),
         "value-field target output buffer is too small"
     );
-    let role_progress = if input.attacking_right {
-        input.receiver.tactical_anchor.0 / input.pitch_length
-    } else {
-        (input.pitch_length - input.receiver.tactical_anchor.0) / input.pitch_length
-    };
-    let role_fit = crate::physics::smoothstep(0.38, 0.76, role_progress)
-        * if input.is_defender { 0.55 } else { 1.0 };
     let mut count = 0;
     for candidate in input.generic_candidates {
-        let goal_fit = if let Some(goal_target) = input.receiver_goal_target {
-            1.0 - distance(goal_target, candidate.target) / 18.0
-        } else {
-            0.0
-        };
-        let arrival_fit = 0.0_f64
-            .max(1.0 - distance(input.receiver.pos, candidate.target) / 28.0)
-            .max(1.0 - distance(input.receiver.target_pos, candidate.target) / 24.0)
-            .max(1.0 - distance(input.receiver.tactical_anchor, candidate.target) / 22.0)
-            .max(goal_fit);
-        let expected_arrival =
-            (candidate.score * (0.30 + 0.48 * arrival_fit + 0.22 * role_fit) * 1.35)
-                .clamp(0.0, 1.0);
-        if expected_arrival < 0.18 {
-            continue;
-        }
+        let expected_arrival = receiver_flight_arrival_fit(
+            input.passer_pos,
+            input.receiver.pos,
+            input.receiver_velocity,
+            input.receiver_speed,
+            candidate.target,
+            input.player_max_speed,
+            input.player_min_speed,
+            input.short_pass_speed,
+            input.long_pass_speed,
+            input.pitch_length,
+            input.pitch_width,
+        );
         output[count] = ValueFieldRawTarget {
             target: candidate.target,
-            arrival: expected_arrival.max(0.42),
+            arrival: 1.0,
             tactical_space_prior: candidate.score,
             tactical_space_value: candidate.position_value,
             tactical_space_visibility: candidate.visibility,
             expected_arrival_confidence: expected_arrival,
-            expected_arrival_fit: arrival_fit,
+            expected_arrival_fit: expected_arrival,
         };
         count += 1;
     }
@@ -1730,11 +1768,24 @@ fn box_delivery_targets_into(
     count
 }
 
+fn receiver_committed_forward_target(
+    receiver: PassSpacePlayer,
+    attacking_right: bool,
+) -> ((f64, f64), f64) {
+    let forward_dir = if attacking_right { 1.0 } else { -1.0 };
+    let target_forward = (receiver.target_pos.0 - receiver.pos.0) * forward_dir;
+    let anchor_forward = (receiver.tactical_anchor.0 - receiver.pos.0) * forward_dir;
+    if target_forward >= anchor_forward {
+        (receiver.target_pos, target_forward.max(0.0))
+    } else {
+        (receiver.tactical_anchor, anchor_forward.max(0.0))
+    }
+}
+
 pub fn delivery_space_targets(input: &DeliverySpaceTargetsInput) -> Vec<RawPassTarget> {
     let forward_dir = if input.attacking_right { 1.0 } else { -1.0 };
-    let receiver_forward = 0.0_f64
-        .max((input.receiver.tactical_anchor.0 - input.receiver.pos.0) * forward_dir)
-        .max((input.receiver.target_pos.0 - input.receiver.pos.0) * forward_dir);
+    let (committed_target, receiver_forward) =
+        receiver_committed_forward_target(input.receiver, input.attacking_right);
     let carrier_progress = if input.attacking_right {
         input.passer_pos.0 / input.pitch_length
     } else {
@@ -1749,21 +1800,24 @@ pub fn delivery_space_targets(input: &DeliverySpaceTargetsInput) -> Vec<RawPassT
     let central_pull = input.pitch_width / 2.0 - input.receiver.pos.1;
     if input.low_visibility
         || delivery_pressure <= 0.70
-        || !(receiver_forward > 0.5 || target_progress_hint > 0.76)
+        || receiver_forward <= 0.5
     {
         return Vec::new();
     }
 
     let mut targets = Vec::new();
-    for (depth_scale, center_scale, arrival_base) in
-        [(0.45, 0.35, 0.74), (0.75, 0.55, 0.66), (1.05, 0.72, 0.58)]
+    for (run_progress, center_scale, arrival_base) in
+        [(0.45, 0.12, 0.74), (0.75, 0.08, 0.66), (1.0, 0.0, 0.58)]
     {
-        let run_depth = 3.0 + (receiver_forward + 6.0).min(12.0) * depth_scale;
+        let run_x =
+            input.receiver.pos.0 + (committed_target.0 - input.receiver.pos.0) * run_progress;
+        let run_y =
+            input.receiver.pos.1 + (committed_target.1 - input.receiver.pos.1) * run_progress;
         targets.push(RawPassTarget {
             target: pitch_clamp(
                 (
-                    input.receiver.pos.0 + forward_dir * run_depth,
-                    input.receiver.pos.1 + central_pull * center_scale,
+                    run_x,
+                    run_y + central_pull * center_scale,
                 ),
                 input.pitch_length,
                 input.pitch_width,
@@ -1805,9 +1859,8 @@ fn delivery_space_targets_into(
         "delivery-space target output buffer is too small"
     );
     let forward_dir = if input.attacking_right { 1.0 } else { -1.0 };
-    let receiver_forward = 0.0_f64
-        .max((input.receiver.tactical_anchor.0 - input.receiver.pos.0) * forward_dir)
-        .max((input.receiver.target_pos.0 - input.receiver.pos.0) * forward_dir);
+    let (committed_target, receiver_forward) =
+        receiver_committed_forward_target(input.receiver, input.attacking_right);
     let carrier_progress = if input.attacking_right {
         input.passer_pos.0 / input.pitch_length
     } else {
@@ -1822,21 +1875,24 @@ fn delivery_space_targets_into(
     let central_pull = input.pitch_width / 2.0 - input.receiver.pos.1;
     if input.low_visibility
         || delivery_pressure <= 0.70
-        || !(receiver_forward > 0.5 || target_progress_hint > 0.76)
+        || receiver_forward <= 0.5
     {
         return 0;
     }
 
     let mut count = 0;
-    for (depth_scale, center_scale, arrival_base) in
-        [(0.45, 0.35, 0.74), (0.75, 0.55, 0.66), (1.05, 0.72, 0.58)]
+    for (run_progress, center_scale, arrival_base) in
+        [(0.45, 0.12, 0.74), (0.75, 0.08, 0.66), (1.0, 0.0, 0.58)]
     {
-        let run_depth = 3.0 + (receiver_forward + 6.0).min(12.0) * depth_scale;
+        let run_x =
+            input.receiver.pos.0 + (committed_target.0 - input.receiver.pos.0) * run_progress;
+        let run_y =
+            input.receiver.pos.1 + (committed_target.1 - input.receiver.pos.1) * run_progress;
         output[count] = RawPassTarget {
             target: pitch_clamp(
                 (
-                    input.receiver.pos.0 + forward_dir * run_depth,
-                    input.receiver.pos.1 + central_pull * center_scale,
+                    run_x,
+                    run_y + central_pull * center_scale,
                 ),
                 input.pitch_length,
                 input.pitch_width,
@@ -1901,69 +1957,92 @@ fn receiver_spatial_candidates_into(
     let mut candidate_count = 0;
 
     if !input.low_visibility {
-        let sample_angles = [
-            -150.0_f64, -105.0, -60.0, -25.0, 0.0, 25.0, 60.0, 105.0, 150.0,
-        ];
-        let sample_radii = [search_radius * 0.55, search_radius];
-        for center in [
-            input.receiver.pos,
+        let mut consider_candidate = |raw_pos: (f64, f64)| {
+            let pos = pitch_clamp(raw_pos, input.pitch_length, input.pitch_width);
+            if candidates[..candidate_count]
+                .iter()
+                .any(|candidate| distance(candidate.target, pos) < 0.35)
+            {
+                return;
+            }
+            let point_visibility = input.vision.confidence_with_occluders(
+                input.passer_pos,
+                pos,
+                input.opponent_positions,
+            );
+            if point_visibility <= 0.0
+                || is_offside_position(
+                    pos,
+                    input.attacking_right,
+                    input.offside_line,
+                    input.pitch_length,
+                    Some(input.passer_pos.0),
+                )
+                || distance(pos, input.receiver.pos) > search_radius * 1.50
+            {
+                return;
+            }
+            let pv = position_value(&PositionValueInput {
+                x: pos.0,
+                y: pos.1,
+                pitch_length: input.pitch_length,
+                pitch_width: input.pitch_width,
+                attacking_right: input.attacking_right,
+                opponent_positions: input.opponent_positions,
+                teammate_positions: input.teammate_positions,
+                skip_teammate_index: None,
+                runner_formation_pos: Some(input.receiver.tactical_anchor),
+            });
+            let receiver_arrival = receiver_flight_arrival_fit(
+                input.passer_pos,
+                input.receiver.pos,
+                input.receiver_velocity,
+                input.receiver_speed,
+                pos,
+                input.player_max_speed,
+                input.player_min_speed,
+                input.short_pass_speed,
+                input.long_pass_speed,
+                input.pitch_length,
+                input.pitch_width,
+            );
+            let score = pv * receiver_arrival * (0.55 + 0.45 * point_visibility);
+            candidates[candidate_count] = ReceiverSpatialCandidate {
+                score,
+                target: pos,
+                receiver_arrival,
+                position_value: pv,
+                point_visibility,
+            };
+            candidate_count += 1;
+        };
+
+        consider_candidate(input.receiver.pos);
+        for path_end in [
             input.receiver.target_pos,
             input.receiver.tactical_anchor,
         ] {
-            for radius in sample_radii {
-                for angle_deg in sample_angles {
-                    let angle = angle_deg.to_radians();
-                    let pos = pitch_clamp(
-                        (
-                            center.0 + angle.cos() * radius * forward_dir,
-                            center.1 + angle.sin() * radius,
-                        ),
-                        input.pitch_length,
-                        input.pitch_width,
-                    );
-                    let point_visibility = input.vision.confidence_with_occluders(
-                        input.passer_pos,
-                        pos,
-                        input.opponent_positions,
-                    );
-                    if point_visibility <= 0.0 {
-                        continue;
-                    }
-                    if is_offside_position(
-                        pos,
-                        input.attacking_right,
-                        input.offside_line,
-                        input.pitch_length,
-                        Some(input.passer_pos.0),
-                    ) {
-                        continue;
-                    }
-                    let d_from_receiver = distance(pos, input.receiver.pos);
-                    if d_from_receiver > search_radius * 1.50 {
-                        continue;
-                    }
-                    let pv = position_value(&PositionValueInput {
-                        x: pos.0,
-                        y: pos.1,
-                        pitch_length: input.pitch_length,
-                        pitch_width: input.pitch_width,
-                        attacking_right: input.attacking_right,
-                        opponent_positions: input.opponent_positions,
-                        teammate_positions: input.teammate_positions,
-                        skip_teammate_index: None,
-                        runner_formation_pos: Some(input.receiver.tactical_anchor),
-                    });
-                    let receiver_arrival =
-                        (1.0 - d_from_receiver / (search_radius * 1.65)).max(0.25);
-                    let score = pv * receiver_arrival * (0.55 + 0.45 * point_visibility);
-                    candidates[candidate_count] = ReceiverSpatialCandidate {
-                        score,
-                        target: pos,
-                        receiver_arrival,
-                        position_value: pv,
-                        point_visibility,
-                    };
-                    candidate_count += 1;
+            let path = (
+                path_end.0 - input.receiver.pos.0,
+                path_end.1 - input.receiver.pos.1,
+            );
+            let path_length = (path.0 * path.0 + path.1 * path.1).sqrt();
+            let lateral_unit = if path_length > 1e-9 {
+                (-path.1 / path_length, path.0 / path_length)
+            } else {
+                (0.0, 1.0)
+            };
+            for progress in [0.25, 0.50, 0.75, 1.0] {
+                let center = (
+                    input.receiver.pos.0 + path.0 * progress,
+                    input.receiver.pos.1 + path.1 * progress,
+                );
+                let lateral_extent = search_radius * (0.10 + 0.16 * progress);
+                for lateral_scale in [-1.0, 0.0, 1.0] {
+                    consider_candidate((
+                        center.0 + lateral_unit.0 * lateral_extent * lateral_scale,
+                        center.1 + lateral_unit.1 * lateral_extent * lateral_scale,
+                    ));
                 }
             }
         }
@@ -1981,46 +2060,7 @@ fn receiver_spatial_candidates_into(
                         input.pitch_length,
                         input.pitch_width,
                     );
-                    let point_visibility = input.vision.confidence_with_occluders(
-                        input.passer_pos,
-                        pos,
-                        input.opponent_positions,
-                    );
-                    if point_visibility <= 0.0 {
-                        continue;
-                    }
-                    if is_offside_position(
-                        pos,
-                        input.attacking_right,
-                        input.offside_line,
-                        input.pitch_length,
-                        Some(input.passer_pos.0),
-                    ) {
-                        continue;
-                    }
-                    let d_from_receiver = distance(pos, input.receiver.pos);
-                    let pv = position_value(&PositionValueInput {
-                        x: pos.0,
-                        y: pos.1,
-                        pitch_length: input.pitch_length,
-                        pitch_width: input.pitch_width,
-                        attacking_right: input.attacking_right,
-                        opponent_positions: input.opponent_positions,
-                        teammate_positions: input.teammate_positions,
-                        skip_teammate_index: None,
-                        runner_formation_pos: Some(input.receiver.tactical_anchor),
-                    });
-                    let receiver_arrival =
-                        (1.0 - d_from_receiver / (search_radius * 1.90)).max(0.22);
-                    let score = pv * receiver_arrival * (0.55 + 0.45 * point_visibility);
-                    candidates[candidate_count] = ReceiverSpatialCandidate {
-                        score,
-                        target: pos,
-                        receiver_arrival,
-                        position_value: pv,
-                        point_visibility,
-                    };
-                    candidate_count += 1;
+                    consider_candidate(pos);
                 }
             }
         }
@@ -2100,6 +2140,70 @@ fn evaluate_raw_pass_target_prevalue_with_motion_context(
         .0
 }
 
+#[allow(clippy::too_many_arguments)]
+fn receiver_flight_arrival_fit(
+    passer_pos: (f64, f64),
+    receiver_pos: (f64, f64),
+    receiver_velocity: (f64, f64),
+    receiver_speed: i32,
+    target: (f64, f64),
+    player_max_speed: f64,
+    player_min_speed: f64,
+    short_pass_speed: f64,
+    long_pass_speed: f64,
+    pitch_length: f64,
+    pitch_width: f64,
+) -> f64 {
+    let pass_distance = distance(passer_pos, target);
+    let pass_speed = if pass_distance > 30.0 {
+        long_pass_speed
+    } else {
+        short_pass_speed
+    }
+    .max(0.1);
+    let exact_flight_ticks = pass_distance / pass_speed;
+    let full_flight_ticks = exact_flight_ticks.floor() as i32;
+    let fractional_flight_tick = exact_flight_ticks - full_flight_ticks as f64;
+    let mut projected_pos = receiver_pos;
+    let mut projected_velocity = receiver_velocity;
+    for _ in 0..full_flight_ticks {
+        let movement =
+            crate::match_flow::player_move_tick(&crate::match_flow::PlayerMoveTickInput {
+                pos: projected_pos,
+                target_pos: target,
+                velocity: projected_velocity,
+                speed_ability: receiver_speed,
+                movement_intent: "attack_run",
+                state: "off_ball",
+                player_max_speed,
+                player_min_speed,
+                pitch_length,
+                pitch_width,
+            });
+        projected_pos = movement.pos;
+        projected_velocity = movement.velocity;
+    }
+    if fractional_flight_tick > 1e-9 {
+        projected_pos = crate::match_flow::player_move_tick_fraction(
+            &crate::match_flow::PlayerMoveTickInput {
+                pos: projected_pos,
+                target_pos: target,
+                velocity: projected_velocity,
+                speed_ability: receiver_speed,
+                movement_intent: "attack_run",
+                state: "off_ball",
+                player_max_speed,
+                player_min_speed,
+                pitch_length,
+                pitch_width,
+            },
+            fractional_flight_tick,
+        )
+        .pos;
+    }
+    1.0 - crate::physics::smoothstep(1.35, 4.5, distance(projected_pos, target))
+}
+
 fn evaluate_raw_pass_target_prevalue_with_motion_context_and_geometry(
     input: &RawPassPreValueInput<'_>,
     motion_context: Option<&RawPassPreValueMotionContext<'_>>,
@@ -2161,6 +2265,22 @@ fn evaluate_raw_pass_target_prevalue_with_motion_context_and_geometry(
         |context| context.receiver_speed,
     );
     let receiver_time = receiver_to_target_distance / tm_speed.max(0.1);
+    if target_kind_space {
+        let arrival_fit = receiver_flight_arrival_fit(
+            input.passer_pos,
+            input.receiver.pos,
+            input.receiver_velocity,
+            input.receiver.speed,
+            input.target,
+            input.player_max_speed,
+            input.player_min_speed,
+            input.short_pass_speed,
+            input.long_pass_speed,
+            input.pitch_length,
+            input.pitch_width,
+        );
+        receiver_arrival *= 0.08 + 0.92 * arrival_fit;
+    }
     let mut defender_time = f64::INFINITY;
     let mut nearest_opp_to_target = f64::INFINITY;
     let mut all_opponents_receiver_pressure = 0.0;
@@ -2271,19 +2391,13 @@ fn evaluate_raw_pass_target_prevalue_with_motion_context_and_geometry(
         input.long_passing
     } else {
         input.short_passing
-    } / 100.0;
+    };
     let base = if is_long {
         input.long_pass_base_success
     } else {
         input.short_pass_base_success
     };
-    let technical_accuracy = base + (1.0 - base) * passing;
-    let distance_factor = if is_long {
-        (1.0 - (d - 30.0).max(0.0) / 60.0).max(0.72)
-    } else {
-        (1.0 - (d - 8.0).max(0.0) / 100.0).max(0.82)
-    };
-    let base_accuracy = technical_accuracy * distance_factor;
+    let base_accuracy = crate::pass_value::pass_technical_accuracy(base, passing, d, is_long);
 
     let mut goal_target_fit = 0.0;
     if let Some(goal_target) = input.receiver_goal_target {
@@ -2306,7 +2420,6 @@ fn evaluate_raw_pass_target_prevalue_with_motion_context_and_geometry(
             * perception
                 .max(perception_floor)
                 .max(input.receiver_visibility * 0.55);
-    receiver_arrival *= perception_multiplier;
 
     (
         RawPassPreValueOutput {
@@ -2444,6 +2557,7 @@ fn score_raw_pass_target_with_batch_context(
         pitch_length: input.prevalue.pitch_length,
         pitch_width: input.prevalue.pitch_width,
         attacking_right: input.prevalue.attacking_right,
+        offside_line: input.prevalue.offside_line,
         interception_reach: input.interception_reach,
         shot_ideal_distance: input.shot_ideal_distance,
         shot_on_target_base: input.shot_on_target_base,
@@ -2687,10 +2801,18 @@ fn receiver_pass_candidates_batch_into(
     );
     let value_field_count = value_field_raw_targets_into(
         &ValueFieldTargetsInput {
+            passer_pos: input.passer_pos,
             receiver: input.receiver_space,
+            receiver_velocity: input.receiver_velocity,
+            receiver_speed: input.receiver_risk.speed,
             receiver_goal_target,
             attacking_right: input.attacking_right,
             pitch_length: input.pitch_length,
+            pitch_width: input.pitch_width,
+            player_max_speed: input.player_max_speed,
+            player_min_speed: input.player_min_speed,
+            short_pass_speed: input.short_pass_speed,
+            long_pass_speed: input.long_pass_speed,
             is_defender: input.is_receiver_defender,
             generic_candidates: input.generic_candidates,
         },
@@ -2717,11 +2839,17 @@ fn receiver_pass_candidates_batch_into(
         &ReceiverSpatialCandidatesInput {
             passer_pos: input.passer_pos,
             receiver: input.receiver_space,
+            receiver_velocity: input.receiver_velocity,
+            receiver_speed: input.receiver_risk.speed,
             vision: input.vision,
             attacking_right: input.attacking_right,
             pitch_length: input.pitch_length,
             pitch_width: input.pitch_width,
             offside_line: input.offside_line,
+            player_max_speed: input.player_max_speed,
+            player_min_speed: input.player_min_speed,
+            short_pass_speed: input.short_pass_speed,
+            long_pass_speed: input.long_pass_speed,
             low_visibility: base.low_visibility,
             front_center: input.front_center,
             opponent_positions: input.opponent_positions,
@@ -2736,7 +2864,7 @@ fn receiver_pass_candidates_batch_into(
     for target in &spatial_candidates[..spatial_candidate_count] {
         raw_targets[raw_target_count] = RawPassTargetMeta {
             target: target.target,
-            arrival: target.receiver_arrival,
+            arrival: 1.0,
             tactical_space: false,
             tactical_space_prior: 0.0,
             tactical_space_value: 0.0,
@@ -2746,6 +2874,7 @@ fn receiver_pass_candidates_batch_into(
         };
         raw_target_count += 1;
     }
+    raw_target_count = compact_raw_pass_targets(raw_targets, raw_target_count);
 
     let mut candidate_count = 0;
     let receiver_context = PassReceiveValueInput {
@@ -2760,6 +2889,7 @@ fn receiver_pass_candidates_batch_into(
         pitch_length: input.pitch_length,
         pitch_width: input.pitch_width,
         attacking_right: input.attacking_right,
+        offside_line: input.offside_line,
         receiver_finishing: input.receiver_finishing,
         receiver_long_shot: input.receiver_long_shot,
         shot_ideal_distance: input.shot_ideal_distance,
@@ -2801,6 +2931,7 @@ fn receiver_pass_candidates_batch_into(
                     passer_index: input.passer_index,
                     passer_pos: input.passer_pos,
                     receiver: input.receiver_risk,
+                    receiver_velocity: input.receiver_velocity,
                     target: raw.target,
                     initial_receiver_arrival: raw.arrival,
                     receiver_visibility: base.receiver_visibility,
@@ -2814,6 +2945,8 @@ fn receiver_pass_candidates_batch_into(
                     offside_line: input.offside_line,
                     player_max_speed: input.player_max_speed,
                     player_min_speed: input.player_min_speed,
+                    short_pass_speed: input.short_pass_speed,
+                    long_pass_speed: input.long_pass_speed,
                     short_passing: input.passer_short_passing,
                     long_passing: input.passer_long_passing,
                     short_pass_base_success: input.short_pass_base_success,
@@ -3023,6 +3156,7 @@ fn team_pass_candidates_batch_into_internal(
             pitch_length: input.pitch_length,
             pitch_width: input.pitch_width,
             attacking_right: input.attacking_right,
+            offside_line: input.offside_line,
             receiver_finishing: input.passer_finishing,
             receiver_long_shot: input.passer_long_shot,
             shot_ideal_distance: input.shot_ideal_distance,
@@ -3057,6 +3191,7 @@ fn team_pass_candidates_batch_into_internal(
             passer_consecutive_carries: input.passer_consecutive_carries,
             receiver_space: player.space,
             receiver_risk: player.risk,
+            receiver_velocity: player.velocity,
             receiver_index: player.space.index,
             receiver_team_home: input.passer_team_home,
             receiver_finishing: player.finishing,
@@ -3072,6 +3207,8 @@ fn team_pass_candidates_batch_into_internal(
             offside_line: input.offside_line,
             player_max_speed: input.player_max_speed,
             player_min_speed: input.player_min_speed,
+            short_pass_speed: input.short_pass_speed,
+            long_pass_speed: input.long_pass_speed,
             short_pass_base_success: input.short_pass_base_success,
             long_pass_base_success: input.long_pass_base_success,
             interception_reach: input.interception_reach,
@@ -3155,6 +3292,182 @@ fn team_pass_candidates_batch_into_internal(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn delivery_space_targets_do_not_extrapolate_beyond_committed_run() {
+        let receiver = PassSpacePlayer {
+            index: 9,
+            pos: (72.0, 52.0),
+            target_pos: (82.0, 46.0),
+            tactical_anchor: (79.0, 48.0),
+            is_goalkeeper: false,
+            is_defender: false,
+            is_midfielder: false,
+            is_wide: true,
+        };
+        let input = DeliverySpaceTargetsInput {
+            passer_pos: (74.0, 34.0),
+            receiver,
+            low_visibility: false,
+            attacking_right: true,
+            pitch_length: 105.0,
+            pitch_width: 68.0,
+        };
+
+        let targets = delivery_space_targets(&input);
+
+        assert_eq!(targets.len(), 3);
+        assert!(targets
+            .iter()
+            .all(|target| target.target.0 <= receiver.target_pos.0));
+        assert_eq!(targets[2].target, receiver.target_pos);
+    }
+
+    #[test]
+    fn receiver_spatial_candidates_prescreen_retains_flight_reachable_targets() {
+        let receiver = PassSpacePlayer {
+            index: 9,
+            pos: (62.0, 34.0),
+            target_pos: (78.0, 34.0),
+            tactical_anchor: (80.0, 34.0),
+            is_goalkeeper: false,
+            is_defender: false,
+            is_midfielder: false,
+            is_wide: false,
+        };
+        let candidates = receiver_spatial_candidates(&ReceiverSpatialCandidatesInput {
+            passer_pos: (42.0, 34.0),
+            receiver,
+            receiver_velocity: (8.0, 0.0),
+            receiver_speed: 86,
+            vision: VisionContext {
+                facing: 0.0,
+                fov: 220.0,
+                half_fov: 110.0,
+                max_distance: 65.0,
+            },
+            attacking_right: true,
+            pitch_length: 105.0,
+            pitch_width: 68.0,
+            offside_line: 96.0,
+            player_max_speed: 18.0,
+            player_min_speed: 4.0,
+            short_pass_speed: 24.0,
+            long_pass_speed: 30.0,
+            low_visibility: false,
+            front_center: None,
+            opponent_positions: &[],
+            teammate_positions: &[receiver.pos],
+        });
+
+        assert_eq!(candidates.len(), 3);
+        assert!(candidates
+            .iter()
+            .all(|candidate| candidate.receiver_arrival > 0.50));
+        assert!(candidates
+            .windows(2)
+            .all(|pair| pair[0].score >= pair[1].score));
+    }
+
+    #[test]
+    fn value_field_arrival_fit_is_diagnostic_not_a_second_probability_multiplier() {
+        let receiver = PassSpacePlayer {
+            index: 9,
+            pos: (62.0, 34.0),
+            target_pos: (72.0, 34.0),
+            tactical_anchor: (74.0, 34.0),
+            is_goalkeeper: false,
+            is_defender: false,
+            is_midfielder: false,
+            is_wide: false,
+        };
+        let generic_candidates = [GenericPassSpaceCandidate {
+            score: 0.72,
+            target: (70.0, 34.0),
+            visibility: 0.83,
+            position_value: 0.41,
+        }];
+        let input = ValueFieldTargetsInput {
+            passer_pos: (42.0, 34.0),
+            receiver,
+            receiver_velocity: (6.0, 0.0),
+            receiver_speed: 84,
+            receiver_goal_target: Some((74.0, 34.0)),
+            attacking_right: true,
+            pitch_length: 105.0,
+            pitch_width: 68.0,
+            player_max_speed: 18.0,
+            player_min_speed: 4.0,
+            short_pass_speed: 24.0,
+            long_pass_speed: 30.0,
+            is_defender: false,
+            generic_candidates: &generic_candidates,
+        };
+
+        let targets = value_field_raw_targets(&input);
+        let expected_fit = receiver_flight_arrival_fit(
+            input.passer_pos,
+            receiver.pos,
+            input.receiver_velocity,
+            input.receiver_speed,
+            generic_candidates[0].target,
+            input.player_max_speed,
+            input.player_min_speed,
+            input.short_pass_speed,
+            input.long_pass_speed,
+            input.pitch_length,
+            input.pitch_width,
+        );
+
+        assert_eq!(targets.len(), 1);
+        assert_eq!(targets[0].arrival, 1.0);
+        assert_eq!(
+            targets[0].expected_arrival_confidence.to_bits(),
+            expected_fit.to_bits()
+        );
+        assert_eq!(
+            targets[0].expected_arrival_fit.to_bits(),
+            expected_fit.to_bits()
+        );
+    }
+
+    #[test]
+    fn raw_pass_target_compaction_merges_duplicate_physical_options_and_preserves_evidence() {
+        let mut targets = [EMPTY_RAW_PASS_TARGET_META; 4];
+        targets[0] = RawPassTargetMeta {
+            target: (52.04, 34.02),
+            arrival: 0.72,
+            ..EMPTY_RAW_PASS_TARGET_META
+        };
+        targets[1] = RawPassTargetMeta {
+            target: (52.01, 34.04),
+            arrival: 0.91,
+            tactical_space: true,
+            tactical_space_prior: 0.44,
+            tactical_space_value: 0.38,
+            tactical_space_visibility: 0.76,
+            expected_arrival_confidence: 0.63,
+            expected_arrival_fit: 0.58,
+        };
+        targets[2] = RawPassTargetMeta {
+            target: (58.0, 40.0),
+            arrival: 0.84,
+            ..EMPTY_RAW_PASS_TARGET_META
+        };
+
+        let count = compact_raw_pass_targets(&mut targets, 3);
+
+        assert_eq!(count, 2);
+        assert_eq!(targets[0].target, (52.04, 34.02));
+        assert_eq!(targets[0].arrival, 0.91);
+        assert!(targets[0].tactical_space);
+        assert_eq!(targets[0].tactical_space_prior, 0.44);
+        assert_eq!(targets[0].tactical_space_value, 0.38);
+        assert_eq!(targets[0].tactical_space_visibility, 0.76);
+        assert_eq!(targets[0].expected_arrival_confidence, 0.63);
+        assert_eq!(targets[0].expected_arrival_fit, 0.58);
+        assert_eq!(targets[1].target, (58.0, 40.0));
+    }
 
     fn assert_raw_pass_prevalue_bits_equal(
         left: RawPassPreValueOutput,
@@ -3273,6 +3586,7 @@ mod tests {
                 passer_index: 0,
                 passer_pos: (44.0, 34.0),
                 receiver,
+                receiver_velocity: (0.0, 0.0),
                 target,
                 initial_receiver_arrival: 0.84,
                 receiver_visibility: 0.73,
@@ -3291,6 +3605,8 @@ mod tests {
                 offside_line: 94.0,
                 player_max_speed: 8.1,
                 player_min_speed: 2.5,
+                short_pass_speed: 24.0,
+                long_pass_speed: 30.0,
                 short_passing: 81.0,
                 long_passing: 77.0,
                 short_pass_base_success: 0.79,
@@ -3315,6 +3631,130 @@ mod tests {
 
             assert_raw_pass_prevalue_bits_equal(direct, prepared);
         }
+    }
+
+    #[test]
+    fn space_pass_arrival_respects_receiver_turning_inertia_during_exact_flight_time() {
+        let receiver = PassRiskPlayer {
+            index: 9,
+            pos: (51.1, 38.4),
+            speed: 96,
+            is_goalkeeper: false,
+        };
+        let target = (53.6, 31.1);
+        let evaluate = |receiver_velocity, target| {
+            evaluate_raw_pass_target_prevalue(&RawPassPreValueInput {
+                passer_index: 7,
+                passer_pos: (58.4, 42.8),
+                receiver,
+                receiver_velocity,
+                target,
+                initial_receiver_arrival: 1.0,
+                receiver_visibility: 1.0,
+                receiver_goal_target: None,
+                receiver_goal_value: 0.0,
+                receiver_goal_fit: 0.0,
+                vision: VisionContext {
+                    facing: 0.0,
+                    fov: 360.0,
+                    half_fov: 180.0,
+                    max_distance: 80.0,
+                },
+                attacking_right: false,
+                pitch_length: 105.0,
+                pitch_width: 68.0,
+                offside_line: 0.0,
+                player_max_speed: 18.0,
+                player_min_speed: 4.0,
+                short_pass_speed: 24.0,
+                long_pass_speed: 30.0,
+                short_passing: 90.0,
+                long_passing: 92.0,
+                short_pass_base_success: 0.80,
+                long_pass_base_success: 0.55,
+                opponents: &[],
+                teammates: &[receiver],
+            })
+        };
+
+        let moving_toward_target = evaluate((2.4, -7.0), target);
+        let moving_away_from_target = evaluate((-2.4, 7.0), target);
+        assert!(moving_toward_target.target_kind_space);
+        assert!(
+            moving_toward_target.receiver_arrival
+                > moving_away_from_target.receiver_arrival * 2.0,
+            "the same nominal runner cannot retain the same arrival probability while needing to reverse direction: toward={}, away={}",
+            moving_toward_target.receiver_arrival,
+            moving_away_from_target.receiver_arrival
+        );
+
+        let feet_target = receiver.pos;
+        let feet_toward = evaluate((2.4, -7.0), feet_target);
+        let feet_away = evaluate((-2.4, 7.0), feet_target);
+        assert!(!feet_toward.target_kind_space);
+        assert_eq!(
+            feet_toward.receiver_arrival.to_bits(),
+            feet_away.receiver_arrival.to_bits(),
+            "passes to the receiver's current control point must not be penalized by run direction"
+        );
+    }
+
+    #[test]
+    fn visible_feet_target_perception_does_not_change_physical_receiver_arrival() {
+        let receiver = PassRiskPlayer {
+            index: 8,
+            pos: (48.0, 34.0),
+            speed: 82,
+            is_goalkeeper: false,
+        };
+        let evaluate = |facing| {
+            evaluate_raw_pass_target_prevalue(&RawPassPreValueInput {
+                passer_index: 6,
+                passer_pos: (38.0, 34.0),
+                receiver,
+                receiver_velocity: (0.0, 0.0),
+                target: receiver.pos,
+                initial_receiver_arrival: 0.92,
+                receiver_visibility: 0.8,
+                receiver_goal_target: None,
+                receiver_goal_value: 0.0,
+                receiver_goal_fit: 0.0,
+                vision: VisionContext {
+                    facing,
+                    fov: 90.0,
+                    half_fov: 45.0,
+                    max_distance: 65.0,
+                },
+                attacking_right: true,
+                pitch_length: 105.0,
+                pitch_width: 68.0,
+                offside_line: 95.0,
+                player_max_speed: 8.1,
+                player_min_speed: 2.5,
+                short_pass_speed: 24.0,
+                long_pass_speed: 30.0,
+                short_passing: 84.0,
+                long_passing: 78.0,
+                short_pass_base_success: 0.79,
+                long_pass_base_success: 0.55,
+                opponents: &[],
+                teammates: &[receiver],
+            })
+        };
+
+        let high_confidence = evaluate(0.0);
+        let low_confidence = evaluate(180.0);
+
+        assert!(high_confidence.valid);
+        assert!(low_confidence.valid);
+        assert!(!high_confidence.target_kind_space);
+        assert!(!low_confidence.target_kind_space);
+        assert!(high_confidence.perception > low_confidence.perception);
+        assert_eq!(
+            high_confidence.receiver_arrival.to_bits(),
+            low_confidence.receiver_arrival.to_bits(),
+            "once the receiver is visible and the target is at their feet, target perception must not alter physical arrival"
+        );
     }
 
     #[test]
@@ -3365,6 +3805,7 @@ mod tests {
             passer_index: 1,
             passer_pos: (45.0, 34.0),
             receiver,
+            receiver_velocity: (0.0, 0.0),
             target: (67.0, 22.0),
             initial_receiver_arrival: 0.86,
             receiver_visibility: 0.88,
@@ -3383,6 +3824,8 @@ mod tests {
             offside_line: 93.0,
             player_max_speed: 8.1,
             player_min_speed: 2.5,
+            short_pass_speed: 24.0,
+            long_pass_speed: 30.0,
             short_passing: 82.0,
             long_passing: 77.0,
             short_pass_base_success: 0.79,
@@ -3434,6 +3877,7 @@ mod tests {
             pitch_length: prevalue.pitch_length,
             pitch_width: prevalue.pitch_width,
             attacking_right: prevalue.attacking_right,
+            offside_line: prevalue.offside_line,
             interception_reach: 3.5,
             shot_ideal_distance: 20.0,
             shot_on_target_base: 0.52,
@@ -3550,6 +3994,7 @@ mod tests {
             passer_index: 0,
             passer_pos: (24.0, 34.0),
             receiver: risk_players[0],
+            receiver_velocity: (0.0, 0.0),
             target: (12.0, 34.0),
             initial_receiver_arrival: 0.90,
             receiver_visibility: 1.0,
@@ -3568,6 +4013,8 @@ mod tests {
             offside_line: 90.0,
             player_max_speed: 8.0,
             player_min_speed: 2.5,
+            short_pass_speed: 24.0,
+            long_pass_speed: 30.0,
             short_passing: 80.0,
             long_passing: 80.0,
             short_pass_base_success: 0.80,
@@ -3770,6 +4217,7 @@ mod tests {
             PassTeamPlayer {
                 space: space_players[0],
                 risk: risk_teammates[0],
+                velocity: (0.0, 0.0),
                 finishing: 0.12,
                 long_shot: 0.08,
                 base: (6.0, 34.0),
@@ -3779,6 +4227,7 @@ mod tests {
             PassTeamPlayer {
                 space: space_players[1],
                 risk: risk_teammates[1],
+                velocity: (0.0, 0.0),
                 finishing: 0.72,
                 long_shot: 0.78,
                 base: (46.0, 34.0),
@@ -3788,6 +4237,7 @@ mod tests {
             PassTeamPlayer {
                 space: space_players[2],
                 risk: risk_teammates[2],
+                velocity: (0.0, 0.0),
                 finishing: 0.81,
                 long_shot: 0.70,
                 base: (66.0, 19.0),
@@ -3801,6 +4251,7 @@ mod tests {
             PassTeamPlayer {
                 space: space_players[3],
                 risk: risk_teammates[3],
+                velocity: (0.0, 0.0),
                 finishing: 0.90,
                 long_shot: 0.67,
                 base: (75.0, 43.0),
@@ -3814,6 +4265,7 @@ mod tests {
             PassTeamPlayer {
                 space: space_players[4],
                 risk: risk_teammates[4],
+                velocity: (0.0, 0.0),
                 finishing: 0.43,
                 long_shot: 0.52,
                 base: (36.0, 48.0),
@@ -3911,6 +4363,8 @@ mod tests {
             offside_line: 93.0,
             player_max_speed: 8.1,
             player_min_speed: 2.5,
+            short_pass_speed: 24.0,
+            long_pass_speed: 30.0,
             short_pass_base_success: 0.78,
             long_pass_base_success: 0.54,
             interception_reach: 3.5,

@@ -236,6 +236,7 @@ pub struct ShotLogEntryInput<'a> {
     pub origin: (f64, f64),
     pub target: Option<(f64, f64)>,
     pub xg: f64,
+    pub big_chance: bool,
     pub in_box: bool,
     pub outcome: &'a str,
 }
@@ -245,6 +246,7 @@ pub struct ShotLogEntryOutput {
     pub x: f64,
     pub y: f64,
     pub xg: f64,
+    pub big_chance: bool,
     pub in_box: bool,
     pub outcome: String,
     pub target_x: Option<f64>,
@@ -264,6 +266,7 @@ pub struct ShotArrivalPlanInput<'a> {
     pub gk_pos: (f64, f64),
     pub gk_attributes: crate::goalkeeper::GkSaveAttributes,
     pub save_roll: f64,
+    pub big_chance: bool,
     pub total_xg: f64,
     pub logged_xg_sum: f64,
 }
@@ -292,6 +295,7 @@ pub struct OutOfBoundsPlanInput {
     pub flight_type_code: u8,
     pub origin: (f64, f64),
     pub attacking_right: bool,
+    pub big_chance: bool,
     pub total_xg: f64,
     pub logged_xg_sum: f64,
     pub goal_kick_restart_ticks: i32,
@@ -321,9 +325,8 @@ pub struct PassPhaseOutcomeOutput {
 
 #[derive(Clone, Copy, Debug)]
 pub struct PassTraceInput {
-    pub target: (f64, f64),
-    pub intended_receiver_pos: Option<(f64, f64)>,
     pub is_long: bool,
+    pub target_kind_space: bool,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -364,6 +367,7 @@ pub struct CarryPhasePlanOutput {
     pub transition: crate::execution_transition::CarrySegmentTransition,
     pub carry_speed: f64,
     pub carry_difficulty: f64,
+    pub movement_progress: f64,
     pub new_pos: (f64, f64),
     pub boundary_crossing: Option<crate::physics::PitchBoundaryCrossing>,
     pub velocity: (f64, f64),
@@ -397,7 +401,7 @@ pub struct PassPhasePlanInput {
     pub tick_duration: f64,
     pub random_1: f64,
     pub random_2: f64,
-    pub intended_receiver_pos: Option<(f64, f64)>,
+    pub target_kind_space: bool,
 }
 
 #[derive(Clone, Debug)]
@@ -537,10 +541,12 @@ pub struct PassArrivalPlanInput<'a> {
     pub target_pos: (f64, f64),
     pub flight_origin: (f64, f64),
     pub flight_speed: f64,
-    pub flight_ticks_total: i32,
+    pub flight_ticks_total: f64,
     pub contest_radius: f64,
     pub player_max_speed: f64,
     pub player_min_speed: f64,
+    pub pitch_length: f64,
+    pub pitch_width: f64,
     pub target_occupation_weight: f64,
     pub receivers: &'a [crate::arrival::ArrivalPlayerInput],
     pub opponents: &'a [crate::arrival::ArrivalPlayerInput],
@@ -672,6 +678,7 @@ pub fn carry_phase_plan(input: &CarryPhasePlanInput<'_>) -> CarryPhasePlanOutput
         transition: carry.transition,
         carry_speed: carry.carry_speed,
         carry_difficulty: carry.carry_difficulty,
+        movement_progress: carry.movement_progress,
         new_pos: carry.new_pos,
         boundary_crossing: carry.boundary_crossing,
         velocity: carry.velocity,
@@ -757,6 +764,8 @@ pub fn pass_arrival_plan(input: &PassArrivalPlanInput<'_>) -> PassArrivalPlanOut
         contest_radius: input.contest_radius,
         player_max_speed: input.player_max_speed,
         player_min_speed: input.player_min_speed,
+        pitch_length: input.pitch_length,
+        pitch_width: input.pitch_width,
         target_occupation_weight: input.target_occupation_weight,
         receivers: input.receivers,
         opponents: input.opponents,
@@ -862,18 +871,9 @@ pub fn pass_phase_outcome(input: &PassPhaseOutcomeInput) -> PassPhaseOutcomeOutp
 }
 
 pub fn pass_trace_payload(input: &PassTraceInput) -> PassTraceOutput {
-    let target_kind_code = if let Some(receiver_pos) = input.intended_receiver_pos {
-        if crate::physics::distance(input.target, receiver_pos) > 4.0 {
-            1
-        } else {
-            0
-        }
-    } else {
-        0
-    };
     PassTraceOutput {
         pass_type_code: if input.is_long { 1 } else { 0 },
-        target_kind_code,
+        target_kind_code: if input.target_kind_space { 1 } else { 0 },
     }
 }
 
@@ -897,9 +897,8 @@ pub fn pass_phase_plan(input: &PassPhasePlanInput) -> PassPhasePlanOutput {
         random_2: input.random_2,
     });
     let trace = pass_trace_payload(&PassTraceInput {
-        target: pass.target,
-        intended_receiver_pos: input.intended_receiver_pos,
         is_long: input.is_long,
+        target_kind_space: input.target_kind_space,
     });
     let flight = build_ball_flight_frame(&BallFlightFrameInput {
         from_pos: input.passer_pos,
@@ -1073,6 +1072,7 @@ pub fn shot_log_entry(input: &ShotLogEntryInput<'_>) -> ShotLogEntryOutput {
         x: round_one(input.origin.0),
         y: round_one(input.origin.1),
         xg: input.xg,
+        big_chance: input.big_chance,
         in_box: input.in_box,
         outcome: input.outcome.to_string(),
         target_x: input.target.map(|target| round_one(target.0)),
@@ -1116,6 +1116,7 @@ pub fn shot_arrival_plan(input: &ShotArrivalPlanInput<'_>) -> ShotArrivalPlanOut
         origin: input.shot_origin,
         target,
         xg: xg.rounded_xg,
+        big_chance: input.big_chance,
         in_box: arrival.in_box,
         outcome,
     });
@@ -1161,6 +1162,7 @@ pub fn out_of_bounds_plan(input: &OutOfBoundsPlanInput) -> OutOfBoundsPlanOutput
             origin: input.origin,
             target: None,
             xg: xg.rounded_xg,
+            big_chance: input.big_chance,
             in_box: crate::physics::is_attacking_box_pos(
                 input.origin,
                 input.attacking_right,
@@ -1174,6 +1176,7 @@ pub fn out_of_bounds_plan(input: &OutOfBoundsPlanInput) -> OutOfBoundsPlanOutput
             origin: input.origin,
             target: None,
             xg: 0.0,
+            big_chance: false,
             in_box: false,
             outcome: "",
         })
@@ -1759,7 +1762,6 @@ pub struct TeamShapePlanOutput {
 #[derive(Clone, Debug)]
 pub struct TeamPhaseUpdateInput {
     pub has_possession: bool,
-    pub ball_contested: bool,
     pub had_possession_last_tick: bool,
     pub ticks_since_possession_change: i32,
     pub transition_ticks: i32,
@@ -1795,12 +1797,21 @@ pub struct FlightTickInput {
     pub ticks_elapsed: i32,
     pub ticks_total: i32,
     pub speed: f64,
+    pub terminal_speed_ratio: f64,
 }
 
 #[derive(Clone, Copy, Debug)]
 pub struct FlightTickOutput {
     pub position: (f64, f64),
+    pub velocity: (f64, f64),
     pub ticks_elapsed: i32,
+    pub complete: bool,
+}
+
+#[derive(Clone, Copy, Debug)]
+pub struct FlightCurveSample {
+    pub position: (f64, f64),
+    pub velocity: (f64, f64),
     pub complete: bool,
 }
 
@@ -1867,21 +1878,70 @@ pub fn build_ball_flight_frame(input: &BallFlightFrameInput<'_>) -> BallFlightFr
     }
 }
 
-pub fn tick_ball_flight(input: &FlightTickInput) -> FlightTickOutput {
-    let ticks_elapsed = input.ticks_elapsed + 1;
+pub fn sample_ball_flight_curve(input: &FlightTickInput, elapsed_ticks: f64) -> FlightCurveSample {
     let total_distance = crate::physics::distance(input.origin, input.target);
-    let progress = if input.ticks_total <= 0 || total_distance <= f64::EPSILON {
+    let average_speed = input.speed.max(0.0);
+    let exact_ticks = if average_speed <= f64::EPSILON {
+        0.0
+    } else {
+        total_distance / average_speed
+    };
+    let elapsed = elapsed_ticks.max(0.0).min(exact_ticks);
+    let time_progress = if input.ticks_total <= 0
+        || total_distance <= f64::EPSILON
+        || exact_ticks <= f64::EPSILON
+    {
         1.0
     } else {
-        (ticks_elapsed as f64 * input.speed.max(0.0) / total_distance).min(1.0)
+        (elapsed / exact_ticks).clamp(0.0, 1.0)
     };
-    FlightTickOutput {
+    let terminal_ratio = input.terminal_speed_ratio.clamp(0.0, 1.0);
+    let position_progress = if terminal_ratio >= 1.0 - f64::EPSILON {
+        if total_distance <= f64::EPSILON {
+            1.0
+        } else {
+            (elapsed * average_speed / total_distance).min(1.0)
+        }
+    } else {
+        (2.0 - terminal_ratio) * time_progress
+            - (1.0 - terminal_ratio) * time_progress * time_progress
+    };
+    let initial_speed = if terminal_ratio >= 1.0 - f64::EPSILON {
+        average_speed
+    } else {
+        average_speed * (2.0 - terminal_ratio)
+    };
+    let instantaneous_speed =
+        initial_speed - 2.0 * average_speed * (1.0 - terminal_ratio) * time_progress;
+    let direction = if total_distance <= f64::EPSILON {
+        (0.0, 0.0)
+    } else {
+        (
+            (input.target.0 - input.origin.0) / total_distance,
+            (input.target.1 - input.origin.1) / total_distance,
+        )
+    };
+    FlightCurveSample {
         position: (
-            input.origin.0 + (input.target.0 - input.origin.0) * progress,
-            input.origin.1 + (input.target.1 - input.origin.1) * progress,
+            input.origin.0 + (input.target.0 - input.origin.0) * position_progress,
+            input.origin.1 + (input.target.1 - input.origin.1) * position_progress,
         ),
+        velocity: (
+            direction.0 * instantaneous_speed,
+            direction.1 * instantaneous_speed,
+        ),
+        complete: elapsed_ticks >= exact_ticks - f64::EPSILON,
+    }
+}
+
+pub fn tick_ball_flight(input: &FlightTickInput) -> FlightTickOutput {
+    let ticks_elapsed = input.ticks_elapsed + 1;
+    let sample = sample_ball_flight_curve(input, ticks_elapsed as f64);
+    FlightTickOutput {
+        position: sample.position,
+        velocity: sample.velocity,
         ticks_elapsed,
-        complete: ticks_elapsed >= input.ticks_total,
+        complete: sample.complete,
     }
 }
 
@@ -2734,13 +2794,6 @@ pub fn team_shape_plan_into(
 }
 
 pub fn team_phase_update(input: &TeamPhaseUpdateInput) -> TeamPhaseUpdateOutput {
-    if input.ball_contested {
-        return TeamPhaseUpdateOutput {
-            phase_code: 4,
-            ticks_since_possession_change: input.ticks_since_possession_change,
-            had_possession_last_tick: input.had_possession_last_tick,
-        };
-    }
     let ticks_since_possession_change = if input.has_possession != input.had_possession_last_tick {
         0
     } else {
@@ -2914,14 +2967,19 @@ pub fn track_pass_stats(input: &PassStatInput) -> PassStatOutput {
     let crosses = origin_wide && target_in_box && progress > 3.0;
     let passes_into_final_third = if input.attacking_right {
         input.target.0 > input.pitch_length * 2.0 / 3.0
+            && input.origin.0 <= input.pitch_length * 2.0 / 3.0
     } else {
-        input.target.0 < input.pitch_length / 3.0
+        input.target.0 < input.pitch_length / 3.0 && input.origin.0 >= input.pitch_length / 3.0
     };
     let passes_into_box = if input.attacking_right {
         input.target.0 > input.pitch_length - 16.5
             && (input.target.1 - input.pitch_width / 2.0).abs() < 20.2
+            && (input.origin.0 <= input.pitch_length - 16.5
+                || (input.origin.1 - input.pitch_width / 2.0).abs() >= 20.2)
     } else {
-        input.target.0 < 16.5 && (input.target.1 - input.pitch_width / 2.0).abs() < 20.2
+        input.target.0 < 16.5
+            && (input.target.1 - input.pitch_width / 2.0).abs() < 20.2
+            && (input.origin.0 >= 16.5 || (input.origin.1 - input.pitch_width / 2.0).abs() >= 20.2)
     };
     PassStatOutput {
         crosses_attempted: if crosses { 1 } else { 0 },
@@ -2964,6 +3022,65 @@ mod tests {
     use super::*;
 
     #[test]
+    fn rounded_shot_log_xg_does_not_reclassify_big_chance_boundary() {
+        let xg = shot_log_xg(&ShotLogXgInput {
+            total_xg: 0.295,
+            logged_xg_sum: 0.0,
+            clamp_nonnegative: false,
+        });
+        let entry = shot_log_entry(&ShotLogEntryInput {
+            origin: (90.0, 34.0),
+            target: None,
+            xg: xg.rounded_xg,
+            big_chance: xg.raw_xg >= 0.3,
+            in_box: true,
+            outcome: "off_target",
+        });
+
+        assert_eq!(entry.xg, 0.3);
+        assert!(!entry.big_chance);
+    }
+
+    #[test]
+    fn pass_entries_require_crossing_the_zone_boundary() {
+        let final_third_entry = track_pass_stats(&PassStatInput {
+            origin: (68.0, 34.0),
+            target: (74.0, 34.0),
+            attacking_right: true,
+            pitch_length: 105.0,
+            pitch_width: 68.0,
+        });
+        assert_eq!(final_third_entry.passes_into_final_third, 1);
+
+        let inside_final_third = track_pass_stats(&PassStatInput {
+            origin: (74.0, 34.0),
+            target: (82.0, 34.0),
+            attacking_right: true,
+            pitch_length: 105.0,
+            pitch_width: 68.0,
+        });
+        assert_eq!(inside_final_third.passes_into_final_third, 0);
+
+        let box_entry = track_pass_stats(&PassStatInput {
+            origin: (86.0, 34.0),
+            target: (92.0, 34.0),
+            attacking_right: true,
+            pitch_length: 105.0,
+            pitch_width: 68.0,
+        });
+        assert_eq!(box_entry.passes_into_box, 1);
+
+        let inside_box = track_pass_stats(&PassStatInput {
+            origin: (92.0, 34.0),
+            target: (98.0, 34.0),
+            attacking_right: true,
+            pitch_length: 105.0,
+            pitch_width: 68.0,
+        });
+        assert_eq!(inside_box.passes_into_box, 0);
+    }
+
+    #[test]
     fn ball_flight_advances_by_speed_per_tick() {
         let first_tick = tick_ball_flight(&FlightTickInput {
             origin: (0.0, 0.0),
@@ -2971,6 +3088,7 @@ mod tests {
             ticks_elapsed: 0,
             ticks_total: 3,
             speed: 22.0,
+            terminal_speed_ratio: 1.0,
         });
         assert_eq!(first_tick.position, (22.0, 0.0));
         assert!(!first_tick.complete);
@@ -2983,6 +3101,7 @@ mod tests {
                 ticks_elapsed: 0,
                 ticks_total: 3,
                 speed: 22.0,
+                terminal_speed_ratio: 1.0,
             }
         });
         assert_eq!(final_tick.position, (50.0, 0.0));
@@ -2997,6 +3116,7 @@ mod tests {
             ticks_elapsed: 0,
             ticks_total: 3,
             speed: 28.0,
+            terminal_speed_ratio: 1.0,
         });
         let second_tick = tick_ball_flight(&FlightTickInput {
             origin: (0.0, 0.0),
@@ -3004,10 +3124,56 @@ mod tests {
             ticks_elapsed: 1,
             ticks_total: 3,
             speed: 28.0,
+            terminal_speed_ratio: 1.0,
         });
 
         assert_eq!(first_tick.position, (28.0, 0.0));
         assert_eq!(second_tick.position, (56.0, 0.0));
+    }
+
+    #[test]
+    fn decelerating_pass_preserves_arrival_time_and_uses_average_speed_terminal_ratio() {
+        let first = tick_ball_flight(&FlightTickInput {
+            origin: (0.0, 0.0),
+            target: (48.0, 0.0),
+            ticks_elapsed: 0,
+            ticks_total: 2,
+            speed: 24.0,
+            terminal_speed_ratio: 0.5,
+        });
+        let terminal = tick_ball_flight(&FlightTickInput {
+            origin: (0.0, 0.0),
+            target: (48.0, 0.0),
+            ticks_elapsed: 1,
+            ticks_total: 2,
+            speed: 24.0,
+            terminal_speed_ratio: 0.5,
+        });
+
+        assert!(first.position.0 > 24.0);
+        assert!(first.position.0 < terminal.position.0);
+        assert_eq!(terminal.position, (48.0, 0.0));
+        assert!((terminal.velocity.0 - 12.0).abs() <= 1e-9);
+        assert!(terminal.velocity.0 < first.velocity.0);
+    }
+
+    #[test]
+    fn decelerating_pass_curve_exposes_local_substep_velocity() {
+        let input = FlightTickInput {
+            origin: (0.0, 0.0),
+            target: (8.0, 0.0),
+            ticks_elapsed: 0,
+            ticks_total: 1,
+            speed: 24.0,
+            terminal_speed_ratio: 0.24,
+        };
+        let three_quarters = sample_ball_flight_curve(&input, 0.25);
+        let terminal = sample_ball_flight_curve(&input, 1.0 / 3.0);
+
+        assert!(three_quarters.position.0 < terminal.position.0);
+        assert!(three_quarters.velocity.0 > terminal.velocity.0);
+        assert!((terminal.position.0 - 8.0).abs() <= 1e-9);
+        assert!((terminal.velocity.0 - 5.76).abs() <= 1e-9);
     }
 
     #[test]
@@ -3089,7 +3255,7 @@ mod tests {
             tick_duration: 2.0,
             random_1: 0.25,
             random_2: 0.75,
-            intended_receiver_pos: Some((35.0, 40.0)),
+            target_kind_space: false,
         });
         let lower_retention = pass_phase_plan(&PassPhasePlanInput {
             retention_probability: 0.30,
@@ -3126,8 +3292,31 @@ mod tests {
             tick_duration: 2.0,
             random_1: 0.25,
             random_2: 0.75,
-            intended_receiver_pos: Some((35.0, 40.0)),
+            target_kind_space: false,
         }
+    }
+
+    #[test]
+    fn pass_execution_preserves_candidate_target_kind_after_delivery_error() {
+        let feet_miss = pass_phase_plan(&PassPhasePlanInput {
+            technical_roll: 1.0,
+            random_1: 1.0,
+            random_2: 1.0,
+            target_kind_space: false,
+            ..retained_input()
+        });
+        let space_miss = pass_phase_plan(&PassPhasePlanInput {
+            technical_roll: 1.0,
+            random_1: 0.0,
+            random_2: 0.0,
+            target_kind_space: true,
+            ..retained_input()
+        });
+
+        assert!(feet_miss.delivery_miss);
+        assert!(space_miss.delivery_miss);
+        assert_eq!(feet_miss.target_kind_code, 0);
+        assert_eq!(space_miss.target_kind_code, 1);
     }
 
     fn gk_shape_player(index: usize) -> TeamShapePlayerInput {

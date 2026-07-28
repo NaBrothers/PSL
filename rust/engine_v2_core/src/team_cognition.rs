@@ -27,6 +27,22 @@ pub fn compile_team_plan_inputs(
     player_inputs: &mut [TeamPlanPlayerInput; MAX_TEAM_COGNITION_PLAYERS],
     opponent_inputs: &mut [TeamPlanOpponentInput; MAX_TEAM_COGNITION_PLAYERS],
 ) -> TeamPlanCognition {
+    compile_team_plan_inputs_with_control(
+        players,
+        fallback_ball_pos,
+        player_inputs,
+        opponent_inputs,
+        None,
+    )
+}
+
+pub fn compile_team_plan_inputs_with_control(
+    players: &[TeamCognitionPlayerInput<'_>],
+    fallback_ball_pos: (f64, f64),
+    player_inputs: &mut [TeamPlanPlayerInput; MAX_TEAM_COGNITION_PLAYERS],
+    opponent_inputs: &mut [TeamPlanOpponentInput; MAX_TEAM_COGNITION_PLAYERS],
+    control_confidence: Option<(f64, f64)>,
+) -> TeamPlanCognition {
     assert!(
         players.len() <= MAX_TEAM_COGNITION_PLAYERS,
         "team cognition expects at most eleven players"
@@ -81,12 +97,17 @@ pub fn compile_team_plan_inputs(
         opponent_count += 1;
     }
     let ball_confidence = ball_confidence.clamp(0.0, 1.0);
-    let possession_probability = shared_possession_probability(
+    let proximity_probability = shared_possession_probability(
         ball_pos,
         ball_confidence,
         &player_inputs[..players.len()],
         &opponent_inputs[..opponent_count],
         &opponent_confidence[..opponent_count],
+    );
+    let possession_probability = possession_probability_with_control(
+        proximity_probability,
+        ball_confidence,
+        control_confidence,
     );
     TeamPlanCognition {
         ball_pos,
@@ -94,6 +115,28 @@ pub fn compile_team_plan_inputs(
         possession_probability,
         opponent_count,
     }
+}
+
+fn possession_probability_with_control(
+    proximity_probability: f64,
+    observation_confidence: f64,
+    control_confidence: Option<(f64, f64)>,
+) -> f64 {
+    let Some((own_confidence, opponent_confidence)) = control_confidence else {
+        return proximity_probability.clamp(0.0, 1.0);
+    };
+    let own_confidence = own_confidence.clamp(0.0, 1.0);
+    let opponent_confidence = opponent_confidence.clamp(0.0, 1.0);
+    let evidence_strength =
+        own_confidence.max(opponent_confidence) * observation_confidence.clamp(0.0, 1.0);
+    if evidence_strength <= 1e-9 {
+        return proximity_probability.clamp(0.0, 1.0);
+    }
+    let control_margin =
+        (own_confidence - opponent_confidence) / (own_confidence + opponent_confidence + 0.20);
+    let control_probability = (0.5 + 0.5 * control_margin).clamp(0.0, 1.0);
+    (proximity_probability * (1.0 - evidence_strength) + control_probability * evidence_strength)
+        .clamp(0.0, 1.0)
 }
 
 fn control_proximity(distance: f64) -> f64 {
@@ -260,5 +303,31 @@ mod tests {
 
         assert!(own_control.possession_probability > 0.75);
         assert!(opponent_control.possession_probability < 0.25);
+    }
+
+    #[test]
+    fn control_confidence_corrects_existing_possession_estimate_continuously() {
+        let baseline = 0.5;
+        let weak_claim = possession_probability_with_control(baseline, 1.0, Some((0.20, 0.0)));
+        let strong_claim = possession_probability_with_control(baseline, 1.0, Some((0.80, 0.0)));
+
+        assert!(weak_claim > baseline);
+        assert!(strong_claim > weak_claim);
+    }
+
+    #[test]
+    fn equal_control_confidence_preserves_contested_neutrality() {
+        assert_eq!(
+            possession_probability_with_control(0.5, 1.0, Some((0.78, 0.78))),
+            0.5
+        );
+    }
+
+    #[test]
+    fn hidden_control_does_not_bypass_team_observation() {
+        assert_eq!(
+            possession_probability_with_control(0.32, 0.0, Some((0.90, 0.0))),
+            0.32
+        );
     }
 }

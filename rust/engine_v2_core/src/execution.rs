@@ -45,6 +45,7 @@ pub struct CarryExecutionOutput {
     pub transition: crate::execution_transition::CarrySegmentTransition,
     pub carry_speed: f64,
     pub carry_difficulty: f64,
+    pub movement_progress: f64,
     pub new_pos: (f64, f64),
     pub boundary_crossing: Option<PitchBoundaryCrossing>,
     pub velocity: (f64, f64),
@@ -284,8 +285,16 @@ pub fn execute_carry(input: &CarryExecutionInput<'_>) -> CarryExecutionOutput {
         crate::execution_transition::BinaryExecutionTransition::from_success_probability(
             containment.constrained_control_probability,
         );
+    let continuous_containment =
+        (0.38 * containment.constrained_control_probability).clamp(0.0, 0.38);
+    let field_limited_control_pos = (
+        unconstrained_control_pos.0
+            + (constrained_control_pos.0 - unconstrained_control_pos.0) * continuous_containment,
+        unconstrained_control_pos.1
+            + (constrained_control_pos.1 - unconstrained_control_pos.1) * continuous_containment,
+    );
     let unconstrained_new_pos = pitch_clamp(
-        unconstrained_control_pos,
+        field_limited_control_pos,
         input.pitch_length,
         input.pitch_width,
     );
@@ -360,8 +369,9 @@ pub fn execute_carry(input: &CarryExecutionInput<'_>) -> CarryExecutionOutput {
         (base_error + goal_touch_error).clamp(0.0, 0.95)
     };
     let computed_transition = crate::execution_transition::CarrySegmentTransition::new(
+        input.holder_pos,
         containment_transition,
-        unconstrained_control_pos,
+        field_limited_control_pos,
         unconstrained_new_pos,
         unconstrained_velocity,
         constrained_control_pos,
@@ -370,7 +380,10 @@ pub fn execute_carry(input: &CarryExecutionInput<'_>) -> CarryExecutionOutput {
         error_chance_at(unconstrained_control_pos, unconstrained_new_pos),
         error_chance_at(constrained_control_pos, constrained_new_pos),
     );
-    let transition = input.transition.unwrap_or(computed_transition);
+    let transition = input
+        .transition
+        .filter(|transition| distance(transition.origin, input.holder_pos) <= 1e-6)
+        .unwrap_or(computed_transition);
     let sample = transition.sample(input.error_roll, input.containment_roll);
     let boundary_crossing = segment_pitch_boundary_crossing(
         input.holder_pos,
@@ -407,12 +420,17 @@ pub fn execute_carry(input: &CarryExecutionInput<'_>) -> CarryExecutionOutput {
         transition,
         carry_speed: speed * progress_ratio,
         carry_difficulty: difficulty,
+        movement_progress: progress_ratio,
         new_pos,
         boundary_crossing,
         velocity,
         facing_direction: motion.facing_direction,
         distance_covered,
-        contact_load: pressure,
+        contact_load: if sample.constrained_control {
+            containment.constrained_control_probability
+        } else {
+            continuous_containment
+        },
         error_chance,
         is_error,
         loose_pos,
@@ -459,12 +477,13 @@ pub fn execute_pass(input: &PassExecutionInput) -> PassExecutionOutput {
         .sample(!delivery_miss, input.random_1, input.random_2);
     let target = spatial.target;
 
-    let speed = if input.is_long {
+    let configured_speed = if input.is_long {
         input.ball_long_pass_speed
     } else {
         input.ball_pass_speed
     };
     let dist = distance(input.passer_pos, target);
+    let speed = crate::pass_average_speed(dist, configured_speed, input.tick_duration);
     let ticks_needed = (dist / speed.max(0.1)).ceil().max(1.0) as i32;
 
     PassExecutionOutput {
@@ -798,6 +817,26 @@ mod tests {
     }
 
     #[test]
+    fn short_pass_execution_uses_configured_average_ball_speed() {
+        let passer_pos = (30.0, 34.0);
+        let output = execute_pass(&PassExecutionInput {
+            passer_pos,
+            ideal_target: (38.0, 34.0),
+            technical_roll: 0.0,
+            random_1: 0.5,
+            random_2: 0.5,
+            ball_pass_speed: 24.0,
+            ..pass_input(1.0, 1.0)
+        });
+        let pass_distance = distance(passer_pos, output.target);
+
+        assert!(pass_distance < 10.0);
+        assert!((output.speed - crate::pass_average_speed(pass_distance, 24.0, 2.0)).abs() <= 1e-9);
+        assert_eq!(output.speed, 24.0);
+        assert_eq!(output.ticks_needed, 1);
+    }
+
+    #[test]
     fn control_execution_samples_the_projected_transition_object_instead_of_rebuilding_it() {
         let frozen = crate::execution_transition::ControlActionTransition {
             contact: crate::interactions::ControlContactTransition {
@@ -925,6 +964,20 @@ mod tests {
         assert!(!unconstrained.constrained_control);
         assert!(contained.constrained_control_probability > 0.0);
         assert_eq!(
+            contained.contact_load.to_bits(),
+            contained.constrained_control_probability.to_bits(),
+            "sampled constrained control must carry the physical containment load"
+        );
+        assert!(
+            unconstrained.contact_load > 0.0 && unconstrained.contact_load < contained.contact_load,
+            "an unconstrained branch must retain only the continuous physical interference"
+        );
+        assert!(
+            (unconstrained.contact_load - 0.38 * unconstrained.constrained_control_probability)
+                .abs()
+                < 1e-12
+        );
+        assert_eq!(
             contained.constrained_control_probability.to_bits(),
             unconstrained.constrained_control_probability.to_bits()
         );
@@ -935,6 +988,47 @@ mod tests {
             "missing the probabilistic containment roll must not allow the carrier to pass through an occupied body"
         );
         assert!(contained.new_pos.0 <= unconstrained.new_pos.0);
+    }
+
+    #[test]
+    fn overlapping_defensive_fields_slow_an_uncontained_carry_continuously() {
+        let first = DefenderActionInput {
+            index: 3,
+            pos: (21.0, 35.3),
+            new_pos: (21.0, 35.3),
+            action: "block_lane",
+            speed: 80.0,
+            defence: 82.0,
+            tackling: 80.0,
+            gk_saving: 0.0,
+            gk_positioning: 0.0,
+            gk_reaction: 0.0,
+            is_goalkeeper: false,
+        };
+        let second = DefenderActionInput {
+            index: 4,
+            pos: (21.2, 32.6),
+            new_pos: (21.2, 32.6),
+            action: "mark_runner",
+            speed: 79.0,
+            defence: 81.0,
+            tackling: 78.0,
+            gk_saving: 0.0,
+            gk_positioning: 0.0,
+            gk_reaction: 0.0,
+            is_goalkeeper: false,
+        };
+        let single = execute_carry(&carry_input(&[first]));
+        let double = execute_carry(&carry_input(&[first, second]));
+
+        assert!(!single.constrained_control);
+        assert!(!double.constrained_control);
+        assert!(double.constrained_control_probability > single.constrained_control_probability);
+        assert!(
+            double.distance_covered < single.distance_covered,
+            "overlapping interference fields must reduce progress even when the binary containment branch is not sampled"
+        );
+        assert!(double.velocity.0 < single.velocity.0);
     }
 
     #[test]
@@ -970,6 +1064,7 @@ mod tests {
     #[test]
     fn carry_execution_samples_the_projected_transition_object_instead_of_rebuilding_it() {
         let frozen = crate::execution_transition::CarrySegmentTransition::new(
+            (20.0, 34.0),
             crate::execution_transition::BinaryExecutionTransition::from_success_probability(1.0),
             (24.0, 34.0),
             (24.0, 34.0),
@@ -995,6 +1090,36 @@ mod tests {
             output.transition.constrained.control_pos,
             frozen.constrained.control_pos
         );
+    }
+
+    #[test]
+    fn carry_execution_rebuilds_a_frozen_transition_after_the_live_origin_diverges() {
+        let frozen = crate::execution_transition::CarrySegmentTransition::new(
+            (20.0, 34.0),
+            crate::execution_transition::BinaryExecutionTransition::from_success_probability(0.0),
+            (24.0, 34.0),
+            (24.0, 34.0),
+            (3.0, 0.0),
+            (22.0, 34.0),
+            (22.0, 34.0),
+            (1.0, 0.0),
+            0.0,
+            0.0,
+        );
+        let live_origin = (30.0, 34.0);
+        let output = execute_carry(&CarryExecutionInput {
+            transition: Some(frozen),
+            holder_pos: live_origin,
+            target: (80.0, 34.0),
+            ..carry_input(&[])
+        });
+
+        assert!(
+            output.new_pos.0 >= live_origin.0,
+            "a stale absolute transition must not pull the live carrier backwards"
+        );
+        assert_ne!(output.transition.origin, frozen.origin);
+        assert_eq!(output.transition.origin, live_origin);
     }
 
     #[test]

@@ -322,8 +322,8 @@ pub fn transition_possession_control(
 
 pub fn shot_release_readiness(state: PossessionControlState) -> f64 {
     let stagnation_impact = state.stagnation_load.powf(4.0);
-    (state.turn_readiness * (1.0 - 0.45 * state.containment_load))
-        * (0.45 + 0.55 * state.release_preparation)
+    (state.release_preparation * (0.50 + 0.50 * state.turn_readiness))
+        * (1.0 - 0.45 * state.containment_load)
         * (1.0 - 0.28 * stagnation_impact).clamp(0.0, 1.0)
 }
 
@@ -499,6 +499,48 @@ mod tests {
                 < 1e-12,
             "body preparation must remain separate from shot-line contest quality"
         );
+    }
+
+    #[test]
+    fn aligned_body_can_release_under_space_pressure_without_ignoring_containment() {
+        let aligned_under_pressure = PossessionControlState {
+            facing_direction: 0.0,
+            pressure_load: 0.82,
+            containment_load: 0.0,
+            forward_control: 0.20,
+            turn_readiness: 0.18,
+            release_window: 0.24,
+            shape_readiness: 0.70,
+            release_preparation: 0.88,
+            stagnation_load: 0.0,
+        };
+        let physically_contained = PossessionControlState {
+            containment_load: 0.82,
+            ..aligned_under_pressure
+        };
+
+        assert!(shot_release_readiness(aligned_under_pressure) > 0.50);
+        assert!(
+            shot_release_readiness(physically_contained)
+                < shot_release_readiness(aligned_under_pressure)
+        );
+    }
+
+    #[test]
+    fn unprepared_body_cannot_release_even_with_turning_space() {
+        let unprepared_with_space = PossessionControlState {
+            facing_direction: 180.0,
+            pressure_load: 0.0,
+            containment_load: 0.0,
+            forward_control: 1.0,
+            turn_readiness: 1.0,
+            release_window: 1.0,
+            shape_readiness: 1.0,
+            release_preparation: 0.0,
+            stagnation_load: 0.0,
+        };
+
+        assert_eq!(shot_release_readiness(unprepared_with_space), 0.0);
     }
 
     #[test]

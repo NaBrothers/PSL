@@ -12,7 +12,7 @@ interface ReplayFrame {
   away_player_goals?: (string | null)[]
   ball_holder: number | null
   ball?: [number, number] | null
-  ball_team: string | null
+  ball_team: TeamSide | null
   score: [number, number]
   ball_flight?: {
     id?: number
@@ -48,6 +48,7 @@ interface ReplayPlayer {
 }
 
 type ReplayLine = ReplayHeader | ReplayFrame
+type TeamSide = 'home' | 'away'
 
 interface Clip { label: string; startIdx: number; endIdx: number; icon: string; minute: number; playerName: string }
 interface Props { replayUrl: string }
@@ -57,6 +58,7 @@ const PITCH_W = 68, PITCH_H = 105
 const CANVAS_W = 300, CANVAS_H = Math.round(CANVAS_W * (PITCH_H / PITCH_W))
 const SCALE_X = CANVAS_W / PITCH_W, SCALE_Y = CANVAS_H / PITCH_H
 const PLAYER_R = 7, BALL_R = 4
+const PLAYER_BODY_SEPARATION_M = 0.9
 const OPEN_PLAY_TIME_COMPRESSION = 2
 const REPLAY_CUT_INTERVAL_MS = 300
 const MIN_FRAME_INTERVAL_MS = 40
@@ -119,6 +121,89 @@ function centripetalCatmullRom(
 function isContinuousFlightEnd(flight: ReplayFrame['ball_flight']) {
   return flight?.complete === true
     && ['received', 'cleared', 'intercepted', 'loose', 'first_touch_error'].includes(flight.end_reason || '')
+}
+
+function oppositeTeam(team: TeamSide | null): TeamSide | null {
+  if (team === 'home') return 'away'
+  if (team === 'away') return 'home'
+  return null
+}
+
+function nearestPlayerToBall(
+  frame: ReplayFrame,
+  team: TeamSide | null,
+): { team: TeamSide; idx: number; distance: number } | null {
+  if (!frame.ball) return null
+  const candidates: { team: TeamSide; idx: number; distance: number }[] = []
+  const collect = (side: TeamSide, players: [number, number][]) => {
+    if (team && side !== team) return
+    players.forEach((position, idx) => {
+      candidates.push({ team: side, idx, distance: pointDist(position, frame.ball!) })
+    })
+  }
+  collect('home', frame.home)
+  collect('away', frame.away)
+  return candidates.reduce<typeof candidates[number] | null>(
+    (nearest, candidate) => !nearest || candidate.distance < nearest.distance ? candidate : nearest,
+    null,
+  )
+}
+
+function nextKnownController(
+  frames: ReplayFrame[],
+  startIdx: number,
+  expectedTeam: TeamSide | null,
+): { team: TeamSide; idx: number } | null {
+  for (let idx = startIdx + 1; idx < Math.min(frames.length, startIdx + 5); idx++) {
+    const frame = frames[idx]
+    if (frame.ball_flight && frame.ball_flight.id !== frames[startIdx].ball_flight?.id) break
+    if (!frame.ball_team || frame.ball_holder == null) continue
+    if (expectedTeam && frame.ball_team !== expectedTeam) return null
+    return { team: frame.ball_team, idx: frame.ball_holder }
+  }
+  return null
+}
+
+function repairReplayControl(frames: ReplayFrame[]): ReplayFrame[] {
+  let possessionTeam: ReplayFrame['ball_team'] = null
+  return frames.map((frame, frameIdx) => {
+    if (frame.ball_team && frame.ball_holder != null) {
+      possessionTeam = frame.ball_team
+      return frame
+    }
+    const reason = frame.ball_flight?.complete ? frame.ball_flight.end_reason : null
+    if (reason !== 'received' && reason !== 'intercepted') return frame
+
+    const expectedTeam = reason === 'received' ? possessionTeam : oppositeTeam(possessionTeam)
+    const nearest = nearestPlayerToBall(frame, expectedTeam)
+      || nearestPlayerToBall(frame, null)
+    const controller = nearest && nearest.distance <= 3.0
+      ? nearest
+      : nextKnownController(frames, frameIdx, expectedTeam)
+    if (!controller) return frame
+
+    possessionTeam = controller.team
+    return {
+      ...frame,
+      ball_holder: controller.idx,
+      ball_team: controller.team,
+    }
+  })
+}
+
+function replayEventLabel(frame: ReplayFrame): string | null {
+  if (frame.event_text === 'GOAL') return '⚽ GOAL'
+  if (frame.event_text === 'SAVE') return '🧤 SAVE'
+  if (frame.event_text) return frame.event_text
+  if (frame.ball_flight?.complete !== true) return null
+  switch (frame.ball_flight.end_reason) {
+    case 'intercepted': return '拦截'
+    case 'first_touch_error': return '停球失误'
+    case 'loose': return '球权未定'
+    case 'offside': return '越位'
+    case 'out_of_play': return '出界'
+    default: return null
+  }
 }
 
 function hasHardReplayCut(frame: ReplayFrame) {
@@ -290,6 +375,157 @@ function smoothPoint(
 
   return centripetalCatmullRom(previous, current, target, following, t)
 }
+
+function closestRelativeSegmentDistance(
+  start: [number, number],
+  end: [number, number],
+) {
+  const dx = end[0] - start[0]
+  const dy = end[1] - start[1]
+  const lengthSquared = dx * dx + dy * dy
+  const progress = lengthSquared > 1e-9
+    ? Math.min(Math.max(-(start[0] * dx + start[1] * dy) / lengthSquared, 0), 1)
+    : 0
+  return Math.hypot(start[0] + dx * progress, start[1] + dy * progress)
+}
+
+function smoothRelativePathMinimumDistance(
+  frames: ReplayFrame[],
+  frameIndex: number,
+  holderSide: TeamSide,
+  holderIndex: number,
+  opponentSide: TeamSide,
+  opponentIndex: number,
+) {
+  let minimumDistance = Number.POSITIVE_INFINITY
+  for (let sample = 0; sample <= 8; sample++) {
+    const progress = sample / 8
+    const holder = smoothPoint(frames, frameIndex, holderSide, holderIndex, progress)
+    const opponent = smoothPoint(frames, frameIndex, opponentSide, opponentIndex, progress)
+    minimumDistance = Math.min(minimumDistance, pointDist(holder, opponent))
+  }
+  return minimumDistance
+}
+
+function collisionAvoidingOpponentPoint(
+  holder: [number, number],
+  holderStart: [number, number],
+  holderEnd: [number, number],
+  opponentStart: [number, number],
+  opponentEnd: [number, number],
+  progress: number,
+  minimumSeparation: number,
+  directionSeed: number,
+  curvedPathIntersects: boolean,
+): [number, number] | null {
+  const relativeStart: [number, number] = [
+    opponentStart[0] - holderStart[0],
+    opponentStart[1] - holderStart[1],
+  ]
+  const relativeEnd: [number, number] = [
+    opponentEnd[0] - holderEnd[0],
+    opponentEnd[1] - holderEnd[1],
+  ]
+  if (
+    !curvedPathIntersects
+    && closestRelativeSegmentDistance(relativeStart, relativeEnd) >= minimumSeparation
+  ) return null
+
+  const startAngle = Math.atan2(relativeStart[1], relativeStart[0])
+  const endAngle = Math.atan2(relativeEnd[1], relativeEnd[0])
+  let angleDelta = Math.atan2(
+    Math.sin(endAngle - startAngle),
+    Math.cos(endAngle - startAngle),
+  )
+  if (Math.abs(Math.abs(angleDelta) - Math.PI) < 1e-6) {
+    angleDelta = directionSeed % 2 === 0 ? Math.PI : -Math.PI
+  }
+  const startRadius = Math.hypot(relativeStart[0], relativeStart[1])
+  const endRadius = Math.hypot(relativeEnd[0], relativeEnd[1])
+  const radius = Math.max(minimumSeparation, lerp(startRadius, endRadius, progress))
+  const angle = startAngle + angleDelta * progress
+  return [
+    holder[0] + Math.cos(angle) * radius,
+    holder[1] + Math.sin(angle) * radius,
+  ]
+}
+
+function separateReplayDefendersFromHolder(
+  home: [number, number][],
+  away: [number, number][],
+  frames: ReplayFrame[],
+  frameIndex: number,
+  progress: number,
+  field: ReplayHeader['field'],
+) {
+  const frame = frames[frameIndex]
+  if (frame.ball_team !== 'home' && frame.ball_team !== 'away') return
+  if (frame.ball_holder == null) return
+  const holderTeam = frame.ball_team === 'home' ? home : away
+  const opponents = frame.ball_team === 'home' ? away : home
+  const holder = holderTeam[frame.ball_holder]
+  if (!holder) return
+  const minimumDisplaySeparation = PLAYER_BODY_SEPARATION_M
+  const nextFrame = frames[frameIndex + 1]
+  const continuousHolder = nextFrame
+    && nextFrame.ball_team === frame.ball_team
+    && nextFrame.ball_holder === frame.ball_holder
+    && !blocksReplayTransition(frame, nextFrame)
+  if (continuousHolder) {
+    const holderStart = frame.ball_team === 'home'
+      ? frame.home[frame.ball_holder]
+      : frame.away[frame.ball_holder]
+    const holderEnd = frame.ball_team === 'home'
+      ? nextFrame.home[frame.ball_holder]
+      : nextFrame.away[frame.ball_holder]
+    const opponentStart = frame.ball_team === 'home' ? frame.away : frame.home
+    const opponentEnd = frame.ball_team === 'home' ? nextFrame.away : nextFrame.home
+    opponents.forEach((opponent, index) => {
+      const opponentSide = frame.ball_team === 'home' ? 'away' : 'home'
+      const curvedPathIntersects = smoothRelativePathMinimumDistance(
+        frames,
+        frameIndex,
+        frame.ball_team!,
+        frame.ball_holder!,
+        opponentSide,
+        index,
+      ) < minimumDisplaySeparation
+      const adjusted = collisionAvoidingOpponentPoint(
+        holder,
+        holderStart,
+        holderEnd,
+        opponentStart[index],
+        opponentEnd[index],
+        progress,
+        minimumDisplaySeparation,
+        index,
+        curvedPathIntersects,
+      )
+      if (adjusted) {
+        opponent[0] = Math.min(Math.max(adjusted[0], 0.5), field.width - 0.5)
+        opponent[1] = Math.min(Math.max(adjusted[1], 0.5), field.length - 0.5)
+      }
+    })
+  }
+  opponents.forEach((opponent, index) => {
+    const dx = opponent[0] - holder[0]
+    const dy = opponent[1] - holder[1]
+    const separation = Math.hypot(dx, dy)
+    if (separation >= minimumDisplaySeparation) return
+    const fallbackAngle = index * 2.399963229728653
+    const nx = separation > 1e-9 ? dx / separation : Math.cos(fallbackAngle)
+    const ny = separation > 1e-9 ? dy / separation : Math.sin(fallbackAngle)
+    opponent[0] = Math.min(
+      Math.max(holder[0] + nx * minimumDisplaySeparation, 0.5),
+      field.width - 0.5,
+    )
+    opponent[1] = Math.min(
+      Math.max(holder[1] + ny * minimumDisplaySeparation, 0.5),
+      field.length - 0.5,
+    )
+  })
+}
+
 function extractHighlights(frames: ReplayFrame[], header: ReplayHeader | null): Clip[] {
   const clips: Clip[] = []
   for (let i = 0; i < frames.length; i++) {
@@ -399,7 +635,7 @@ export default function ReplayHighlights({ replayUrl }: Props) {
     fetch(resolveReplayFileUrl(replayUrl)).then(r => r.text()).then(text => {
       const parsed = text.trim().split('\n').map(l => JSON.parse(l)) as ReplayLine[]
       const h = parsed.find(l => l.type === 'header') as ReplayHeader
-      const f = parsed.filter(l => l.type === 'frame') as ReplayFrame[]
+      const f = repairReplayControl(parsed.filter(l => l.type === 'frame') as ReplayFrame[])
       setHeader(h); setFrames(f)
       const hl = extractHighlights(f, h); setClips(hl); setLoading(false)
       if (hl.length > 0) {
@@ -437,6 +673,7 @@ export default function ReplayHighlights({ replayUrl }: Props) {
       home = frame.home.map((_, i) => smoothPoint(f, idx, 'home', i, interpT))
       away = frame.away.map((_, i) => smoothPoint(f, idx, 'away', i, interpT))
     }
+    separateReplayDefendersFromHolder(home, away, f, idx, interpT, h.field)
 
     // Field
     ctx.fillStyle = '#2d5a27'; ctx.fillRect(0, 0, CANVAS_W, CANVAS_H)
@@ -501,14 +738,19 @@ export default function ReplayHighlights({ replayUrl }: Props) {
     ctx.fillStyle = '#fff'; ctx.fill(); ctx.strokeStyle = '#000'; ctx.lineWidth = 0.5; ctx.stroke()
 
     // Event overlay
+    const eventLabel = replayEventLabel(frame)
     if (frame.event_text === 'GOAL') {
       ctx.fillStyle = 'rgba(0,0,0,0.6)'; ctx.fillRect(0, CANVAS_H/2-18, CANVAS_W, 36)
       ctx.fillStyle = '#4ade80'; ctx.font = 'bold 16px sans-serif'; ctx.textAlign = 'center'
-      ctx.fillText('⚽ GOAL', CANVAS_W/2, CANVAS_H/2+5)
+      ctx.fillText(eventLabel!, CANVAS_W/2, CANVAS_H/2+5)
     } else if (frame.event_text === 'SAVE') {
       ctx.fillStyle = 'rgba(0,0,0,0.5)'; ctx.fillRect(0, CANVAS_H/2-14, CANVAS_W, 28)
       ctx.fillStyle = '#facc15'; ctx.font = 'bold 13px sans-serif'; ctx.textAlign = 'center'
-      ctx.fillText('🧤 SAVE', CANVAS_W/2, CANVAS_H/2+4)
+      ctx.fillText(eventLabel!, CANVAS_W/2, CANVAS_H/2+4)
+    } else if (eventLabel) {
+      ctx.fillStyle = 'rgba(0,0,0,0.55)'; ctx.fillRect(CANVAS_W/2-38, CANVAS_H/2-11, 76, 22)
+      ctx.fillStyle = '#fff'; ctx.font = 'bold 11px sans-serif'; ctx.textAlign = 'center'
+      ctx.fillText(eventLabel, CANVAS_W/2, CANVAS_H/2+4)
     }
 
     // HUD

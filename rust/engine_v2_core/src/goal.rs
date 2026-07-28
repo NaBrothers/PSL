@@ -589,6 +589,7 @@ fn action_name(action_code: u8) -> &'static str {
         2 => "shoot",
         3 => "hold",
         4 => "clear",
+        5 => "reorient",
         _ => "",
     }
 }
@@ -776,6 +777,16 @@ pub fn apply_specialized_on_ball_bias(
                             0.65
                         };
                 }
+            }
+            "cut_inside_to_shoot" if input.goal_phase == "finish" && action == "reorient" => {
+                let target_fit = candidate
+                    .target
+                    .map(|target| {
+                        (1.0 - crate::physics::distance(target, input.goal_target) / 16.0).max(0.0)
+                    })
+                    .unwrap_or(0.0);
+                let preparation_need = 1.0 - candidate.shot_readiness.clamp(0.0, 1.0);
+                affinity += input.goal_value * target_fit * preparation_need;
             }
             "wide_byline_attack" if input.goal_phase == "drive" && action == "carry" => {
                 let target_fit = candidate
@@ -1719,5 +1730,51 @@ mod tests {
                 "{goal_type} must use successor metadata to form the goal, not repay it as policy"
             );
         }
+    }
+
+    #[test]
+    fn cut_inside_finish_uses_reorientation_only_while_the_body_is_unprepared() {
+        let reorient = OnBallSpecializedBiasCandidateInput {
+            score: 0.04,
+            action_code: 5,
+            target: Some((105.0, 34.0)),
+            carry_to_shoot_window: 0.0,
+            wide_second_line_carry_window: 0.0,
+            future_shot_gain: 0.0,
+            byline_carry_window: 0.0,
+            xg: 0.0,
+            shot_readiness: 0.20,
+            open_medium_window: 0.0,
+            clean_second_line_shot: 0.0,
+            space_manipulation: 0.0,
+            pressure_draw: 0.0,
+        };
+        let prepared = OnBallSpecializedBiasCandidateInput {
+            shot_readiness: 0.90,
+            ..reorient
+        };
+
+        let unprepared = apply_specialized_on_ball_bias(&OnBallSpecializedBiasInput {
+            candidates: &[reorient],
+            goal_type: "cut_inside_to_shoot",
+            goal_phase: "finish",
+            goal_target: (105.0, 34.0),
+            goal_value: 0.60,
+            bias: 0.0,
+            consecutive_carries: 0,
+        });
+        let prepared = apply_specialized_on_ball_bias(&OnBallSpecializedBiasInput {
+            candidates: &[prepared],
+            goal_type: "cut_inside_to_shoot",
+            goal_phase: "finish",
+            goal_target: (105.0, 34.0),
+            goal_value: 0.60,
+            bias: 0.0,
+            consecutive_carries: 0,
+        });
+
+        assert!(unprepared.alignments[0] > prepared.alignments[0]);
+        assert!(unprepared.alignments[0] > 0.40);
+        assert!(prepared.alignments[0] < 0.10);
     }
 }

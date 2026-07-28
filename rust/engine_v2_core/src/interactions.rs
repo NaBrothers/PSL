@@ -318,6 +318,7 @@ pub fn duel_margin(input: &DuelResolveInput<'_>) -> f64 {
     let contact_margin = (input.contact_quality.clamp(0.0, 1.0) - 0.5) * 12.0;
     let commitment_margin = match input.defender_action {
         "tackle" => 2.2,
+        "body_challenge" => 0.0,
         "approach" => -3.4,
         _ => -4.0,
     };
@@ -386,7 +387,7 @@ struct ContactEngagementProfile {
     containment_reach_scale: f64,
 }
 
-const CONTACT_ENGAGEMENT_PROFILES: [ContactEngagementProfile; 8] = [
+const CONTACT_ENGAGEMENT_PROFILES: [ContactEngagementProfile; 10] = [
     ContactEngagementProfile {
         action: "smother",
         reach_scale: 1.32,
@@ -413,6 +414,24 @@ const CONTACT_ENGAGEMENT_PROFILES: [ContactEngagementProfile; 8] = [
         records_tackle_attempt: false,
         containment_weight: 0.46,
         containment_reach_scale: 1.15,
+    },
+    ContactEngagementProfile {
+        action: "body_challenge",
+        reach_scale: 0.94,
+        engagement_weight: 0.36,
+        outcome_commitment: 0.78,
+        records_tackle_attempt: false,
+        containment_weight: 0.46,
+        containment_reach_scale: 1.15,
+    },
+    ContactEngagementProfile {
+        action: "defeated_contact",
+        reach_scale: 0.0,
+        engagement_weight: 0.0,
+        outcome_commitment: 0.0,
+        records_tackle_attempt: false,
+        containment_weight: 0.0,
+        containment_reach_scale: 0.0,
     },
     ContactEngagementProfile {
         action: "close_down",
@@ -484,6 +503,18 @@ pub fn defender_action_physical_reach(tackle_range: f64, action: &str) -> f64 {
 
 pub fn records_tackle_attempt(action: &str) -> bool {
     engagement_profile(action).records_tackle_attempt
+}
+
+pub fn duel_resolution_defender(
+    mut defender: DefenderActionInput,
+    contact: DetectionResult,
+) -> DefenderActionInput {
+    if contact.distance <= PLAYER_BODY_SEPARATION
+        && !matches!(defender.action, "tackle" | "smother" | "defeated_contact")
+    {
+        defender.action = "body_challenge";
+    }
+    defender
 }
 
 fn step_toward(origin: (f64, f64), target: (f64, f64), step_distance: f64) -> (f64, f64) {
@@ -559,6 +590,63 @@ fn moving_circle_first_contact_time(
     (contact_time >= 0.0 && contact_time <= 1.0).then_some(contact_time)
 }
 
+pub fn moving_body_collision_position(
+    mover_start: (f64, f64),
+    mover_end: (f64, f64),
+    other_start: (f64, f64),
+    other_end: (f64, f64),
+) -> (f64, f64) {
+    let initial_offset = (
+        mover_start.0 - other_start.0,
+        mover_start.1 - other_start.1,
+    );
+    let initial_distance =
+        (initial_offset.0 * initial_offset.0 + initial_offset.1 * initial_offset.1).sqrt();
+    let relative_velocity = (
+        (mover_end.0 - mover_start.0) - (other_end.0 - other_start.0),
+        (mover_end.1 - mover_start.1) - (other_end.1 - other_start.1),
+    );
+    let separation_rate =
+        initial_offset.0 * relative_velocity.0 + initial_offset.1 * relative_velocity.1;
+    if initial_distance < PLAYER_BODY_SEPARATION && separation_rate <= 1e-12 {
+        let separation_direction = if initial_distance > 1e-9 {
+            (
+                initial_offset.0 / initial_distance,
+                initial_offset.1 / initial_distance,
+            )
+        } else {
+            let relative_speed = (relative_velocity.0 * relative_velocity.0
+                + relative_velocity.1 * relative_velocity.1)
+                .sqrt();
+            if relative_speed > 1e-9 {
+                (
+                    -relative_velocity.0 / relative_speed,
+                    -relative_velocity.1 / relative_speed,
+                )
+            } else {
+                (1.0, 0.0)
+            }
+        };
+        return (
+            other_start.0 + separation_direction.0 * PLAYER_BODY_SEPARATION,
+            other_start.1 + separation_direction.1 * PLAYER_BODY_SEPARATION,
+        );
+    }
+    let Some(contact_time) = moving_circle_first_contact_time(
+        mover_start,
+        mover_end,
+        other_start,
+        other_end,
+        PLAYER_BODY_SEPARATION,
+    ) else {
+        return mover_end;
+    };
+    (
+        mover_start.0 + (mover_end.0 - mover_start.0) * contact_time,
+        mover_start.1 + (mover_end.1 - mover_start.1) * contact_time,
+    )
+}
+
 pub fn carrier_body_collision_position(
     carrier_start: (f64, f64),
     carrier_end: (f64, f64),
@@ -573,35 +661,38 @@ pub fn carrier_body_collision_position(
     if carrier_distance <= 1e-9 {
         return carrier_end;
     }
-    let carrier_direction = (
-        carrier_delta.0 / carrier_distance,
-        carrier_delta.1 / carrier_distance,
-    );
+    for defender in defenders {
+        let initial_offset = (
+            carrier_start.0 - defender.pos.0,
+            carrier_start.1 - defender.pos.1,
+        );
+        let initial_distance =
+            (initial_offset.0 * initial_offset.0 + initial_offset.1 * initial_offset.1).sqrt();
+        let relative_velocity = (
+            carrier_delta.0 - (defender.new_pos.0 - defender.pos.0),
+            carrier_delta.1 - (defender.new_pos.1 - defender.pos.1),
+        );
+        let separation_rate =
+            initial_offset.0 * relative_velocity.0 + initial_offset.1 * relative_velocity.1;
+        if initial_distance < PLAYER_BODY_SEPARATION && separation_rate <= 1e-12 {
+            return moving_body_collision_position(
+                carrier_start,
+                carrier_end,
+                defender.pos,
+                defender.new_pos,
+            );
+        }
+    }
     let mut first_contact_time: f64 = 1.0;
     for defender in defenders {
-        let Some(contact_time) = moving_circle_first_contact_time(
+        let collision_position = moving_body_collision_position(
             carrier_start,
             carrier_end,
             defender.pos,
             defender.new_pos,
-            PLAYER_BODY_SEPARATION,
-        ) else {
-            continue;
-        };
-        let carrier_at_contact = (
-            carrier_start.0 + carrier_delta.0 * contact_time,
-            carrier_start.1 + carrier_delta.1 * contact_time,
         );
-        let defender_at_contact = (
-            defender.pos.0 + (defender.new_pos.0 - defender.pos.0) * contact_time,
-            defender.pos.1 + (defender.new_pos.1 - defender.pos.1) * contact_time,
-        );
-        let defender_forward_offset = (defender_at_contact.0 - carrier_at_contact.0)
-            * carrier_direction.0
-            + (defender_at_contact.1 - carrier_at_contact.1) * carrier_direction.1;
-        if defender_forward_offset >= -1e-9 {
-            first_contact_time = first_contact_time.min(contact_time);
-        }
+        let contact_time = distance(carrier_start, collision_position) / carrier_distance;
+        first_contact_time = first_contact_time.min(contact_time);
     }
     (
         carrier_start.0 + carrier_delta.0 * first_contact_time,
@@ -828,9 +919,10 @@ pub fn control_contact_transition(
             unresolved_probability: 0.0,
         };
     };
+    let defender = duel_resolution_defender(*defender, contact);
     let (_, defender_wins, loose_ball) = duel_outcome_probabilities(
         attacker_dribbling,
-        defender,
+        &defender,
         holder_action,
         contact.contact_quality,
     );
@@ -865,6 +957,45 @@ pub fn carry_contact_transition(
     )
 }
 
+pub fn carry_contact_transition_for_segment(
+    holder_pos: (f64, f64),
+    carrier_end: (f64, f64),
+    attacker_dribbling: f64,
+    defenders: &[DefenderActionInput],
+    tackle_range: f64,
+) -> ControlContactTransition {
+    let contact = detect_duel_on_segment(holder_pos, carrier_end, "carry", defenders, tackle_range);
+    let Some(defender) = contact.defender_index.and_then(|defender_index| {
+        defenders
+            .iter()
+            .find(|defender| defender.index == defender_index)
+    }) else {
+        return ControlContactTransition {
+            contact,
+            retained_probability: 1.0,
+            opposing_control_probability: 0.0,
+            unresolved_probability: 0.0,
+        };
+    };
+    let defender = duel_resolution_defender(*defender, contact);
+    let (_, defender_wins, loose_ball) = duel_outcome_probabilities(
+        attacker_dribbling,
+        &defender,
+        "carry",
+        contact.contact_quality,
+    );
+    let contact_probability = contact.contact_probability.clamp(0.0, 1.0);
+    let opposing_control_probability = contact_probability * defender_wins;
+    let unresolved_probability = contact_probability * loose_ball;
+    ControlContactTransition {
+        contact,
+        retained_probability: (1.0 - opposing_control_probability - unresolved_probability)
+            .clamp(0.0, 1.0),
+        opposing_control_probability,
+        unresolved_probability,
+    }
+}
+
 pub fn pass_release_contact_transition(
     holder_pos: (f64, f64),
     pass_target: (f64, f64),
@@ -893,9 +1024,10 @@ pub fn pass_release_contact_transition(
             unresolved_probability: 0.0,
         };
     };
+    let defender = duel_resolution_defender(*defender, contact);
     let (_, defender_wins, loose_ball) = duel_outcome_probabilities(
         attacker_dribbling,
-        defender,
+        &defender,
         "pass",
         contact.contact_quality,
     );
@@ -945,7 +1077,28 @@ fn projected_defender_actions(
 }
 
 pub fn detect_duel(input: &DuelDetectionInput<'_>) -> DetectionResult {
-    let base_exposure: f64 = match input.holder_action {
+    let carrier_end = step_toward(
+        input.holder_pos,
+        input.carry_target,
+        input.carrier_step_distance,
+    );
+    detect_duel_on_segment(
+        input.holder_pos,
+        carrier_end,
+        input.holder_action,
+        input.defenders,
+        input.tackle_range,
+    )
+}
+
+fn detect_duel_on_segment(
+    holder_pos: (f64, f64),
+    carrier_end: (f64, f64),
+    holder_action: &str,
+    defenders: &[DefenderActionInput],
+    tackle_range: f64,
+) -> DetectionResult {
+    let base_exposure: f64 = match holder_action {
         "carry" | "dribble" => 1.0,
         "hold" | "shield" => 0.68,
         "reorient" => 0.58,
@@ -960,37 +1113,36 @@ pub fn detect_duel(input: &DuelDetectionInput<'_>) -> DetectionResult {
             contact_quality: 0.0,
         };
     }
-    let carrier_end = step_toward(
-        input.holder_pos,
-        input.carry_target,
-        input.carrier_step_distance,
-    );
     let mut best_contact = DetectionResult {
         defender_index: None,
         distance: 0.0,
         contact_probability: 0.0,
         contact_quality: 0.0,
     };
-    for defender in input.defenders {
+    for defender in defenders {
         let profile = engagement_profile(defender.action);
-        if profile.engagement_weight <= 0.0 {
+        let closest_distance =
+            simultaneous_closest_distance(holder_pos, carrier_end, defender.pos, defender.new_pos);
+        let physical_body_contact = closest_distance <= PLAYER_BODY_SEPARATION;
+        let physical_smother_contact =
+            defender.is_goalkeeper && defender.action == "smother" && closest_distance <= 2.0;
+        if !physical_body_contact
+            && !physical_smother_contact
+            && profile.engagement_weight <= 0.0
+        {
             continue;
         }
-        let physical_reach = defender_action_physical_reach(input.tackle_range, defender.action);
-        if physical_reach <= 0.0 {
-            continue;
-        }
-        let closest_distance = simultaneous_closest_distance(
-            input.holder_pos,
-            carrier_end,
-            defender.pos,
-            defender.new_pos,
-        );
-        if closest_distance >= physical_reach {
+        let physical_reach = defender_action_physical_reach(tackle_range, defender.action)
+            .max(if physical_body_contact {
+                PLAYER_BODY_SEPARATION
+            } else {
+                0.0
+            });
+        if !physical_smother_contact && closest_distance > physical_reach {
             continue;
         }
         let proximity = 1.0 - smoothstep(physical_reach * 0.34, physical_reach, closest_distance);
-        let start_distance = distance(input.holder_pos, defender.pos);
+        let start_distance = distance(holder_pos, defender.pos);
         let end_distance = distance(carrier_end, defender.new_pos);
         let convergence = smoothstep(
             -physical_reach * 0.20,
@@ -1009,15 +1161,25 @@ pub fn detect_duel(input: &DuelDetectionInput<'_>) -> DetectionResult {
         } else {
             base_exposure
         };
-        let contact_probability = (exposure_multiplier
+        let modeled_contact_probability = (exposure_multiplier
             * profile.engagement_weight
             * (0.18 + 0.82 * proximity)
             * (0.70 + 0.30 * convergence)
             * speed_factor
             * defensive_timing)
             .clamp(0.0, 0.95);
+        let contact_probability = if physical_body_contact || physical_smother_contact {
+            1.0
+        } else {
+            modeled_contact_probability
+        };
+        let outcome_profile = if physical_body_contact && profile.engagement_weight <= 0.0 {
+            engagement_profile("body_challenge")
+        } else {
+            profile
+        };
         let contact_quality = ((0.18 + 0.58 * proximity + 0.24 * convergence)
-            * (0.54 + 0.46 * profile.outcome_commitment))
+            * (0.54 + 0.46 * outcome_profile.outcome_commitment))
             .clamp(0.0, 1.0);
         if contact_probability > best_contact.contact_probability {
             best_contact = DetectionResult {
@@ -1305,14 +1467,17 @@ pub fn detect_interception(input: &InterceptionDetectionInput<'_>) -> DetectionR
 #[cfg(test)]
 mod tests {
     use super::{
-        carrier_body_collision_position, carry_containment_transition, carry_survival_transition,
+        carrier_body_collision_position, carry_contact_transition_for_segment,
+        carry_containment_transition, carry_survival_transition,
         carry_survival_transition_with_defender_responses, control_interference_probability,
-        detect_duel, duel_outcome_probabilities, pass_release_contact_transition, resolve_duel,
-        track_defensive_pressures, track_defensive_pressures_into, CarryContainmentInput,
-        CarrySurvivalInput, DefenderActionInput, DefensivePressureInput, DuelDetectionInput,
-        DuelOutcome, DuelResolveInput, GoalkeeperSmotherTransition, PLAYER_BODY_SEPARATION,
+        detect_duel, duel_outcome_probabilities, duel_resolution_defender,
+        moving_body_collision_position, pass_release_contact_transition, records_tackle_attempt,
+        resolve_duel, track_defensive_pressures, track_defensive_pressures_into,
+        CarryContainmentInput, CarrySurvivalInput, DefenderActionInput, DefensivePressureInput,
+        DetectionResult, DuelDetectionInput, DuelOutcome, DuelResolveInput,
+        GoalkeeperSmotherTransition, PLAYER_BODY_SEPARATION,
     };
-    use crate::{temporal_option_value, PossessionTransition, TemporalOptionValueInput};
+    use crate::{distance, temporal_option_value, PossessionTransition, TemporalOptionValueInput};
 
     fn defender(
         index: usize,
@@ -1384,6 +1549,57 @@ mod tests {
     }
 
     #[test]
+    fn physical_approach_contact_becomes_a_body_challenge_without_recording_a_tackle() {
+        let approaching = defender(1, (1.4, 0.0), (0.4, 0.0), "approach");
+        let body_contact = duel_resolution_defender(
+            approaching,
+            DetectionResult {
+                defender_index: Some(1),
+                distance: PLAYER_BODY_SEPARATION * 0.5,
+                contact_probability: 1.0,
+                contact_quality: 0.80,
+            },
+        );
+        let non_body_contact = duel_resolution_defender(
+            approaching,
+            DetectionResult {
+                defender_index: Some(1),
+                distance: PLAYER_BODY_SEPARATION + 0.01,
+                contact_probability: 0.8,
+                contact_quality: 0.72,
+            },
+        );
+
+        assert_eq!(body_contact.action, "body_challenge");
+        assert_eq!(non_body_contact.action, "approach");
+        assert!(!records_tackle_attempt(body_contact.action));
+    }
+
+    #[test]
+    fn physical_approach_projection_uses_body_challenge_outcome_probabilities() {
+        let approaching = defender(1, (1.4, 0.0), (0.4, 0.0), "approach");
+        let transition = carry_contact_transition_for_segment(
+            (0.0, 0.0),
+            (2.0, 0.0),
+            82.0,
+            &[approaching],
+            6.0,
+        );
+        let resolved = duel_resolution_defender(approaching, transition.contact);
+        let (attacker_wins, defender_wins, loose_ball) = duel_outcome_probabilities(
+            82.0,
+            &resolved,
+            "carry",
+            transition.contact.contact_quality,
+        );
+
+        assert_eq!(resolved.action, "body_challenge");
+        assert!((transition.retained_probability - attacker_wins).abs() < 1e-9);
+        assert!((transition.opposing_control_probability - defender_wins).abs() < 1e-9);
+        assert!((transition.unresolved_probability - loose_ball).abs() < 1e-9);
+    }
+
+    #[test]
     fn committed_tackle_keeps_a_contact_window_during_pass_release() {
         let defender = defender(1, (0.0, 0.0), (0.2, 0.0), "tackle");
         let pass_contact = detect_duel(&DuelDetectionInput {
@@ -1446,7 +1662,7 @@ mod tests {
     }
 
     #[test]
-    fn close_down_constrains_the_dribble_without_creating_contact() {
+    fn close_down_constrains_the_dribble_and_resolves_real_body_contact() {
         let defenders = [defender(3, (5.0, 0.0), (3.0, 0.0), "close_down")];
         let duel = detect_duel(&DuelDetectionInput {
             holder_pos: (0.0, 0.0),
@@ -1462,8 +1678,13 @@ mod tests {
             defenders: &defenders,
         });
 
-        assert_eq!(duel.defender_index, None);
-        assert_eq!(duel.contact_probability, 0.0);
+        assert_eq!(duel.defender_index, Some(3));
+        assert_eq!(duel.contact_probability, 1.0);
+        assert_eq!(
+            duel_resolution_defender(defenders[0], duel).action,
+            "body_challenge"
+        );
+        assert!(!records_tackle_attempt("body_challenge"));
         assert!(
             containment.constrained_control_probability > 0.0,
             "a close-down that occupies the carrier's path must constrain progress"
@@ -1556,6 +1777,100 @@ mod tests {
     }
 
     #[test]
+    fn swept_body_collision_uses_the_same_contact_time_for_both_players() {
+        let carrier_start = (0.0, 0.0);
+        let carrier_end = (5.0, 0.0);
+        let defender_start = (2.5, 2.0);
+        let defender_end = (2.5, -2.0);
+        let carrier_contact = moving_body_collision_position(
+            carrier_start,
+            carrier_end,
+            defender_start,
+            defender_end,
+        );
+        let defender_contact = moving_body_collision_position(
+            defender_start,
+            defender_end,
+            carrier_start,
+            carrier_end,
+        );
+
+        assert!(
+            (distance(carrier_contact, defender_contact) - PLAYER_BODY_SEPARATION).abs() <= 1e-9
+        );
+        let carrier_progress = distance(carrier_start, carrier_contact)
+            / distance(carrier_start, carrier_end);
+        let defender_progress = distance(defender_start, defender_contact)
+            / distance(defender_start, defender_end);
+        assert!((carrier_progress - defender_progress).abs() <= 1e-9);
+    }
+
+    #[test]
+    fn overlapping_bodies_are_separated_when_their_motion_keeps_converging() {
+        let mover = moving_body_collision_position(
+            (0.0, 0.0),
+            (1.0, 0.0),
+            (0.5, 0.0),
+            (0.5, 0.0),
+        );
+
+        assert!(
+            (distance(mover, (0.5, 0.0)) - PLAYER_BODY_SEPARATION).abs() <= 1e-9
+        );
+        assert!(mover.0 < 0.0);
+    }
+
+    #[test]
+    fn overlapping_bodies_can_naturally_disengage_when_motion_is_separating() {
+        let mover = moving_body_collision_position(
+            (0.0, 0.0),
+            (-1.0, 0.0),
+            (0.5, 0.0),
+            (0.5, 0.0),
+        );
+
+        assert_eq!(mover, (-1.0, 0.0));
+    }
+
+    #[test]
+    fn swept_body_collision_stops_a_defender_crossing_from_behind() {
+        let defenders = [defender(4, (-1.0, -3.0), (4.5, -0.5), "approach")];
+
+        let blocked_position = carrier_body_collision_position((0.0, 0.0), (5.0, 0.0), &defenders);
+
+        assert!(
+            blocked_position.0 < 5.0,
+            "body collision is independent of whether the defender began ahead of the carrier"
+        );
+        let progress = blocked_position.0 / 5.0;
+        let defender_at_contact = (
+            -1.0 + (4.5 + 1.0) * progress,
+            -3.0 + (-0.5 + 3.0) * progress,
+        );
+        assert!(
+            (distance(blocked_position, defender_at_contact) - PLAYER_BODY_SEPARATION).abs()
+                <= 1e-9
+        );
+    }
+
+    #[test]
+    fn swept_body_collision_stops_at_the_earliest_of_multiple_moving_contacts() {
+        let defenders = [
+            defender(4, (3.8, 2.0), (3.8, -2.0), "hold_position"),
+            defender(5, (2.2, 2.0), (2.2, -2.0), "hold_position"),
+        ];
+
+        let blocked_position = carrier_body_collision_position((0.0, 0.0), (5.0, 0.0), &defenders);
+        let early_only = carrier_body_collision_position((0.0, 0.0), (5.0, 0.0), &defenders[1..]);
+
+        assert_eq!(
+            blocked_position, early_only,
+            "body blocking must resolve the first contact in continuous time, independent of defender iteration order"
+        );
+        assert!(blocked_position.0 < 2.2);
+    }
+
+    #[test]
     fn distant_future_path_crossing_is_not_a_current_tick_duel() {
         let defenders = [defender(4, (8.0, 0.0), (7.0, 0.0), "tackle")];
         let result = detect_duel(&DuelDetectionInput {
@@ -1585,6 +1900,59 @@ mod tests {
         assert_eq!(result.defender_index, Some(5));
         assert!(result.distance < 1.7);
         assert!(result.contact_probability > 0.2);
+    }
+
+    #[test]
+    fn swept_body_overlap_always_enters_duel_resolution() {
+        let defenders = [defender(5, (1.5, 2.0), (1.5, -2.0), "approach")];
+        let result = detect_duel(&DuelDetectionInput {
+            holder_pos: (0.0, 0.0),
+            holder_action: "carry",
+            carry_target: (6.0, 0.0),
+            carrier_step_distance: 3.0,
+            defenders: &defenders,
+            tackle_range: 6.0,
+        });
+
+        assert_eq!(result.defender_index, Some(5));
+        assert!(result.distance <= PLAYER_BODY_SEPARATION);
+        assert_eq!(
+            result.contact_probability, 1.0,
+            "a physical swept overlap must resolve a duel instead of allowing players to pass through each other"
+        );
+    }
+
+    #[test]
+    fn swept_body_overlap_is_physical_even_for_containment_actions() {
+        for action in [
+            "close_down",
+            "block_lane",
+            "mark_runner",
+            "pursuit",
+            "hold_position",
+        ] {
+            let defenders = [defender(5, (1.5, 2.0), (1.5, -2.0), action)];
+            let result = detect_duel(&DuelDetectionInput {
+                holder_pos: (0.0, 0.0),
+                holder_action: "carry",
+                carry_target: (6.0, 0.0),
+                carrier_step_distance: 3.0,
+                defenders: &defenders,
+                tackle_range: 6.0,
+            });
+
+            assert_eq!(
+                result.defender_index,
+                Some(5),
+                "{action} cannot pass through the carrier without physical contact"
+            );
+            assert!(result.distance <= PLAYER_BODY_SEPARATION);
+            assert_eq!(result.contact_probability, 1.0);
+            assert_eq!(
+                duel_resolution_defender(defenders[0], result).action,
+                "body_challenge"
+            );
+        }
     }
 
     #[test]
@@ -1644,7 +2012,10 @@ mod tests {
         assert_eq!(pass.defender_index, Some(5));
         assert!(pass.contact_probability > 0.0);
         assert!(pass.contact_probability < carry.contact_probability);
-        assert_eq!(containment_only.defender_index, None);
+        assert_eq!(
+            containment_only.defender_index, None,
+            "containment still must not fabricate contact outside the body radius"
+        );
         assert_eq!(containment_only.contact_probability, 0.0);
     }
 
@@ -1755,6 +2126,34 @@ mod tests {
             contact_quality,
         );
         assert_eq!(baseline, unchanged);
+    }
+
+    #[test]
+    fn goalkeeper_smother_body_overlap_always_creates_a_contact_event() {
+        let goalkeeper = [DefenderActionInput {
+            index: 0,
+            pos: (6.43, 31.12),
+            new_pos: (6.10, 31.60),
+            action: "smother",
+            speed: 60.0,
+            defence: 23.0,
+            tackling: 25.0,
+            gk_saving: 103.0,
+            gk_positioning: 94.0,
+            gk_reaction: 97.0,
+            is_goalkeeper: true,
+        }];
+        let contact = detect_duel(&DuelDetectionInput {
+            holder_pos: (6.30, 32.90),
+            holder_action: "carry",
+            carry_target: (3.0, 41.7),
+            carrier_step_distance: 6.0,
+            defenders: &goalkeeper,
+            tackle_range: 6.0,
+        });
+
+        assert_eq!(contact.defender_index, Some(0));
+        assert_eq!(contact.contact_probability, 1.0);
     }
 
     #[test]
@@ -2014,7 +2413,7 @@ mod tests {
     }
 
     #[test]
-    fn responsive_defenders_reduce_long_carry_survival_without_turning_lane_blockers_into_tacklers()
+    fn responsive_defenders_reduce_long_carry_survival_without_recording_lane_blocks_as_tackles()
     {
         let stale_defenders = [defender(6, (14.0, 7.0), (14.0, 7.0), "tackle")];
         let input = CarrySurvivalInput {
@@ -2056,9 +2455,16 @@ mod tests {
             "closed-loop response must expose future carry contact: stale={stale:?}, responsive={responsive:?}"
         );
         assert!(responsive.opposing_control_probability > 0.0);
-        assert_eq!(lane_blocker.peak_contact_probability, 0.0);
-        assert_eq!(lane_blocker.opposing_control_probability, 0.0);
-        assert_eq!(lane_blocker.unresolved_probability, 0.0);
+        assert_eq!(
+            lane_blocker.peak_contact_probability, 1.0,
+            "a lane blocker whose swept body crosses the carry path must resolve contact"
+        );
+        assert!(
+            lane_blocker.opposing_control_probability > 0.0
+                || lane_blocker.unresolved_probability > 0.0
+        );
+        assert!(!records_tackle_attempt("block_lane"));
+        assert!(!records_tackle_attempt("body_challenge"));
         assert!(
             lane_blocker.constrained_control_probability > 0.0,
             "lane blocking must move retained control into a constrained state: {lane_blocker:?}"

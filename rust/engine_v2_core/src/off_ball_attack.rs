@@ -172,7 +172,7 @@ pub struct OffBallAttackChoiceComponents {
     pub dist_to_ball: f64,
 }
 
-pub const MAX_FIXED_OFF_BALL_ATTACK_CANDIDATES: usize = 61;
+pub const MAX_FIXED_OFF_BALL_ATTACK_CANDIDATES: usize = 62;
 const MAX_FIXED_OFF_BALL_ATTACK_GENERATED_CANDIDATES: usize =
     MAX_FIXED_OFF_BALL_ATTACK_CANDIDATES - 1;
 
@@ -181,6 +181,38 @@ fn pitch_clamp(pos: (f64, f64), pitch_length: f64, pitch_width: f64) -> (f64, f6
         pos.0.clamp(0.5, pitch_length - 0.5),
         pos.1.clamp(0.5, pitch_width - 0.5),
     )
+}
+
+fn role_aligned_support_value(
+    pos: (f64, f64),
+    anchor: (f64, f64),
+    ball_pos: (f64, f64),
+    carrier_progress: f64,
+    pitch_width: f64,
+) -> f64 {
+    let support_angle_dist = distance(pos, ball_pos);
+    let role_from_ball = (anchor.0 - ball_pos.0, anchor.1 - ball_pos.1);
+    let candidate_from_ball = (pos.0 - ball_pos.0, pos.1 - ball_pos.1);
+    let role_from_ball_distance =
+        (role_from_ball.0 * role_from_ball.0 + role_from_ball.1 * role_from_ball.1).sqrt();
+    let role_alignment = if role_from_ball_distance > 1e-9 && support_angle_dist > 1e-9 {
+        ((role_from_ball.0 * candidate_from_ball.0
+            + role_from_ball.1 * candidate_from_ball.1)
+            / (role_from_ball_distance * support_angle_dist))
+            .clamp(-1.0, 1.0)
+            .mul_add(0.5, 0.5)
+    } else {
+        0.0
+    };
+    let support_distance =
+        8.0 + 8.0 * smoothstep(0.30, 0.78, carrier_progress.clamp(0.0, 1.0));
+    let support_distance_value =
+        (1.0 - (support_angle_dist - support_distance).abs() / support_distance.max(1.0))
+            .max(0.0);
+    support_distance_value
+        * (0.45 + 0.55 * role_alignment)
+        * (1.0
+            - ((pos.1 - pitch_width / 2.0).abs() / (pitch_width / 2.0)).min(1.0) * 0.20)
 }
 
 fn emit_off_ball_attack_anchor_candidates<F>(input: &OffBallRawGenerationInput<'_>, emit: &mut F)
@@ -275,6 +307,26 @@ where
         input.anchor.0 * (1.0 - support_pull) + ball_support_x * support_pull,
         input.anchor.1 * (1.0 - support_pull) + ball_support_y * support_pull,
     );
+    let role_from_ball = (
+        input.anchor.0 - input.ball_pos.0,
+        input.anchor.1 - input.ball_pos.1,
+    );
+    let role_from_ball_distance =
+        (role_from_ball.0 * role_from_ball.0 + role_from_ball.1 * role_from_ball.1).sqrt();
+    if role_from_ball_distance > 1e-9 {
+        let support_distance = (role_from_ball_distance * 0.42).clamp(6.0, 12.0);
+        let support_pos = (
+            input.ball_pos.0 + role_from_ball.0 / role_from_ball_distance * support_distance,
+            input.ball_pos.1 + role_from_ball.1 / role_from_ball_distance * support_distance,
+        );
+        emit(OffBallAttackCandidateInput {
+            pos: support_pos,
+            anchor_pos: (
+                input.anchor.0 * 0.45 + support_pos.0 * 0.55,
+                input.anchor.1 * 0.45 + support_pos.1 * 0.55,
+            ),
+        });
+    }
     for sample in input.support_samples {
         let angle = sample.angle_unit * std::f64::consts::TAU;
         let radius = sample.radius_unit.powf(0.7) * (7.0 + 15.0 * role_progress);
@@ -295,75 +347,62 @@ where
     } else {
         (input.pitch_length - input.ball_pos.0) / input.pitch_length
     };
-    if ball_progress > 0.68 && !input.is_defender {
-        let side_sign = if input.anchor.1 >= input.pitch_width / 2.0 {
-            1.0
-        } else {
-            -1.0
-        };
-        let weak_side = (-width_signed
-            * ((input.ball_pos.1 - input.pitch_width / 2.0) / (input.pitch_width / 2.0)))
-            .clamp(0.0, 1.0);
-        let support_centers = [
-            (
-                support_center.0 * 0.55 + input.ball_pos.0 * 0.45,
-                support_center.1 * 0.55 + input.ball_pos.1 * 0.45,
-            ),
-            (
-                input.anchor.0 * 0.35 + input.ball_pos.0 * 0.65,
-                input.anchor.1 * 0.45 + input.ball_pos.1 * 0.55,
-            ),
-        ];
-        let angle_bias = (input.pitch_width / 2.0 - input.ball_pos.1).atan2(10.0);
-        let support_angles = [
-            angle_bias - 1.65,
-            angle_bias - 0.95,
-            angle_bias - 0.35,
-            angle_bias,
-            angle_bias + 0.35,
-            angle_bias + 0.95,
-            angle_bias + 1.65,
-        ];
-        let support_radii = [
-            6.0,
-            10.0 + 3.0 * smoothstep(0.72, 0.88, ball_progress),
-            15.0 + 5.0 * smoothstep(0.70, 0.90, ball_progress),
-        ];
-        for center in support_centers {
-            for radius in support_radii {
-                for angle in support_angles {
-                    let sx = center.0 - forward_dir * angle.cos() * radius;
-                    let sy = center.1 + angle.sin() * radius;
-                    emit(OffBallAttackCandidateInput {
-                        pos: (sx, sy),
-                        anchor_pos: (sx, sy),
-                    });
-                }
-            }
-        }
-        if width_factor > 0.38 && role_progress > 0.58 {
-            let arrival_t = ((ball_progress - 0.68) / 0.20).clamp(0.0, 1.0);
-            let arrival_depth = 6.0 + 7.0 * arrival_t;
-            let center_lane = input.pitch_width / 2.0;
-            let half_space =
-                center_lane + side_sign * input.pitch_width * (0.06 + 0.06 * (1.0 - weak_side));
-            let central_arrival_x = input.ball_pos.0 - forward_dir * arrival_depth;
-            for sy in [half_space, center_lane] {
-                emit(OffBallAttackCandidateInput {
-                    pos: (central_arrival_x, sy),
-                    anchor_pos: (central_arrival_x, sy),
-                });
-            }
-            if weak_side > 0.18 {
-                let far_post_x = input.ball_pos.0 + forward_dir * (2.0 + 4.0 * arrival_t);
-                let far_post_y = center_lane + side_sign * input.pitch_width * 0.08;
-                emit(OffBallAttackCandidateInput {
-                    pos: (far_post_x, far_post_y),
-                    anchor_pos: (far_post_x, far_post_y),
-                });
-            }
-        }
+    let attacking_support_activation =
+        smoothstep(0.58, 0.78, ball_progress) * if input.is_defender { 0.0 } else { 1.0 };
+    let side_sign = if input.anchor.1 >= input.pitch_width / 2.0 {
+        1.0
+    } else {
+        -1.0
+    };
+    let weak_side = (-width_signed
+        * ((input.ball_pos.1 - input.pitch_width / 2.0) / (input.pitch_width / 2.0)))
+        .clamp(0.0, 1.0);
+    let arrival_t = smoothstep(0.58, 0.88, ball_progress);
+    let wide_arrival_activation = attacking_support_activation
+        * smoothstep(0.20, 0.55, width_factor)
+        * smoothstep(0.42, 0.72, role_progress);
+    let arrival_depth = 6.0 + 7.0 * arrival_t;
+    let center_lane = input.pitch_width / 2.0;
+    let half_space =
+        center_lane + side_sign * input.pitch_width * (0.06 + 0.06 * (1.0 - weak_side));
+    let central_arrival_x = input.ball_pos.0 - forward_dir * arrival_depth;
+    let base_arrivals = [
+        (
+            support_center.0 - forward_dir * 4.0,
+            support_center.1 + side_sign * 3.0,
+        ),
+        (
+            support_center.0 + forward_dir * 2.0,
+            support_center.1 + (center_lane - support_center.1) * 0.35,
+        ),
+    ];
+    for (base, sy) in base_arrivals.into_iter().zip([half_space, center_lane]) {
+        let arrival = (
+            base.0 + (central_arrival_x - base.0) * wide_arrival_activation,
+            base.1 + (sy - base.1) * wide_arrival_activation,
+        );
+        emit(OffBallAttackCandidateInput {
+            pos: arrival,
+            anchor_pos: arrival,
+        });
     }
+    let far_post_activation = wide_arrival_activation * smoothstep(0.0, 0.45, weak_side);
+    let far_post = (
+        input.ball_pos.0 + forward_dir * (2.0 + 4.0 * arrival_t),
+        center_lane + side_sign * input.pitch_width * 0.08,
+    );
+    let far_post_base = (
+        support_center.0,
+        support_center.1 - side_sign * 4.0,
+    );
+    let far_post = (
+        far_post_base.0 + (far_post.0 - far_post_base.0) * far_post_activation,
+        far_post_base.1 + (far_post.1 - far_post_base.1) * far_post_activation,
+    );
+    emit(OffBallAttackCandidateInput {
+        pos: far_post,
+        anchor_pos: far_post,
+    });
 }
 
 pub fn generate_off_ball_attack_support_candidates(
@@ -524,11 +563,13 @@ fn score_off_ball_attack_candidate(
         (input.pitch_length - input.ball_pos.0) / input.pitch_length
     };
     let support_angle_dist = distance(pos, input.ball_pos);
-    let support_angle_value = ((carrier_progress - 0.68) / 0.22).clamp(0.0, 1.0)
-        * (1.0
-            - ((pos.1 - input.pitch_width / 2.0).abs() / (input.pitch_width / 2.0)).min(1.0)
-                * 0.35)
-        * (1.0 - (support_angle_dist - 16.0).abs() / 18.0).max(0.0);
+    let support_angle_value = role_aligned_support_value(
+        pos,
+        input.anchor,
+        input.ball_pos,
+        carrier_progress,
+        input.pitch_width,
+    );
     let cutback_depth = (input.ball_pos.0 - pos.0) * forward_dir;
     let carrier_width =
         (input.ball_pos.1 - input.pitch_width / 2.0).abs() / (input.pitch_width / 2.0);
@@ -841,13 +882,111 @@ pub fn choose_off_ball_attack_target(
 mod tests {
     use super::{
         choose_off_ball_attack_target, choose_off_ball_attack_target_from_scored,
+        distance,
         generate_off_ball_attack_raw_candidates, generate_off_ball_attack_raw_candidates_into,
-        score_off_ball_attack_candidates, score_off_ball_attack_candidates_into,
+        generate_off_ball_attack_support_candidates, score_off_ball_attack_candidates,
+        score_off_ball_attack_candidates_into, role_aligned_support_value,
         OffBallAttackBatchInput, OffBallAttackCandidateInput, OffBallAttackCandidateOutput,
         OffBallAttackChoiceInput, OffBallAttackGoalInput, OffBallRawGenerationInput,
         OffBallTeammateInput, RandomPolarSample, MAX_FIXED_OFF_BALL_ATTACK_CANDIDATES,
         MAX_FIXED_OFF_BALL_ATTACK_GENERATED_CANDIDATES,
     };
+
+    #[test]
+    fn build_up_support_includes_a_role_aligned_near_option() {
+        let input = OffBallRawGenerationInput {
+            anchor: (42.0, 46.0),
+            ball_pos: (28.0, 34.0),
+            attacking_right: true,
+            pitch_width: 68.0,
+            pitch_length: 105.0,
+            is_defender: false,
+            has_ball_carrier: true,
+            anchor_samples: &[],
+            support_samples: &[],
+        };
+
+        let candidates = generate_off_ball_attack_support_candidates(&input);
+
+        assert_eq!(candidates.len(), 4);
+        let candidate = candidates
+            .iter()
+            .min_by(|left, right| {
+                distance(left.pos, input.ball_pos)
+                    .total_cmp(&distance(right.pos, input.ball_pos))
+            })
+            .copied()
+            .expect("support generation must include a near option");
+        let distance_to_ball = distance(candidate.pos, input.ball_pos);
+        let role_direction = (
+            input.anchor.0 - input.ball_pos.0,
+            input.anchor.1 - input.ball_pos.1,
+        );
+        let candidate_direction = (
+            candidate.pos.0 - input.ball_pos.0,
+            candidate.pos.1 - input.ball_pos.1,
+        );
+        assert!((6.0..=12.0).contains(&distance_to_ball));
+        assert!(
+            (role_direction.0 * candidate_direction.1
+                - role_direction.1 * candidate_direction.0)
+                .abs()
+                < 1e-9
+        );
+        assert!(
+            role_direction.0 * candidate_direction.0
+                + role_direction.1 * candidate_direction.1
+                > 0.0
+        );
+    }
+
+    #[test]
+    fn final_third_support_candidates_do_not_jump_at_an_arbitrary_progress_boundary() {
+        let candidates_at = |ball_x| {
+            generate_off_ball_attack_support_candidates(&OffBallRawGenerationInput {
+                anchor: (78.0, 52.0),
+                ball_pos: (ball_x, 12.0),
+                attacking_right: true,
+                pitch_width: 68.0,
+                pitch_length: 105.0,
+                is_defender: false,
+                has_ball_carrier: true,
+                anchor_samples: &[],
+                support_samples: &[],
+            })
+        };
+        let before = candidates_at(71.39);
+        let after = candidates_at(71.41);
+
+        assert_eq!(
+            before.len(),
+            after.len(),
+            "available support topology must not change discontinuously when the ball crosses a field-coordinate threshold"
+        );
+        for (before, after) in before.iter().zip(&after) {
+            assert!(
+                distance(before.pos, after.pos) < 0.05,
+                "nearby ball states must produce nearby support opportunities: before={before:?}, after={after:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn role_aligned_support_distance_expands_continuously_with_attack_progress() {
+        let ball_pos = (28.0, 34.0);
+        let anchor = (48.0, 44.0);
+        let near = (35.2, 37.6);
+        let far = (42.4, 41.2);
+
+        assert!(
+            role_aligned_support_value(near, anchor, ball_pos, 0.25, 68.0)
+                > role_aligned_support_value(far, anchor, ball_pos, 0.25, 68.0)
+        );
+        assert!(
+            role_aligned_support_value(far, anchor, ball_pos, 0.85, 68.0)
+                > role_aligned_support_value(near, anchor, ball_pos, 0.85, 68.0)
+        );
+    }
 
     #[test]
     fn fixed_off_ball_attack_kernel_matches_dynamic_generation_scoring_and_selection() {

@@ -49,9 +49,45 @@ def _distance(a: list[float], b: list[float]) -> float:
     return ((a[0] - b[0]) ** 2 + (a[1] - b[1]) ** 2) ** 0.5
 
 
+def _weighted_pass_success_rate(matches: list[dict], team: str) -> float:
+    attempted = sum(int(match[f"{team}_passes"]) for match in matches)
+    completed = sum(int(match[f"{team}_passes_completed"]) for match in matches)
+    return round(completed / max(attempted, 1) * 100.0, 3)
+
+
+def _long_shot_diagnostics(events: list[dict]) -> dict:
+    shots = [event for event in events if event.get("event_type") == "shot"]
+    long_shots = [
+        event
+        for event in shots
+        if event.get("origin") is not None
+        and event.get("target") is not None
+        and _distance(event["origin"], event["target"]) > 50.0
+    ]
+    return {
+        "count": len(long_shots),
+        "share_of_shots": round(len(long_shots) / max(len(shots), 1), 4),
+        "xg": round(
+            sum(
+                float(event.get("xg_exact", event.get("xg", 0.0)) or 0.0)
+                for event in long_shots
+            ),
+            4,
+        ),
+    }
+
+
 def _scan_match(response: dict) -> dict:
-    entries = response["trace"]["entries"]
     events = response["events"]
+    event_xg_by_team = {
+        team: sum(
+            float(event.get("xg_exact", event.get("xg", 0.0)) or 0.0)
+            for event in events
+            if event.get("team_side") == team
+            and event.get("event_type") == "shot"
+        )
+        for team in ("home", "away")
+    }
     same_position_seconds: dict[str, int] = {}
     max_same_position_seconds = 0
     prior_holder: tuple[str, list[float], float] | None = None
@@ -85,20 +121,13 @@ def _scan_match(response: dict) -> dict:
         )
         prior_holder = (holder_key, pos, time_value)
 
-    long_shots = [
+    long_shots = _long_shot_diagnostics(events)
+    attacker_wins = [
         event
         for event in events
-        if event["event_type"] == "shot"
-        and event["origin"] is not None
-        and event["target"] is not None
-        and _distance(event["origin"], event["target"]) > 50.0
+        if event.get("event_type") == "duel"
+        and event.get("outcome") in {"won", "retained", "released"}
     ]
-    attacker_wins = [
-        entry
-        for entry in entries
-        if entry.get("event") == "duel" and entry.get("outcome") == "attacker_wins"
-    ]
-    carries = [entry for entry in entries if entry.get("action") == "carry"]
     home_stats = response["home_stats"]
     away_stats = response["away_stats"]
     return {
@@ -108,16 +137,23 @@ def _scan_match(response: dict) -> dict:
         "away_possession": response["away_stats"]["possession"],
         "home_shots": home_stats["shots"],
         "away_shots": away_stats["shots"],
-        "home_xg": home_stats["xg"],
-        "away_xg": away_stats["xg"],
-        "home_pass_success_rate": home_stats["pass_success_rate"],
-        "away_pass_success_rate": away_stats["pass_success_rate"],
+        "home_shots_on_target": home_stats["shots_on_target"],
+        "away_shots_on_target": away_stats["shots_on_target"],
+        "home_xg": event_xg_by_team["home"],
+        "away_xg": event_xg_by_team["away"],
+        "home_passes": home_stats["passes"],
+        "away_passes": away_stats["passes"],
+        "home_passes_completed": home_stats["passes_completed"],
+        "away_passes_completed": away_stats["passes_completed"],
         "home_tackles": home_stats["tackles"],
         "away_tackles": away_stats["tackles"],
         "max_same_position_seconds": max_same_position_seconds,
-        "long_shots_over_50m": len(long_shots),
+        "long_shots_over_50m": long_shots["count"],
+        "long_shot_share": long_shots["share_of_shots"],
+        "long_shot_xg": long_shots["xg"],
         "attacker_won_duels": len(attacker_wins),
-        "carries": len(carries),
+        "carries": int(home_stats.get("carries", 0))
+        + int(away_stats.get("carries", 0)),
     }
 
 
@@ -135,7 +171,7 @@ def main() -> int:
     )
     args = parser.parse_args()
 
-    from psl_core.engine_v2 import EngineConfig
+    from psl_core.engine_v2 import load_config_from_service
     from psl_core.engine_v2.rust_bridge import run_match
     from server.database import Database
     from server.services.game_config import GameConfigService
@@ -151,19 +187,9 @@ def main() -> int:
         try:
             home_cards, home_formation = _build_cards(db, args.home_qq)
             away_cards, away_formation = _build_cards(db, args.away_qq)
-            config = EngineConfig()
-            config.team_communication_enabled = not args.disable_team_communication
             config_service = GameConfigService(db)
-            for key in (
-                "tick_duration",
-                "shot_on_target_base",
-                "gk_save_base",
-                "press_radius",
-                "player_max_speed",
-                "goal_noise_scale",
-                "iq_noise_scale",
-            ):
-                setattr(config, key, type(getattr(config, key))(config_service.get(f"engine_v2.{key}")))
+            config = load_config_from_service(config_service)
+            config.team_communication_enabled = not args.disable_team_communication
 
             matches = []
             for seed in range(args.start_seed, args.start_seed + args.seeds):
@@ -194,10 +220,17 @@ def main() -> int:
         "avg_away_possession": average("away_possession"),
         "avg_home_shots": average("home_shots"),
         "avg_away_shots": average("away_shots"),
+        "avg_home_shots_on_target": average("home_shots_on_target"),
+        "avg_away_shots_on_target": average("away_shots_on_target"),
         "avg_home_xg": average("home_xg"),
         "avg_away_xg": average("away_xg"),
-        "avg_home_pass_success_rate": average("home_pass_success_rate"),
-        "avg_away_pass_success_rate": average("away_pass_success_rate"),
+        "avg_home_passes": average("home_passes"),
+        "avg_away_passes": average("away_passes"),
+        "avg_home_pass_success_rate": _weighted_pass_success_rate(matches, "home"),
+        "avg_away_pass_success_rate": _weighted_pass_success_rate(matches, "away"),
+        "pass_success_rate_definition": (
+            "sample-wide completed passes divided by attempted passes for each side"
+        ),
         "avg_home_tackles": average("home_tackles"),
         "avg_away_tackles": average("away_tackles"),
         "max_same_position_seconds": max(
@@ -208,6 +241,20 @@ def main() -> int:
         ),
         "long_shots_over_50m": sum(
             match["long_shots_over_50m"] for match in matches
+        ),
+        "long_shot_share": round(
+            sum(match["long_shots_over_50m"] for match in matches)
+            / max(
+                sum(match["home_shots"] + match["away_shots"] for match in matches),
+                1,
+            ),
+            4,
+        ),
+        "long_shot_xg": round(sum(match["long_shot_xg"] for match in matches), 4),
+        "long_shot_definition": (
+            "released shot whose recorded origin-to-target distance exceeds 50m; "
+            "reported as a diagnostic, not treated as invalid because extreme attempts "
+            "must retain continuous non-zero possibility"
         ),
         "max_possession_pct": max(
             max(match["home_possession"], match["away_possession"]) for match in matches
@@ -221,8 +268,6 @@ def main() -> int:
     failures = []
     if summary["matches_with_120s_same_position_hold"] > 0:
         failures.append("found held-ball runs at one position for at least 120 seconds")
-    if summary["long_shots_over_50m"] > 0:
-        failures.append("found shots longer than 50m")
     if summary["min_attacker_won_duels"] > 0 and summary["min_carries"] == 0:
         failures.append("attacker-won duels did not produce any carries")
     if failures:

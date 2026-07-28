@@ -155,7 +155,9 @@ class TestMatchService:
         assert "engine_v2.engine_version" not in all_config
         assert "engine_v2.rust_full_match_runner_enabled" not in all_config
         config = load_config_from_service(config_service)
-        assert config.tick_duration == 2.0
+        assert config.tick_duration == 1.0
+        assert config.total_ticks == 5400
+        assert config.half_ticks == 2700
         assert not any(name.startswith("rust_") for name in vars(config))
 
     def test_match_engine_speed_scale_migrates_only_old_defaults_once(self, match_db):
@@ -172,7 +174,7 @@ class TestMatchService:
 
         config_service = GameConfigService(match_db)
 
-        assert config_service.get("engine_v2.player_max_speed") == 18.0
+        assert config_service.get("engine_v2.player_max_speed") == 9.0
         assert config_service.get("engine_v2.ball_pass_speed") == 19.0
         assert json.loads(
             match_db.query_one(
@@ -183,6 +185,37 @@ class TestMatchService:
 
         config_service.set("engine_v2.player_max_speed", 8.0)
         assert GameConfigService(match_db).get("engine_v2.player_max_speed") == 8.0
+
+    def test_match_engine_time_step_migrates_physical_defaults_only_once(self, match_db):
+        from server.services.game_config import GameConfigService
+
+        match_db.execute(
+            'INSERT INTO "global" (Name, Value) VALUES (?, ?)',
+            ("config:engine_v2.tick_duration", json.dumps(2.0)),
+        )
+        match_db.execute(
+            'INSERT INTO "global" (Name, Value) VALUES (?, ?)',
+            ("config:engine_v2.player_max_speed", json.dumps(18.0)),
+        )
+        match_db.execute(
+            'INSERT INTO "global" (Name, Value) VALUES (?, ?)',
+            ("config:engine_v2.ball_pass_speed", json.dumps(19.0)),
+        )
+
+        config_service = GameConfigService(match_db)
+
+        assert config_service.get("engine_v2.tick_duration") == 1.0
+        assert config_service.get("engine_v2.player_max_speed") == 9.0
+        assert config_service.get("engine_v2.ball_pass_speed") == 19.0
+        assert json.loads(
+            match_db.query_one(
+                'SELECT Value FROM "global" WHERE Name = ?',
+                ("config:engine_v2.time_step_version",),
+            )[0]
+        ) == 1
+
+        config_service.set("engine_v2.tick_duration", 2.0)
+        assert GameConfigService(match_db).get("engine_v2.tick_duration") == 2.0
 
     def test_quick_match(self, match_db):
         from server.services.match import MatchService

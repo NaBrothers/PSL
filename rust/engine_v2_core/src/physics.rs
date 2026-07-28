@@ -29,6 +29,52 @@ pub fn interpolate(a: (f64, f64), b: (f64, f64), t: f64) -> (f64, f64) {
     (a.0 + (b.0 - a.0) * t, a.1 + (b.1 - a.1) * t)
 }
 
+pub fn resolve_player_body_overlaps(
+    positions: &mut [(f64, f64)],
+    minimum_separation: f64,
+    pitch_length: f64,
+    pitch_width: f64,
+) {
+    let minimum_separation = minimum_separation.max(0.0);
+    if minimum_separation <= 1e-9 || positions.len() < 2 {
+        return;
+    }
+    for _ in 0..16 {
+        let mut corrected = false;
+        for left_index in 0..positions.len() {
+            for right_index in left_index + 1..positions.len() {
+                let left = positions[left_index];
+                let right = positions[right_index];
+                let delta = (right.0 - left.0, right.1 - left.1);
+                let separation = (delta.0 * delta.0 + delta.1 * delta.1).sqrt();
+                if separation >= minimum_separation - 1e-9 {
+                    continue;
+                }
+                let direction = if separation > 1e-9 {
+                    (delta.0 / separation, delta.1 / separation)
+                } else {
+                    let pair_key = (left_index * positions.len() + right_index) as f64;
+                    let angle = pair_key * 2.399_963_229_728_653;
+                    (angle.cos(), angle.sin())
+                };
+                let correction = (minimum_separation - separation) * 0.5;
+                positions[left_index] = (
+                    (left.0 - direction.0 * correction).clamp(0.5, pitch_length - 0.5),
+                    (left.1 - direction.1 * correction).clamp(0.5, pitch_width - 0.5),
+                );
+                positions[right_index] = (
+                    (right.0 + direction.0 * correction).clamp(0.5, pitch_length - 0.5),
+                    (right.1 + direction.1 * correction).clamp(0.5, pitch_width - 0.5),
+                );
+                corrected = true;
+            }
+        }
+        if !corrected {
+            break;
+        }
+    }
+}
+
 pub fn angle_to_goal(pos: (f64, f64), goal_center: (f64, f64), goal_width: f64) -> f64 {
     let dx = goal_center.0 - pos.0;
     let dy_top = goal_center.1 + goal_width / 2.0 - pos.1;
@@ -397,7 +443,7 @@ pub fn residual_ball_velocity(
     let dx = target.0 - origin.0;
     let dy = target.1 - origin.1;
     let length = (dx * dx + dy * dy).sqrt().max(0.1);
-    let residual = (speed * factor).clamp(0.7, 6.0);
+    let residual = (speed * factor).max(0.7);
     (dx / length * residual, dy / length * residual)
 }
 
@@ -423,6 +469,37 @@ pub fn out_of_bounds_restart(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn player_body_overlap_resolution_separates_a_dense_cluster() {
+        let mut positions = [(52.5, 34.0); 6];
+
+        resolve_player_body_overlaps(&mut positions, 0.9, 105.0, 68.0);
+
+        for left_index in 0..positions.len() {
+            for right_index in left_index + 1..positions.len() {
+                assert!(
+                    distance(positions[left_index], positions[right_index]) >= 0.88,
+                    "players {left_index} and {right_index} remain overlapped: {:?}",
+                    positions
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn player_body_overlap_resolution_is_deterministic() {
+        let mut first = [(0.5, 0.5); 4];
+        let mut second = first;
+
+        resolve_player_body_overlaps(&mut first, 0.9, 105.0, 68.0);
+        resolve_player_body_overlaps(&mut second, 0.9, 105.0, 68.0);
+
+        assert_eq!(first, second);
+        assert!(first
+            .iter()
+            .all(|position| position.0 >= 0.5 && position.1 >= 0.5));
+    }
 
     #[test]
     fn move_toward_matches_python_edge_behavior() {

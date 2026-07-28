@@ -2,6 +2,7 @@ use crate::physics::{distance, smoothstep};
 
 pub const MAX_FIXED_TEAM_DEFENSE_PLAYERS: usize = 11;
 pub const DEFENSE_DEPTH_PROTECTION_BANDS: usize = 3;
+pub const DEFENSE_SPATIAL_THREAT_SAMPLES: usize = 8;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum DefenseTaskKind {
@@ -22,6 +23,7 @@ pub struct DefenseResourceClaim {
     pub depth_protection: [f64; DEFENSE_DEPTH_PROTECTION_BANDS],
     pub wide_balance: [f64; 2],
     pub outlet_coverage: [f64; MAX_FIXED_TEAM_DEFENSE_PLAYERS],
+    pub spatial_suppression: [f64; DEFENSE_SPATIAL_THREAT_SAMPLES],
 }
 
 impl DefenseResourceClaim {
@@ -41,6 +43,9 @@ impl DefenseResourceClaim {
             outlet_coverage: self
                 .outlet_coverage
                 .map(|coverage| coverage.clamp(0.0, 1.0)),
+            spatial_suppression: self
+                .spatial_suppression
+                .map(|suppression| suppression.clamp(0.0, 1.0)),
         }
     }
 }
@@ -54,6 +59,7 @@ pub struct DefenseResourceDemand {
     pub depth_protection: [f64; DEFENSE_DEPTH_PROTECTION_BANDS],
     pub wide_balance: [f64; 2],
     pub outlet_coverage: [f64; MAX_FIXED_TEAM_DEFENSE_PLAYERS],
+    pub spatial_threat: [f64; DEFENSE_SPATIAL_THREAT_SAMPLES],
 }
 
 impl DefenseResourceDemand {
@@ -73,6 +79,7 @@ impl DefenseResourceDemand {
             outlet_coverage: self
                 .outlet_coverage
                 .map(|coverage| coverage.clamp(0.0, 1.0)),
+            spatial_threat: self.spatial_threat.map(|threat| threat.clamp(0.0, 1.0)),
         }
     }
 }
@@ -160,22 +167,6 @@ pub struct TeamDefenseAssignmentOutput {
 pub struct TeamDefenseCoordinationSummary {
     pub objective: f64,
     pub formation_scale: f64,
-}
-
-#[derive(Clone, Copy, Debug)]
-enum CarrierResponsibility {
-    Closure,
-    Engagement,
-}
-
-#[derive(Clone, Copy, Debug)]
-struct SupportedCarrierRequirement {
-    engager_player_index: usize,
-    engager_candidate_index: usize,
-    cover_player_index: usize,
-    cover_candidate_index: usize,
-    responsibility: CarrierResponsibility,
-    minimum_supported_coverage: f64,
 }
 
 fn formation_scale(players: &[TeamDefensePlayerInput<'_>]) -> f64 {
@@ -275,10 +266,97 @@ fn depth_protection_profile(
     })
 }
 
+fn spatial_threat_sample_positions(
+    ball_pos: (f64, f64),
+    carrier_velocity: (f64, f64),
+    own_goal_x: f64,
+    pitch_width: f64,
+) -> [(f64, f64); DEFENSE_SPATIAL_THREAT_SAMPLES] {
+    let goal = (own_goal_x, pitch_width * 0.5);
+    let goal_delta = (goal.0 - ball_pos.0, goal.1 - ball_pos.1);
+    let goal_distance = (goal_delta.0 * goal_delta.0 + goal_delta.1 * goal_delta.1)
+        .sqrt()
+        .max(1e-6);
+    let goal_direction = (goal_delta.0 / goal_distance, goal_delta.1 / goal_distance);
+    let carrier_speed =
+        (carrier_velocity.0 * carrier_velocity.0 + carrier_velocity.1 * carrier_velocity.1).sqrt();
+    let carrier_direction = if carrier_speed > 1e-6 {
+        (
+            carrier_velocity.0 / carrier_speed,
+            carrier_velocity.1 / carrier_speed,
+        )
+    } else {
+        goal_direction
+    };
+    let breakthrough_raw = (
+        0.76 * carrier_direction.0 + 0.24 * goal_direction.0,
+        0.76 * carrier_direction.1 + 0.24 * goal_direction.1,
+    );
+    let breakthrough_norm = (breakthrough_raw.0 * breakthrough_raw.0
+        + breakthrough_raw.1 * breakthrough_raw.1)
+        .sqrt()
+        .max(1e-6);
+    let breakthrough = (
+        breakthrough_raw.0 / breakthrough_norm,
+        breakthrough_raw.1 / breakthrough_norm,
+    );
+    let clamp_position = |position: (f64, f64)| {
+        (
+            position
+                .0
+                .clamp(ball_pos.0.min(own_goal_x), ball_pos.0.max(own_goal_x)),
+            position.1.clamp(0.5, pitch_width - 0.5),
+        )
+    };
+    let point_on_direction = |direction: (f64, f64), sample_distance: f64| {
+        clamp_position((
+            ball_pos.0 + direction.0 * sample_distance,
+            ball_pos.1 + direction.1 * sample_distance,
+        ))
+    };
+    let horizon = goal_distance.min((7.0 + carrier_speed * 2.0).clamp(8.0, 20.0));
+    let goal_channel = |fraction: f64, lateral: f64| {
+        clamp_position((
+            ball_pos.0 + goal_delta.0 * fraction,
+            ball_pos.1 + goal_delta.1 * fraction + lateral,
+        ))
+    };
+    [
+        ball_pos,
+        point_on_direction(breakthrough, horizon * 0.22),
+        point_on_direction(breakthrough, horizon * 0.42),
+        point_on_direction(breakthrough, horizon * 0.64),
+        point_on_direction(breakthrough, horizon * 0.86),
+        goal_channel(0.48, 0.0),
+        goal_channel(0.72, -3.2),
+        goal_channel(0.72, 3.2),
+    ]
+}
+
+fn spatial_suppression_profile(
+    task_kind: DefenseTaskKind,
+    projected_pos: (f64, f64),
+    samples: [(f64, f64); DEFENSE_SPATIAL_THREAT_SAMPLES],
+) -> [f64; DEFENSE_SPATIAL_THREAT_SAMPLES] {
+    let (strength, radius) = match task_kind {
+        DefenseTaskKind::CloseDown => (0.76, 4.4),
+        DefenseTaskKind::Press => (0.94, 3.8),
+        DefenseTaskKind::Pursuit => (0.70, 4.8),
+        DefenseTaskKind::Mark => (0.58, 5.2),
+        DefenseTaskKind::BlockLane => (0.88, 5.6),
+        DefenseTaskKind::RecoverShape => (0.50, 5.8),
+    };
+    samples.map(|sample| {
+        let normalized_distance = distance(projected_pos, sample) / radius;
+        strength * (-normalized_distance * normalized_distance).exp()
+    })
+}
+
 pub fn defense_resource_claim(
     task_kind: DefenseTaskKind,
     projected_pos: (f64, f64),
     ball_pos: (f64, f64),
+    carrier_velocity: (f64, f64),
     own_goal_x: f64,
     pitch_width: f64,
     carrier_closure: f64,
@@ -289,6 +367,45 @@ pub fn defense_resource_claim(
     let goal_side_depth = (projected_pos.0 - ball_pos.0) * defensive_direction;
     let goal_side_fit = smoothstep(-1.2, 6.5, goal_side_depth);
     let local_cover_fit = (-distance_to_ball / 22.0).exp();
+    let carrier_speed =
+        (carrier_velocity.0 * carrier_velocity.0 + carrier_velocity.1 * carrier_velocity.1).sqrt();
+    let goal_direction = (defensive_direction, 0.0);
+    let carrier_direction = if carrier_speed > 1e-6 {
+        (
+            carrier_velocity.0 / carrier_speed,
+            carrier_velocity.1 / carrier_speed,
+        )
+    } else {
+        goal_direction
+    };
+    let breakthrough_direction_raw = (
+        0.78 * carrier_direction.0 + 0.22 * goal_direction.0,
+        0.78 * carrier_direction.1 + 0.22 * goal_direction.1,
+    );
+    let breakthrough_norm = (breakthrough_direction_raw.0 * breakthrough_direction_raw.0
+        + breakthrough_direction_raw.1 * breakthrough_direction_raw.1)
+        .sqrt()
+        .max(1e-6);
+    let breakthrough_direction = (
+        breakthrough_direction_raw.0 / breakthrough_norm,
+        breakthrough_direction_raw.1 / breakthrough_norm,
+    );
+    let candidate_delta = (projected_pos.0 - ball_pos.0, projected_pos.1 - ball_pos.1);
+    let breakthrough_projection =
+        candidate_delta.0 * breakthrough_direction.0 + candidate_delta.1 * breakthrough_direction.1;
+    let breakthrough_perpendicular = (candidate_delta.0 * breakthrough_direction.1
+        - candidate_delta.1 * breakthrough_direction.0)
+        .abs();
+    let breakthrough_length = (6.0 + carrier_speed * 1.8).clamp(7.0, 18.0);
+    let breakthrough_between = smoothstep(0.4, 2.2, breakthrough_projection)
+        * (1.0
+            - smoothstep(
+                breakthrough_length * 0.72,
+                breakthrough_length,
+                breakthrough_projection,
+            ));
+    let breakthrough_corridor = breakthrough_between
+        * (1.0 - smoothstep(1.2, 3.2 + 0.22 * carrier_speed, breakthrough_perpendicular));
     let screen_role = match task_kind {
         DefenseTaskKind::CloseDown => 0.18,
         DefenseTaskKind::Press => 0.0,
@@ -322,6 +439,8 @@ pub fn defense_resource_claim(
     } else {
         wide_balance[1] = balance_role * lateral_fit;
     }
+    let spatial_samples =
+        spatial_threat_sample_positions(ball_pos, carrier_velocity, own_goal_x, pitch_width);
     DefenseResourceClaim {
         carrier_closure: if matches!(
             task_kind,
@@ -331,12 +450,21 @@ pub fn defense_resource_claim(
         } else {
             0.0
         },
-        carrier_engagement: if task_kind == DefenseTaskKind::Press {
+        carrier_engagement: if matches!(
+            task_kind,
+            DefenseTaskKind::CloseDown
+                | DefenseTaskKind::Press
+                | DefenseTaskKind::Mark
+                | DefenseTaskKind::BlockLane
+                | DefenseTaskKind::RecoverShape
+        ) {
             pressure_coverage
         } else {
             0.0
         },
-        cover: screen_role * goal_side_fit * local_cover_fit,
+        cover: screen_role
+            * local_cover_fit
+            * (0.34 * goal_side_fit + 0.66 * breakthrough_corridor),
         lane_screen: lane_role * (0.34 + 0.66 * goal_side_fit) * local_cover_fit,
         depth_protection: depth_protection_profile(
             task_kind,
@@ -347,6 +475,7 @@ pub fn defense_resource_claim(
         ),
         wide_balance,
         outlet_coverage: [0.0; MAX_FIXED_TEAM_DEFENSE_PLAYERS],
+        spatial_suppression: spatial_suppression_profile(task_kind, projected_pos, spatial_samples),
     }
     .clamped()
 }
@@ -355,6 +484,7 @@ pub fn defense_resource_claim_with_outlets(
     task_kind: DefenseTaskKind,
     projected_pos: (f64, f64),
     ball_pos: (f64, f64),
+    carrier_velocity: (f64, f64),
     own_goal_x: f64,
     pitch_width: f64,
     carrier_closure: f64,
@@ -369,6 +499,7 @@ pub fn defense_resource_claim_with_outlets(
         task_kind,
         projected_pos,
         ball_pos,
+        carrier_velocity,
         own_goal_x,
         pitch_width,
         carrier_closure,
@@ -420,6 +551,7 @@ pub fn defense_resource_claim_with_outlets(
 
 pub fn defense_resource_demand_from_visible_threats(
     ball_pos: (f64, f64),
+    carrier_velocity: (f64, f64),
     visible_attackers: &[(f64, f64)],
     own_goal_x: f64,
     pitch_length: f64,
@@ -434,9 +566,39 @@ pub fn defense_resource_demand_from_visible_threats(
     let half_width = (pitch_width * 0.5).max(1.0);
     let goal_distance = distance(ball_pos, (own_goal_x, half_width));
     let goal_proximity = 1.0 - smoothstep(15.0, 54.0, goal_distance);
+    let carrier_speed =
+        (carrier_velocity.0 * carrier_velocity.0 + carrier_velocity.1 * carrier_velocity.1).sqrt();
+    let velocity_toward_goal = if carrier_speed > 1e-6 {
+        ((carrier_velocity.0 / carrier_speed) * forward_to_own_goal).clamp(0.0, 1.0)
+    } else {
+        0.0
+    };
+    let breakthrough_threat =
+        smoothstep(1.2, 5.8, carrier_speed) * (0.30 + 0.70 * velocity_toward_goal);
     let centrality = 1.0 - smoothstep(0.12, 0.82, (ball_pos.1 - half_width).abs() / half_width);
     let depth_demand =
         goal_proximity * (0.34 + 0.66 * centrality) * (0.40 + 0.60 * immediate_threat);
+    let spatial_samples =
+        spatial_threat_sample_positions(ball_pos, carrier_velocity, own_goal_x, pitch_width);
+    let spatial_threat = std::array::from_fn(|sample_index| {
+        let sample = spatial_samples[sample_index];
+        let sample_goal_proximity =
+            1.0 - smoothstep(14.0, 56.0, distance(sample, (own_goal_x, half_width)));
+        let path_weight = match sample_index {
+            0 => 0.88,
+            1 => 0.98,
+            2 => 1.0,
+            3 => 0.94,
+            4 => 0.86,
+            5 => 0.82,
+            _ => 0.68,
+        };
+        if carrier_visible {
+            path_weight * (0.24 + 0.76 * immediate_threat) * (0.54 + 0.46 * sample_goal_proximity)
+        } else {
+            0.0
+        }
+    });
     let mut lane_screen = 0.0_f64;
     let mut wide_balance = [0.06_f64; 2];
     let mut outlet_coverage = [0.0; MAX_FIXED_TEAM_DEFENSE_PLAYERS];
@@ -478,7 +640,8 @@ pub fn defense_resource_demand_from_visible_threats(
             0.0
         },
         cover: if carrier_visible {
-            (0.26 + 0.74 * immediate_threat) * (0.42 + 0.58 * press_intensity)
+            ((0.26 + 0.74 * immediate_threat) * (0.42 + 0.58 * press_intensity))
+                .max(0.38 + 0.62 * breakthrough_threat)
         } else {
             0.0
         },
@@ -486,6 +649,7 @@ pub fn defense_resource_demand_from_visible_threats(
         depth_protection: [0.72, 0.92, 0.68].map(|weight| depth_demand * weight),
         wide_balance,
         outlet_coverage,
+        spatial_threat,
     }
     .clamped()
 }
@@ -496,10 +660,19 @@ fn local_candidate_value(
     scale: f64,
     compactness: f64,
 ) -> f64 {
-    let anchor_stiffness = 0.05 + 0.10 * compactness;
+    let structural_release = candidate
+        .resource_claim
+        .carrier_closure
+        .max(candidate.resource_claim.carrier_engagement)
+        .max(0.65 * candidate.resource_claim.cover);
+    let structural_tension = 1.0 - 0.55 * structural_release;
+    let anchor_stiffness = (0.05 + 0.10 * compactness) * structural_tension;
+    let target_stiffness = (0.020 + 0.045 * compactness) * structural_tension;
     let role_departure = distance(candidate.projected_pos, player.anchor) / scale;
+    let target_departure = (distance(candidate.target, player.anchor) / scale - 1.05).max(0.0);
     candidate.local_value.max(0.0)
         - anchor_stiffness * role_departure * role_departure
+        - target_stiffness * target_departure * target_departure
         - 0.04 * candidate.residual_threat.clamp(0.0, 1.0)
 }
 
@@ -533,6 +706,14 @@ fn resource_claim_distance(left: DefenseResourceClaim, right: DefenseResourceCla
         + (left.lane_screen - right.lane_screen).abs()
         + 0.5 * (left.wide_balance[0] - right.wide_balance[0]).abs()
         + 0.5 * (left.wide_balance[1] - right.wide_balance[1]).abs()
+        + 0.40
+            * left
+                .depth_protection
+                .iter()
+                .zip(right.depth_protection)
+                .map(|(left, right)| (left - right).abs())
+                .sum::<f64>()
+            / DEFENSE_DEPTH_PROTECTION_BANDS as f64
         + 0.35
             * left
                 .outlet_coverage
@@ -541,6 +722,14 @@ fn resource_claim_distance(left: DefenseResourceClaim, right: DefenseResourceCla
                 .map(|(left, right)| (left - right).abs())
                 .sum::<f64>()
             / MAX_FIXED_TEAM_DEFENSE_PLAYERS as f64
+        + 0.70
+            * left
+                .spatial_suppression
+                .iter()
+                .zip(right.spatial_suppression)
+                .map(|(left, right)| (left - right).abs())
+                .sum::<f64>()
+            / DEFENSE_SPATIAL_THREAT_SAMPLES as f64
 }
 
 fn local_intent_deviation_cost(
@@ -625,6 +814,13 @@ fn task_retarget_cost(
         .max(continuity.resource_claim.carrier_engagement)
         .max(continuity.resource_claim.cover)
         .max(continuity.resource_claim.lane_screen)
+        .max(
+            continuity
+                .resource_claim
+                .spatial_suppression
+                .into_iter()
+                .fold(0.0_f64, f64::max),
+        )
         .max(continuity.resource_claim.wide_balance[0])
         .max(continuity.resource_claim.wide_balance[1]);
     continuity.commitment
@@ -640,7 +836,17 @@ fn pair_candidate_penalty(
     scale: f64,
     compactness: f64,
 ) -> f64 {
-    let linkage_stiffness = 0.08 + 0.18 * compactness;
+    let structural_release = left_candidate
+        .resource_claim
+        .carrier_closure
+        .max(left_candidate.resource_claim.carrier_engagement)
+        .max(0.65 * left_candidate.resource_claim.cover)
+        .max(right_candidate.resource_claim.carrier_closure)
+        .max(right_candidate.resource_claim.carrier_engagement)
+        .max(0.65 * right_candidate.resource_claim.cover);
+    let structural_tension = 1.0 - 0.45 * structural_release;
+    let linkage_stiffness = (0.08 + 0.18 * compactness) * structural_tension;
+    let target_linkage_stiffness = (0.055 + 0.120 * compactness) * structural_tension;
     let anchor_distance = distance(left_player.anchor, right_player.anchor);
     let neighborhood_weight = (-anchor_distance / scale).exp();
     let relative_anchor = (
@@ -652,8 +858,14 @@ fn pair_candidate_penalty(
         left_candidate.projected_pos.1 - right_candidate.projected_pos.1,
     );
     let relative_deformation = distance(relative_position, relative_anchor) / scale;
-    let linkage_penalty =
-        linkage_stiffness * neighborhood_weight * relative_deformation * relative_deformation;
+    let relative_target = (
+        left_candidate.target.0 - right_candidate.target.0,
+        left_candidate.target.1 - right_candidate.target.1,
+    );
+    let target_stretch = target_link_stretch_excess(relative_target, anchor_distance, scale);
+    let linkage_penalty = neighborhood_weight
+        * (linkage_stiffness * relative_deformation * relative_deformation
+            + target_linkage_stiffness * target_stretch * target_stretch);
 
     let occupancy =
         (-(distance(left_candidate.projected_pos, right_candidate.projected_pos) / scale).powi(2))
@@ -666,21 +878,40 @@ fn pair_candidate_penalty(
         * task_concentration(right_candidate.task_kind);
     let overlap_penalty = (0.10 + 0.24 * compactness) * target_overlap * task_overlap;
 
-    let shared_future_closure_penalty = if left_candidate.task_kind == DefenseTaskKind::Pursuit
-        && right_candidate.task_kind == DefenseTaskKind::Pursuit
-    {
+    let left_closure = left_candidate.resource_claim.carrier_closure;
+    let right_closure = right_candidate.resource_claim.carrier_closure;
+    let left_engagement = left_candidate.resource_claim.carrier_engagement;
+    let right_engagement = right_candidate.resource_claim.carrier_engagement;
+    let redundant_carrier_responsibility_penalty = if left_closure > 1e-6 && right_closure > 1e-6 {
         let same_closure_window =
             (-(distance(left_candidate.target, right_candidate.target) / 5.0).powi(2)).exp();
-        let redundant_closure = left_candidate
-            .resource_claim
-            .carrier_closure
-            .min(right_candidate.resource_claim.carrier_closure);
-        (0.44 + 0.46 * compactness) * same_closure_window * redundant_closure
+        let redundant_closure = left_closure.min(right_closure);
+        let both_future_pursuit = left_candidate.task_kind == DefenseTaskKind::Pursuit
+            && right_candidate.task_kind == DefenseTaskKind::Pursuit;
+        let both_immediate_engagement = left_engagement > 1e-6 && right_engagement > 1e-6;
+        let responsibility_weight = if both_future_pursuit {
+            0.44 + 0.46 * compactness
+        } else if both_immediate_engagement {
+            0.32 + 0.34 * compactness
+        } else {
+            0.08 + 0.12 * compactness
+        };
+        responsibility_weight * same_closure_window * redundant_closure
     } else {
         0.0
     };
 
-    linkage_penalty + occupancy_penalty + overlap_penalty + shared_future_closure_penalty
+    linkage_penalty + occupancy_penalty + overlap_penalty + redundant_carrier_responsibility_penalty
+}
+
+fn target_link_stretch_excess(
+    relative_target: (f64, f64),
+    anchor_distance: f64,
+    scale: f64,
+) -> f64 {
+    let target_distance =
+        (relative_target.0 * relative_target.0 + relative_target.1 * relative_target.1).sqrt();
+    ((target_distance - anchor_distance) / scale - 0.24).max(0.0)
 }
 
 fn resource_coverage(
@@ -696,6 +927,7 @@ fn resource_coverage(
         depth_protection: [1.0; DEFENSE_DEPTH_PROTECTION_BANDS],
         wide_balance: [1.0, 1.0],
         outlet_coverage: [1.0; MAX_FIXED_TEAM_DEFENSE_PLAYERS],
+        spatial_suppression: [1.0; DEFENSE_SPATIAL_THREAT_SAMPLES],
     };
     let mut best_future_closure = 0.0_f64;
     for (player_index, player) in input.players.iter().enumerate() {
@@ -723,6 +955,10 @@ fn resource_coverage(
         for outlet_index in 0..MAX_FIXED_TEAM_DEFENSE_PLAYERS {
             uncovered.outlet_coverage[outlet_index] *= 1.0 - claim.outlet_coverage[outlet_index];
         }
+        for sample_index in 0..DEFENSE_SPATIAL_THREAT_SAMPLES {
+            uncovered.spatial_suppression[sample_index] *=
+                1.0 - claim.spatial_suppression[sample_index];
+        }
     }
     let immediate_closure = 1.0 - uncovered.carrier_closure;
     DefenseResourceClaim {
@@ -736,6 +972,9 @@ fn resource_coverage(
             1.0 - uncovered.wide_balance[1],
         ],
         outlet_coverage: uncovered.outlet_coverage.map(|uncovered| 1.0 - uncovered),
+        spatial_suppression: uncovered
+            .spatial_suppression
+            .map(|uncovered| 1.0 - uncovered),
     }
 }
 
@@ -756,6 +995,8 @@ fn resource_objective(
     let depth_weight = 0.22 + 0.34 * compactness;
     let balance_weight = 0.30 + 0.36 * (1.0 - compactness);
     let outlet_weight = 0.22 + 0.30 * (1.0 - compactness);
+    let spatial_weight = 0.58 + 0.72 * input.immediate_threat.clamp(0.0, 1.0);
+    let outlet_demand_mass = demand.outlet_coverage.iter().sum::<f64>().max(1.0);
     let engagement_overcommitment =
         (coverage.carrier_engagement - demand.carrier_engagement).max(0.0);
     let closure_overcommitment = (coverage.carrier_closure - demand.carrier_closure).max(0.0);
@@ -778,117 +1019,24 @@ fn resource_objective(
             .zip(coverage.outlet_coverage)
             .map(|(demand, coverage)| demand * outlet_weight * coverage)
             .sum::<f64>()
+            / outlet_demand_mass
+        + demand
+            .spatial_threat
+            .iter()
+            .zip(coverage.spatial_suppression)
+            .map(|(threat, suppression)| threat * spatial_weight * suppression)
+            .sum::<f64>()
+            / DEFENSE_SPATIAL_THREAT_SAMPLES as f64
         - demand.carrier_engagement * exposure_weight * unsupported_engagement
         - demand.carrier_engagement * 0.22 * engagement_overcommitment.powi(2)
         - demand.carrier_closure * 0.14 * closure_overcommitment.powi(2)
 }
 
-fn carrier_responsibility_claim(
-    claim: DefenseResourceClaim,
-    responsibility: CarrierResponsibility,
-) -> f64 {
-    match responsibility {
-        CarrierResponsibility::Closure => claim.carrier_closure,
-        CarrierResponsibility::Engagement => claim.carrier_engagement,
-    }
-}
-
-fn carrier_responsibility_demand(
-    demand: DefenseResourceDemand,
-    responsibility: CarrierResponsibility,
-) -> f64 {
-    match responsibility {
-        CarrierResponsibility::Closure => demand.carrier_closure,
-        CarrierResponsibility::Engagement => demand.carrier_engagement,
-    }
-}
-
-fn supported_carrier_requirement_for(
-    input: &TeamDefenseAssignmentInput<'_>,
-    responsibility: CarrierResponsibility,
-) -> Option<SupportedCarrierRequirement> {
-    let demand = input.resource_demand.clamped();
-    let responsibility_demand = carrier_responsibility_demand(demand, responsibility);
-    if responsibility_demand <= 1e-6 || demand.cover <= 1e-6 {
-        return None;
-    }
-    let mut best: Option<SupportedCarrierRequirement> = None;
-    for (engager_player_index, engager_player) in input.players.iter().enumerate() {
-        for (engager_candidate_index, engager_candidate) in
-            engager_player.candidates.iter().enumerate()
-        {
-            let responsibility_claim =
-                carrier_responsibility_claim(engager_candidate.resource_claim, responsibility);
-            if responsibility_claim <= 1e-6 {
-                continue;
-            }
-            for (cover_player_index, cover_player) in input.players.iter().enumerate() {
-                if engager_player_index == cover_player_index {
-                    continue;
-                }
-                for (cover_candidate_index, cover_candidate) in
-                    cover_player.candidates.iter().enumerate()
-                {
-                    let cover = cover_candidate.resource_claim.cover;
-                    let supported_coverage = responsibility_claim.min(cover);
-                    if supported_coverage <= 1e-6 {
-                        continue;
-                    }
-                    let candidate = SupportedCarrierRequirement {
-                        engager_player_index,
-                        engager_candidate_index,
-                        cover_player_index,
-                        cover_candidate_index,
-                        responsibility,
-                        minimum_supported_coverage: supported_coverage
-                            .min(responsibility_demand)
-                            .min(demand.cover),
-                    };
-                    if best
-                        .map(|current| {
-                            candidate.minimum_supported_coverage
-                                > current.minimum_supported_coverage + 1e-9
-                        })
-                        .unwrap_or(true)
-                    {
-                        best = Some(candidate);
-                    }
-                }
-            }
-        }
-    }
-    best
-}
-
-fn supported_engagement_requirement(
-    input: &TeamDefenseAssignmentInput<'_>,
-) -> Option<SupportedCarrierRequirement> {
-    supported_carrier_requirement_for(input, CarrierResponsibility::Engagement)
-        .or_else(|| supported_carrier_requirement_for(input, CarrierResponsibility::Closure))
-}
-
-fn selection_satisfies_supported_engagement(
-    input: &TeamDefenseAssignmentInput<'_>,
-    selections: &[usize],
-    requirement: Option<SupportedCarrierRequirement>,
-) -> bool {
-    let Some(requirement) = requirement else {
-        return true;
-    };
-    let coverage = resource_coverage(input, selections, None);
-    carrier_responsibility_claim(coverage, requirement.responsibility).min(coverage.cover) + 1e-9
-        >= requirement.minimum_supported_coverage
-}
-
-fn selection_objective_with_supported_engagement(
+fn selection_objective(
     input: &TeamDefenseAssignmentInput<'_>,
     selections: &[usize],
     scale: f64,
-    requirement: Option<SupportedCarrierRequirement>,
 ) -> f64 {
-    if !selection_satisfies_supported_engagement(input, selections, requirement) {
-        return f64::NEG_INFINITY;
-    }
     let compactness = input.compactness.clamp(0.0, 1.0);
     let mut value = 0.0;
 
@@ -926,25 +1074,14 @@ fn selection_objective_with_supported_engagement(
     value
 }
 
-fn selection_objective_after_change_with_supported_engagement(
+fn selection_objective_after_change(
     input: &TeamDefenseAssignmentInput<'_>,
     selections: &[usize],
     scale: f64,
     current_objective: f64,
     player_index: usize,
     candidate_index: usize,
-    requirement: Option<SupportedCarrierRequirement>,
 ) -> f64 {
-    let mut changed = [0usize; MAX_FIXED_TEAM_DEFENSE_PLAYERS];
-    assert!(
-        selections.len() <= changed.len(),
-        "fixed defense responsibility checks support eleven players"
-    );
-    changed[..selections.len()].copy_from_slice(selections);
-    changed[player_index] = candidate_index;
-    if !selection_satisfies_supported_engagement(input, &changed[..selections.len()], requirement) {
-        return f64::NEG_INFINITY;
-    }
     let compactness = input.compactness.clamp(0.0, 1.0);
     let Some(player) = input.players.get(player_index).copied() else {
         return current_objective;
@@ -1001,6 +1138,99 @@ fn selection_objective_after_change_with_supported_engagement(
         - pair_delta
 }
 
+fn improve_with_pair_exchange(
+    input: &TeamDefenseAssignmentInput<'_>,
+    selections: &mut [usize],
+    scale: f64,
+) -> bool {
+    if input.immediate_threat < 0.42 || selections.len() < 2 {
+        return false;
+    }
+    let current_objective = selection_objective(input, selections, scale);
+    let mut best_objective = current_objective;
+    let mut best_exchange: Option<(usize, usize, usize, usize)> = None;
+    for left_player_index in 0..selections.len() {
+        let left_current = selections[left_player_index];
+        let left_alternative = (0..input.players[left_player_index].candidates.len())
+            .filter(|candidate_index| *candidate_index != left_current)
+            .max_by(|left, right| {
+                let left_value = selection_objective_after_change(
+                    input,
+                    selections,
+                    scale,
+                    current_objective,
+                    left_player_index,
+                    *left,
+                );
+                let right_value = selection_objective_after_change(
+                    input,
+                    selections,
+                    scale,
+                    current_objective,
+                    left_player_index,
+                    *right,
+                );
+                left_value
+                    .partial_cmp(&right_value)
+                    .unwrap_or(std::cmp::Ordering::Equal)
+            });
+        let Some(left_alternative) = left_alternative else {
+            continue;
+        };
+        for right_player_index in left_player_index + 1..selections.len() {
+            let right_current = selections[right_player_index];
+            let right_alternative = (0..input.players[right_player_index].candidates.len())
+                .filter(|candidate_index| *candidate_index != right_current)
+                .max_by(|left, right| {
+                    let left_value = selection_objective_after_change(
+                        input,
+                        selections,
+                        scale,
+                        current_objective,
+                        right_player_index,
+                        *left,
+                    );
+                    let right_value = selection_objective_after_change(
+                        input,
+                        selections,
+                        scale,
+                        current_objective,
+                        right_player_index,
+                        *right,
+                    );
+                    left_value
+                        .partial_cmp(&right_value)
+                        .unwrap_or(std::cmp::Ordering::Equal)
+                });
+            let Some(right_alternative) = right_alternative else {
+                continue;
+            };
+            let mut changed = [0usize; MAX_FIXED_TEAM_DEFENSE_PLAYERS];
+            changed[..selections.len()].copy_from_slice(selections);
+            changed[left_player_index] = left_alternative;
+            changed[right_player_index] = right_alternative;
+            let candidate_objective =
+                selection_objective(input, &changed[..selections.len()], scale);
+            if candidate_objective > best_objective + 1e-9 {
+                best_objective = candidate_objective;
+                best_exchange = Some((
+                    left_player_index,
+                    left_alternative,
+                    right_player_index,
+                    right_alternative,
+                ));
+            }
+        }
+    }
+    if let Some((left_player, left_candidate, right_player, right_candidate)) = best_exchange {
+        selections[left_player] = left_candidate;
+        selections[right_player] = right_candidate;
+        true
+    } else {
+        false
+    }
+}
+
 pub fn coordinate_team_defense_into(
     input: &TeamDefenseAssignmentInput<'_>,
     assignments: &mut [TeamDefenseAssignment],
@@ -1019,27 +1249,11 @@ pub fn coordinate_team_defense_into(
     for (index, _) in input.players.iter().enumerate() {
         selections[index] = preferred_candidate_index(input, index);
     }
-    let supported_engagement = supported_engagement_requirement(input);
-    if !selection_satisfies_supported_engagement(
-        input,
-        &selections[..player_count],
-        supported_engagement,
-    ) {
-        if let Some(requirement) = supported_engagement {
-            selections[requirement.engager_player_index] = requirement.engager_candidate_index;
-            selections[requirement.cover_player_index] = requirement.cover_candidate_index;
-        }
-    }
 
     let maximum_sweeps = player_count.saturating_mul(2).max(1);
     for _ in 0..maximum_sweeps {
         let mut changed = false;
-        let mut current_objective = selection_objective_with_supported_engagement(
-            input,
-            &selections[..player_count],
-            scale,
-            supported_engagement,
-        );
+        let mut current_objective = selection_objective(input, &selections[..player_count], scale);
         for player_index in 0..player_count {
             let candidate_count = input.players[player_index].candidates.len();
             if candidate_count == 0 {
@@ -1052,14 +1266,13 @@ pub fn coordinate_team_defense_into(
                 if candidate_index == current_index {
                     continue;
                 }
-                let candidate_value = selection_objective_after_change_with_supported_engagement(
+                let candidate_value = selection_objective_after_change(
                     input,
                     &selections[..player_count],
                     scale,
                     current_objective,
                     player_index,
                     candidate_index,
-                    supported_engagement,
                 );
                 if candidate_value > best_value + 1e-9 {
                     best_index = candidate_index;
@@ -1074,13 +1287,9 @@ pub fn coordinate_team_defense_into(
             break;
         }
     }
+    improve_with_pair_exchange(input, &mut selections[..player_count], scale);
 
-    let objective = selection_objective_with_supported_engagement(
-        input,
-        &selections[..player_count],
-        scale,
-        supported_engagement,
-    );
+    let objective = selection_objective(input, &selections[..player_count], scale);
     for (player_index, player) in input.players.iter().enumerate() {
         let candidate_index = selections[player_index];
         let candidate =
@@ -1124,23 +1333,11 @@ pub fn coordinate_team_defense(
     let mut selections = (0..input.players.len())
         .map(|player_index| preferred_candidate_index(input, player_index))
         .collect::<Vec<_>>();
-    let supported_engagement = supported_engagement_requirement(input);
-    if !selection_satisfies_supported_engagement(input, &selections, supported_engagement) {
-        if let Some(requirement) = supported_engagement {
-            selections[requirement.engager_player_index] = requirement.engager_candidate_index;
-            selections[requirement.cover_player_index] = requirement.cover_candidate_index;
-        }
-    }
 
     let maximum_sweeps = input.players.len().saturating_mul(2).max(1);
     for _ in 0..maximum_sweeps {
         let mut changed = false;
-        let mut current_objective = selection_objective_with_supported_engagement(
-            input,
-            &selections,
-            scale,
-            supported_engagement,
-        );
+        let mut current_objective = selection_objective(input, &selections, scale);
         for player_index in 0..input.players.len() {
             let candidate_count = input.players[player_index].candidates.len();
             if candidate_count == 0 {
@@ -1153,14 +1350,13 @@ pub fn coordinate_team_defense(
                 if candidate_index == current_index {
                     continue;
                 }
-                let candidate_value = selection_objective_after_change_with_supported_engagement(
+                let candidate_value = selection_objective_after_change(
                     input,
                     &selections,
                     scale,
                     current_objective,
                     player_index,
                     candidate_index,
-                    supported_engagement,
                 );
                 if candidate_value > best_value + 1e-9 {
                     best_index = candidate_index;
@@ -1175,13 +1371,9 @@ pub fn coordinate_team_defense(
             break;
         }
     }
+    improve_with_pair_exchange(input, &mut selections, scale);
 
-    let objective = selection_objective_with_supported_engagement(
-        input,
-        &selections,
-        scale,
-        supported_engagement,
-    );
+    let objective = selection_objective(input, &selections, scale);
     let assignments = input
         .players
         .iter()
@@ -1229,8 +1421,8 @@ mod tests {
     use super::{
         coordinate_team_defense, coordinate_team_defense_into, defense_resource_claim,
         defense_resource_claim_with_outlets, defense_resource_demand_from_visible_threats,
-        formation_scale, selection_objective_after_change_with_supported_engagement,
-        selection_objective_with_supported_engagement, supported_engagement_requirement,
+        formation_scale, local_candidate_value, selection_objective,
+        selection_objective_after_change, target_link_stretch_excess, task_retarget_cost,
         DefenseResourceClaim, DefenseResourceDemand, DefenseTaskContinuity, DefenseTaskKind,
         TeamDefenseAssignment, TeamDefenseAssignmentInput, TeamDefenseCandidate,
         TeamDefensePlayerInput, DEFENSE_DEPTH_PROTECTION_BANDS, MAX_FIXED_TEAM_DEFENSE_PLAYERS,
@@ -1542,6 +1734,59 @@ mod tests {
     }
 
     #[test]
+    fn structural_field_yields_to_real_responsibility_not_unclaimed_departure() {
+        let anchor = (40.0, 34.0);
+        let player = TeamDefensePlayerInput {
+            index: 0,
+            anchor,
+            candidates: &[],
+        };
+        let unclaimed = candidate((58.0, 34.0), (52.0, 34.0), 0.80, DefenseTaskKind::Pursuit);
+        let engaged = with_claim(
+            unclaimed,
+            DefenseResourceClaim {
+                carrier_closure: 0.86,
+                carrier_engagement: 0.72,
+                ..DefenseResourceClaim::default()
+            },
+        );
+        let covering = with_claim(
+            unclaimed,
+            DefenseResourceClaim {
+                cover: 0.86,
+                ..DefenseResourceClaim::default()
+            },
+        );
+
+        let unclaimed_value = local_candidate_value(unclaimed, player, 12.0, 0.72);
+        let engaged_value = local_candidate_value(engaged, player, 12.0, 0.72);
+        let covering_value = local_candidate_value(covering, player, 12.0, 0.72);
+
+        assert!(
+            engaged_value > covering_value && covering_value > unclaimed_value,
+            "engagement should release more structural tension than cover, while an unclaimed pursuit remains shape-constrained"
+        );
+    }
+
+    #[test]
+    fn forecast_link_field_resists_separation_without_resisting_compaction() {
+        assert_eq!(
+            target_link_stretch_excess((0.0, 7.0), 12.0, 12.0),
+            0.0,
+            "a compacted neighbor pair must not be pushed back toward its original spacing"
+        );
+        assert_eq!(
+            target_link_stretch_excess((0.0, 14.0), 12.0, 12.0),
+            0.0,
+            "small tactical stretching should remain inside the free zone"
+        );
+        assert!(
+            target_link_stretch_excess((0.0, 20.0), 12.0, 12.0) > 0.0,
+            "a broken neighbor chain should create restoring tension"
+        );
+    }
+
+    #[test]
     fn preserves_separate_marks_when_their_threat_targets_are_distinct() {
         let left = [
             candidate((55.0, 18.0), (47.0, 19.0), 1.00, DefenseTaskKind::Mark),
@@ -1763,29 +2008,21 @@ mod tests {
         let input = assignment_input(&players, 0.65, 0.90);
         let selections = [1, 0, 2];
         let scale = formation_scale(&players);
-        let requirement = supported_engagement_requirement(&input);
-        let current_objective =
-            selection_objective_with_supported_engagement(&input, &selections, scale, requirement);
+        let current_objective = selection_objective(&input, &selections, scale);
 
         for (player_index, player) in players.iter().enumerate() {
             for candidate_index in 0..player.candidates.len() {
-                let incremental = selection_objective_after_change_with_supported_engagement(
+                let incremental = selection_objective_after_change(
                     &input,
                     &selections,
                     scale,
                     current_objective,
                     player_index,
                     candidate_index,
-                    requirement,
                 );
                 let mut changed = selections;
                 changed[player_index] = candidate_index;
-                let full = selection_objective_with_supported_engagement(
-                    &input,
-                    &changed,
-                    scale,
-                    requirement,
-                );
+                let full = selection_objective(&input, &changed, scale);
                 assert!(
                     (incremental.is_infinite() && full.is_infinite())
                         || (incremental - full).abs() <= 1e-10,
@@ -1935,6 +2172,7 @@ mod tests {
                 DefenseResourceClaim {
                     carrier_closure: 0.88,
                     carrier_engagement: 0.82,
+                    spatial_suppression: [0.92, 0.78, 0.24, 0.04, 0.0, 0.0, 0.0, 0.0],
                     ..DefenseResourceClaim::default()
                 },
             ),
@@ -1942,11 +2180,12 @@ mod tests {
                 candidate(
                     (42.0, 34.0),
                     (42.0, 34.0),
-                    0.92,
+                    0.70,
                     DefenseTaskKind::RecoverShape,
                 ),
                 DefenseResourceClaim {
                     lane_screen: 0.66,
+                    spatial_suppression: [0.0, 0.0, 0.06, 0.18, 0.34, 0.42, 0.36, 0.36],
                     ..DefenseResourceClaim::default()
                 },
             ),
@@ -1958,6 +2197,7 @@ mod tests {
                     cover: 0.88,
                     lane_screen: 0.72,
                     wide_balance: [0.0, 0.48],
+                    spatial_suppression: [0.0, 0.18, 0.76, 0.88, 0.62, 0.48, 0.32, 0.50],
                     ..DefenseResourceClaim::default()
                 },
             ),
@@ -1965,11 +2205,12 @@ mod tests {
                 candidate(
                     (41.0, 49.0),
                     (41.0, 49.0),
-                    0.90,
+                    0.70,
                     DefenseTaskKind::RecoverShape,
                 ),
                 DefenseResourceClaim {
                     wide_balance: [0.0, 0.76],
+                    spatial_suppression: [0.0, 0.0, 0.02, 0.10, 0.28, 0.38, 0.26, 0.44],
                     ..DefenseResourceClaim::default()
                 },
             ),
@@ -1997,6 +2238,7 @@ mod tests {
                 cover: 0.74,
                 lane_screen: 0.34,
                 wide_balance: [0.0, 0.22],
+                spatial_threat: [0.94, 0.96, 0.92, 0.84, 0.72, 0.68, 0.52, 0.58],
                 ..DefenseResourceDemand::default()
             },
             local_candidate_indices: Some(&[1, 1]),
@@ -2010,7 +2252,103 @@ mod tests {
                 .map(|assignment| assignment.candidate_index)
                 .collect::<Vec<_>>(),
             vec![0, 0],
-            "when a reachable engager has a separate cover, the team must take the supported pressure responsibility"
+            "near and middle breakthrough threats should make complementary spatial suppression outweigh passive recovery"
+        );
+    }
+
+    #[test]
+    fn deeper_spatial_suppression_can_outweigh_available_press_and_cover() {
+        let press_or_recover = [
+            with_claim(
+                candidate((61.0, 34.0), (58.0, 34.0), 0.72, DefenseTaskKind::Press),
+                DefenseResourceClaim {
+                    carrier_closure: 0.82,
+                    carrier_engagement: 0.78,
+                    spatial_suppression: [0.88, 0.74, 0.20, 0.04, 0.0, 0.0, 0.0, 0.0],
+                    ..DefenseResourceClaim::default()
+                },
+            ),
+            with_claim(
+                candidate(
+                    (46.0, 29.0),
+                    (46.0, 29.0),
+                    0.60,
+                    DefenseTaskKind::RecoverShape,
+                ),
+                DefenseResourceClaim {
+                    lane_screen: 0.72,
+                    depth_protection: [0.18, 0.82, 0.74],
+                    spatial_suppression: [0.02, 0.08, 0.34, 0.74, 0.88, 0.84, 0.76, 0.42],
+                    ..DefenseResourceClaim::default()
+                },
+            ),
+        ];
+        let cover_or_recover = [
+            with_claim(
+                candidate((54.0, 39.0), (52.0, 38.0), 0.66, DefenseTaskKind::BlockLane),
+                DefenseResourceClaim {
+                    cover: 0.84,
+                    lane_screen: 0.62,
+                    spatial_suppression: [0.0, 0.12, 0.58, 0.70, 0.28, 0.18, 0.12, 0.24],
+                    ..DefenseResourceClaim::default()
+                },
+            ),
+            with_claim(
+                candidate(
+                    (45.0, 42.0),
+                    (45.0, 42.0),
+                    0.72,
+                    DefenseTaskKind::RecoverShape,
+                ),
+                DefenseResourceClaim {
+                    lane_screen: 0.68,
+                    depth_protection: [0.16, 0.78, 0.80],
+                    wide_balance: [0.0, 0.46],
+                    spatial_suppression: [0.0, 0.04, 0.22, 0.58, 0.78, 0.82, 0.48, 0.86],
+                    ..DefenseResourceClaim::default()
+                },
+            ),
+        ];
+        let players = [
+            TeamDefensePlayerInput {
+                index: 0,
+                anchor: (48.0, 29.0),
+                candidates: &press_or_recover,
+            },
+            TeamDefensePlayerInput {
+                index: 1,
+                anchor: (47.0, 42.0),
+                candidates: &cover_or_recover,
+            },
+        ];
+
+        let output = coordinate_team_defense(&TeamDefenseAssignmentInput {
+            players: &players,
+            compactness: 0.76,
+            immediate_threat: 0.84,
+            press_intensity: 0.62,
+            resource_demand: DefenseResourceDemand {
+                carrier_closure: 0.62,
+                carrier_engagement: 0.58,
+                cover: 0.62,
+                lane_screen: 0.70,
+                depth_protection: [0.24, 0.86, 0.92],
+                wide_balance: [0.0, 0.28],
+                spatial_threat: [0.12, 0.18, 0.36, 0.82, 0.96, 0.94, 0.84, 0.90],
+                ..DefenseResourceDemand::default()
+            },
+            local_candidate_indices: Some(&[0, 0]),
+            task_continuities: None,
+        });
+
+        assert_eq!(
+            output
+                .assignments
+                .iter()
+                .map(|assignment| assignment.candidate_index)
+                .collect::<Vec<_>>(),
+            vec![1, 1],
+            "press and cover are options, not mandatory roles: both defenders should recover when that removes more of their believed spatial threat"
         );
     }
 
@@ -2021,11 +2359,12 @@ mod tests {
                 candidate((61.0, 34.0), (53.0, 34.0), 0.54, DefenseTaskKind::Press),
                 DefenseResourceClaim {
                     carrier_closure: 0.66,
+                    spatial_suppression: [0.78, 0.62, 0.18, 0.02, 0.0, 0.0, 0.0, 0.0],
                     ..DefenseResourceClaim::default()
                 },
             ),
             with_claim(
-                candidate((49.0, 20.0), (48.0, 20.0), 1.04, DefenseTaskKind::BlockLane),
+                candidate((49.0, 20.0), (48.0, 20.0), 0.68, DefenseTaskKind::BlockLane),
                 DefenseResourceClaim {
                     lane_screen: 0.92,
                     outlet_coverage: [0.86, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
@@ -2035,15 +2374,16 @@ mod tests {
         ];
         let cover_or_lane = [
             with_claim(
-                candidate((52.0, 39.0), (50.0, 38.0), 0.52, DefenseTaskKind::BlockLane),
+                candidate((52.0, 39.0), (50.0, 38.0), 1.18, DefenseTaskKind::BlockLane),
                 DefenseResourceClaim {
                     cover: 0.84,
                     lane_screen: 0.52,
+                    spatial_suppression: [0.0, 0.14, 0.68, 0.84, 0.66, 0.42, 0.32, 0.46],
                     ..DefenseResourceClaim::default()
                 },
             ),
             with_claim(
-                candidate((46.0, 48.0), (46.0, 48.0), 0.98, DefenseTaskKind::Mark),
+                candidate((46.0, 48.0), (46.0, 48.0), 0.56, DefenseTaskKind::Mark),
                 DefenseResourceClaim {
                     lane_screen: 0.88,
                     wide_balance: [0.0, 0.76],
@@ -2090,7 +2430,8 @@ mod tests {
                 lane_screen: 0.84,
                 depth_protection: [0.0; DEFENSE_DEPTH_PROTECTION_BANDS],
                 wide_balance: [0.0, 0.82],
-                outlet_coverage: [0.78, 0.82, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
+                outlet_coverage: [0.30, 0.82, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
+                spatial_threat: [0.88, 0.90, 0.86, 0.78, 0.66, 0.58, 0.42, 0.48],
             },
             local_candidate_indices: Some(&local_indices),
             task_continuities: None,
@@ -2102,7 +2443,7 @@ mod tests {
                 .map(|assignment| assignment.candidate_index)
                 .collect::<Vec<_>>(),
             vec![0, 0, 0],
-            "a reachable approach with independent cover must claim the carrier even when lane alternatives have higher local scores"
+            "complementary suppression of the near and breakthrough samples should outweigh duplicate lane value"
         );
 
         let contact_ready = [
@@ -2111,6 +2452,7 @@ mod tests {
                 DefenseResourceClaim {
                     carrier_closure: 0.88,
                     carrier_engagement: 0.78,
+                    spatial_suppression: [0.94, 0.82, 0.30, 0.04, 0.0, 0.0, 0.0, 0.0],
                     ..DefenseResourceClaim::default()
                 },
             ),
@@ -2156,6 +2498,7 @@ mod tests {
                 depth_protection: [0.0; DEFENSE_DEPTH_PROTECTION_BANDS],
                 wide_balance: [0.0, 0.82],
                 outlet_coverage: [0.78, 0.82, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
+                spatial_threat: [0.94, 0.92, 0.88, 0.80, 0.68, 0.60, 0.44, 0.50],
             },
             local_candidate_indices: Some(&local_indices),
             task_continuities: Some(&continuities),
@@ -2167,7 +2510,7 @@ mod tests {
                 .map(|assignment| assignment.candidate_index)
                 .collect::<Vec<_>>(),
             vec![0, 0, 0],
-            "the same supported presser must remain responsible when its next task has entered contact range"
+            "the same spatially valuable pressure path should remain stable after entering contact range"
         );
     }
 
@@ -2216,6 +2559,61 @@ mod tests {
 
         assert_eq!(output.assignments[0].candidate_index, 1);
         assert_eq!(output.assignments[0].local_intent_cost, 0.0);
+    }
+
+    #[test]
+    fn active_spatial_responsibility_resists_an_uncompensated_role_switch() {
+        let candidates = [
+            with_claim(
+                candidate((55.0, 34.0), (51.0, 34.0), 0.72, DefenseTaskKind::BlockLane),
+                DefenseResourceClaim {
+                    spatial_suppression: [0.04, 0.20, 0.72, 0.88, 0.74, 0.46, 0.24, 0.24],
+                    ..DefenseResourceClaim::default()
+                },
+            ),
+            with_claim(
+                candidate((47.0, 48.0), (47.0, 48.0), 0.75, DefenseTaskKind::Mark),
+                DefenseResourceClaim {
+                    outlet_coverage: [0.0, 0.82, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
+                    spatial_suppression: [0.0, 0.0, 0.02, 0.06, 0.12, 0.16, 0.10, 0.18],
+                    ..DefenseResourceClaim::default()
+                },
+            ),
+        ];
+        let players = [TeamDefensePlayerInput {
+            index: 0,
+            anchor: (48.0, 40.0),
+            candidates: &candidates,
+        }];
+        let continuity = [DefenseTaskContinuity {
+            active: true,
+            target: candidates[0].target,
+            commitment: 0.92,
+            resource_claim: candidates[0].resource_claim,
+        }];
+        let input = TeamDefenseAssignmentInput {
+            players: &players,
+            compactness: 0.72,
+            immediate_threat: 0.78,
+            press_intensity: 0.64,
+            resource_demand: DefenseResourceDemand {
+                spatial_threat: [0.18, 0.42, 0.88, 0.94, 0.82, 0.60, 0.38, 0.38],
+                outlet_coverage: [0.0, 0.36, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
+                ..DefenseResourceDemand::default()
+            },
+            local_candidate_indices: Some(&[1]),
+            task_continuities: Some(&continuity),
+        };
+        let scale = formation_scale(input.players);
+        let role_switch_cost = task_retarget_cost(&input, 0, 1, scale);
+        let output = coordinate_team_defense(&input);
+
+        assert_eq!(output.assignments[0].candidate_index, 0);
+        assert!(
+            role_switch_cost > 0.0,
+            "changing the defended spatial field must be visible to task continuity"
+        );
+        assert_eq!(output.assignments[0].task_retarget_cost, 0.0);
     }
 
     #[test]
@@ -2329,7 +2727,15 @@ mod tests {
         let ball_pos = (58.0, 34.0);
         let threats = [(52.0, 11.0), (53.0, 57.0)];
         let demand = defense_resource_demand_from_visible_threats(
-            ball_pos, &threats, 0.0, 105.0, 68.0, 0.56, 0.54, true,
+            ball_pos,
+            (0.0, 0.0),
+            &threats,
+            0.0,
+            105.0,
+            68.0,
+            0.56,
+            0.54,
+            true,
         );
         assert!(demand.wide_balance[0] > 0.35);
         assert!(demand.wide_balance[1] > 0.35);
@@ -2344,6 +2750,7 @@ mod tests {
                 DefenseTaskKind::Mark,
                 (46.0, 13.0),
                 ball_pos,
+                (0.0, 0.0),
                 0.0,
                 68.0,
                 0.0,
@@ -2361,6 +2768,7 @@ mod tests {
                 DefenseTaskKind::Mark,
                 (46.0, 55.0),
                 ball_pos,
+                (0.0, 0.0),
                 0.0,
                 68.0,
                 0.0,
@@ -2413,6 +2821,7 @@ mod tests {
             DefenseTaskKind::BlockLane,
             (52.0, 20.0),
             ball_pos,
+            (0.0, 0.0),
             0.0,
             68.0,
             0.0,
@@ -2423,6 +2832,7 @@ mod tests {
             DefenseTaskKind::Mark,
             (53.5, 52.5),
             ball_pos,
+            (0.0, 0.0),
             0.0,
             68.0,
             0.0,
@@ -2441,11 +2851,12 @@ mod tests {
     }
 
     #[test]
-    fn close_down_claims_space_without_claiming_ball_contact() {
+    fn close_down_claims_continuous_carrier_engagement() {
         let claim = defense_resource_claim(
             DefenseTaskKind::CloseDown,
             (55.0, 34.0),
             (60.0, 34.0),
+            (0.0, 0.0),
             0.0,
             68.0,
             0.78,
@@ -2453,7 +2864,7 @@ mod tests {
         );
 
         assert_eq!(claim.carrier_closure, 0.78);
-        assert_eq!(claim.carrier_engagement, 0.0);
+        assert_eq!(claim.carrier_engagement, 0.94);
     }
 
     #[test]
@@ -2462,6 +2873,7 @@ mod tests {
             DefenseTaskKind::Pursuit,
             (49.0, 34.0),
             (60.0, 34.0),
+            (0.0, 0.0),
             0.0,
             68.0,
             0.71,
@@ -2472,6 +2884,292 @@ mod tests {
         assert_eq!(
             claim.carrier_engagement, 0.0,
             "future closure must not masquerade as a current tackle responsibility"
+        );
+    }
+
+    #[test]
+    fn cover_claim_tracks_the_carriers_breakthrough_corridor() {
+        let ball = (60.0, 26.0);
+        let carrier_velocity = (-3.2, 2.4);
+        let on_path = defense_resource_claim(
+            DefenseTaskKind::BlockLane,
+            (55.5, 29.4),
+            ball,
+            carrier_velocity,
+            0.0,
+            68.0,
+            0.0,
+            0.0,
+        );
+        let off_path = defense_resource_claim(
+            DefenseTaskKind::BlockLane,
+            (55.5, 21.0),
+            ball,
+            carrier_velocity,
+            0.0,
+            68.0,
+            0.0,
+            0.0,
+        );
+
+        assert!(
+            on_path.cover > off_path.cover,
+            "cover must occupy the moving carrier's breakthrough corridor rather than a fixed goal-axis screen: on_path={on_path:?}, off_path={off_path:?}"
+        );
+    }
+
+    #[test]
+    fn breakthrough_assigns_one_contact_one_path_cover_and_preserves_shape() {
+        let engager = [
+            with_claim(
+                candidate((60.0, 30.0), (59.0, 30.0), 0.78, DefenseTaskKind::Press),
+                DefenseResourceClaim {
+                    carrier_engagement: 0.86,
+                    carrier_closure: 0.90,
+                    ..DefenseResourceClaim::default()
+                },
+            ),
+            candidate(
+                (52.0, 24.0),
+                (52.0, 24.0),
+                0.64,
+                DefenseTaskKind::RecoverShape,
+            ),
+        ];
+        let cover = [
+            with_claim(
+                candidate((55.0, 33.0), (55.0, 33.0), 0.70, DefenseTaskKind::BlockLane),
+                DefenseResourceClaim {
+                    cover: 0.88,
+                    lane_screen: 0.72,
+                    ..DefenseResourceClaim::default()
+                },
+            ),
+            candidate(
+                (51.0, 38.0),
+                (51.0, 38.0),
+                0.76,
+                DefenseTaskKind::RecoverShape,
+            ),
+        ];
+        let shape = [
+            candidate((49.0, 48.0), (49.0, 48.0), 0.82, DefenseTaskKind::Mark),
+            with_claim(
+                candidate((55.0, 34.0), (55.0, 34.0), 0.66, DefenseTaskKind::BlockLane),
+                DefenseResourceClaim {
+                    cover: 0.70,
+                    ..DefenseResourceClaim::default()
+                },
+            ),
+        ];
+        let players = [
+            TeamDefensePlayerInput {
+                index: 0,
+                anchor: (52.0, 24.0),
+                candidates: &engager,
+            },
+            TeamDefensePlayerInput {
+                index: 1,
+                anchor: (51.0, 38.0),
+                candidates: &cover,
+            },
+            TeamDefensePlayerInput {
+                index: 2,
+                anchor: (49.0, 48.0),
+                candidates: &shape,
+            },
+        ];
+
+        let output = coordinate_team_defense(&TeamDefenseAssignmentInput {
+            players: &players,
+            compactness: 0.72,
+            immediate_threat: 0.88,
+            press_intensity: 0.72,
+            resource_demand: DefenseResourceDemand {
+                carrier_closure: 0.86,
+                carrier_engagement: 0.82,
+                cover: 0.88,
+                lane_screen: 0.58,
+                ..DefenseResourceDemand::default()
+            },
+            local_candidate_indices: Some(&[1, 1, 0]),
+            task_continuities: None,
+        });
+
+        assert_eq!(
+            output
+                .assignments
+                .iter()
+                .map(|assignment| assignment.candidate_index)
+                .collect::<Vec<_>>(),
+            vec![0, 0, 0],
+            "the carrier needs one engager and one independent path cover; a third defender must retain marking/shape instead of joining the swarm"
+        );
+    }
+
+    #[test]
+    fn weak_cover_fragments_do_not_replace_one_real_breakthrough_screen() {
+        let engager = [
+            with_claim(
+                candidate((60.0, 34.0), (59.0, 34.0), 0.82, DefenseTaskKind::Press),
+                DefenseResourceClaim {
+                    carrier_closure: 0.88,
+                    carrier_engagement: 0.84,
+                    ..DefenseResourceClaim::default()
+                },
+            ),
+            candidate(
+                (52.0, 28.0),
+                (52.0, 28.0),
+                0.54,
+                DefenseTaskKind::RecoverShape,
+            ),
+        ];
+        let first_cover = [
+            with_claim(
+                candidate((56.0, 31.0), (56.0, 31.0), 0.86, DefenseTaskKind::Mark),
+                DefenseResourceClaim {
+                    cover: 0.42,
+                    ..DefenseResourceClaim::default()
+                },
+            ),
+            with_claim(
+                candidate((55.0, 34.0), (55.0, 34.0), 0.66, DefenseTaskKind::BlockLane),
+                DefenseResourceClaim {
+                    cover: 0.82,
+                    lane_screen: 0.70,
+                    ..DefenseResourceClaim::default()
+                },
+            ),
+        ];
+        let second_cover = [with_claim(
+            candidate((56.0, 37.0), (56.0, 37.0), 0.88, DefenseTaskKind::Mark),
+            DefenseResourceClaim {
+                cover: 0.42,
+                ..DefenseResourceClaim::default()
+            },
+        )];
+        let players = [
+            TeamDefensePlayerInput {
+                index: 0,
+                anchor: (54.0, 28.0),
+                candidates: &engager,
+            },
+            TeamDefensePlayerInput {
+                index: 1,
+                anchor: (54.0, 34.0),
+                candidates: &first_cover,
+            },
+            TeamDefensePlayerInput {
+                index: 2,
+                anchor: (54.0, 40.0),
+                candidates: &second_cover,
+            },
+        ];
+
+        let output = coordinate_team_defense(&TeamDefenseAssignmentInput {
+            players: &players,
+            compactness: 0.76,
+            immediate_threat: 0.92,
+            press_intensity: 0.76,
+            resource_demand: DefenseResourceDemand {
+                carrier_closure: 0.84,
+                carrier_engagement: 0.80,
+                cover: 0.80,
+                lane_screen: 0.62,
+                ..DefenseResourceDemand::default()
+            },
+            local_candidate_indices: Some(&[0, 0, 0]),
+            task_continuities: None,
+        });
+
+        assert_eq!(output.assignments[0].candidate_index, 0);
+        assert_eq!(
+            output.assignments[1].candidate_index, 1,
+            "several weak abstract cover claims must not replace one defender physically occupying the breakthrough corridor"
+        );
+    }
+
+    #[test]
+    fn duplicate_immediate_carrier_responsibilities_collapse_to_one_primary_defender() {
+        let shared_target = (60.0, 34.0);
+        let first = [
+            with_claim(
+                candidate(shared_target, (58.0, 33.0), 0.76, DefenseTaskKind::Press),
+                DefenseResourceClaim {
+                    carrier_closure: 0.92,
+                    carrier_engagement: 0.84,
+                    ..DefenseResourceClaim::default()
+                },
+            ),
+            with_claim(
+                candidate((55.0, 31.0), (55.0, 31.0), 0.68, DefenseTaskKind::BlockLane),
+                DefenseResourceClaim {
+                    cover: 0.78,
+                    lane_screen: 0.64,
+                    ..DefenseResourceClaim::default()
+                },
+            ),
+        ];
+        let second = [
+            with_claim(
+                candidate(
+                    shared_target,
+                    (58.2, 35.0),
+                    0.75,
+                    DefenseTaskKind::CloseDown,
+                ),
+                DefenseResourceClaim {
+                    carrier_closure: 0.90,
+                    ..DefenseResourceClaim::default()
+                },
+            ),
+            with_claim(
+                candidate((55.0, 37.0), (55.0, 37.0), 0.69, DefenseTaskKind::BlockLane),
+                DefenseResourceClaim {
+                    cover: 0.80,
+                    lane_screen: 0.66,
+                    ..DefenseResourceClaim::default()
+                },
+            ),
+        ];
+        let players = [
+            TeamDefensePlayerInput {
+                index: 0,
+                anchor: (54.0, 31.0),
+                candidates: &first,
+            },
+            TeamDefensePlayerInput {
+                index: 1,
+                anchor: (54.0, 37.0),
+                candidates: &second,
+            },
+        ];
+
+        let output = coordinate_team_defense(&TeamDefenseAssignmentInput {
+            players: &players,
+            compactness: 0.70,
+            immediate_threat: 0.86,
+            press_intensity: 0.72,
+            resource_demand: DefenseResourceDemand {
+                carrier_closure: 0.88,
+                carrier_engagement: 0.82,
+                cover: 0.82,
+                lane_screen: 0.54,
+                ..DefenseResourceDemand::default()
+            },
+            local_candidate_indices: Some(&[0, 0]),
+            task_continuities: None,
+        });
+
+        let selected = output
+            .assignments
+            .iter()
+            .map(|assignment| assignment.candidate_index)
+            .collect::<Vec<_>>();
+        assert!(
+            matches!(selected.as_slice(), [0, 1] | [1, 0]),
+            "one defender must own immediate carrier contact while the other supplies cover: {selected:?}"
         );
     }
 
@@ -2556,9 +3254,10 @@ mod tests {
     fn reachable_pursuit_with_cover_is_assigned_before_deeper_recovery() {
         let pursuit_or_recover = [
             with_claim(
-                candidate((61.0, 34.0), (50.0, 34.0), 0.56, DefenseTaskKind::Pursuit),
+                candidate((61.0, 34.0), (50.0, 34.0), 0.84, DefenseTaskKind::Pursuit),
                 DefenseResourceClaim {
                     carrier_closure: 0.74,
+                    spatial_suppression: [0.42, 0.72, 0.68, 0.30, 0.08, 0.02, 0.0, 0.0],
                     ..DefenseResourceClaim::default()
                 },
             ),
@@ -2566,21 +3265,23 @@ mod tests {
                 candidate(
                     (42.0, 34.0),
                     (42.0, 34.0),
-                    0.91,
+                    0.68,
                     DefenseTaskKind::RecoverShape,
                 ),
                 DefenseResourceClaim {
                     lane_screen: 0.68,
+                    spatial_suppression: [0.0, 0.0, 0.06, 0.18, 0.36, 0.46, 0.34, 0.34],
                     ..DefenseResourceClaim::default()
                 },
             ),
         ];
         let cover_or_recover = [
             with_claim(
-                candidate((52.0, 39.0), (49.0, 38.0), 0.58, DefenseTaskKind::BlockLane),
+                candidate((52.0, 39.0), (49.0, 38.0), 1.02, DefenseTaskKind::BlockLane),
                 DefenseResourceClaim {
                     cover: 0.86,
                     lane_screen: 0.64,
+                    spatial_suppression: [0.0, 0.12, 0.52, 0.82, 0.72, 0.48, 0.34, 0.48],
                     ..DefenseResourceClaim::default()
                 },
             ),
@@ -2588,11 +3289,12 @@ mod tests {
                 candidate(
                     (41.0, 47.0),
                     (41.0, 47.0),
-                    0.90,
+                    0.62,
                     DefenseTaskKind::RecoverShape,
                 ),
                 DefenseResourceClaim {
                     wide_balance: [0.0, 0.72],
+                    spatial_suppression: [0.0, 0.0, 0.02, 0.10, 0.24, 0.36, 0.22, 0.40],
                     ..DefenseResourceClaim::default()
                 },
             ),
@@ -2621,6 +3323,7 @@ mod tests {
                 cover: 0.82,
                 lane_screen: 0.32,
                 wide_balance: [0.0, 0.20],
+                spatial_threat: [0.54, 0.88, 0.94, 0.88, 0.74, 0.64, 0.46, 0.52],
                 ..DefenseResourceDemand::default()
             },
             local_candidate_indices: Some(&[1, 1]),
@@ -2634,7 +3337,7 @@ mod tests {
                 .map(|assignment| assignment.candidate_index)
                 .collect::<Vec<_>>(),
             vec![0, 0],
-            "a reachable future closer with a separate cover must be assigned before passive recovery"
+            "complementary future-path suppression should beat two passive recovery targets"
         );
     }
 

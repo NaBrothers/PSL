@@ -122,6 +122,7 @@ pub struct CarryInput<'a> {
     pub pitch_length: f64,
     pub pitch_width: f64,
     pub attacking_right: bool,
+    pub offside_line: f64,
     pub carrier_speed: f64,
     pub shot_ideal_distance: f64,
     pub shot_on_target_base: f64,
@@ -149,6 +150,7 @@ pub struct CarryBatchValueContextInput<'a> {
     pub pitch_length: f64,
     pub pitch_width: f64,
     pub attacking_right: bool,
+    pub offside_line: f64,
     pub shot_ideal_distance: f64,
     pub shot_on_target_base: f64,
     pub gk_save_base: f64,
@@ -163,6 +165,7 @@ pub struct CarryBatchValueContext<'a> {
     teammate_positions: &'a [(usize, f64, f64)],
     teammate_goalkeeper_indices: &'a [usize],
     shot_profiles: &'a [PlayerShotProfile],
+    offside_line: f64,
     possession_value: PossessionValueContext,
     current_shot: f64,
     support_nearby: f64,
@@ -509,8 +512,12 @@ fn evaluate_carry_path_impl<const INCLUDE_FEASIBILITY: bool>(
             }
         }
 
-        if time_def_reaches < time_i_carry {
-            let threat = (1.0 - time_def_reaches / time_i_carry).max(0.0);
+        let carrier_arrival_time = time_i_carry * proj.clamp(0.0, 1.0);
+        if (0.0..=1.0).contains(&proj)
+            && carrier_arrival_time > 1e-9
+            && time_def_reaches < carrier_arrival_time
+        {
+            let threat = (1.0 - time_def_reaches / carrier_arrival_time).max(0.0);
             if threat > path_peak_threat {
                 path_peak_threat = threat;
                 path_peak_proj = proj;
@@ -666,8 +673,9 @@ pub fn evaluate_shot(input: &ShotInput<'_>) -> ShotOutput {
         .unwrap_or(1.0);
     let tap_in_release_readiness = control_release_readiness
         + (0.99 - control_release_readiness).max(0.0) * shot_outcome.open_goal_window;
-    let body_release_probability = tap_in_release_readiness * shot_outcome.body_release_probability;
-    let xg = shot_outcome.xg;
+    let body_release_probability =
+        tap_in_release_readiness.min(shot_outcome.body_release_probability);
+    let xg = shot_outcome.xg * shot_outcome.release_probability;
     let first_time_window = (1.0 - smoothstep(2.0, 5.0, input.possession_ticks.max(0) as f64))
         * (1.0 - smoothstep(1.0, 3.0, input.consecutive_carries.max(0) as f64));
     let receive_origin_progress = if input.attacking_right {
@@ -724,13 +732,6 @@ pub fn evaluate_shot(input: &ShotInput<'_>) -> ShotOutput {
         open_medium_window,
         clean_second_line_shot,
     }
-}
-
-fn clamp_pitch(pos: (f64, f64), length: f64, width: f64) -> (f64, f64) {
-    (
-        pos.0.clamp(0.5, length - 0.5),
-        pos.1.clamp(0.5, width - 0.5),
-    )
 }
 
 pub fn carry_batch_value_context<'a>(
@@ -792,6 +793,7 @@ pub fn carry_batch_value_context<'a>(
         pitch_length: input.pitch_length,
         pitch_width: input.pitch_width,
         attacking_right: input.attacking_right,
+        offside_line: input.offside_line,
         finishing: input.finishing,
         long_shot: input.long_shot,
         shot_ideal_distance: input.shot_ideal_distance,
@@ -829,6 +831,7 @@ pub fn carry_batch_value_context<'a>(
         teammate_positions: input.teammate_positions,
         teammate_goalkeeper_indices: input.teammate_goalkeeper_indices,
         shot_profiles: input.shot_profiles,
+        offside_line: input.offside_line,
         possession_value,
         current_shot,
         support_nearby,
@@ -880,6 +883,7 @@ pub fn evaluate_carry(input: &CarryInput<'_>) -> CarryOutput {
         pitch_length: input.pitch_length,
         pitch_width: input.pitch_width,
         attacking_right: input.attacking_right,
+        offside_line: input.offside_line,
         shot_ideal_distance: input.shot_ideal_distance,
         shot_on_target_base: input.shot_on_target_base,
         gk_save_base: input.gk_save_base,
@@ -906,6 +910,7 @@ pub fn evaluate_carry_with_context(
             pitch_length: input.pitch_length,
             pitch_width: input.pitch_width,
             attacking_right: input.attacking_right,
+            offside_line: context.offside_line,
             finishing: input.finishing,
             long_shot: input.long_shot,
             shot_ideal_distance: input.shot_ideal_distance,
@@ -983,64 +988,7 @@ fn evaluate_carry_from_state(
     let lane_gain = (context.old_angle_width - new_angle_width).max(0.0) / context.width_base;
     let progress_gain = ((input.target.0 - input.carrier_pos.0) * context.forward_dir).max(0.0)
         / input.pitch_length.max(1.0);
-    let step = input.carrier_speed * 1.75;
-    let step = step.clamp(3.0, 7.5);
-    let to_goal_x = context.goal_x - input.target.0;
-    let to_goal_y = context.goal_y - input.target.1;
-    let to_goal_len = (to_goal_x * to_goal_x + to_goal_y * to_goal_y)
-        .sqrt()
-        .max(1.0);
-    let future_points = [
-        (
-            input.target.0 + to_goal_x / to_goal_len * step,
-            input.target.1 + to_goal_y / to_goal_len * step,
-        ),
-        (
-            input.target.0 + context.forward_dir * step * 0.70,
-            input.target.1 + (context.goal_y - input.target.1) * 0.55,
-        ),
-        (
-            input.target.0 + context.forward_dir * step * 0.45,
-            input.target.1 + (context.goal_y - input.target.1) * 0.85,
-        ),
-    ];
-    let mut future_shot = target_shot;
-    for point in future_points {
-        let fpos = clamp_pitch(point, input.pitch_length, input.pitch_width);
-        let future_point_shot = shot_quality_at(&ShotQualityInput {
-            x: fpos.0,
-            y: fpos.1,
-            finishing: input.finishing,
-            long_shot: input.long_shot,
-            opponents: input.opponents,
-            pitch_length: input.pitch_length,
-            pitch_width: input.pitch_width,
-            attacking_right: input.attacking_right,
-            shot_ideal_distance: input.shot_ideal_distance,
-            shot_on_target_base: input.shot_on_target_base,
-            gk_save_base: input.gk_save_base,
-            gk_attributes: input.gk_attributes,
-            gk_pos: input.gk_pos,
-            contest_defenders: input.contest_defenders,
-            cache: input.shot_quality_cache,
-            cache_key: input.shot_quality_cache.and_then(|_| {
-                input.gk_attributes.is_none().then(|| {
-                    shot_quality_cache_key(
-                        input.tick,
-                        input.carrier_team_home,
-                        input.carrier_index,
-                        fpos,
-                        input.attacking_right,
-                    )
-                })
-            }),
-        }) * input
-            .successor_control_state
-            .map(shot_release_readiness)
-            .unwrap_or(1.0);
-        future_shot = future_shot.max(future_point_shot);
-    }
-    let future_shot_gain = (future_shot - current_shot).max(0.0);
+    let future_shot_gain = shot_quality_gain;
     let new_width_ratio = new_angle_width / context.width_base;
     let target_progress = if input.attacking_right {
         input.target.0 / input.pitch_length.max(1.0)
@@ -1180,6 +1128,7 @@ fn evaluate_carry_from_state(
 mod tests {
     use super::*;
     use crate::goalkeeper::GkSaveAttributes;
+    use crate::{estimate_shot_contest, ShotContestIntent};
 
     fn assert_carry_path_metrics_identical(actual: CarryPathMetrics, expected: CarryPathOutput) {
         macro_rules! assert_field {
@@ -1251,6 +1200,7 @@ mod tests {
                 pitch_length: input.pitch_length,
                 pitch_width: input.pitch_width,
                 attacking_right: input.attacking_right,
+                offside_line: context.offside_line,
                 finishing: input.finishing,
                 long_shot: input.long_shot,
                 shot_ideal_distance: input.shot_ideal_distance,
@@ -1329,6 +1279,42 @@ mod tests {
                 evaluate_carry_path(&input),
             );
         }
+    }
+
+    #[test]
+    fn carry_path_threat_requires_the_defender_to_reach_the_path_before_the_carrier() {
+        let evaluate = |opponent_pos| {
+            evaluate_carry_path(&CarryPathInput {
+                carrier_pos: (0.0, 0.0),
+                target: (10.0, 0.0),
+                dribbling: 75.0,
+                attacking_right: true,
+                pitch_length: 105.0,
+                pitch_width: 68.0,
+                player_max_speed: 10.0,
+                carrier_speed: 1.0,
+                tackle_range: 2.8,
+                opponents: &[CarryPathOpponentInput {
+                    pos: opponent_pos,
+                    speed: 50.0,
+                    defence: 80.0,
+                    tackling: 80.0,
+                    is_goalkeeper: false,
+                }],
+            })
+        };
+
+        let arrives_before_carrier = evaluate((2.0, 1.0));
+        let arrives_after_carrier = evaluate((1.0, 8.0));
+
+        assert!(
+            arrives_before_carrier.path_peak_threat > 0.75,
+            "a defender already covering the future path point must remain a major threat: {arrives_before_carrier:?}"
+        );
+        assert!(
+            arrives_after_carrier.path_peak_threat < 0.05,
+            "a defender arriving after the carrier has passed the path point cannot create a retroactive threat: {arrives_after_carrier:?}"
+        );
     }
 
     #[test]
@@ -1419,6 +1405,7 @@ mod tests {
             pitch_length: 105.0,
             pitch_width: 68.0,
             attacking_right: true,
+            offside_line: 105.0,
             shot_ideal_distance: 20.0,
             shot_on_target_base: 0.52,
             gk_save_base: 0.66,
@@ -1444,6 +1431,7 @@ mod tests {
             pitch_length: 105.0,
             pitch_width: 68.0,
             attacking_right: true,
+            offside_line: 105.0,
             carrier_speed: 4.4,
             shot_ideal_distance: 20.0,
             shot_on_target_base: 0.52,
@@ -1493,6 +1481,7 @@ mod tests {
             pitch_length: 105.0,
             pitch_width: 68.0,
             attacking_right: true,
+            offside_line: 105.0,
             shot_ideal_distance: 20.0,
             shot_on_target_base: 0.52,
             gk_save_base: 0.66,
@@ -1508,6 +1497,85 @@ mod tests {
         assert_carry_outputs_identical(
             evaluate_carry_with_context(&mismatched_input, &mismatched_context),
             evaluate_carry_with_explicit_target_shot(&mismatched_input, &mismatched_context),
+        );
+    }
+
+    #[test]
+    fn carry_values_only_the_shot_window_reached_by_this_action() {
+        let teammates = [CarrySupportPlayer {
+            index: 0,
+            pos: (88.0, 45.0),
+            base: (88.0, 45.0),
+            finishing: 0.82,
+            long_shot: 0.74,
+            is_goalkeeper: false,
+        }];
+        let teammate_positions = [(0, 88.0, 45.0)];
+        let shot_profiles = [PlayerShotProfile {
+            player_index: 0,
+            finishing: 0.82,
+            long_shot: 0.74,
+        }];
+        let opponents = [(101.0, 34.0)];
+        let context = carry_batch_value_context(&CarryBatchValueContextInput {
+            tick: 72,
+            carrier_index: 0,
+            carrier_team_home: true,
+            carrier_pos: (88.0, 45.0),
+            finishing: 0.82,
+            long_shot: 0.74,
+            teammates: &teammates,
+            teammate_positions: &teammate_positions,
+            teammate_goalkeeper_indices: &[],
+            shot_profiles: &shot_profiles,
+            opponents: &opponents,
+            pitch_length: 105.0,
+            pitch_width: 68.0,
+            attacking_right: true,
+            offside_line: 105.0,
+            shot_ideal_distance: 20.0,
+            shot_on_target_base: 0.52,
+            gk_save_base: 0.66,
+            gk_attributes: None,
+            gk_pos: Some((101.0, 34.0)),
+            contest_defenders: None,
+            shot_quality_cache: None,
+        });
+        let input = CarryInput {
+            tick: 72,
+            carrier_index: 0,
+            carrier_team_home: true,
+            carrier_pos: (88.0, 45.0),
+            target: (91.0, 43.0),
+            finishing: 0.82,
+            long_shot: 0.74,
+            consecutive_carries: 0,
+            possession_ticks: 2,
+            current_state_value: 0.12,
+            path_feasibility: 0.90,
+            teammates: &teammates,
+            opponents: &opponents,
+            pitch_length: 105.0,
+            pitch_width: 68.0,
+            attacking_right: true,
+            offside_line: 105.0,
+            carrier_speed: 4.4,
+            shot_ideal_distance: 20.0,
+            shot_on_target_base: 0.52,
+            gk_save_base: 0.66,
+            gk_attributes: None,
+            gk_pos: Some((101.0, 34.0)),
+            successor_control_state: None,
+            contest_defenders: None,
+            shot_quality_cache: None,
+        };
+
+        let carry = evaluate_carry_with_context(&input, &context);
+
+        assert!(
+            (carry.future_shot_gain - (carry.target_shot - carry.current_shot).max(0.0)).abs()
+                <= 1e-12,
+            "a carry must not borrow xG from a second, unexecuted carry: {carry:?}"
         );
     }
 
@@ -1569,6 +1637,7 @@ mod tests {
                 pitch_length: 105.0,
                 pitch_width: 68.0,
                 attacking_right: true,
+                offside_line: 105.0,
                 carrier_speed: 4.4,
                 shot_ideal_distance: 20.0,
                 shot_on_target_base: 0.52,
@@ -1649,6 +1718,7 @@ mod tests {
             pitch_length: 105.0,
             pitch_width: 68.0,
             attacking_right: true,
+            offside_line: 105.0,
             carrier_speed: 4.4,
             shot_ideal_distance: 20.0,
             shot_on_target_base: 0.52,
@@ -1780,6 +1850,126 @@ mod tests {
             goalkeeper_behind.terminal_value > goalkeeper_goal_side.terminal_value,
             "the open-goal terminal value should naturally exceed the still-contested shot"
         );
+    }
+
+    #[test]
+    fn shared_pressure_evidence_does_not_multiply_body_release_failure_twice() {
+        let opponents = [(88.2, 34.0)];
+        let defender = [ShotContestDefender {
+            index: 4,
+            pos: (88.2, 34.0),
+            projected_pos: (87.5, 34.0),
+            speed: 84.0,
+            defence: 86.0,
+            intent: ShotContestIntent::Press,
+            engagement_weight: 0.82,
+            engagement_reach: 4.0,
+            is_goalkeeper: false,
+        }];
+        let control_state = PossessionControlState {
+            pressure_load: 0.64,
+            containment_load: 0.18,
+            forward_control: 0.18,
+            turn_readiness: 0.46,
+            release_window: 0.58,
+            shape_readiness: 0.84,
+            release_preparation: 0.52,
+            stagnation_load: 0.0,
+            ..PossessionControlState::default()
+        };
+        let shot = evaluate_shot(&ShotInput {
+            tick: 1,
+            shooter_index: 1,
+            shooter_team_home: true,
+            shooter_pos: (86.0, 34.0),
+            finishing: 0.84,
+            long_shot: 0.78,
+            possession_ticks: 2,
+            consecutive_carries: 0,
+            last_receive_origin: (82.0, 34.0),
+            opponents: &opponents,
+            pitch_length: 105.0,
+            pitch_width: 68.0,
+            attacking_right: true,
+            shot_on_target_base: 0.52,
+            gk_save_base: 0.66,
+            gk_attributes: None,
+            gk_pos: None,
+            contest_defenders: Some(&defender),
+            shot_ideal_distance: 20.0,
+            shot_quality_cache: None,
+            control_state: Some(control_state),
+        });
+        let control_readiness = shot_release_readiness(control_state);
+        let contest_readiness =
+            estimate_shot_contest((86.0, 34.0), (105.0, 34.0), &defender).body_release_probability;
+
+        assert!(
+            shot.body_release_probability + 1e-12
+                >= control_readiness.min(contest_readiness),
+            "control pressure and press contest describe the same body-release bottleneck and must not multiply independently: control={control_readiness}, contest={contest_readiness}, shot={shot:?}"
+        );
+    }
+
+    #[test]
+    fn released_shot_xg_includes_the_probability_of_beating_the_blocking_lane() {
+        let opponents = [];
+        let blocker = [ShotContestDefender {
+            index: 4,
+            pos: (94.0, 34.0),
+            projected_pos: (94.0, 34.0),
+            speed: 82.0,
+            defence: 88.0,
+            intent: ShotContestIntent::BlockLane,
+            engagement_weight: 0.0,
+            engagement_reach: 0.0,
+            is_goalkeeper: false,
+        }];
+        let input = |contest_defenders| ShotInput {
+            tick: 1,
+            shooter_index: 1,
+            shooter_team_home: true,
+            shooter_pos: (88.0, 34.0),
+            finishing: 0.86,
+            long_shot: 0.80,
+            possession_ticks: 3,
+            consecutive_carries: 0,
+            last_receive_origin: (84.0, 34.0),
+            opponents: &opponents,
+            pitch_length: 105.0,
+            pitch_width: 68.0,
+            attacking_right: true,
+            shot_on_target_base: 0.52,
+            gk_save_base: 0.66,
+            gk_attributes: Some(GkSaveAttributes {
+                gk_saving: 84.0,
+                gk_positioning: 82.0,
+                gk_reaction: 86.0,
+                gk_position_error_factor: 0.05,
+                gk_reaction_delay_factor: 0.005,
+                gk_save_base: 0.66,
+            }),
+            gk_pos: Some((102.0, 34.0)),
+            contest_defenders,
+            shot_ideal_distance: 20.0,
+            shot_quality_cache: None,
+            control_state: None,
+        };
+
+        let clear_lane = evaluate_shot(&input(None));
+        let blocked_lane = evaluate_shot(&input(Some(&blocker)));
+
+        assert_eq!(blocked_lane.on_target_prob, clear_lane.on_target_prob);
+        assert!(blocked_lane.release_probability < clear_lane.release_probability);
+        assert!(
+            blocked_lane.xg < clear_lane.xg,
+            "formal shot xG must include the chance that the released attempt is blocked: clear={clear_lane:?}, blocked={blocked_lane:?}"
+        );
+        assert!(
+            (blocked_lane.xg - clear_lane.xg * blocked_lane.release_probability).abs() < 1e-12,
+            "formal shot xG must equal conditional goal probability times the lane-release probability"
+        );
+        assert!(blocked_lane.terminal_value < clear_lane.terminal_value);
     }
 
     #[test]
