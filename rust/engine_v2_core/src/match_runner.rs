@@ -27916,11 +27916,18 @@ fn runner_projected_control_value_with_shape_inputs(
     );
     let mut breakdown = RunnerProjectedStateValueBreakdown::default();
     breakdown.add_weighted(state, 1.0);
-    let symmetric_goalkeeper_network =
-        crate::state_value::diagnostic_possession_state_value_with_goalkeeper_recycle_node(&input);
-    breakdown.symmetric_goalkeeper_network_applied = true;
-    breakdown.symmetric_goalkeeper_network_continuation_value =
-        symmetric_goalkeeper_network.continuation_value;
+    // This counterfactual only populates the trace ledger. Keeping it out of
+    // the default production path avoids a second full state-value network
+    // evaluation for every projected branch without changing action values.
+    if config.trace_detail != "off" {
+        let symmetric_goalkeeper_network =
+            crate::state_value::diagnostic_possession_state_value_with_goalkeeper_recycle_node(
+                &input,
+            );
+        breakdown.symmetric_goalkeeper_network_applied = true;
+        breakdown.symmetric_goalkeeper_network_continuation_value =
+            symmetric_goalkeeper_network.continuation_value;
+    }
     if config.trace_detail == "full" {
         let symmetric_field_shape =
             crate::state_value::diagnostic_possession_state_value_with_symmetric_field_shape(
