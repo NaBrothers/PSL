@@ -453,14 +453,20 @@ pub fn project_team_plan_formation_into(
     input: &TeamPlanFormationProjectionInput<'_>,
     output: &mut [TeamPlanProjectionPlayerOutput],
 ) -> usize {
-    project_team_plan_formation_into_with_target_provider(input, output, |player, _| {
-        team_plan_movement_target(player.target_pos, player.tactical_anchor, input.signals)
-    })
+    project_team_plan_formation_into_with_target_provider(
+        input,
+        output,
+        |player, _| {
+            team_plan_movement_target(player.target_pos, player.tactical_anchor, input.signals)
+        },
+        None,
+    )
 }
 
-pub(crate) fn project_team_plan_formation_into_with_prepared_targets(
+pub(crate) fn project_team_plan_formation_into_with_prepared_targets_and_kinematics(
     input: &TeamPlanFormationProjectionInput<'_>,
     movement_targets: &[(f64, f64)],
+    kinematics: &[(f64, f64)],
     output: &mut [TeamPlanProjectionPlayerOutput],
 ) -> usize {
     assert_eq!(
@@ -468,15 +474,24 @@ pub(crate) fn project_team_plan_formation_into_with_prepared_targets(
         input.players.len(),
         "prepared formation movement targets must align with the player set"
     );
-    project_team_plan_formation_into_with_target_provider(input, output, |_, index| {
-        movement_targets[index]
-    })
+    assert_eq!(
+        kinematics.len(),
+        input.players.len(),
+        "prepared formation kinematics must align with the player set"
+    );
+    project_team_plan_formation_into_with_target_provider(
+        input,
+        output,
+        |_, index| movement_targets[index],
+        Some(kinematics),
+    )
 }
 
 fn project_team_plan_formation_into_with_target_provider(
     input: &TeamPlanFormationProjectionInput<'_>,
     output: &mut [TeamPlanProjectionPlayerOutput],
     mut movement_target: impl FnMut(&TeamPlanProjectionPlayerInput, usize) -> (f64, f64),
+    prepared_kinematics: Option<&[(f64, f64)]>,
 ) -> usize {
     assert!(
         output.len() >= input.players.len(),
@@ -497,11 +512,15 @@ fn project_team_plan_formation_into_with_target_provider(
         let mut pos = player.pos;
         let mut velocity = player.velocity;
         if player.is_mobile {
-            let (max_speed, acceleration) = crate::physics::player_motion_kinematics(
-                player.speed_ability,
-                input.player_max_speed,
-                input.player_min_speed,
-            );
+            let (max_speed, acceleration) = prepared_kinematics
+                .map(|values| values[output_index])
+                .unwrap_or_else(|| {
+                    crate::physics::player_motion_kinematics(
+                        player.speed_ability,
+                        input.player_max_speed,
+                        input.player_min_speed,
+                    )
+                });
             for tick_index in 0..duration_ticks {
                 let motion_input = crate::physics::PlayerMotionInput {
                         pos,

@@ -13,7 +13,7 @@ if ! command -v cargo >/dev/null 2>&1; then
 fi
 
 echo "====== 编译 Rust 比赛引擎"
-(cd rust/engine_v2_core && cargo build --release --bin engine)
+scripts/build_engine_v2_release.sh
 
 echo "====== 初始化 SQLite 数据库"
 python3 database/init_db.py

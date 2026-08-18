@@ -1,5 +1,5 @@
 use crate::goalkeeper::{compute_gk_save_probability_for_attributes, GkSaveAttributes};
-use crate::match_flow::{player_move_tick, PlayerMoveTickInput};
+use crate::match_flow::{player_move_state_tick_fraction, PlayerMoveTickInput};
 use crate::physics::{distance, smoothstep};
 
 #[derive(Clone, Copy, Debug)]
@@ -150,24 +150,27 @@ fn pass_arrival_score(
     let mut projected_velocity = player.velocity;
     let full_ticks = flight_ticks.max(0.0).floor() as i32;
     for _ in 0..full_ticks {
-        let movement = player_move_tick(&PlayerMoveTickInput {
-            pos: projected_pos,
-            velocity: projected_velocity,
-            speed_ability: player.speed,
-            target_pos: movement_target,
-            movement_intent,
-            state: "off_ball",
-            player_max_speed: player_max_speed_value,
-            player_min_speed: player_min_speed_value,
-            pitch_length: f64::MAX,
-            pitch_width: f64::MAX,
-        });
+        let movement = player_move_state_tick_fraction(
+            &PlayerMoveTickInput {
+                pos: projected_pos,
+                velocity: projected_velocity,
+                speed_ability: player.speed,
+                target_pos: movement_target,
+                movement_intent,
+                state: "off_ball",
+                player_max_speed: player_max_speed_value,
+                player_min_speed: player_min_speed_value,
+                pitch_length: f64::MAX,
+                pitch_width: f64::MAX,
+            },
+            1.0,
+        );
         projected_pos = movement.pos;
         projected_velocity = movement.velocity;
     }
     let fractional_tick = flight_ticks.max(0.0) - full_ticks as f64;
     if fractional_tick > 1e-9 {
-        let movement = crate::match_flow::player_move_tick_fraction(
+        let movement = player_move_state_tick_fraction(
             &PlayerMoveTickInput {
                 pos: projected_pos,
                 velocity: projected_velocity,

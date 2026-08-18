@@ -150,6 +150,12 @@ pub struct PlayerMoveSpeedOutput {
     pub speed: f64,
 }
 
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct PlayerMoveStateOutput {
+    pub pos: (f64, f64),
+    pub velocity: (f64, f64),
+}
+
 #[derive(Clone, Debug)]
 pub struct PlayerSetMovementTargetInput<'a> {
     pub current_target: (f64, f64),
@@ -1328,6 +1334,13 @@ pub fn player_move_speed(input: &PlayerMoveSpeedInput<'_>) -> PlayerMoveSpeedOut
         input.player_max_speed,
         input.player_min_speed,
     );
+    player_move_speed_with_max_speed(input, max_speed)
+}
+
+pub(crate) fn player_move_speed_with_max_speed(
+    input: &PlayerMoveSpeedInput<'_>,
+    max_speed: f64,
+) -> PlayerMoveSpeedOutput {
     let dist_to_target = crate::physics::distance(input.pos, input.target_pos);
     let urgency = 1.0 - (-dist_to_target / 14.0).exp();
     let mut intent_base = movement_intent_base(input.movement_intent);
@@ -1402,6 +1415,61 @@ pub fn player_move_tick_fraction(
         distance_covered: movement.distance_covered,
         facing_direction: movement.facing_direction,
         desired_speed,
+    }
+}
+
+pub(crate) fn player_move_state_tick_fraction(
+    input: &PlayerMoveTickInput<'_>,
+    tick_fraction: f64,
+) -> PlayerMoveStateOutput {
+    if input.state == "on_ball" || input.state == "stunned" || input.state == "recovering" {
+        return PlayerMoveStateOutput {
+            pos: input.pos,
+            velocity: input.velocity,
+        };
+    }
+    let desired_speed = player_move_speed(&PlayerMoveSpeedInput {
+        pos: input.pos,
+        target_pos: input.target_pos,
+        speed_ability: input.speed_ability,
+        movement_intent: input.movement_intent,
+        state: input.state,
+        player_max_speed: input.player_max_speed,
+        player_min_speed: input.player_min_speed,
+    })
+    .speed;
+    let (max_speed, acceleration) = crate::physics::player_motion_kinematics(
+        input.speed_ability,
+        input.player_max_speed,
+        input.player_min_speed,
+    );
+    let movement = crate::physics::advance_player_motion_state_fraction_with_kinematics(
+        &crate::physics::PlayerMotionInput {
+            pos: input.pos,
+            target: input.target_pos,
+            velocity: input.velocity,
+            speed_ability: input.speed_ability,
+            desired_speed,
+            acceleration_scale: if matches!(
+                input.movement_intent,
+                "press" | "contest" | "attack_run"
+            ) {
+                1.15
+            } else {
+                1.0
+            },
+            player_max_speed: input.player_max_speed,
+            player_min_speed: input.player_min_speed,
+            pitch_length: input.pitch_length,
+            pitch_width: input.pitch_width,
+        },
+        tick_fraction,
+        max_speed,
+        acceleration,
+    );
+    PlayerMoveStateOutput {
+        pos: movement.pos,
+        velocity: movement.velocity,
     }
 }
 

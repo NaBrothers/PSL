@@ -3,7 +3,11 @@ use serde::{Deserialize, Serialize};
 use serde_json::json;
 use std::cell::RefCell;
 use std::collections::HashMap;
-use std::sync::OnceLock;
+use std::sync::{
+    atomic::{AtomicU64, Ordering},
+    OnceLock,
+};
+
 use std::time::{Duration, Instant};
 
 mod runner_transition_model;
@@ -31,7 +35,7 @@ use crate::state_value::{
     possession_bellman_geometry, possession_state_value_with_context_and_bellman_geometry,
 };
 use crate::team_cognition::TeamCognitionPlayerInput;
-use crate::team_plan::project_team_plan_formation_into_with_prepared_targets;
+use crate::team_plan::project_team_plan_formation_into_with_prepared_targets_and_kinematics;
 use crate::{
     accept_task, action_outcome_value, action_timing_plan, advance_free_ball, angle_between_points,
     apply_specialized_on_ball_bias, ball_contact_substep_ticks,
@@ -23593,6 +23597,7 @@ struct RunnerProjectedTeamProjectionScratch {
     shape_anchors: [TeamShapePlayerOutput; RUNNER_TEAM_SIZE],
     projection_players: [TeamPlanProjectionPlayerInput; RUNNER_TEAM_SIZE],
     projection_movement_targets: [(f64, f64); RUNNER_TEAM_SIZE],
+    projection_kinematics: [(f64, f64); RUNNER_TEAM_SIZE],
     projection_output: [TeamPlanProjectionPlayerOutput; RUNNER_TEAM_SIZE],
 }
 
@@ -23604,6 +23609,7 @@ impl RunnerProjectedTeamProjectionScratch {
             shape_anchors: [RUNNER_EMPTY_TEAM_SHAPE_OUTPUT; RUNNER_TEAM_SIZE],
             projection_players: [RUNNER_EMPTY_TEAM_PLAN_PROJECTION_PLAYER; RUNNER_TEAM_SIZE],
             projection_movement_targets: [(0.0, 0.0); RUNNER_TEAM_SIZE],
+            projection_kinematics: [(0.0, 0.0); RUNNER_TEAM_SIZE],
             projection_output: [RUNNER_EMPTY_TEAM_PLAN_PROJECTION_OUTPUT; RUNNER_TEAM_SIZE],
         }
     }
@@ -24940,6 +24946,7 @@ struct RunnerProjectedTransitionValueContexts {
 struct RunnerProjectionWorkerContext {
     value_contexts: RunnerProjectedTransitionValueContexts,
     shot_quality_cache: ShotQualityCache,
+    batch_id: u64,
 }
 
 thread_local! {
@@ -24947,7 +24954,13 @@ thread_local! {
         RefCell::new(RunnerProjectionWorkerContext {
             value_contexts: RunnerProjectedTransitionValueContexts::default(),
             shot_quality_cache: RefCell::new(HashMap::new()),
+            batch_id: 0,
         });
+}
+
+fn runner_projection_batch_id() -> u64 {
+    static NEXT_BATCH_ID: AtomicU64 = AtomicU64::new(1);
+    NEXT_BATCH_ID.fetch_add(1, Ordering::Relaxed)
 }
 
 impl Default for RunnerProjectedTransitionValueContexts {
@@ -25002,6 +25015,13 @@ impl RunnerProjectedTransitionValueContexts {
         if let Some(context) = self.opposing.as_mut() {
             context.refresh(opponents, teammates, config);
         }
+    }
+
+    fn reset_action(&mut self) {
+        self.immediate_opposing_control_ready = false;
+        self.execution_second_ball_inputs.clear();
+        self.execution_outcomes.clear();
+        self.control_execution_outcome_cache = None;
     }
 
     fn immediate_opposing_control(
@@ -26370,6 +26390,7 @@ fn runner_projected_team_positions_with_shape_inputs_fraction_into(
         shape_anchors,
         projection_players,
         projection_movement_targets,
+        projection_kinematics,
         projection_output,
         ..
     } = scratch;
@@ -26406,15 +26427,25 @@ fn runner_projected_team_positions_with_shape_inputs_fraction_into(
             config.tick_duration,
         );
         projection_movement_targets[index] = movement_target;
-        let desired_speed = player_move_speed(&PlayerMoveSpeedInput {
-            pos: player.pos,
-            target_pos: movement_target,
-            speed_ability: player.speed.round() as i32,
-            movement_intent: player.movement_intent.as_str(),
-            state: player.state.as_str(),
-            player_max_speed: config.player_max_speed,
-            player_min_speed: config.player_min_speed,
-        })
+        let speed_ability = player.speed.round() as i32;
+        let (top_speed, acceleration) = crate::physics::player_motion_kinematics(
+            speed_ability,
+            config.player_max_speed,
+            config.player_min_speed,
+        );
+        projection_kinematics[index] = (top_speed, acceleration);
+        let desired_speed = crate::match_flow::player_move_speed_with_max_speed(
+            &PlayerMoveSpeedInput {
+                pos: player.pos,
+                target_pos: movement_target,
+                speed_ability,
+                movement_intent: player.movement_intent.as_str(),
+                state: player.state.as_str(),
+                player_max_speed: config.player_max_speed,
+                player_min_speed: config.player_min_speed,
+            },
+            top_speed,
+        )
         .speed;
         projection_players[index] = TeamPlanProjectionPlayerInput {
             index,
@@ -26422,7 +26453,7 @@ fn runner_projected_team_positions_with_shape_inputs_fraction_into(
             velocity: player.velocity,
             target_pos: player.target_pos,
             tactical_anchor,
-            speed_ability: player.speed.round() as i32,
+            speed_ability,
             desired_speed,
             acceleration_scale: if matches!(
                 player.movement_intent.as_str(),
@@ -26435,7 +26466,7 @@ fn runner_projected_team_positions_with_shape_inputs_fraction_into(
             is_mobile: player.state != "stunned",
         };
     }
-    let len = project_team_plan_formation_into_with_prepared_targets(
+    let len = project_team_plan_formation_into_with_prepared_targets_and_kinematics(
         &TeamPlanFormationProjectionInput {
             signals: plan_signals,
             duration_ticks,
@@ -26449,6 +26480,7 @@ fn runner_projected_team_positions_with_shape_inputs_fraction_into(
             players: &projection_players[..players.len()],
         },
         &projection_movement_targets[..players.len()],
+        &projection_kinematics[..players.len()],
         projection_output,
     );
     let mut positions = [(0, 0.0, 0.0); RUNNER_TEAM_SIZE];
@@ -26542,7 +26574,7 @@ fn runner_projected_contact_position(
     let mut pos = player.pos;
     let mut velocity = player.velocity;
     for _ in 0..duration_ticks.max(0) {
-        let movement = player_move_tick(&PlayerMoveTickInput {
+        let movement = crate::match_flow::player_move_state_tick_fraction(&PlayerMoveTickInput {
             pos,
             target_pos: contact_target,
             velocity,
@@ -26553,7 +26585,7 @@ fn runner_projected_contact_position(
             player_min_speed: config.player_min_speed,
             pitch_length: config.pitch_length,
             pitch_width: config.pitch_width,
-        });
+        }, 1.0);
         pos = movement.pos;
         velocity = movement.velocity;
     }
@@ -28103,7 +28135,9 @@ fn apply_temporal_option_values_with_contexts(
     config: &RunnerRuntimeConfig,
 ) {
     value_contexts.prepare(teammates, opponents, config);
-    runner_projection_pool().install(|| {
+    let batch_id = runner_projection_batch_id();
+    let projection_pool = runner_projection_pool();
+    projection_pool.install(|| {
         actions
             .par_iter_mut()
             .filter(|action| {
@@ -28117,9 +28151,18 @@ fn apply_temporal_option_values_with_contexts(
             .for_each(|action| {
                 RUNNER_PROJECTION_WORKER_CONTEXT.with(|worker_context| {
                     let mut worker_context = worker_context.borrow_mut();
-                    worker_context
-                        .value_contexts
-                        .prepare(teammates, opponents, config);
+                    if config.trace_detail != "off" {
+                        worker_context
+                            .value_contexts
+                            .prepare(teammates, opponents, config);
+                        worker_context.batch_id = 0;
+                    } else if worker_context.batch_id != batch_id {
+                        worker_context
+                            .value_contexts
+                            .prepare(teammates, opponents, config);
+                        worker_context.batch_id = batch_id;
+                    }
+                    worker_context.value_contexts.reset_action();
                     worker_context.shot_quality_cache.borrow_mut().clear();
                     let RunnerProjectionWorkerContext {
                         value_contexts,
@@ -28198,7 +28241,7 @@ fn runner_projection_pool() -> &'static rayon::ThreadPool {
                     .ok()
                     .and_then(|value| value.parse::<usize>().ok())
                     .filter(|count| *count > 0)
-                    .unwrap_or_else(|| available_threads.saturating_sub(2).max(1)),
+                    .unwrap_or(available_threads),
             )
             .build()
             .expect("projection worker pool must initialize")
@@ -28219,7 +28262,7 @@ fn runner_carry_response_pool() -> &'static rayon::ThreadPool {
                     .ok()
                     .and_then(|value| value.parse::<usize>().ok())
                     .filter(|count| *count > 0)
-                    .unwrap_or_else(|| available_threads.saturating_add(2)),
+                    .unwrap_or_else(|| available_threads.min(4)),
             )
             .build()
             .expect("carry response worker pool must initialize")

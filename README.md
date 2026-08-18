@@ -89,6 +89,17 @@ PSL_RUST_PROFILE=debug
 比赛默认使用 release 版 Rust 引擎。仅本地调试 Rust 代码时需要显式设置
 `PSL_RUST_PROFILE=debug`；`start.sh` 会自动构建并使用 release 版本。
 
+需要优化单场延迟时，可以用一个或多个真实的 `match_v2_run` 请求训练 PGO 构建：
+
+```
+scripts/build_engine_v2_pgo.sh /path/to/match-request.json
+```
+
+脚本会将 PGO 引擎写入正常的 `rust/engine_v2_core/target/release/engine`。
+`start.sh`、`config.sh` 和 Python bridge 会复用与当前 Rust 源码 digest 匹配的 PGO
+引擎；Rust 源码或 Cargo manifest 变化后会自动回落到普通 release 构建。
+如只在当前机器部署，可显式传 `--native`，默认构建保持跨同架构机器可移植。
+
 ## 6. 测试
 
 测试绕过 QQ Bot，直接覆盖模型层和核心游戏功能流：

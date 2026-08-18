@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import fcntl
+import hashlib
 import json
 import subprocess
 from pathlib import Path
@@ -15,6 +16,7 @@ ROOT = Path(__file__).resolve().parents[2]
 RUST_CRATE = ROOT / "rust" / "engine_v2_core"
 RUST_ENGINE = RUST_CRATE / "target" / "release" / "engine"
 RUST_BUILD_LOCK = RUST_CRATE / "target" / ".engine.release.lock"
+RUST_PGO_MARKER = RUST_CRATE / "target" / "release" / ".engine.pgo"
 
 
 class RustEngineError(RuntimeError):
@@ -31,10 +33,20 @@ def _source_paths() -> list[Path]:
     return paths
 
 
+def _source_digest() -> str:
+    digest = hashlib.sha256()
+    for path in sorted(_source_paths()):
+        digest.update(hashlib.sha256(path.read_bytes()).hexdigest().encode("ascii"))
+        digest.update(b"\n")
+    return digest.hexdigest()
+
+
 def _needs_build() -> bool:
     if not RUST_ENGINE.exists():
         return True
     binary_mtime = RUST_ENGINE.stat().st_mtime
+    if RUST_PGO_MARKER.exists():
+        return RUST_PGO_MARKER.read_text().strip() != _source_digest()
     return any(path.stat().st_mtime > binary_mtime for path in _source_paths())
 
 
@@ -57,6 +69,7 @@ def _build_release_engine() -> None:
                     "failed to build Rust match engine:\n"
                     + (process.stderr.strip() or process.stdout.strip())
                 )
+            RUST_PGO_MARKER.unlink(missing_ok=True)
         finally:
             fcntl.flock(lock_file, fcntl.LOCK_UN)
 

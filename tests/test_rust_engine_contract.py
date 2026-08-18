@@ -1,12 +1,14 @@
 """Contract and architecture tests for the Rust-only match engine."""
 
 import random
+import subprocess
 import sys
 from pathlib import Path
 
 from psl_core.engine_v2 import EngineConfig, MatchV2, TraceConfig
 from psl_core.engine_v2.match import MatchResult
 from psl_core.presentation import build_match_presentation
+from psl_core.engine_v2 import rust_bridge
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -61,6 +63,42 @@ def test_python_package_contains_only_rust_contract_boundary():
     assert not hasattr(Game, "play_possession")
     assert not hasattr(Game, "_start_legacy")
     assert not hasattr(Game, "_run_simulation_legacy")
+
+
+def test_pgo_marker_preserves_fresh_binary_and_invalidates_when_source_changes(
+    tmp_path, monkeypatch
+):
+    crate = tmp_path / "crate"
+    source = crate / "src" / "lib.rs"
+    manifest = crate / "Cargo.toml"
+    engine = crate / "target" / "release" / "engine"
+    marker = crate / "target" / "release" / ".engine.pgo"
+    for path in (source, manifest, engine, marker):
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("fixture")
+
+    engine.touch()
+    marker.touch()
+
+    monkeypatch.setattr(rust_bridge, "RUST_CRATE", crate)
+    monkeypatch.setattr(rust_bridge, "RUST_ENGINE", engine)
+    monkeypatch.setattr(rust_bridge, "RUST_PGO_MARKER", marker)
+    marker.write_text(rust_bridge._source_digest())
+    digest_process = subprocess.run(
+        [sys.executable, str(ROOT / "scripts" / "engine_v2_source_digest.py"), str(crate)],
+        text=True,
+        capture_output=True,
+        check=True,
+    )
+    assert digest_process.stdout.strip() == rust_bridge._source_digest()
+    assert rust_bridge._needs_build() is False
+    assert marker.exists()
+
+    source.touch()
+    assert rust_bridge._needs_build() is False
+    source.write_text("changed fixture")
+    assert rust_bridge._needs_build() is True
+    assert marker.exists()
 
 
 def test_engine_config_serializes_rust_runtime_contract():
