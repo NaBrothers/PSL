@@ -1,4 +1,4 @@
-use crate::tactical_task::TacticalTask;
+use crate::tactical_task::{CommunicatedTeammateHint, TacticalTask};
 
 pub const TEAM_COMMUNICATION_PLAYER_COUNT: usize = 11;
 
@@ -10,6 +10,19 @@ struct TeamSharedTask {
     received_tick: i32,
 }
 
+#[derive(Clone, Copy, Debug)]
+struct TeamSharedPosition {
+    pos: (f64, f64),
+    observed_tick: i32,
+    received: bool,
+}
+
+const EMPTY_SHARED_POSITION: TeamSharedPosition = TeamSharedPosition {
+    pos: (0.0, 0.0),
+    observed_tick: UNKNOWN_OBSERVED_TICK,
+    received: false,
+};
+
 const EMPTY_SHARED_TASK: TeamSharedTask = TeamSharedTask {
     task: None,
     received_tick: UNKNOWN_OBSERVED_TICK,
@@ -18,12 +31,14 @@ const EMPTY_SHARED_TASK: TeamSharedTask = TeamSharedTask {
 #[derive(Clone, Copy, Debug)]
 pub struct TeamSharedBelief {
     tasks: [TeamSharedTask; TEAM_COMMUNICATION_PLAYER_COUNT],
+    positions: [TeamSharedPosition; TEAM_COMMUNICATION_PLAYER_COUNT],
 }
 
 impl Default for TeamSharedBelief {
     fn default() -> Self {
         Self {
             tasks: [EMPTY_SHARED_TASK; TEAM_COMMUNICATION_PLAYER_COUNT],
+            positions: [EMPTY_SHARED_POSITION; TEAM_COMMUNICATION_PLAYER_COUNT],
         }
     }
 }
@@ -36,6 +51,17 @@ impl TeamSharedBelief {
             .filter(|task| task.active(tick))
     }
 
+    pub fn teammate_hint(&self, player_index: usize) -> Option<CommunicatedTeammateHint> {
+        self.positions.get(player_index).and_then(|shared| {
+            shared.received.then_some(CommunicatedTeammateHint {
+                index: player_index,
+                pos: shared.pos,
+                confidence: 0.35,
+                observed_tick: shared.observed_tick,
+            })
+        })
+    }
+
     fn advance_to(&mut self, tick: i32) {
         for shared_task in &mut self.tasks {
             if shared_task.task.is_some_and(|task| !task.active(tick)) {
@@ -45,6 +71,11 @@ impl TeamSharedBelief {
     }
 
     fn merge_message(&mut self, message: TeamCommunicationMessage, tick: i32) {
+        self.positions[message.sender_index] = TeamSharedPosition {
+            pos: message.pos,
+            observed_tick: message.observed_tick,
+            received: true,
+        };
         if let Some(task) = message.task.filter(|task| task.active(tick)) {
             self.tasks[message.sender_index] = TeamSharedTask {
                 task: Some(task),
@@ -64,6 +95,7 @@ impl TeamSharedBelief {
 pub struct TeamCommunicationPublishInput {
     pub sender_index: usize,
     pub task: Option<TacticalTask>,
+    pub pos: (f64, f64),
     pub observed_tick: i32,
 }
 
@@ -72,6 +104,7 @@ struct TeamCommunicationMessage {
     pending: bool,
     sender_index: usize,
     task: Option<TacticalTask>,
+    pos: (f64, f64),
     observed_tick: i32,
     deliver_tick: i32,
 }
@@ -80,6 +113,7 @@ const EMPTY_TEAM_COMMUNICATION_MESSAGE: TeamCommunicationMessage = TeamCommunica
     pending: false,
     sender_index: 0,
     task: None,
+    pos: (0.0, 0.0),
     observed_tick: UNKNOWN_OBSERVED_TICK,
     deliver_tick: UNKNOWN_OBSERVED_TICK,
 };
@@ -119,6 +153,7 @@ impl TeamCommunicationState {
             pending: true,
             sender_index: input.sender_index,
             task: input.task,
+            pos: input.pos,
             observed_tick: input.observed_tick,
             deliver_tick: input.observed_tick.saturating_add(1),
         };
@@ -185,12 +220,14 @@ mod tests {
             TeamCommunicationPublishInput {
                 sender_index: 7,
                 task: Some(task),
+                pos: (58.0, 22.0),
                 observed_tick: 8,
             },
         );
 
         bus.deliver(8);
         assert!(bus.snapshot(false).task(7, 8).is_none());
+        assert!(bus.snapshot(false).teammate_hint(7).is_none());
         bus.deliver(9);
         assert_eq!(
             bus.snapshot(false)
@@ -198,6 +235,16 @@ mod tests {
                 .map(|shared| shared.raw_target),
             Some((60.0, 18.0))
         );
+        assert_eq!(
+            bus.snapshot(false).teammate_hint(7),
+            Some(CommunicatedTeammateHint {
+                index: 7,
+                pos: (58.0, 22.0),
+                confidence: 0.35,
+                observed_tick: 8,
+            })
+        );
+        assert!(bus.snapshot(true).teammate_hint(7).is_none());
     }
 
     #[test]
@@ -208,6 +255,7 @@ mod tests {
             TeamCommunicationPublishInput {
                 sender_index: 5,
                 task: Some(active_support_task((72.0, 40.0), 4, 12)),
+                pos: (68.0, 38.0),
                 observed_tick: 4,
             },
         );
@@ -228,6 +276,7 @@ mod tests {
             TeamCommunicationPublishInput {
                 sender_index: 3,
                 task: Some(active_support_task((74.0, 24.0), 10, 13)),
+                pos: (70.0, 22.0),
                 observed_tick: 10,
             },
         );
@@ -239,6 +288,7 @@ mod tests {
             TeamCommunicationPublishInput {
                 sender_index: 3,
                 task: None,
+                pos: (71.0, 22.0),
                 observed_tick: 11,
             },
         );
@@ -253,6 +303,7 @@ mod tests {
             TeamCommunicationPublishInput {
                 sender_index: 3,
                 task: Some(active_support_task((74.0, 24.0), 12, 13)),
+                pos: (72.0, 22.0),
                 observed_tick: 12,
             },
         );

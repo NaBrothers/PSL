@@ -251,8 +251,7 @@ pub fn receive_reachability(
     }
 
     let advantage = time_def - time_runner;
-    let competitive_reach =
-        (0.5 + advantage * receive_reachability_scale).clamp(0.0, 1.0);
+    let competitive_reach = (0.5 + advantage * receive_reachability_scale).clamp(0.0, 1.0);
     let arrival_lateness = (time_runner - time_ball).max(0.0);
     let arrival_compatibility = (-arrival_lateness / time_ball.max(0.1)).exp();
     (competitive_reach * arrival_compatibility).clamp(0.0, 1.0)

@@ -153,6 +153,7 @@ pub struct TeamPlanProjectionPlayerInput {
 pub struct TeamPlanFormationProjectionInput<'a> {
     pub signals: TeamPlanSignals,
     pub duration_ticks: i32,
+    pub elapsed_fraction: f64,
     pub controlled_player_index: Option<usize>,
     pub controlled_player_pos: Option<(f64, f64)>,
     pub pitch_length: f64,
@@ -496,9 +497,8 @@ fn project_team_plan_formation_into_with_target_provider(
         let mut pos = player.pos;
         let mut velocity = player.velocity;
         if player.is_mobile {
-            for _ in 0..duration_ticks {
-                let movement =
-                    crate::physics::advance_player_motion(&crate::physics::PlayerMotionInput {
+            for tick_index in 0..duration_ticks {
+                let motion_input = crate::physics::PlayerMotionInput {
                         pos,
                         target,
                         velocity,
@@ -509,7 +509,21 @@ fn project_team_plan_formation_into_with_target_provider(
                         player_min_speed: input.player_min_speed,
                         pitch_length: input.pitch_length,
                         pitch_width: input.pitch_width,
-                    });
+                    };
+                let final_tick = tick_index + 1 == duration_ticks;
+                let elapsed_fraction = if final_tick {
+                    input.elapsed_fraction.clamp(0.0, 1.0)
+                } else {
+                    1.0
+                };
+                let movement = if elapsed_fraction >= 1.0 {
+                    crate::physics::advance_player_motion(&motion_input)
+                } else {
+                    crate::physics::advance_player_motion_fraction(
+                        &motion_input,
+                        elapsed_fraction,
+                    )
+                };
                 pos = movement.pos;
                 velocity = movement.velocity;
             }
@@ -912,7 +926,10 @@ mod tests {
         assert!(output.signals.width_scale > 1.2);
         assert!(
             output.signals.switch_bias > 0.85,
-            "the dominant switch plan must retain a strong switch tendency"
+            "the dominant switch plan must retain a strong switch tendency: features={:?}, signals={:?}, candidates={:?}",
+            output.features,
+            output.signals,
+            output.candidates,
         );
         assert!(
             output.signals.switch_bias < team_plan_signals(TeamPlanKind::Switch).switch_bias,
@@ -1147,6 +1164,7 @@ mod tests {
         let one_tick = project_team_plan_formation(&TeamPlanFormationProjectionInput {
             signals,
             duration_ticks: 1,
+            elapsed_fraction: 1.0,
             controlled_player_index: Some(0),
             controlled_player_pos: Some((49.5, 34.0)),
             pitch_length: 105.0,
@@ -1160,6 +1178,7 @@ mod tests {
             ..TeamPlanFormationProjectionInput {
                 signals,
                 duration_ticks: 1,
+                elapsed_fraction: 1.0,
                 controlled_player_index: Some(0),
                 controlled_player_pos: Some((49.5, 34.0)),
                 pitch_length: 105.0,
@@ -1218,6 +1237,7 @@ mod tests {
         let input = TeamPlanFormationProjectionInput {
             signals,
             duration_ticks: 3,
+            elapsed_fraction: 1.0,
             controlled_player_index: Some(0),
             controlled_player_pos: Some((49.0, 34.5)),
             pitch_length: 105.0,
@@ -1285,6 +1305,7 @@ mod tests {
         let projection = project_team_plan_formation(&TeamPlanFormationProjectionInput {
             signals,
             duration_ticks: 1,
+            elapsed_fraction: 1.0,
             controlled_player_index: None,
             controlled_player_pos: None,
             pitch_length: 105.0,
@@ -1305,6 +1326,54 @@ mod tests {
             pitch_length: 105.0,
             pitch_width: 68.0,
         });
+
+        assert_eq!(projection.players[0].pos, live.pos);
+        assert_eq!(projection.players[0].velocity, live.velocity);
+    }
+
+    #[test]
+    fn projected_formation_uses_the_same_fractional_motion_budget_as_live() {
+        let signals = team_plan_signals(TeamPlanKind::Recycle);
+        let target = (72.0, 14.0);
+        let player = TeamPlanProjectionPlayerInput {
+            index: 0,
+            pos: (48.0, 34.0),
+            velocity: (0.0, 0.0),
+            target_pos: target,
+            tactical_anchor: target,
+            speed_ability: 80,
+            desired_speed: 4.5,
+            acceleration_scale: 1.0,
+            is_mobile: true,
+        };
+        let elapsed_fraction = 0.37;
+        let projection = project_team_plan_formation(&TeamPlanFormationProjectionInput {
+            signals,
+            duration_ticks: 1,
+            elapsed_fraction,
+            controlled_player_index: None,
+            controlled_player_pos: None,
+            pitch_length: 105.0,
+            pitch_width: 68.0,
+            player_max_speed: 8.0,
+            player_min_speed: 2.5,
+            players: &[player],
+        });
+        let live = crate::physics::advance_player_motion_fraction(
+            &crate::physics::PlayerMotionInput {
+                pos: player.pos,
+                target,
+                velocity: player.velocity,
+                speed_ability: player.speed_ability,
+                desired_speed: player.desired_speed,
+                acceleration_scale: player.acceleration_scale,
+                player_max_speed: 8.0,
+                player_min_speed: 2.5,
+                pitch_length: 105.0,
+                pitch_width: 68.0,
+            },
+            elapsed_fraction,
+        );
 
         assert_eq!(projection.players[0].pos, live.pos);
         assert_eq!(projection.players[0].velocity, live.velocity);

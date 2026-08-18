@@ -1,5 +1,7 @@
 use crate::physics::{angle_to_goal, distance, player_speed, smoothstep};
-use crate::possession_control::{shot_release_readiness, PossessionControlState};
+use crate::possession_control::{
+    shot_release_probability, shot_release_readiness, PossessionControlState,
+};
 use crate::shot_quality::{
     estimate_shot_outcome, shot_quality_at, ShotContestDefender, ShotQualityCache, ShotQualityInput,
 };
@@ -14,8 +16,8 @@ pub struct HoldInput {
     pub iq: f64,
     pub is_midfielder: bool,
     pub is_defender: bool,
-    pub hold_ticks: i32,
-    pub possession_ticks: i32,
+    pub hold_seconds: f64,
+    pub possession_seconds: f64,
     pub current_pv: f64,
     pub pressure: i32,
     pub nearest_pressure: f64,
@@ -61,7 +63,7 @@ pub struct ShotInput<'a> {
     pub shooter_pos: (f64, f64),
     pub finishing: f64,
     pub long_shot: f64,
-    pub possession_ticks: i32,
+    pub possession_seconds: f64,
     pub consecutive_carries: i32,
     pub last_receive_origin: (f64, f64),
     pub opponents: &'a [(f64, f64)],
@@ -69,6 +71,7 @@ pub struct ShotInput<'a> {
     pub pitch_width: f64,
     pub attacking_right: bool,
     pub shot_on_target_base: f64,
+    pub shot_execution_accuracy_scale: f64,
     pub gk_save_base: f64,
     pub gk_attributes: Option<crate::goalkeeper::GkSaveAttributes>,
     pub gk_pos: Option<(f64, f64)>,
@@ -114,7 +117,7 @@ pub struct CarryInput<'a> {
     pub finishing: f64,
     pub long_shot: f64,
     pub consecutive_carries: i32,
-    pub possession_ticks: i32,
+    pub possession_seconds: f64,
     pub current_state_value: f64,
     pub path_feasibility: f64,
     pub teammates: &'a [CarrySupportPlayer],
@@ -606,8 +609,8 @@ pub fn evaluate_hold(input: &HoldInput) -> HoldOutput {
         (input.best_pass_score - 0.075).max(0.0) * 0.38 * (1.0 - 0.55 * no_clear_release);
     let hold_multiplier = 1.0
         / (1.0
-            + input.hold_ticks.max(0) as f64 * 0.62
-            + (input.possession_ticks - 2).max(0) as f64 * 0.38);
+            + input.hold_seconds.max(0.0) * 0.62
+            + (input.possession_seconds - 2.0).max(0.0) * 0.38);
     score *= hold_multiplier;
     score = (score - opportunity_cost).max(0.0);
 
@@ -665,18 +668,26 @@ pub fn evaluate_shot(input: &ShotInput<'_>) -> ShotOutput {
             })
         }),
     });
-    let on_target_prob = shot_outcome.on_target_prob;
-    let save_estimate = shot_outcome.save_prob;
+    let (on_target_prob, save_estimate) = crate::calibrated_shot_execution_probabilities(
+        shot_outcome.xg,
+        shot_outcome.on_target_prob,
+        input.shot_execution_accuracy_scale,
+    );
     let control_release_readiness = input
         .control_state
-        .map(shot_release_readiness)
+        .map(shot_release_probability)
         .unwrap_or(1.0);
+    // `shot_release_readiness` is a multiplicative control index, not an
+    // empirical Bernoulli probability. Mapping it through a square root keeps
+    // the physical zero/one boundaries and ordering while avoiding a second
+    // multiplicative penalty when execution samples whether the shot leaves
+    // the foot. Defender engagement remains an independent upper bound.
     let tap_in_release_readiness = control_release_readiness
         + (0.99 - control_release_readiness).max(0.0) * shot_outcome.open_goal_window;
     let body_release_probability =
         tap_in_release_readiness.min(shot_outcome.body_release_probability);
     let xg = shot_outcome.xg * shot_outcome.release_probability;
-    let first_time_window = (1.0 - smoothstep(2.0, 5.0, input.possession_ticks.max(0) as f64))
+    let first_time_window = (1.0 - smoothstep(2.0, 5.0, input.possession_seconds.max(0.0)))
         * (1.0 - smoothstep(1.0, 3.0, input.consecutive_carries.max(0) as f64));
     let receive_origin_progress = if input.attacking_right {
         input.last_receive_origin.0 / input.pitch_length.max(1.0)
@@ -1066,9 +1077,9 @@ fn evaluate_carry_from_state(
         (1.0 - 0.50 * shot_window * (1.0 - extra_touch_improvement)).max(0.45);
     score *= shooting_window_multiplier;
 
-    let stale_ticks = (input.possession_ticks - 2).max(0) as f64;
+    let stale_seconds = (input.possession_seconds - 2.0).max(0.0);
     let low_gain_pressure = 1.0 - smoothstep(0.02, 0.08, immediate_gain);
-    let possession_multiplier = 1.0 / (1.0 + stale_ticks * 0.20 * low_gain_pressure);
+    let possession_multiplier = 1.0 / (1.0 + stale_seconds * 0.20 * low_gain_pressure);
     let low_gain_multiplier = 0.65 + 0.35 * smoothstep(0.0, 0.06, immediate_gain);
     let final_third_carry =
         smoothstep(0.72, 0.88, target_progress) * smoothstep(0.35, 0.75, target_centrality);
@@ -1423,7 +1434,7 @@ mod tests {
             finishing: 0.82,
             long_shot: 0.74,
             consecutive_carries: 2,
-            possession_ticks: 4,
+            possession_seconds: 4.0,
             current_state_value: 0.19,
             path_feasibility: 0.72,
             teammates: &teammates,
@@ -1550,7 +1561,7 @@ mod tests {
             finishing: 0.82,
             long_shot: 0.74,
             consecutive_carries: 0,
-            possession_ticks: 2,
+            possession_seconds: 2.0,
             current_state_value: 0.12,
             path_feasibility: 0.90,
             teammates: &teammates,
@@ -1629,7 +1640,7 @@ mod tests {
                 finishing: 0.78,
                 long_shot: 0.74,
                 consecutive_carries: 0,
-                possession_ticks: 1,
+                possession_seconds: 1.0,
                 current_state_value: 0.08,
                 path_feasibility: 0.88,
                 teammates,
@@ -1710,7 +1721,7 @@ mod tests {
             finishing: 0.88,
             long_shot: 0.78,
             consecutive_carries: 1,
-            possession_ticks: 2,
+            possession_seconds: 2.0,
             current_state_value: 0.10,
             path_feasibility: 0.72,
             teammates: &teammates,
@@ -1758,8 +1769,8 @@ mod tests {
             iq: 0.8,
             is_midfielder: true,
             is_defender: false,
-            hold_ticks: 0,
-            possession_ticks: 1,
+            hold_seconds: 0.0,
+            possession_seconds: 1.0,
             current_pv: 0.4,
             pressure: 0,
             nearest_pressure: 0.0,
@@ -1775,8 +1786,8 @@ mod tests {
                 iq: 0.8,
                 is_midfielder: true,
                 is_defender: false,
-                hold_ticks: 0,
-                possession_ticks: 1,
+                hold_seconds: 0.0,
+                possession_seconds: 1.0,
                 current_pv: 0.4,
                 pressure: 0,
                 nearest_pressure: 0.0,
@@ -1813,7 +1824,7 @@ mod tests {
             shooter_pos: (100.0, 34.0),
             finishing: 0.82,
             long_shot: 0.72,
-            possession_ticks: 4,
+            possession_seconds: 4.0,
             consecutive_carries: 2,
             last_receive_origin: (96.0, 34.0),
             opponents: &opponents,
@@ -1821,6 +1832,7 @@ mod tests {
             pitch_width: 68.0,
             attacking_right: true,
             shot_on_target_base: 0.52,
+            shot_execution_accuracy_scale: 1.0,
             gk_save_base: 0.66,
             gk_attributes: Some(goalkeeper_attributes),
             gk_pos: Some(goalkeeper_pos),
@@ -1842,7 +1854,7 @@ mod tests {
             goalkeeper_goal_side.body_release_probability
         );
         assert!(
-            (goalkeeper_goal_side.body_release_probability - ordinary_release_readiness).abs()
+            (goalkeeper_goal_side.body_release_probability - ordinary_release_readiness.sqrt()).abs()
                 < 0.03,
             "a goalkeeper still between shooter and goal must not receive the tap-in release benefit"
         );
@@ -1850,6 +1862,48 @@ mod tests {
             goalkeeper_behind.terminal_value > goalkeeper_goal_side.terminal_value,
             "the open-goal terminal value should naturally exceed the still-contested shot"
         );
+    }
+
+    #[test]
+    fn control_readiness_maps_monotonically_to_release_probability_with_fixed_boundaries() {
+        let opponents = [];
+        let shot = |release_preparation: f64| {
+            evaluate_shot(&ShotInput {
+                tick: 1,
+                shooter_index: 1,
+                shooter_team_home: true,
+                shooter_pos: (86.0, 34.0),
+                finishing: 0.84,
+                long_shot: 0.78,
+                possession_seconds: 2.0,
+                consecutive_carries: 0,
+                last_receive_origin: (82.0, 34.0),
+                opponents: &opponents,
+                pitch_length: 105.0,
+                pitch_width: 68.0,
+                attacking_right: true,
+                shot_on_target_base: 0.52,
+                shot_execution_accuracy_scale: 1.0,
+                gk_save_base: 0.66,
+                gk_attributes: None,
+                gk_pos: None,
+                contest_defenders: Some(&[]),
+                shot_ideal_distance: 20.0,
+                shot_quality_cache: None,
+                control_state: Some(PossessionControlState {
+                    release_preparation,
+                    ..PossessionControlState::default()
+                }),
+            })
+        };
+
+        let unavailable = shot(0.0);
+        let developing = shot(0.25);
+        let ready = shot(1.0);
+        assert_eq!(unavailable.body_release_probability, 0.0);
+        assert!(developing.body_release_probability > 0.25);
+        assert!(developing.body_release_probability < ready.body_release_probability);
+        assert_eq!(ready.body_release_probability, 1.0);
     }
 
     #[test]
@@ -1884,7 +1938,7 @@ mod tests {
             shooter_pos: (86.0, 34.0),
             finishing: 0.84,
             long_shot: 0.78,
-            possession_ticks: 2,
+            possession_seconds: 2.0,
             consecutive_carries: 0,
             last_receive_origin: (82.0, 34.0),
             opponents: &opponents,
@@ -1892,6 +1946,7 @@ mod tests {
             pitch_width: 68.0,
             attacking_right: true,
             shot_on_target_base: 0.52,
+            shot_execution_accuracy_scale: 1.0,
             gk_save_base: 0.66,
             gk_attributes: None,
             gk_pos: None,
@@ -1932,7 +1987,7 @@ mod tests {
             shooter_pos: (88.0, 34.0),
             finishing: 0.86,
             long_shot: 0.80,
-            possession_ticks: 3,
+            possession_seconds: 3.0,
             consecutive_carries: 0,
             last_receive_origin: (84.0, 34.0),
             opponents: &opponents,
@@ -1940,6 +1995,7 @@ mod tests {
             pitch_width: 68.0,
             attacking_right: true,
             shot_on_target_base: 0.52,
+            shot_execution_accuracy_scale: 1.0,
             gk_save_base: 0.66,
             gk_attributes: Some(GkSaveAttributes {
                 gk_saving: 84.0,
@@ -1982,7 +2038,7 @@ mod tests {
             shooter_pos: (12.0, 34.0),
             finishing: 0.90,
             long_shot: 0.99,
-            possession_ticks: 4,
+            possession_seconds: 4.0,
             consecutive_carries: 1,
             last_receive_origin: (12.0, 34.0),
             opponents: &opponents,
@@ -1990,6 +2046,7 @@ mod tests {
             pitch_width: 68.0,
             attacking_right: true,
             shot_on_target_base: 0.52,
+            shot_execution_accuracy_scale: 1.0,
             gk_save_base: 0.66,
             gk_attributes: Some(GkSaveAttributes {
                 gk_saving: 84.0,

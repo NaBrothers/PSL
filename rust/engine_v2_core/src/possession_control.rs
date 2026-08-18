@@ -49,6 +49,8 @@ pub struct PossessionControlTransitionInput<'a> {
     pub ownership_continuity: f64,
     pub contact_load: f64,
     pub settling_ticks: i32,
+    pub tick_duration: f64,
+    pub elapsed_fraction: f64,
     pub movement_distance: f64,
     pub turn_target: Option<f64>,
 }
@@ -170,17 +172,30 @@ fn blend_heading(previous_heading: f64, previous_weight: f64, arrival_heading: f
     y.atan2(x).to_degrees()
 }
 
+fn reorient_turn_capacity_degrees_per_second(state: PossessionControlState, mobility: f64) -> f64 {
+    (34.0 + 66.0 * mobility.clamp(0.0, 1.0))
+        * (0.42 + 0.58 * (1.0 - state.pressure_load))
+        * (0.58 + 0.42 * state.turn_readiness)
+}
+
+pub fn reorient_control_duration_seconds(
+    state: PossessionControlState,
+    target_heading: f64,
+) -> f64 {
+    let required_turn = angle_diff(state.facing_direction, target_heading).abs();
+    let mobility = (0.36 + 0.64 * state.turn_readiness).clamp(0.0, 1.0);
+    required_turn / reorient_turn_capacity_degrees_per_second(state, mobility).max(f64::EPSILON)
+}
+
 pub fn reorient_control_heading(
     state: PossessionControlState,
     target_heading: f64,
     mobility: f64,
-    elapsed_ticks: i32,
+    elapsed_seconds: f64,
 ) -> f64 {
     let remaining_turn = angle_diff(state.facing_direction, target_heading);
-    let turn_capacity = (34.0 + 66.0 * mobility.clamp(0.0, 1.0))
-        * elapsed_ticks.max(1) as f64
-        * (0.42 + 0.58 * (1.0 - state.pressure_load))
-        * (0.58 + 0.42 * state.turn_readiness);
+    let turn_capacity = reorient_turn_capacity_degrees_per_second(state, mobility)
+        * elapsed_seconds.max(f64::EPSILON);
     (state.facing_direction + remaining_turn.clamp(-turn_capacity, turn_capacity)).rem_euclid(360.0)
 }
 
@@ -219,7 +234,10 @@ pub fn transition_possession_control(
 ) -> PossessionControlState {
     let continuity = input.ownership_continuity.clamp(0.0, 1.0);
     let elapsed_ticks = input.settling_ticks.max(1);
-    let settling = 1.0 - (-0.45 * elapsed_ticks as f64).exp();
+    let elapsed_tick_budget =
+        (elapsed_ticks - 1) as f64 + input.elapsed_fraction.clamp(0.0, 1.0);
+    let elapsed_seconds = elapsed_tick_budget * input.tick_duration.max(f64::EPSILON);
+    let settling = 1.0 - (-0.45 * elapsed_seconds).exp();
     let retained_memory = continuity * (1.0 - settling);
     let facing_direction = input.turn_target.map_or_else(
         || {
@@ -234,7 +252,7 @@ pub fn transition_possession_control(
                 input.previous,
                 target_heading,
                 (0.36 + 0.64 * input.previous.turn_readiness).clamp(0.0, 1.0),
-                elapsed_ticks,
+                elapsed_seconds,
             )
         },
     );
@@ -282,7 +300,7 @@ pub fn transition_possession_control(
         .turn_target
         .map(|_| preparation_alignment)
         .unwrap_or(0.0);
-    let exposure_duration = 1.0 - (-0.32 * elapsed_ticks as f64).exp();
+    let exposure_duration = 1.0 - (-0.32 * elapsed_seconds).exp();
     let stagnant_control = continuity
         * exposure_duration
         * (1.0 - movement_refresh)
@@ -327,6 +345,13 @@ pub fn shot_release_readiness(state: PossessionControlState) -> f64 {
         * (1.0 - 0.28 * stagnation_impact).clamp(0.0, 1.0)
 }
 
+/// Convert the dimensionless control-readiness index into the probability that
+/// the shooting contact can be completed. Prediction and live execution must
+/// share this mapping.
+pub fn shot_release_probability(state: PossessionControlState) -> f64 {
+    shot_release_readiness(state).sqrt()
+}
+
 pub fn continuation_control_readiness(state: PossessionControlState) -> f64 {
     let stagnation_impact = state.stagnation_load.powf(4.0);
     ((0.22
@@ -357,8 +382,9 @@ pub fn directional_control_readiness(state: PossessionControlState, target_headi
 mod tests {
     use super::{
         angle_diff, directional_control_readiness, observe_possession_control,
-        shot_release_readiness, team_shape_readiness, transition_possession_control,
-        PossessionControlObservation, PossessionControlState, PossessionControlTransitionInput,
+        reorient_control_duration_seconds, reorient_control_heading, shot_release_readiness,
+        team_shape_readiness, transition_possession_control, PossessionControlObservation,
+        PossessionControlState, PossessionControlTransitionInput,
     };
     use crate::physics::{distance, smoothstep};
 
@@ -455,6 +481,8 @@ mod tests {
             ownership_continuity: 1.0,
             contact_load: 0.0,
             settling_ticks: 0,
+            tick_duration: 1.0,
+            elapsed_fraction: 1.0,
             movement_distance: 0.0,
             turn_target: None,
         });
@@ -465,6 +493,8 @@ mod tests {
             ownership_continuity: 1.0,
             contact_load: 1.0,
             settling_ticks: 0,
+            tick_duration: 1.0,
+            elapsed_fraction: 1.0,
             movement_distance: 0.0,
             turn_target: None,
         });
@@ -565,6 +595,7 @@ mod tests {
         assert!(lateral > reverse);
     }
 
+
     #[test]
     fn unpressured_control_recovers_without_action_specific_overrides() {
         let teammates = [
@@ -596,6 +627,8 @@ mod tests {
             ownership_continuity: 1.0,
             contact_load: 1.0,
             settling_ticks: 0,
+            tick_duration: 1.0,
+            elapsed_fraction: 1.0,
             movement_distance: 0.0,
             turn_target: None,
         });
@@ -606,6 +639,8 @@ mod tests {
             ownership_continuity: 1.0,
             contact_load: 0.0,
             settling_ticks: 3,
+            tick_duration: 1.0,
+            elapsed_fraction: 1.0,
             movement_distance: 2.4,
             turn_target: None,
         });
@@ -642,6 +677,8 @@ mod tests {
             ownership_continuity: 1.0,
             contact_load: 0.0,
             settling_ticks: 1,
+            tick_duration: 1.0,
+            elapsed_fraction: 1.0,
             movement_distance: 0.0,
             turn_target: None,
         });
@@ -652,6 +689,8 @@ mod tests {
             ownership_continuity: 1.0,
             contact_load: 0.0,
             settling_ticks: 1,
+            tick_duration: 1.0,
+            elapsed_fraction: 1.0,
             movement_distance: 0.0,
             turn_target: None,
         });
@@ -662,6 +701,8 @@ mod tests {
             ownership_continuity: 1.0,
             contact_load: 0.0,
             settling_ticks: 1,
+            tick_duration: 1.0,
+            elapsed_fraction: 1.0,
             movement_distance: 2.5,
             turn_target: Some(0.0),
         });
@@ -711,6 +752,8 @@ mod tests {
             ownership_continuity: 1.0,
             contact_load: 0.2,
             settling_ticks: 1,
+            tick_duration: 1.0,
+            elapsed_fraction: 1.0,
             movement_distance: 0.0,
             turn_target: Some(0.0),
         });
@@ -718,5 +761,170 @@ mod tests {
         assert!(angle_diff(previous.facing_direction, turned.facing_direction).abs() > 0.0);
         assert!(angle_diff(turned.facing_direction, 0.0).abs() > 0.0);
         assert!(turned.release_preparation > previous.release_preparation);
+    }
+
+    #[test]
+    fn reorient_duration_matches_the_live_heading_capacity() {
+        let state = PossessionControlState {
+            facing_direction: 214.0,
+            pressure_load: 0.58,
+            containment_load: 0.24,
+            forward_control: 0.20,
+            turn_readiness: 0.43,
+            release_window: 0.38,
+            shape_readiness: 0.55,
+            release_preparation: 0.18,
+            stagnation_load: 0.12,
+        };
+        let target_heading = 18.0;
+        let duration = reorient_control_duration_seconds(state, target_heading);
+        let mobility = (0.36 + 0.64 * state.turn_readiness).clamp(0.0, 1.0);
+        let completed = reorient_control_heading(state, target_heading, mobility, duration);
+        let incomplete =
+            reorient_control_heading(state, target_heading, mobility, duration * 0.999);
+
+        assert!(angle_diff(completed, target_heading).abs() < 1e-10);
+        assert!(angle_diff(incomplete, target_heading).abs() > 1e-6);
+    }
+
+    #[test]
+    fn reorient_duration_preserves_physical_time_across_tick_sizes() {
+        let state = PossessionControlState {
+            facing_direction: 180.0,
+            pressure_load: 0.72,
+            containment_load: 0.30,
+            forward_control: 0.15,
+            turn_readiness: 0.26,
+            release_window: 0.35,
+            shape_readiness: 0.42,
+            release_preparation: 0.10,
+            stagnation_load: 0.15,
+        };
+        let target_heading = 0.0;
+        let duration = reorient_control_duration_seconds(state, target_heading);
+        let mobility = (0.36 + 0.64 * state.turn_readiness).clamp(0.0, 1.0);
+        let advance_in_steps = |step_seconds: f64| {
+            let mut current = state;
+            let full_steps = (duration / step_seconds).floor() as usize;
+            for _ in 0..full_steps {
+                current.facing_direction =
+                    reorient_control_heading(current, target_heading, mobility, step_seconds);
+            }
+            let remainder = duration - full_steps as f64 * step_seconds;
+            if remainder > 1e-12 {
+                current.facing_direction =
+                    reorient_control_heading(current, target_heading, mobility, remainder);
+            }
+            current.facing_direction
+        };
+
+        assert!(angle_diff(advance_in_steps(1.0), target_heading).abs() < 1e-10);
+        assert!(angle_diff(advance_in_steps(0.5), target_heading).abs() < 1e-10);
+        assert!(angle_diff(advance_in_steps(0.25), target_heading).abs() < 1e-10);
+    }
+
+    #[test]
+    fn control_transition_preserves_physical_time_across_tick_sizes() {
+        let teammates = [(1, 34.0, 18.0), (2, 38.0, 50.0), (3, 68.0, 25.0)];
+        let opponents = [(52.0, 34.0), (56.0, 30.0), (56.0, 38.0)];
+        let observation = PossessionControlObservation {
+            controller_index: 0,
+            controller_pos: (50.0, 34.0),
+            teammate_positions: &teammates,
+            teammate_goalkeeper_indices: &[],
+            opponent_positions: &opponents,
+            pitch_length: 105.0,
+            pitch_width: 68.0,
+            attacking_right: true,
+        };
+        let previous = PossessionControlState {
+            facing_direction: 180.0,
+            pressure_load: 0.72,
+            containment_load: 0.30,
+            forward_control: 0.15,
+            turn_readiness: 0.26,
+            release_window: 0.35,
+            shape_readiness: 0.42,
+            release_preparation: 0.10,
+            stagnation_load: 0.15,
+        };
+        let step = |previous, settling_ticks, tick_duration| {
+            transition_possession_control(&PossessionControlTransitionInput {
+                previous,
+                observation,
+                arrival_heading: 0.0,
+                ownership_continuity: 1.0,
+                contact_load: 0.0,
+                settling_ticks,
+                tick_duration,
+                elapsed_fraction: 1.0,
+                movement_distance: 0.0,
+                turn_target: Some(0.0),
+            })
+        };
+        let one_second = step(previous, 1, 1.0);
+        let half_second = step(step(previous, 1, 0.5), 1, 0.5);
+        let quarter_second = (0..4).fold(previous, |state, _| step(state, 1, 0.25));
+
+        assert!((one_second.facing_direction - half_second.facing_direction).abs() < 8.0);
+        assert!((one_second.release_preparation - half_second.release_preparation).abs() < 0.12);
+        assert!((one_second.turn_readiness - half_second.turn_readiness).abs() < 0.12);
+        assert!((one_second.stagnation_load - half_second.stagnation_load).abs() < 0.04);
+        assert!(
+            (one_second.facing_direction - quarter_second.facing_direction).abs() < 12.0,
+            "one={one_second:?}, quarter={quarter_second:?}"
+        );
+        assert!((one_second.release_preparation - quarter_second.release_preparation).abs() < 0.12);
+        assert!((one_second.turn_readiness - quarter_second.turn_readiness).abs() < 0.12);
+        assert!((one_second.stagnation_load - quarter_second.stagnation_load).abs() < 0.04);
+    }
+
+    #[test]
+    fn fractional_control_transition_matches_the_same_physical_tick_duration() {
+        let teammates = [(1, 34.0, 18.0), (2, 38.0, 50.0), (3, 68.0, 25.0)];
+        let opponents = [(52.0, 34.0), (56.0, 30.0), (56.0, 38.0)];
+        let observation = PossessionControlObservation {
+            controller_index: 0,
+            controller_pos: (50.0, 34.0),
+            teammate_positions: &teammates,
+            teammate_goalkeeper_indices: &[],
+            opponent_positions: &opponents,
+            pitch_length: 105.0,
+            pitch_width: 68.0,
+            attacking_right: true,
+        };
+        let previous = PossessionControlState {
+            facing_direction: 180.0,
+            pressure_load: 0.72,
+            containment_load: 0.30,
+            forward_control: 0.15,
+            turn_readiness: 0.26,
+            release_window: 0.35,
+            shape_readiness: 0.42,
+            release_preparation: 0.10,
+            stagnation_load: 0.15,
+        };
+        let transition = |tick_duration, elapsed_fraction| {
+            transition_possession_control(&PossessionControlTransitionInput {
+                previous,
+                observation,
+                arrival_heading: 0.0,
+                ownership_continuity: 1.0,
+                contact_load: 0.2,
+                settling_ticks: 1,
+                tick_duration,
+                elapsed_fraction,
+                movement_distance: 0.3,
+                turn_target: Some(0.0),
+            })
+        };
+
+        let fractional = transition(1.0, 0.5);
+        let short_tick = transition(0.5, 1.0);
+        assert_eq!(fractional.facing_direction.to_bits(), short_tick.facing_direction.to_bits());
+        assert_eq!(fractional.pressure_load.to_bits(), short_tick.pressure_load.to_bits());
+        assert_eq!(fractional.turn_readiness.to_bits(), short_tick.turn_readiness.to_bits());
+        assert_eq!(fractional.release_preparation.to_bits(), short_tick.release_preparation.to_bits());
+        assert_eq!(fractional.stagnation_load.to_bits(), short_tick.stagnation_load.to_bits());
     }
 }

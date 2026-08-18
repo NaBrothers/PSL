@@ -1,6 +1,7 @@
 """Configuration contract for the Rust match engine."""
 
 from dataclasses import asdict, dataclass, field
+import math
 from typing import Optional
 
 
@@ -25,8 +26,12 @@ class EngineConfig:
     half_ticks: int = 2700
     frame_interval: int = 4
     transition_ticks: int = 6
+    kickoff_restart_ticks: int = 45
     goal_kick_restart_ticks: int = 16
+    corner_restart_ticks: int = 26
     throw_in_restart_ticks: int = 8
+    free_kick_restart_ticks: int = 20
+    restart_setup_ticks: int = 10
 
     player_max_speed: float = 9.0
     player_min_speed: float = 2.0
@@ -44,6 +49,7 @@ class EngineConfig:
     long_pass_base_success: float = 0.55
     shot_ideal_distance: float = 20.0
     shot_on_target_base: float = 0.50
+    shot_execution_accuracy_scale: float = 1.25
     gk_save_base: float = 0.78
     gk_position_error_factor: float = 0.05
     gk_reaction_delay_factor: float = 0.005
@@ -82,6 +88,26 @@ class EngineConfig:
         trace = payload.pop("trace")
         payload["trace_detail"] = trace["detail"]
         payload["trace_top_k"] = trace["top_k"]
+
+        # These legacy tick-count settings were authored against the
+        # production one-second clock.  Preserve their physical duration when
+        # the simulation resolution changes; Rust still receives integer tick
+        # counts at the process boundary.
+        tick_duration = max(float(self.tick_duration), 1e-9)
+        for name in (
+            "total_ticks",
+            "half_ticks",
+            "frame_interval",
+            "transition_ticks",
+            "kickoff_restart_ticks",
+            "goal_kick_restart_ticks",
+            "corner_restart_ticks",
+            "throw_in_restart_ticks",
+            "free_kick_restart_ticks",
+            "restart_setup_ticks",
+        ):
+            reference_seconds = max(float(getattr(self, name)), 0.0)
+            payload[name] = max(1, math.ceil(reference_seconds / tick_duration))
         return payload
 
 
@@ -98,6 +124,12 @@ ENGINE_CONFIG_FIELDS = (
         "name": "shot_on_target_base",
         "default": 0.52,
         "label": "射正基准概率",
+        "type": "float",
+    },
+    {
+        "name": "shot_execution_accuracy_scale",
+        "default": 1.25,
+        "label": "射门执行射正分布倍率",
         "type": "float",
     },
     {

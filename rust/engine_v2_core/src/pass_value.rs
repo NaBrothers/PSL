@@ -323,12 +323,20 @@ pub fn pass_retention_probability(
 pub fn pass_technical_accuracy(
     base_success: f64,
     passing: f64,
-    _distance: f64,
+    distance: f64,
     _is_long: bool,
 ) -> f64 {
     let passing = (passing / 100.0).clamp(0.0, 1.0);
+    let base_success = base_success.clamp(0.0, 1.0);
+    let scaled_ceiling = base_success * (0.4 + 0.6 * passing);
+    let ability_improved_base = base_success + (1.0 - base_success) * passing;
+    // Close control lets technique close more of the gap above the generic
+    // delivery ceiling. That benefit decays on the same 12m length scale used
+    // by PassSpatialTransition's continuous endpoint-error growth, rather than
+    // switching at a short/long classification boundary.
+    let close_control = (-distance.max(0.0) / 12.0).exp();
     let technical_accuracy =
-        base_success.clamp(0.0, 1.0) + (1.0 - base_success.clamp(0.0, 1.0)) * passing;
+        scaled_ceiling + (ability_improved_base - scaled_ceiling) * close_control;
     technical_accuracy.clamp(0.05, 0.995)
 }
 
@@ -887,22 +895,31 @@ mod tests {
     }
 
     #[test]
-    fn technical_accuracy_uses_ability_to_improve_the_base_rate() {
-        let goalkeeper_short = pass_technical_accuracy(0.80, 60.0, 12.0, false);
-        let defender_short = pass_technical_accuracy(0.80, 80.0, 12.0, false);
-        let defender_long = pass_technical_accuracy(0.55, 80.0, 42.0, true);
+    fn technical_accuracy_continuously_loses_close_control_benefit_with_distance() {
+        let zero = pass_technical_accuracy(0.55, 0.0, 42.0, true);
+        let average = pass_technical_accuracy(0.55, 50.0, 42.0, true);
+        let stronger = pass_technical_accuracy(0.55, 80.0, 42.0, true);
+        let perfect = pass_technical_accuracy(0.55, 100.0, 42.0, true);
+        let close = pass_technical_accuracy(0.80, 80.0, 6.0, false);
+        let medium = pass_technical_accuracy(0.80, 80.0, 18.0, false);
+        let distant = pass_technical_accuracy(0.80, 80.0, 30.0, false);
 
-        assert!(goalkeeper_short > 0.88);
-        assert!(defender_short > goalkeeper_short);
-        assert!(defender_long < defender_short);
+        assert!(zero > 0.22 && zero < 0.55);
+        assert!(average > 0.385 && average < 0.775);
+        assert!(stronger > average);
+        assert!(perfect > 0.55 && perfect < 0.995);
+        assert!(close > medium && medium > distant);
     }
 
     #[test]
-    fn technical_accuracy_does_not_duplicate_spatial_distance_error() {
+    fn technical_accuracy_distance_effect_is_continuous_across_pass_families() {
         let short = pass_technical_accuracy(0.80, 80.0, 8.0, false);
         let distant = pass_technical_accuracy(0.80, 80.0, 28.0, false);
 
-        assert!((short - distant).abs() <= f64::EPSILON);
+        assert!(short > distant);
+        let left = pass_technical_accuracy(0.80, 80.0, 31.999, false);
+        let right = pass_technical_accuracy(0.80, 80.0, 32.001, true);
+        assert!((left - right).abs() <= 1e-4);
     }
 
     #[test]

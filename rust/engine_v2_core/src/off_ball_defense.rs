@@ -19,6 +19,7 @@ pub struct DefenseTeammateInput {
 
 #[derive(Clone, Copy, Debug)]
 pub struct DefenseMovementInput<'a> {
+    pub tick_duration: f64,
     pub velocity: (f64, f64),
     pub speed_ability: i32,
     pub defence: f64,
@@ -287,7 +288,9 @@ fn pitch_clamp(pos: (f64, f64), pitch_length: f64, pitch_width: f64) -> (f64, f6
 pub fn defense_action_movement_intent(action: &str) -> &'static str {
     match action {
         "smother" => "contest",
-        "close_down" | "tackle" | "approach" | "pursuit" => "press",
+        "close_down" | "tackle" | "tackle_committed" | "tackle_spent" | "approach" | "pursuit" => {
+            "press"
+        }
         "mark_runner" => "mark",
         "block_lane" => "block_lane",
         _ => "defend_shape",
@@ -363,12 +366,15 @@ pub fn defensive_pursuit_reachability(
     anchor: (f64, f64),
     press_radius: f64,
     movement: DefenseMovementInput<'_>,
-    commitment_ticks: i32,
+    commitment_seconds: f64,
 ) -> f64 {
     let mut projected_pos = defender_pos;
     let mut projected_velocity = movement.velocity;
     let mut closest_distance = distance(defender_pos, carrier_pos);
-    for _ in 0..commitment_ticks.clamp(1, 8) {
+    let commitment_ticks = (commitment_seconds.clamp(1.0, 8.0)
+        / movement.tick_duration.max(f64::EPSILON))
+    .ceil() as i32;
+    for _ in 0..commitment_ticks {
         let motion = project_defense_action_motion(
             projected_pos,
             carrier_pos,
@@ -396,7 +402,7 @@ pub fn defensive_approach_reachability(
     anchor: (f64, f64),
     press_radius: f64,
     movement: DefenseMovementInput<'_>,
-    commitment_ticks: i32,
+    commitment_seconds: f64,
 ) -> f64 {
     defensive_pursuit_reachability(
         defender_pos,
@@ -404,7 +410,7 @@ pub fn defensive_approach_reachability(
         anchor,
         press_radius,
         movement,
-        commitment_ticks,
+        commitment_seconds,
     )
 }
 
@@ -415,7 +421,7 @@ pub fn defensive_interception_reachability(
     anchor: (f64, f64),
     press_radius: f64,
     movement: DefenseMovementInput<'_>,
-    commitment_ticks: i32,
+    commitment_seconds: f64,
 ) -> f64 {
     let mut projected_defender_pos = defender_pos;
     let mut projected_defender_velocity = movement.velocity;
@@ -423,7 +429,10 @@ pub fn defensive_interception_reachability(
     let mut best_reachability = 0.0_f64;
     let contact_radius = (press_radius.max(0.1) * 0.22).clamp(1.0, 2.8);
 
-    for elapsed_tick in 1..=commitment_ticks.clamp(1, 8) {
+    let commitment_ticks = (commitment_seconds.clamp(1.0, 8.0)
+        / movement.tick_duration.max(f64::EPSILON))
+    .ceil() as i32;
+    for elapsed_tick in 1..=commitment_ticks {
         let next_carrier_pos = pitch_clamp(
             (
                 projected_carrier_pos.0 + carrier_velocity.0,
@@ -454,7 +463,8 @@ pub fn defensive_interception_reachability(
             closest_distance_to_motion_segment((0.0, 0.0), relative_start, relative_end);
         let contact_access =
             1.0 - smoothstep(contact_radius * 0.58, contact_radius, closest_distance);
-        let arrival_discount = (-0.24 * (elapsed_tick - 1) as f64).exp();
+        let elapsed_seconds = (elapsed_tick - 1) as f64 * movement.tick_duration.max(0.0);
+        let arrival_discount = (-0.24 * elapsed_seconds).exp();
         best_reachability = best_reachability.max(contact_access * arrival_discount);
         projected_defender_pos = motion.pos;
         projected_defender_velocity = motion.velocity;
@@ -542,6 +552,11 @@ fn local_press_access(
     })
 }
 
+fn settled_carrier_control(possession_ticks: i32, tick_duration: f64) -> f64 {
+    let possession_seconds = possession_ticks.max(0) as f64 * tick_duration.max(0.0);
+    1.0 - (-possession_seconds / 4.0).exp()
+}
+
 fn carrier_control_threat(input: &DefenseScoreInput<'_>) -> f64 {
     let Some(carrier_pos) = input.ball_carrier_pos else {
         return 0.0;
@@ -550,7 +565,10 @@ fn carrier_control_threat(input: &DefenseScoreInput<'_>) -> f64 {
         .chain(input.teammates.iter().map(|teammate| teammate.pos))
         .map(|defender_pos| distance(defender_pos, carrier_pos))
         .fold(f64::INFINITY, f64::min);
-    let settled_control = 1.0 - (-(input.ball_carrier_possession_ticks.max(0) as f64) / 4.0).exp();
+    let settled_control = settled_carrier_control(
+        input.ball_carrier_possession_ticks,
+        input.movement.tick_duration,
+    );
     let receiving_window =
         (1.0 - settled_control) * (0.30 + 0.70 * input.carrier_control_readiness.clamp(0.0, 1.0));
     let control_duration = settled_control.max(receiving_window);
@@ -580,6 +598,7 @@ pub(crate) fn fixed_defense_team_context(
     ball_pos: (f64, f64),
     ball_carrier_pos: Option<(f64, f64)>,
     ball_carrier_possession_ticks: i32,
+    tick_duration: f64,
     carrier_control_readiness: f64,
     attacking_right: bool,
     pitch_length: f64,
@@ -602,7 +621,7 @@ pub(crate) fn fixed_defense_team_context(
             .iter()
             .map(|defender| distance(defender.pos, carrier_pos))
             .fold(f64::INFINITY, f64::min);
-        let settled_control = 1.0 - (-(ball_carrier_possession_ticks.max(0) as f64) / 4.0).exp();
+        let settled_control = settled_carrier_control(ball_carrier_possession_ticks, tick_duration);
         let receiving_window =
             (1.0 - settled_control) * (0.30 + 0.70 * carrier_control_readiness.clamp(0.0, 1.0));
         let control_duration = settled_control.max(receiving_window);
@@ -948,7 +967,7 @@ fn candidate_defense_action_type(
         anchor,
         press_radius,
         movement,
-        4,
+        4.0,
     );
     let pursuit_value =
         if target_access >= 0.72 && immediate_closure < 0.10 && pursuit_reachability > 0.10 {
@@ -1156,7 +1175,7 @@ fn score_defense_candidate(
                 input.anchor,
                 input.press_radius,
                 input.movement,
-                4,
+                4.0,
             )
         });
         score += context.immediate_threat
@@ -2016,6 +2035,7 @@ mod tests {
 
     fn movement() -> DefenseMovementInput<'static> {
         DefenseMovementInput {
+            tick_duration: 1.0,
             velocity: (0.0, 0.0),
             speed_ability: 80,
             defence: 80.0,
@@ -2140,7 +2160,7 @@ mod tests {
             (42.0, 34.0),
             12.0,
             movement(),
-            4,
+            4.0,
         );
         let retreating = defensive_approach_reachability(
             (42.0, 34.0),
@@ -2151,7 +2171,7 @@ mod tests {
                 velocity: (-5.0, 0.0),
                 ..movement()
             },
-            4,
+            4.0,
         );
         let short_window = defensive_approach_reachability(
             (42.0, 34.0),
@@ -2159,7 +2179,7 @@ mod tests {
             (42.0, 34.0),
             12.0,
             movement(),
-            1,
+            1.0,
         );
 
         assert!(
@@ -2177,6 +2197,84 @@ mod tests {
     }
 
     #[test]
+    fn pursuit_reachability_preserves_four_physical_seconds_across_tick_sizes() {
+        let one_second = defensive_pursuit_reachability(
+            (42.0, 34.0),
+            (57.0, 34.0),
+            (42.0, 34.0),
+            12.0,
+            DefenseMovementInput {
+                tick_duration: 1.0,
+                ..movement()
+            },
+            4.0,
+        );
+        let half_second = defensive_pursuit_reachability(
+            (42.0, 34.0),
+            (57.0, 34.0),
+            (42.0, 34.0),
+            12.0,
+            DefenseMovementInput {
+                tick_duration: 0.5,
+                player_max_speed: movement().player_max_speed * 0.5,
+                player_min_speed: movement().player_min_speed * 0.5,
+                ..movement()
+            },
+            4.0,
+        );
+
+        assert!(
+            (one_second - half_second).abs() <= 1e-9,
+            "the same four physical seconds must preserve pursuit reachability: one={one_second}, half={half_second}"
+        );
+    }
+
+    #[test]
+    fn interception_reachability_preserves_physical_time_across_tick_sizes() {
+        let one_second = defensive_interception_reachability(
+            (42.0, 34.0),
+            (57.0, 34.0),
+            (1.5, 0.0),
+            (42.0, 34.0),
+            12.0,
+            DefenseMovementInput {
+                tick_duration: 1.0,
+                ..movement()
+            },
+            4.0,
+        );
+        let half_second = defensive_interception_reachability(
+            (42.0, 34.0),
+            (57.0, 34.0),
+            (0.75, 0.0),
+            (42.0, 34.0),
+            12.0,
+            DefenseMovementInput {
+                tick_duration: 0.5,
+                player_max_speed: movement().player_max_speed * 0.5,
+                player_min_speed: movement().player_min_speed * 0.5,
+                ..movement()
+            },
+            4.0,
+        );
+
+        assert!(
+            (one_second - half_second).abs() <= 0.05,
+            "equivalent physical paths should preserve interception reachability: one={one_second}, half={half_second}"
+        );
+    }
+
+    #[test]
+    fn carrier_control_maturity_depends_on_seconds_not_tick_count() {
+        let one_second = super::settled_carrier_control(4, 1.0);
+        let half_second = super::settled_carrier_control(8, 0.5);
+        let two_seconds = super::settled_carrier_control(4, 0.5);
+
+        assert!((one_second - half_second).abs() <= 1e-12);
+        assert!(two_seconds < one_second);
+    }
+
+    #[test]
     fn moving_carrier_cannot_be_claimed_by_a_distant_non_intercepting_pursuer() {
         let unreachable = defensive_interception_reachability(
             (52.0, 34.0),
@@ -2185,7 +2283,7 @@ mod tests {
             (52.0, 34.0),
             12.0,
             movement(),
-            4,
+            4.0,
         );
         let converging = defensive_interception_reachability(
             (86.0, 28.0),
@@ -2194,7 +2292,7 @@ mod tests {
             (86.0, 28.0),
             12.0,
             movement(),
-            4,
+            4.0,
         );
 
         assert!(
@@ -2246,7 +2344,7 @@ mod tests {
             input.anchor,
             input.press_radius,
             input.movement,
-            4,
+            4.0,
         );
 
         assert_eq!(
@@ -2308,7 +2406,7 @@ mod tests {
             input.anchor,
             input.press_radius,
             input.movement,
-            4,
+            4.0,
         );
 
         assert!(
@@ -2350,6 +2448,7 @@ mod tests {
             carrier,
             Some(carrier),
             5,
+            1.0,
             0.83,
             false,
             105.0,
@@ -3003,6 +3102,7 @@ mod tests {
     #[test]
     fn defensive_motion_uses_the_same_player_physics_kernel_without_a_speed_bonus() {
         let movement = DefenseMovementInput {
+            tick_duration: 1.0,
             velocity: (0.8, -0.2),
             speed_ability: 86,
             defence: 92.0,
@@ -3042,6 +3142,7 @@ mod tests {
     #[test]
     fn goalkeeper_smother_uses_contest_urgency_without_bypassing_shared_motion() {
         let movement = DefenseMovementInput {
+            tick_duration: 1.0,
             velocity: (-4.4, 1.6),
             speed_ability: 96,
             defence: 24.0,

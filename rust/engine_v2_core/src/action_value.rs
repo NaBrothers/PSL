@@ -169,6 +169,7 @@ pub struct TemporalOptionValueOutput {
     pub unresolved_probability: f64,
 }
 
+
 #[derive(Clone, Copy, Debug)]
 pub struct ActionOutcomeValueInput {
     pub temporal: TemporalOptionValueOutput,
@@ -260,6 +261,7 @@ pub fn temporal_option_value(input: &TemporalOptionValueInput) -> TemporalOption
     }
 }
 
+
 pub fn action_outcome_value(input: &ActionOutcomeValueInput) -> ActionOutcomeValueOutput {
     let outcome_value = input.temporal.score;
     let policy_budget = action_policy_budget(input.current_control_value, outcome_value);
@@ -276,11 +278,13 @@ pub fn action_outcome_value(input: &ActionOutcomeValueInput) -> ActionOutcomeVal
 mod tests {
     use super::{
         action_outcome_value, action_policy_budget, estimate_second_ball_control,
-        merge_action_outcome_policy, shot_possession_transition, temporal_option_value,
+        merge_action_outcome_policy,
+        shot_possession_transition, temporal_option_value,
         ActionOutcomeValueInput, ActionOutcomeValueOutput, PossessionTransition,
         SecondBallControlEstimate, SecondBallControlInput, SecondBallPlayerInput,
         ShotPossessionTransitionInput, TemporalOptionValueInput,
     };
+
 
     #[test]
     fn second_ball_control_favors_the_side_with_earlier_arrival() {

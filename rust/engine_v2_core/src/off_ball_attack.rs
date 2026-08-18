@@ -63,14 +63,22 @@ pub struct OffBallAttackCandidateOutput {
     pub movement_reach: f64,
     pub immediate_reach: f64,
     pub pass_feasibility: f64,
+    pub holder_pressure: f64,
+    pub projected_outlet_access: f64,
+    pub pressure_outlet_value: f64,
     pub space_bonus: f64,
     pub role_shape_factor: f64,
     pub team_structure_factor: f64,
     pub role_overlap_factor: f64,
     pub role_overlap: f64,
+    pub role_anchor_overlap: f64,
+    pub current_position_overlap: f64,
+    pub responsibility_role_overlap_factor: f64,
+    pub responsibility_role_overlap: f64,
     pub lane_factor: f64,
     pub offside_penalty: f64,
     pub support_angle_value: f64,
+    pub responsibility_support_angle_value: f64,
     pub inside_support: f64,
     pub second_line_support: f64,
     pub arrival_goal_fit: f64,
@@ -152,14 +160,22 @@ pub struct OffBallAttackChoiceComponents {
     pub movement_reach: f64,
     pub immediate_reach: f64,
     pub pass_feasibility: f64,
+    pub holder_pressure: f64,
+    pub projected_outlet_access: f64,
+    pub pressure_outlet_value: f64,
     pub space_bonus: f64,
     pub role_shape_factor: f64,
     pub team_structure_factor: f64,
     pub role_overlap_factor: f64,
     pub role_overlap: f64,
+    pub role_anchor_overlap: f64,
+    pub current_position_overlap: f64,
+    pub responsibility_role_overlap_factor: f64,
+    pub responsibility_role_overlap: f64,
     pub lane_factor: f64,
     pub offside_penalty: f64,
     pub support_angle_value: f64,
+    pub responsibility_support_angle_value: f64,
     pub inside_support: f64,
     pub second_line_support: f64,
     pub arrival_goal_fit: f64,
@@ -196,23 +212,19 @@ fn role_aligned_support_value(
     let role_from_ball_distance =
         (role_from_ball.0 * role_from_ball.0 + role_from_ball.1 * role_from_ball.1).sqrt();
     let role_alignment = if role_from_ball_distance > 1e-9 && support_angle_dist > 1e-9 {
-        ((role_from_ball.0 * candidate_from_ball.0
-            + role_from_ball.1 * candidate_from_ball.1)
+        ((role_from_ball.0 * candidate_from_ball.0 + role_from_ball.1 * candidate_from_ball.1)
             / (role_from_ball_distance * support_angle_dist))
             .clamp(-1.0, 1.0)
             .mul_add(0.5, 0.5)
     } else {
         0.0
     };
-    let support_distance =
-        8.0 + 8.0 * smoothstep(0.30, 0.78, carrier_progress.clamp(0.0, 1.0));
+    let support_distance = 8.0 + 8.0 * smoothstep(0.30, 0.78, carrier_progress.clamp(0.0, 1.0));
     let support_distance_value =
-        (1.0 - (support_angle_dist - support_distance).abs() / support_distance.max(1.0))
-            .max(0.0);
+        (1.0 - (support_angle_dist - support_distance).abs() / support_distance.max(1.0)).max(0.0);
     support_distance_value
         * (0.45 + 0.55 * role_alignment)
-        * (1.0
-            - ((pos.1 - pitch_width / 2.0).abs() / (pitch_width / 2.0)).min(1.0) * 0.20)
+        * (1.0 - ((pos.1 - pitch_width / 2.0).abs() / (pitch_width / 2.0)).min(1.0) * 0.20)
 }
 
 fn emit_off_ball_attack_anchor_candidates<F>(input: &OffBallRawGenerationInput<'_>, emit: &mut F)
@@ -391,10 +403,7 @@ where
         input.ball_pos.0 + forward_dir * (2.0 + 4.0 * arrival_t),
         center_lane + side_sign * input.pitch_width * 0.08,
     );
-    let far_post_base = (
-        support_center.0,
-        support_center.1 - side_sign * 4.0,
-    );
+    let far_post_base = (support_center.0, support_center.1 - side_sign * 4.0);
     let far_post = (
         far_post_base.0 + (far_post.0 - far_post_base.0) * far_post_activation,
         far_post_base.1 + (far_post.1 - far_post_base.1) * far_post_activation,
@@ -508,7 +517,7 @@ fn score_off_ball_attack_candidate(
         input.pass_to_space_ball_speed,
         input.receive_reachability_scale,
     );
-    let reach = 0.35 + 0.45 * movement_reach + 0.20 * immediate_reach;
+    let reach = 0.35 + 0.65 * movement_reach;
 
     let mut pass_feasibility = 1.0;
     let dx = pos.0 - input.ball_pos.0;
@@ -533,10 +542,24 @@ fn score_off_ball_attack_candidate(
     if dist_to_ball > 25.0 {
         pass_feasibility *= (1.0 - (dist_to_ball - 25.0) / 35.0).max(0.1);
     }
+    let holder_pressure = crate::state_value::local_pressure(
+        input.ball_pos,
+        input.opponent_positions,
+    );
+    let target_pressure = crate::state_value::local_pressure(pos, input.opponent_positions);
+    let projected_outlet_access = crate::state_value::outlet_quality(
+        input.ball_pos,
+        pos,
+        target_pressure,
+        input.pitch_length,
+        input.attacking_right,
+    ) * reach
+        * pass_feasibility;
+    let pressure_outlet_value = 0.12 * holder_pressure * projected_outlet_access;
 
     let space_bonus =
         space_creation_value(pos, input.opponent_positions, input.space_creation_radius);
-    let role_dist = distance(pos, input.anchor);
+    let role_dist = distance(pos, anchor_pos);
     let role_limit = 14.0 + 22.0 * role_progress;
     let role_t = (role_dist / (role_limit * 1.8).max(1.0)).min(1.0);
     let mut role_shape_factor = 0.22 + 0.78 * (1.0 - role_t * role_t * (3.0 - 2.0 * role_t));
@@ -566,6 +589,13 @@ fn score_off_ball_attack_candidate(
     let support_angle_value = role_aligned_support_value(
         pos,
         input.anchor,
+        input.ball_pos,
+        carrier_progress,
+        input.pitch_width,
+    );
+    let responsibility_support_angle_value = role_aligned_support_value(
+        pos,
+        anchor_pos,
         input.ball_pos,
         carrier_progress,
         input.pitch_width,
@@ -624,21 +654,35 @@ fn score_off_ball_attack_candidate(
     }
 
     let mut role_overlap = 0.0;
+    let mut role_anchor_overlap = 0.0;
+    let mut current_position_overlap = 0.0;
+    let mut responsibility_role_overlap = 0.0;
     for teammate in input.teammates {
         if teammate.index == input.player_index || teammate.is_goalkeeper {
             continue;
         }
         let anchor_dist = distance(pos, teammate.tactical_anchor);
         let own_anchor_dist = distance(pos, input.anchor);
+        let responsibility_anchor_dist = distance(pos, anchor_pos);
         if anchor_dist < 12.0 && anchor_dist + 2.0 < own_anchor_dist {
-            role_overlap += (1.0 - anchor_dist / 12.0).powf(1.15);
+            let overlap = (1.0 - anchor_dist / 12.0).powf(1.15);
+            role_overlap += overlap;
+            role_anchor_overlap += overlap;
+        }
+        if anchor_dist < 12.0 && anchor_dist + 2.0 < responsibility_anchor_dist {
+            responsibility_role_overlap += (1.0 - anchor_dist / 12.0).powf(1.15);
         }
         let current_dist = distance(pos, teammate.pos);
         if current_dist < 8.0 {
-            role_overlap += 0.45 * (1.0 - current_dist / 8.0);
+            let current_overlap = 0.45 * (1.0 - current_dist / 8.0);
+            role_overlap += current_overlap;
+            current_position_overlap += current_overlap;
+            responsibility_role_overlap += current_overlap;
         }
     }
     let role_overlap_factor = 1.0 / (1.0 + role_overlap * 0.72);
+    let responsibility_role_overlap_factor =
+        1.0 / (1.0 + responsibility_role_overlap * 0.72);
     let target_width_signed = (pos.1 - input.pitch_width / 2.0) / (input.pitch_width / 2.0);
     let cross_lane = (-width_signed * target_width_signed).max(0.0);
     let lane_factor = (1.0 - 0.88 * width_factor * cross_lane).max(0.12);
@@ -682,14 +726,22 @@ fn score_off_ball_attack_candidate(
         movement_reach,
         immediate_reach,
         pass_feasibility,
+        holder_pressure,
+        projected_outlet_access,
+        pressure_outlet_value,
         space_bonus,
         role_shape_factor,
         team_structure_factor,
         role_overlap_factor,
         role_overlap,
+        role_anchor_overlap,
+        current_position_overlap,
+        responsibility_role_overlap_factor,
+        responsibility_role_overlap,
         lane_factor,
         offside_penalty,
         support_angle_value,
+        responsibility_support_angle_value,
         inside_support,
         second_line_support,
         arrival_goal_fit,
@@ -736,14 +788,22 @@ fn default_off_ball_attack_components(kind: u8) -> OffBallAttackChoiceComponents
         movement_reach: 0.0,
         immediate_reach: 0.0,
         pass_feasibility: 0.0,
+        holder_pressure: 0.0,
+        projected_outlet_access: 0.0,
+        pressure_outlet_value: 0.0,
         space_bonus: 0.0,
         role_shape_factor: 0.0,
         team_structure_factor: 0.0,
         role_overlap_factor: 0.0,
         role_overlap: 0.0,
+        role_anchor_overlap: 0.0,
+        current_position_overlap: 0.0,
+        responsibility_role_overlap_factor: 0.0,
+        responsibility_role_overlap: 0.0,
         lane_factor: 0.0,
         offside_penalty: 0.0,
         support_angle_value: 0.0,
+        responsibility_support_angle_value: 0.0,
         inside_support: 0.0,
         second_line_support: 0.0,
         arrival_goal_fit: 0.0,
@@ -767,14 +827,22 @@ pub fn off_ball_attack_components_from_scored(
         movement_reach: value.movement_reach,
         immediate_reach: value.immediate_reach,
         pass_feasibility: value.pass_feasibility,
+        holder_pressure: value.holder_pressure,
+        projected_outlet_access: value.projected_outlet_access,
+        pressure_outlet_value: value.pressure_outlet_value,
         space_bonus: value.space_bonus,
         role_shape_factor: value.role_shape_factor,
         team_structure_factor: value.team_structure_factor,
         role_overlap_factor: value.role_overlap_factor,
         role_overlap: value.role_overlap,
+        role_anchor_overlap: value.role_anchor_overlap,
+        current_position_overlap: value.current_position_overlap,
+        responsibility_role_overlap_factor: value.responsibility_role_overlap_factor,
+        responsibility_role_overlap: value.responsibility_role_overlap,
         lane_factor: value.lane_factor,
         offside_penalty: value.offside_penalty,
         support_angle_value: value.support_angle_value,
+        responsibility_support_angle_value: value.responsibility_support_angle_value,
         inside_support: value.inside_support,
         second_line_support: value.second_line_support,
         arrival_goal_fit: value.arrival_goal_fit,
@@ -881,16 +949,17 @@ pub fn choose_off_ball_attack_target(
 #[cfg(test)]
 mod tests {
     use super::{
-        choose_off_ball_attack_target, choose_off_ball_attack_target_from_scored,
-        distance,
+        choose_off_ball_attack_target, choose_off_ball_attack_target_from_scored, distance,
         generate_off_ball_attack_raw_candidates, generate_off_ball_attack_raw_candidates_into,
-        generate_off_ball_attack_support_candidates, score_off_ball_attack_candidates,
-        score_off_ball_attack_candidates_into, role_aligned_support_value,
+        generate_off_ball_attack_support_candidates, role_aligned_support_value,
+        score_off_ball_attack_candidates, score_off_ball_attack_candidates_into,
         OffBallAttackBatchInput, OffBallAttackCandidateInput, OffBallAttackCandidateOutput,
         OffBallAttackChoiceInput, OffBallAttackGoalInput, OffBallRawGenerationInput,
         OffBallTeammateInput, RandomPolarSample, MAX_FIXED_OFF_BALL_ATTACK_CANDIDATES,
         MAX_FIXED_OFF_BALL_ATTACK_GENERATED_CANDIDATES,
     };
+
+
 
     #[test]
     fn build_up_support_includes_a_role_aligned_near_option() {
@@ -912,30 +981,24 @@ mod tests {
         let candidate = candidates
             .iter()
             .min_by(|left, right| {
-                distance(left.pos, input.ball_pos)
-                    .total_cmp(&distance(right.pos, input.ball_pos))
+                distance(left.pos, input.ball_pos).total_cmp(&distance(right.pos, input.ball_pos))
             })
             .copied()
             .expect("support generation must include a near option");
         let distance_to_ball = distance(candidate.pos, input.ball_pos);
-        let role_direction = (
-            input.anchor.0 - input.ball_pos.0,
-            input.anchor.1 - input.ball_pos.1,
-        );
+        let role_direction = (input.anchor.0 - input.ball_pos.0, input.anchor.1 - input.ball_pos.1);
         let candidate_direction = (
             candidate.pos.0 - input.ball_pos.0,
             candidate.pos.1 - input.ball_pos.1,
         );
         assert!((6.0..=12.0).contains(&distance_to_ball));
         assert!(
-            (role_direction.0 * candidate_direction.1
-                - role_direction.1 * candidate_direction.0)
+            (role_direction.0 * candidate_direction.1 - role_direction.1 * candidate_direction.0)
                 .abs()
                 < 1e-9
         );
         assert!(
-            role_direction.0 * candidate_direction.0
-                + role_direction.1 * candidate_direction.1
+            role_direction.0 * candidate_direction.0 + role_direction.1 * candidate_direction.1
                 > 0.0
         );
     }
@@ -985,6 +1048,151 @@ mod tests {
         assert!(
             role_aligned_support_value(far, anchor, ball_pos, 0.85, 68.0)
                 > role_aligned_support_value(near, anchor, ball_pos, 0.85, 68.0)
+        );
+    }
+
+    #[test]
+    fn future_off_ball_responsibility_uses_its_movement_horizon() {
+        let candidates = [OffBallAttackCandidateInput {
+            pos: (52.0, 34.0),
+            anchor_pos: (52.0, 34.0),
+        }];
+        let score_at = |pass_to_space_ball_speed| score_off_ball_attack_candidates(&OffBallAttackBatchInput {
+            player_index: 1,
+            player_pos: (60.0, 38.0),
+            player_speed: 80,
+            anchor: (52.0, 34.0),
+            ball_pos: (45.0, 34.0),
+            attacking_right: true,
+            offside_line: 100.0,
+            pitch_length: 105.0,
+            pitch_width: 68.0,
+            player_max_speed: 5.5,
+            player_min_speed: 2.5,
+            pass_to_space_ball_speed,
+            receive_reachability_scale: 1.0,
+            space_creation_radius: 10.0,
+            team_structure_weight: 0.6,
+            candidates: &candidates,
+            opponent_positions: &[],
+            opponent_speeds: &[],
+            teammate_positions: &[],
+            skip_teammate_index: None,
+            teammates: &[],
+            current_goal: None,
+        })[0];
+        let output = score_at(18.0);
+        let faster_ball = score_at(36.0);
+
+        assert!((output.reach - (0.35 + 0.65 * output.movement_reach)).abs() < 1e-12);
+        assert!(output.immediate_reach < output.movement_reach);
+        assert_ne!(output.immediate_reach.to_bits(), faster_ball.immediate_reach.to_bits());
+        assert_eq!(output.reach.to_bits(), faster_ball.reach.to_bits());
+        assert_eq!(output.score.to_bits(), faster_ball.score.to_bits());
+    }
+
+    #[test]
+    fn structural_debt_uses_the_candidate_responsibility_anchor() {
+        let formation_anchor = (80.0, 50.0);
+        let target = (52.0, 34.0);
+        let score_at = |anchor_pos| {
+            let candidates = [OffBallAttackCandidateInput {
+                pos: target,
+                anchor_pos,
+            }];
+            score_off_ball_attack_candidates(&OffBallAttackBatchInput {
+                player_index: 1,
+                player_pos: (60.0, 38.0),
+                player_speed: 80,
+                anchor: formation_anchor,
+                ball_pos: (45.0, 34.0),
+                attacking_right: true,
+                offside_line: 100.0,
+                pitch_length: 105.0,
+                pitch_width: 68.0,
+                player_max_speed: 5.5,
+                player_min_speed: 2.5,
+                pass_to_space_ball_speed: 18.0,
+                receive_reachability_scale: 1.0,
+                space_creation_radius: 10.0,
+                team_structure_weight: 0.6,
+                candidates: &candidates,
+                opponent_positions: &[],
+                opponent_speeds: &[],
+                teammate_positions: &[],
+                skip_teammate_index: None,
+                teammates: &[],
+                current_goal: None,
+            })[0]
+        };
+
+        let responsibility_aligned = score_at(target);
+        let formation_bound = score_at(formation_anchor);
+
+        assert_eq!(responsibility_aligned.role_shape_factor, 1.0);
+        assert_eq!(responsibility_aligned.team_structure_factor, 1.0);
+        assert!(responsibility_aligned.role_shape_factor > formation_bound.role_shape_factor);
+        assert!(
+            responsibility_aligned.team_structure_factor
+                > formation_bound.team_structure_factor
+        );
+    }
+
+    #[test]
+    fn responsibility_role_overlap_diagnostic_is_separate_from_production() {
+        let formation_anchor = (78.0, 50.0);
+        let target = (52.0, 34.0);
+        let teammate = OffBallTeammateInput {
+            index: 2,
+            pos: (80.0, 58.0),
+            target_pos: (80.0, 58.0),
+            tactical_anchor: (57.0, 34.0),
+            is_goalkeeper: false,
+        };
+        let score_at = |anchor_pos| {
+            let candidates = [OffBallAttackCandidateInput {
+                pos: target,
+                anchor_pos,
+            }];
+            score_off_ball_attack_candidates(&OffBallAttackBatchInput {
+                player_index: 1,
+                player_pos: (60.0, 38.0),
+                player_speed: 80,
+                anchor: formation_anchor,
+                ball_pos: (45.0, 34.0),
+                attacking_right: true,
+                offside_line: 100.0,
+                pitch_length: 105.0,
+                pitch_width: 68.0,
+                player_max_speed: 5.5,
+                player_min_speed: 2.5,
+                pass_to_space_ball_speed: 18.0,
+                receive_reachability_scale: 1.0,
+                space_creation_radius: 10.0,
+                team_structure_weight: 0.6,
+                candidates: &candidates,
+                opponent_positions: &[],
+                opponent_speeds: &[],
+                teammate_positions: &[teammate.pos],
+                skip_teammate_index: None,
+                teammates: &[teammate],
+                current_goal: None,
+            })[0]
+        };
+
+        let responsibility_aligned = score_at(target);
+        let formation_bound = score_at(formation_anchor);
+
+        assert_eq!(responsibility_aligned.responsibility_role_overlap, 0.0);
+        assert_eq!(
+            responsibility_aligned.responsibility_role_overlap_factor,
+            1.0
+        );
+        assert!(responsibility_aligned.role_overlap > 0.0);
+        assert!(formation_bound.responsibility_role_overlap > 0.0);
+        assert!(
+            responsibility_aligned.responsibility_role_overlap_factor
+                > formation_bound.responsibility_role_overlap_factor
         );
     }
 
@@ -1402,4 +1610,5 @@ mod tests {
             choose_off_ball_attack_target(&shared_choice)
         );
     }
+
 }

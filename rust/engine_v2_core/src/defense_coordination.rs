@@ -978,6 +978,39 @@ fn resource_coverage(
     }
 }
 
+fn outlet_average_objective(
+    demand: DefenseResourceDemand,
+    coverage: DefenseResourceClaim,
+    outlet_weight: f64,
+) -> f64 {
+    let demand_mass = demand.outlet_coverage.iter().sum::<f64>().max(1.0);
+    demand
+        .outlet_coverage
+        .iter()
+        .zip(coverage.outlet_coverage)
+        .map(|(demand, coverage)| demand * outlet_weight * coverage)
+        .sum::<f64>()
+        / demand_mass
+}
+
+fn outlet_worst_residual_objective(
+    demand: DefenseResourceDemand,
+    coverage: DefenseResourceClaim,
+    outlet_weight: f64,
+) -> f64 {
+    let maximum_threat = demand
+        .outlet_coverage
+        .into_iter()
+        .fold(0.0_f64, f64::max);
+    let maximum_residual = demand
+        .outlet_coverage
+        .into_iter()
+        .zip(coverage.outlet_coverage)
+        .map(|(demand, coverage)| demand * (1.0 - coverage.clamp(0.0, 1.0)))
+        .fold(0.0_f64, f64::max);
+    outlet_weight * (maximum_threat - maximum_residual).max(0.0)
+}
+
 fn resource_objective(
     input: &TeamDefenseAssignmentInput<'_>,
     coverage: DefenseResourceClaim,
@@ -996,7 +1029,6 @@ fn resource_objective(
     let balance_weight = 0.30 + 0.36 * (1.0 - compactness);
     let outlet_weight = 0.22 + 0.30 * (1.0 - compactness);
     let spatial_weight = 0.58 + 0.72 * input.immediate_threat.clamp(0.0, 1.0);
-    let outlet_demand_mass = demand.outlet_coverage.iter().sum::<f64>().max(1.0);
     let engagement_overcommitment =
         (coverage.carrier_engagement - demand.carrier_engagement).max(0.0);
     let closure_overcommitment = (coverage.carrier_closure - demand.carrier_closure).max(0.0);
@@ -1013,13 +1045,7 @@ fn resource_objective(
             .sum::<f64>()
         + demand.wide_balance[0] * balance_weight * coverage.wide_balance[0]
         + demand.wide_balance[1] * balance_weight * coverage.wide_balance[1]
-        + demand
-            .outlet_coverage
-            .iter()
-            .zip(coverage.outlet_coverage)
-            .map(|(demand, coverage)| demand * outlet_weight * coverage)
-            .sum::<f64>()
-            / outlet_demand_mass
+        + outlet_average_objective(demand, coverage, outlet_weight)
         + demand
             .spatial_threat
             .iter()
@@ -1136,6 +1162,166 @@ fn selection_objective_after_change(
 
     current_objective + local_delta - local_intent_delta - task_retarget_delta + resource_delta
         - pair_delta
+}
+
+pub(crate) fn diagnostic_single_replacement_objective(
+    input: &TeamDefenseAssignmentInput<'_>,
+    selections: &[usize],
+    player_index: usize,
+    candidate_index: usize,
+) -> f64 {
+    if selections.len() != input.players.len() {
+        return f64::NEG_INFINITY;
+    }
+    let scale = formation_scale_fixed(input.players);
+    let current_objective = selection_objective(input, selections, scale);
+    selection_objective_after_change(
+        input,
+        selections,
+        scale,
+        current_objective,
+        player_index,
+        candidate_index,
+    )
+}
+
+pub(crate) fn diagnostic_double_replacement_objective(
+    input: &TeamDefenseAssignmentInput<'_>,
+    selections: &[usize],
+    left_player_index: usize,
+    left_candidate_index: usize,
+    right_player_index: usize,
+    right_candidate_index: usize,
+) -> f64 {
+    if selections.len() != input.players.len()
+        || left_player_index == right_player_index
+        || left_player_index >= selections.len()
+        || right_player_index >= selections.len()
+    {
+        return f64::NEG_INFINITY;
+    }
+    let mut changed = [0usize; MAX_FIXED_TEAM_DEFENSE_PLAYERS];
+    changed[..selections.len()].copy_from_slice(selections);
+    changed[left_player_index] = left_candidate_index;
+    changed[right_player_index] = right_candidate_index;
+    selection_objective(
+        input,
+        &changed[..selections.len()],
+        formation_scale_fixed(input.players),
+    )
+}
+
+#[derive(Clone, Copy, Debug, Default)]
+pub(crate) struct DefenseReplacementObjectiveBreakdown {
+    pub total_delta: f64,
+    pub local_delta: f64,
+    pub local_intent_cost_delta: f64,
+    pub task_retarget_cost_delta: f64,
+    pub resource_delta: f64,
+    pub pair_penalty_delta: f64,
+    pub outlet_average_delta: f64,
+    pub outlet_worst_residual_delta: f64,
+    pub worst_residual_total_delta: f64,
+}
+
+pub(crate) fn diagnostic_single_replacement_breakdown(
+    input: &TeamDefenseAssignmentInput<'_>,
+    selections: &[usize],
+    player_index: usize,
+    candidate_index: usize,
+) -> DefenseReplacementObjectiveBreakdown {
+    if selections.len() != input.players.len() {
+        return DefenseReplacementObjectiveBreakdown::default();
+    }
+    let scale = formation_scale_fixed(input.players);
+    let Some(player) = input.players.get(player_index).copied() else {
+        return DefenseReplacementObjectiveBreakdown::default();
+    };
+    let Some(current_candidate) = player.candidates.get(selections[player_index]).copied() else {
+        return DefenseReplacementObjectiveBreakdown::default();
+    };
+    let Some(candidate) = player.candidates.get(candidate_index).copied() else {
+        return DefenseReplacementObjectiveBreakdown::default();
+    };
+    let compactness = input.compactness.clamp(0.0, 1.0);
+    let local_delta = local_candidate_value(candidate, player, scale, compactness)
+        - local_candidate_value(current_candidate, player, scale, compactness);
+    let local_intent_cost_delta =
+        local_intent_deviation_cost(input, player_index, candidate_index, scale)
+            - local_intent_deviation_cost(
+                input,
+                player_index,
+                selections[player_index],
+                scale,
+            );
+    let task_retarget_cost_delta = task_retarget_cost(input, player_index, candidate_index, scale)
+        - task_retarget_cost(input, player_index, selections[player_index], scale);
+    let resource_delta = resource_objective(
+        input,
+        resource_coverage(input, selections, Some((player_index, candidate_index))),
+    ) - resource_objective(input, resource_coverage(input, selections, None));
+    let current_coverage = resource_coverage(input, selections, None);
+    let replacement_coverage =
+        resource_coverage(input, selections, Some((player_index, candidate_index)));
+    let outlet_weight = 0.22 + 0.30 * (1.0 - compactness);
+    let outlet_average_delta = outlet_average_objective(
+        input.resource_demand,
+        replacement_coverage,
+        outlet_weight,
+    ) - outlet_average_objective(input.resource_demand, current_coverage, outlet_weight);
+    let outlet_worst_residual_delta = outlet_worst_residual_objective(
+        input.resource_demand,
+        replacement_coverage,
+        outlet_weight,
+    ) - outlet_worst_residual_objective(
+        input.resource_demand,
+        current_coverage,
+        outlet_weight,
+    );
+    let pair_penalty_delta = input
+        .players
+        .iter()
+        .enumerate()
+        .filter(|(other_index, _)| *other_index != player_index)
+        .filter_map(|(other_index, other)| {
+            other
+                .candidates
+                .get(selections[other_index])
+                .copied()
+                .map(|other_candidate| {
+                    pair_candidate_penalty(
+                        player,
+                        candidate,
+                        *other,
+                        other_candidate,
+                        scale,
+                        compactness,
+                    ) - pair_candidate_penalty(
+                        player,
+                        current_candidate,
+                        *other,
+                        other_candidate,
+                        scale,
+                        compactness,
+                    )
+                })
+        })
+        .sum::<f64>();
+    let total_delta = local_delta - local_intent_cost_delta - task_retarget_cost_delta
+            + resource_delta
+            - pair_penalty_delta;
+    DefenseReplacementObjectiveBreakdown {
+        total_delta,
+        local_delta,
+        local_intent_cost_delta,
+        task_retarget_cost_delta,
+        resource_delta,
+        pair_penalty_delta,
+        outlet_average_delta,
+        outlet_worst_residual_delta,
+        worst_residual_total_delta: total_delta - outlet_average_delta
+            + outlet_worst_residual_delta,
+    }
 }
 
 fn improve_with_pair_exchange(

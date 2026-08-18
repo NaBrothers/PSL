@@ -21,6 +21,40 @@ pub struct TeamCognitionPlayerInput<'a> {
     pub believed_entities: &'a [BelievedEntity],
 }
 
+pub fn compile_shared_opponent_beliefs(
+    players: &[TeamCognitionPlayerInput<'_>],
+    output: &mut [BelievedEntity; MAX_TEAM_COGNITION_PLAYERS],
+) -> usize {
+    let mut confidence_by_index = [0.0; MAX_TEAM_COGNITION_PLAYERS];
+    for player in players {
+        for entity in player.believed_entities {
+            if entity.is_teammate || entity.confidence < MIN_SHARED_OBSERVATION_CONFIDENCE {
+                continue;
+            }
+            let Some(opponent_index) = entity.index.checked_sub(MAX_TEAM_COGNITION_PLAYERS) else {
+                continue;
+            };
+            if opponent_index >= MAX_TEAM_COGNITION_PLAYERS
+                || entity.confidence <= confidence_by_index[opponent_index]
+            {
+                continue;
+            }
+            confidence_by_index[opponent_index] = entity.confidence;
+            output[opponent_index] = *entity;
+        }
+    }
+    let mut count = 0;
+    for opponent_index in 0..MAX_TEAM_COGNITION_PLAYERS {
+        if confidence_by_index[opponent_index] <= 0.0 {
+            continue;
+        }
+        output.swap(count, opponent_index);
+        confidence_by_index.swap(count, opponent_index);
+        count += 1;
+    }
+    count
+}
+
 pub fn compile_team_plan_inputs(
     players: &[TeamCognitionPlayerInput<'_>],
     fallback_ball_pos: (f64, f64),
@@ -47,7 +81,15 @@ pub fn compile_team_plan_inputs_with_control(
         players.len() <= MAX_TEAM_COGNITION_PLAYERS,
         "team cognition expects at most eleven players"
     );
-    let mut opponent_confidence = [0.0; MAX_TEAM_COGNITION_PLAYERS];
+    let mut shared_opponents = [BelievedEntity {
+        index: 0,
+        pos: (0.0, 0.0),
+        velocity: (0.0, 0.0),
+        confidence: 0.0,
+        is_teammate: false,
+        is_goalkeeper: false,
+    }; MAX_TEAM_COGNITION_PLAYERS];
+    let opponent_count = compile_shared_opponent_beliefs(players, &mut shared_opponents);
     let mut ball_weight = 0.0;
     let mut ball_confidence = 0.0_f64;
     let mut ball_x = 0.0;
@@ -63,38 +105,19 @@ pub fn compile_team_plan_inputs_with_control(
             ball_x += player.ball_pos.0 * player.ball_confidence;
             ball_y += player.ball_pos.1 * player.ball_confidence;
         }
-        for entity in player.believed_entities {
-            if entity.is_teammate || entity.confidence < MIN_SHARED_OBSERVATION_CONFIDENCE {
-                continue;
-            }
-            let Some(opponent_index) = entity.index.checked_sub(MAX_TEAM_COGNITION_PLAYERS) else {
-                continue;
-            };
-            if opponent_index >= MAX_TEAM_COGNITION_PLAYERS
-                || entity.confidence <= opponent_confidence[opponent_index]
-            {
-                continue;
-            }
-            opponent_confidence[opponent_index] = entity.confidence;
-            opponent_inputs[opponent_index] = TeamPlanOpponentInput {
-                pos: entity.pos,
-                is_goalkeeper: entity.is_goalkeeper,
-            };
-        }
     }
     let ball_pos = if ball_weight > 1e-9 {
         (ball_x / ball_weight, ball_y / ball_weight)
     } else {
         fallback_ball_pos
     };
-    let mut opponent_count = 0;
-    for opponent_index in 0..MAX_TEAM_COGNITION_PLAYERS {
-        if opponent_confidence[opponent_index] <= 0.0 {
-            continue;
-        }
-        opponent_inputs.swap(opponent_count, opponent_index);
-        opponent_confidence.swap(opponent_count, opponent_index);
-        opponent_count += 1;
+    let mut opponent_confidence = [0.0; MAX_TEAM_COGNITION_PLAYERS];
+    for (index, entity) in shared_opponents[..opponent_count].iter().enumerate() {
+        opponent_inputs[index] = TeamPlanOpponentInput {
+            pos: entity.pos,
+            is_goalkeeper: entity.is_goalkeeper,
+        };
+        opponent_confidence[index] = entity.confidence;
     }
     let ball_confidence = ball_confidence.clamp(0.0, 1.0);
     let proximity_probability = shared_possession_probability(
@@ -238,6 +261,21 @@ mod tests {
         assert_eq!(opponent_inputs[0].pos, (62.0, 32.0));
         assert_eq!(cognition.ball_pos, (57.5, 34.0));
         assert!((cognition.ball_confidence - 0.75).abs() <= 1e-12);
+
+        let mut shared = [BelievedEntity {
+            index: 0,
+            pos: (0.0, 0.0),
+            velocity: (0.0, 0.0),
+            confidence: 0.0,
+            is_teammate: false,
+            is_goalkeeper: false,
+        }; MAX_TEAM_COGNITION_PLAYERS];
+        let shared_count = compile_shared_opponent_beliefs(&players, &mut shared);
+        assert_eq!(shared_count, 1);
+        assert_eq!(shared[0].index, second_entities[0].index);
+        assert_eq!(shared[0].pos, second_entities[0].pos);
+        assert_eq!(shared[0].velocity, second_entities[0].velocity);
+        assert_eq!(shared[0].confidence, second_entities[0].confidence);
     }
 
     #[test]

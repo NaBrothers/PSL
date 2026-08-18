@@ -15,6 +15,7 @@ pub struct ActionTimingInput {
     pub tempo: f64,
     pub risk_budget: f64,
     pub opportunity: f64,
+    pub tick_duration: f64,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -81,14 +82,19 @@ const ACTION_TIMING_PROFILES: [ActionTimingProfile; 4] = [
     },
     ActionTimingProfile {
         kind: TemporalActionKind::Shoot,
-        base_ticks: 1.0,
+        // A selected shot is a short rolling-horizon action: the first contact
+        // may only set the body and improve release readiness before the ball
+        // is struck. The match runner already models that preparation contact
+        // (including a defender duel), so a one-tick cap made its continuation
+        // branch unreachable and discarded most selected shots.
+        base_ticks: 2.0,
         distance_ticks: 0.0,
         low_tempo_ticks: 0.0,
         low_risk_ticks: 0.0,
         opportunity_ticks: 0.0,
         pressure_ticks: 0.0,
-        min_ticks: 1.0,
-        max_ticks: 1.0,
+        min_ticks: 2.0,
+        max_ticks: 2.0,
         completion_step_fraction: 0.0,
         requires_target_completion: false,
     },
@@ -112,9 +118,10 @@ pub fn action_timing_plan(input: &ActionTimingInput) -> ActionTimingPlan {
         + profile.low_risk_ticks * (1.0 - input.risk_budget.clamp(0.0, 1.0))
         + profile.opportunity_ticks * input.opportunity.clamp(0.0, 1.0)
         - profile.pressure_ticks * input.pressure.clamp(0.0, 1.0);
-    let initial_ticks = commitment
+    let commitment_seconds = commitment
         .clamp(profile.min_ticks, profile.max_ticks)
-        .ceil() as i32;
+        .max(input.tick_duration.max(f64::EPSILON));
+    let initial_ticks = (commitment_seconds / input.tick_duration.max(f64::EPSILON)).ceil() as i32;
     ActionTimingPlan {
         initial_ticks,
         completion_distance: step_distance * profile.completion_step_fraction,
@@ -149,6 +156,7 @@ mod tests {
             tempo: 0.85,
             risk_budget: 0.75,
             opportunity: 0.0,
+            tick_duration: 1.0,
         });
         let long_controlled = action_timing_plan(&ActionTimingInput {
             kind: TemporalActionKind::Carry,
@@ -158,6 +166,7 @@ mod tests {
             tempo: 0.25,
             risk_budget: 0.30,
             opportunity: 0.0,
+            tick_duration: 1.0,
         });
 
         assert!(long_controlled.initial_ticks > short_fast.initial_ticks);
@@ -174,6 +183,7 @@ mod tests {
             tempo: 0.25,
             risk_budget: 0.25,
             opportunity: 1.0,
+            tick_duration: 1.0,
         });
         let urgent_pressure = action_timing_plan(&ActionTimingInput {
             kind: TemporalActionKind::Hold,
@@ -183,6 +193,7 @@ mod tests {
             tempo: 0.85,
             risk_budget: 0.75,
             opportunity: 0.0,
+            tick_duration: 1.0,
         });
 
         assert!(protected_window.initial_ticks > urgent_pressure.initial_ticks);
@@ -198,6 +209,7 @@ mod tests {
             tempo: 0.25,
             risk_budget: 0.25,
             opportunity: 1.0,
+            tick_duration: 1.0,
         });
 
         assert_eq!(reorientation.initial_ticks, 1);
@@ -205,7 +217,41 @@ mod tests {
     }
 
     #[test]
-    fn shot_is_a_single_rolling_horizon_execution_step() {
+    fn action_commitment_preserves_physical_seconds_across_tick_sizes() {
+        let one_second = action_timing_plan(&ActionTimingInput {
+            kind: TemporalActionKind::Shoot,
+            target_distance: 18.0,
+            nominal_step_distance: 3.0,
+            pressure: 0.5,
+            tempo: 0.5,
+            risk_budget: 0.5,
+            opportunity: 0.0,
+            tick_duration: 1.0,
+        });
+        let half_second = action_timing_plan(&ActionTimingInput {
+            tick_duration: 0.5,
+            ..ActionTimingInput {
+                kind: TemporalActionKind::Shoot,
+                target_distance: 18.0,
+                nominal_step_distance: 3.0,
+                pressure: 0.5,
+                tempo: 0.5,
+                risk_budget: 0.5,
+                opportunity: 0.0,
+                tick_duration: 1.0,
+            }
+        });
+
+        assert_eq!(one_second.initial_ticks, 2);
+        assert_eq!(half_second.initial_ticks, 4);
+        assert_eq!(
+            one_second.initial_ticks as f64,
+            half_second.initial_ticks as f64 * 0.5,
+        );
+    }
+
+    #[test]
+    fn shot_keeps_a_short_preparation_horizon() {
         let shot = action_timing_plan(&ActionTimingInput {
             kind: TemporalActionKind::Shoot,
             target_distance: 18.0,
@@ -214,10 +260,12 @@ mod tests {
             tempo: 0.2,
             risk_budget: 0.2,
             opportunity: 0.0,
+            tick_duration: 1.0,
         });
 
-        assert_eq!(shot.initial_ticks, 1);
+        assert_eq!(shot.initial_ticks, 2);
         assert!(!shot.requires_target_completion);
+        assert!(should_continue_action(shot, 2, 18.0));
         assert!(should_continue_action(shot, 1, 18.0));
         assert!(!should_continue_action(shot, 0, 18.0));
     }
@@ -232,6 +280,7 @@ mod tests {
             tempo: 0.5,
             risk_budget: 0.5,
             opportunity: 0.0,
+            tick_duration: 1.0,
         });
         assert!(should_continue_action(carry, 1, 4.0));
         assert!(!should_continue_action(carry, 0, 4.0));
@@ -245,6 +294,7 @@ mod tests {
             tempo: 0.5,
             risk_budget: 0.5,
             opportunity: 1.0,
+            tick_duration: 1.0,
         });
         assert!(should_continue_action(hold, 1, 0.0));
     }

@@ -1,5 +1,17 @@
 pub const MAX_EXECUTION_TRANSITION_BRANCHES: usize = 64;
 
+pub fn continuous_exposure_probability(probability: f64, elapsed_fraction: f64) -> f64 {
+    let probability = probability.clamp(0.0, 1.0);
+    let elapsed_fraction = elapsed_fraction.clamp(0.0, 1.0);
+    if elapsed_fraction <= 0.0 {
+        0.0
+    } else if elapsed_fraction >= 1.0 {
+        probability
+    } else {
+        1.0 - (1.0 - probability).powf(elapsed_fraction)
+    }
+}
+
 #[derive(Clone, Copy, Debug)]
 pub struct BinaryExecutionTransition {
     pub success_probability: f64,
@@ -299,6 +311,7 @@ pub struct PassExecutionTransitionMass {
 pub struct PassSpatialTransition {
     pub ideal_target: (f64, f64),
     pub successful_delivery_error_radius: f64,
+    pub failed_delivery_minimum_error_radius: f64,
     pub failed_delivery_error_radius: f64,
     pub pitch_length: f64,
     pub pitch_width: f64,
@@ -522,11 +535,23 @@ impl PassSpatialTransition {
         .sqrt();
         let ability_factor = (passing / 100.0).clamp(0.0, 1.0);
         let successful_delivery_error_radius = (1.0 - ability_factor) * (1.2 + distance / 12.0);
+        // A sampled delivery failure is the complement of a controlled delivery, not a
+        // second draw that may land exactly on the intended point.  Endpoint error grows
+        // continuously with flight distance (the same angular error travels farther) and
+        // with reduced technique.  There is deliberately no long/short threshold here.
+        // Successful and failed delivery are complementary technical outcomes. A
+        // failed delivery must not be sampled inside the spatial support already
+        // assigned to a successful one, otherwise some failures are physically
+        // more accurate than valid deliveries. Keep the boundary continuous in
+        // distance and technique instead of introducing a long-pass threshold.
+        let failed_delivery_minimum_error_radius =
+            (distance * 0.025).max(successful_delivery_error_radius);
+        let failed_delivery_error_radius = distance * (0.12 + 0.10 * (1.0 - ability_factor));
         Self {
             ideal_target,
             successful_delivery_error_radius,
-            failed_delivery_error_radius: successful_delivery_error_radius
-                * (1.85 + (distance / 90.0).min(0.45)),
+            failed_delivery_minimum_error_radius,
+            failed_delivery_error_radius,
             pitch_length,
             pitch_width,
         }
@@ -540,6 +565,8 @@ impl PassSpatialTransition {
         }
     }
 
+
+
     pub fn sample(
         self,
         delivery_succeeded: bool,
@@ -547,10 +574,20 @@ impl PassSpatialTransition {
         radius_roll: f64,
     ) -> PassSpatialSample {
         let error_radius = self.error_radius(delivery_succeeded);
+        let minimum_error_radius = if delivery_succeeded {
+            0.0
+        } else {
+            self.failed_delivery_minimum_error_radius
+        };
         let used_target_error = error_radius > 0.05;
         let target = if used_target_error {
             let angle = angle_roll.clamp(0.0, 1.0) * std::f64::consts::TAU;
-            let magnitude = radius_roll.clamp(0.0, 1.0) * error_radius;
+            let radius_roll = radius_roll.clamp(0.0, 1.0);
+            let magnitude = (minimum_error_radius * minimum_error_radius
+                + radius_roll
+                    * (error_radius * error_radius - minimum_error_radius * minimum_error_radius)
+                        .max(0.0))
+            .sqrt();
             (
                 self.ideal_target.0 + angle.cos() * magnitude,
                 self.ideal_target.1 + angle.sin() * magnitude,
@@ -569,13 +606,31 @@ impl PassSpatialTransition {
     }
 
     pub fn quadrature(self, delivery_succeeded: bool) -> [PassSpatialSample; 4] {
+        let outer = self.error_radius(delivery_succeeded);
+        let inner = if delivery_succeeded {
+            0.0
+        } else {
+            self.failed_delivery_minimum_error_radius
+        };
+        let mean_radius = if outer <= inner + f64::EPSILON {
+            inner
+        } else {
+            (2.0 / 3.0) * (outer.powi(3) - inner.powi(3)) / (outer.powi(2) - inner.powi(2))
+        };
+        let radius_roll = if outer <= inner + f64::EPSILON {
+            0.0
+        } else {
+            ((mean_radius.powi(2) - inner.powi(2)) / (outer.powi(2) - inner.powi(2)))
+                .clamp(0.0, 1.0)
+        };
         [
-            self.sample(delivery_succeeded, 0.125, 0.5),
-            self.sample(delivery_succeeded, 0.375, 0.5),
-            self.sample(delivery_succeeded, 0.625, 0.5),
-            self.sample(delivery_succeeded, 0.875, 0.5),
+            self.sample(delivery_succeeded, 0.125, radius_roll),
+            self.sample(delivery_succeeded, 0.375, radius_roll),
+            self.sample(delivery_succeeded, 0.625, radius_roll),
+            self.sample(delivery_succeeded, 0.875, radius_roll),
         ]
     }
+
 }
 
 impl PassExecutionTransition {
@@ -677,6 +732,7 @@ pub struct ExecutionTransitionBranch {
     pub arrival_heading: f64,
     pub ownership_continuity: f64,
     pub contact_load: f64,
+    pub additional_delay_seconds: f64,
 }
 
 const EMPTY_EXECUTION_TRANSITION_BRANCH: ExecutionTransitionBranch = ExecutionTransitionBranch {
@@ -686,6 +742,7 @@ const EMPTY_EXECUTION_TRANSITION_BRANCH: ExecutionTransitionBranch = ExecutionTr
     arrival_heading: 0.0,
     ownership_continuity: 0.0,
     contact_load: 0.0,
+    additional_delay_seconds: 0.0,
 };
 
 impl ExecutionTransitionBranch {
@@ -747,6 +804,44 @@ pub struct ExecutionTransitionDistribution {
     pub retained: ExecutionTransitionBranches,
     pub opposing: ExecutionTransitionBranches,
     pub unresolved_probability: f64,
+    pub out_of_play_probability: f64,
+    pub retained_restart_probability: f64,
+    pub opposing_restart_probability: f64,
+    pub expected_restart_ticks: f64,
+    pub retained_restart_position_weight: (f64, f64),
+    pub opposing_restart_position_weight: (f64, f64),
+    pub retained_restart_probability_by_kind: [f64; 3],
+    pub opposing_restart_probability_by_kind: [f64; 3],
+    pub retained_restart_position_weight_by_kind: [(f64, f64); 3],
+    pub opposing_restart_position_weight_by_kind: [(f64, f64); 3],
+    pub settled_retained_probability: f64,
+    pub settled_opposing_probability: f64,
+    pub settled_expected_recovery_ticks: f64,
+    pub direct_retained_probability: f64,
+    // Read-only pass-projection diagnostics. These fields deliberately do not
+    // participate in sampling or expected-value calculation.
+    pub debug_successful_delivery_retained_probability: f64,
+    pub debug_successful_delivery_direct_retained_probability: f64,
+    pub debug_failed_delivery_retained_probability: f64,
+    pub debug_failed_delivery_direct_retained_probability: f64,
+    pub debug_pass_resolution_stage: &'static str,
+    pub debug_pass_stable_control_elapsed_ticks: Option<f64>,
+    pub debug_pass_stable_control_after_material_deflection: Option<bool>,
+    pub debug_residual_home_player: Option<usize>,
+    pub debug_residual_home_confidence: f64,
+    pub debug_residual_away_player: Option<usize>,
+    pub debug_residual_away_confidence: f64,
+    pub debug_handoff_home_player: Option<usize>,
+    pub debug_handoff_home_confidence: f64,
+    pub debug_handoff_away_player: Option<usize>,
+    pub debug_handoff_away_confidence: f64,
+    pub debug_second_ball_attacking_probability: f64,
+    pub debug_second_ball_defending_probability: f64,
+    pub debug_second_ball_unresolved_probability: f64,
+    pub debug_pursuit_second_ball_attacking_probability: f64,
+    pub debug_pursuit_second_ball_defending_probability: f64,
+    pub debug_pursuit_second_ball_unresolved_probability: f64,
+    pub debug_second_ball_position: Option<(f64, f64)>,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -764,6 +859,42 @@ impl ExecutionTransitionDistribution {
             retained: ExecutionTransitionBranches::new(),
             opposing: ExecutionTransitionBranches::new(),
             unresolved_probability: 0.0,
+            out_of_play_probability: 0.0,
+            retained_restart_probability: 0.0,
+            opposing_restart_probability: 0.0,
+            expected_restart_ticks: 0.0,
+            retained_restart_position_weight: (0.0, 0.0),
+            opposing_restart_position_weight: (0.0, 0.0),
+            retained_restart_probability_by_kind: [0.0; 3],
+            opposing_restart_probability_by_kind: [0.0; 3],
+            retained_restart_position_weight_by_kind: [(0.0, 0.0); 3],
+            opposing_restart_position_weight_by_kind: [(0.0, 0.0); 3],
+            settled_retained_probability: 0.0,
+            settled_opposing_probability: 0.0,
+            settled_expected_recovery_ticks: 0.0,
+            direct_retained_probability: 0.0,
+            debug_successful_delivery_retained_probability: 0.0,
+            debug_successful_delivery_direct_retained_probability: 0.0,
+            debug_failed_delivery_retained_probability: 0.0,
+            debug_failed_delivery_direct_retained_probability: 0.0,
+            debug_pass_resolution_stage: "unobserved",
+            debug_pass_stable_control_elapsed_ticks: None,
+            debug_pass_stable_control_after_material_deflection: None,
+            debug_residual_home_player: None,
+            debug_residual_home_confidence: 0.0,
+            debug_residual_away_player: None,
+            debug_residual_away_confidence: 0.0,
+            debug_handoff_home_player: None,
+            debug_handoff_home_confidence: 0.0,
+            debug_handoff_away_player: None,
+            debug_handoff_away_confidence: 0.0,
+            debug_second_ball_attacking_probability: 0.0,
+            debug_second_ball_defending_probability: 0.0,
+            debug_second_ball_unresolved_probability: 0.0,
+            debug_pursuit_second_ball_attacking_probability: 0.0,
+            debug_pursuit_second_ball_defending_probability: 0.0,
+            debug_pursuit_second_ball_unresolved_probability: 0.0,
+            debug_second_ball_position: None,
         }
     }
 
@@ -772,6 +903,42 @@ impl ExecutionTransitionDistribution {
         self.retained.clear();
         self.opposing.clear();
         self.unresolved_probability = 0.0;
+        self.out_of_play_probability = 0.0;
+        self.retained_restart_probability = 0.0;
+        self.opposing_restart_probability = 0.0;
+        self.expected_restart_ticks = 0.0;
+        self.retained_restart_position_weight = (0.0, 0.0);
+        self.opposing_restart_position_weight = (0.0, 0.0);
+        self.retained_restart_probability_by_kind = [0.0; 3];
+        self.opposing_restart_probability_by_kind = [0.0; 3];
+        self.retained_restart_position_weight_by_kind = [(0.0, 0.0); 3];
+        self.opposing_restart_position_weight_by_kind = [(0.0, 0.0); 3];
+        self.settled_retained_probability = 0.0;
+        self.settled_opposing_probability = 0.0;
+        self.settled_expected_recovery_ticks = 0.0;
+        self.direct_retained_probability = 0.0;
+        self.debug_successful_delivery_retained_probability = 0.0;
+        self.debug_successful_delivery_direct_retained_probability = 0.0;
+        self.debug_failed_delivery_retained_probability = 0.0;
+        self.debug_failed_delivery_direct_retained_probability = 0.0;
+        self.debug_pass_resolution_stage = "unobserved";
+        self.debug_pass_stable_control_elapsed_ticks = None;
+        self.debug_pass_stable_control_after_material_deflection = None;
+        self.debug_residual_home_player = None;
+        self.debug_residual_home_confidence = 0.0;
+        self.debug_residual_away_player = None;
+        self.debug_residual_away_confidence = 0.0;
+        self.debug_handoff_home_player = None;
+        self.debug_handoff_home_confidence = 0.0;
+        self.debug_handoff_away_player = None;
+        self.debug_handoff_away_confidence = 0.0;
+        self.debug_second_ball_attacking_probability = 0.0;
+        self.debug_second_ball_defending_probability = 0.0;
+        self.debug_second_ball_unresolved_probability = 0.0;
+        self.debug_pursuit_second_ball_attacking_probability = 0.0;
+        self.debug_pursuit_second_ball_defending_probability = 0.0;
+        self.debug_pursuit_second_ball_unresolved_probability = 0.0;
+        self.debug_second_ball_position = None;
     }
 
     pub fn retained_probability(&self) -> f64 {
@@ -865,6 +1032,7 @@ mod tests {
             arrival_heading: 0.0,
             ownership_continuity: 0.0,
             contact_load: 0.0,
+            additional_delay_seconds: 0.0,
         }
     }
 
@@ -888,6 +1056,19 @@ mod tests {
     }
 
     #[test]
+    fn direct_retention_is_separate_from_later_team_control() {
+        let mut distribution = ExecutionTransitionDistribution::new();
+        distribution.direct_retained_probability = 0.22;
+        distribution.retained.push(branch(0.22, 4));
+        let mut second_ball = branch(0.31, 7);
+        second_ball.additional_delay_seconds = 6.0;
+        distribution.retained.push(second_ball);
+
+        assert_eq!(distribution.direct_retained_probability, 0.22);
+        assert_eq!(distribution.retained_probability(), 0.53);
+    }
+
+    #[test]
     fn binary_transition_uses_the_same_mass_for_prediction_and_execution() {
         let transition = BinaryExecutionTransition::from_success_probability(0.72);
 
@@ -895,6 +1076,16 @@ mod tests {
         assert!((transition.failure_probability - 0.28).abs() <= f64::EPSILON);
         assert!(transition.succeeds(0.719));
         assert!(transition.fails(0.72));
+    }
+
+    #[test]
+    fn continuous_exposure_probability_preserves_full_tick_and_composes() {
+        let full_tick = 0.36;
+        let half_tick = continuous_exposure_probability(full_tick, 0.5);
+
+        assert_eq!(continuous_exposure_probability(full_tick, 1.0), full_tick);
+        assert_eq!(continuous_exposure_probability(full_tick, 0.0), 0.0);
+        assert!((1.0 - (1.0 - half_tick).powi(2) - full_tick).abs() < 1e-12);
     }
 
     #[test]
@@ -1029,14 +1220,31 @@ mod tests {
             "failed delivery must use the same amplified spatial error in prediction and execution"
         );
         assert!(
-            failed.error_radius < successful.error_radius * 2.5,
-            "a technical miss should remain a continuous pass error rather than an extreme random redirection"
+            transition.failed_delivery_minimum_error_radius
+                >= transition.successful_delivery_error_radius,
+            "failed and successful delivery supports must not overlap"
         );
-        assert!((successful.target.0 - 50.0).abs() <= 1e-12);
-        assert!(successful.target.1 > 34.0);
+        assert!(
+            crate::physics::distance(failed.target, transition.ideal_target)
+                >= transition.failed_delivery_minimum_error_radius - 1e-12,
+            "a sampled technical failure must leave the original receiver window"
+        );
+        let failed_at_zero_radius_roll = transition.sample(false, 0.0, 0.0);
+        assert!(
+            (crate::physics::distance(failed_at_zero_radius_roll.target, transition.ideal_target)
+                - transition.failed_delivery_minimum_error_radius)
+                .abs()
+                <= 1e-12
+        );
+        assert!(crate::physics::distance(successful.target, transition.ideal_target) > 0.0);
         assert!(quadrature
             .iter()
             .all(|sample| (sample.error_radius - successful.error_radius).abs() <= 1e-12));
+        assert!(transition.quadrature(false).iter().all(|sample| {
+            crate::physics::distance(sample.target, transition.ideal_target)
+                >= transition.failed_delivery_minimum_error_radius - 1e-12
+        }));
+
         let mean = quadrature.iter().fold((0.0, 0.0), |sum, sample| {
             (
                 sum.0 + sample.target.0 * 0.25,
@@ -1046,6 +1254,10 @@ mod tests {
         assert!((mean.0 - transition.ideal_target.0).abs() <= 1e-12);
         assert!((mean.1 - transition.ideal_target.1).abs() <= 1e-12);
     }
+
+
+
+
 
     #[test]
     fn loose_ball_transition_shares_live_sampling_and_prediction_quadrature() {

@@ -66,6 +66,7 @@ pub struct RawPassTarget {
 struct RawPassTargetMeta {
     target: (f64, f64),
     arrival: f64,
+    source_mask: u16,
     tactical_space: bool,
     tactical_space_prior: f64,
     tactical_space_value: f64,
@@ -79,6 +80,7 @@ impl From<RawPassTarget> for RawPassTargetMeta {
         Self {
             target: value.target,
             arrival: value.arrival,
+            source_mask: 0,
             tactical_space: false,
             tactical_space_prior: 0.0,
             tactical_space_value: 0.0,
@@ -97,6 +99,7 @@ const EMPTY_RAW_PASS_TARGET: RawPassTarget = RawPassTarget {
 const EMPTY_RAW_PASS_TARGET_META: RawPassTargetMeta = RawPassTargetMeta {
     target: (0.0, 0.0),
     arrival: 0.0,
+    source_mask: 0,
     tactical_space: false,
     tactical_space_prior: 0.0,
     tactical_space_value: 0.0,
@@ -104,6 +107,31 @@ const EMPTY_RAW_PASS_TARGET_META: RawPassTargetMeta = RawPassTargetMeta {
     expected_arrival_confidence: 0.0,
     expected_arrival_fit: 0.0,
 };
+
+const PASS_TARGET_SOURCE_BASE: u16 = 1 << 0;
+const PASS_TARGET_SOURCE_STALE_RELEASE: u16 = 1 << 1;
+const PASS_TARGET_SOURCE_LAYOFF: u16 = 1 << 2;
+const PASS_TARGET_SOURCE_SECOND_LINE: u16 = 1 << 3;
+const PASS_TARGET_SOURCE_BOX_DELIVERY: u16 = 1 << 4;
+const PASS_TARGET_SOURCE_DELIVERY_SPACE: u16 = 1 << 5;
+const PASS_TARGET_SOURCE_VALUE_FIELD: u16 = 1 << 6;
+const PASS_TARGET_SOURCE_RECEIVER_SPATIAL: u16 = 1 << 7;
+
+pub fn pass_target_source_names(source_mask: u16) -> Vec<&'static str> {
+    [
+        (PASS_TARGET_SOURCE_BASE, "base"),
+        (PASS_TARGET_SOURCE_STALE_RELEASE, "stale_release"),
+        (PASS_TARGET_SOURCE_LAYOFF, "layoff"),
+        (PASS_TARGET_SOURCE_SECOND_LINE, "second_line"),
+        (PASS_TARGET_SOURCE_BOX_DELIVERY, "box_delivery"),
+        (PASS_TARGET_SOURCE_DELIVERY_SPACE, "delivery_space"),
+        (PASS_TARGET_SOURCE_VALUE_FIELD, "value_field"),
+        (PASS_TARGET_SOURCE_RECEIVER_SPATIAL, "receiver_spatial"),
+    ]
+    .into_iter()
+    .filter_map(|(bit, name)| (source_mask & bit != 0).then_some(name))
+    .collect()
+}
 
 const EMPTY_VALUE_FIELD_RAW_TARGET: ValueFieldRawTarget = ValueFieldRawTarget {
     target: (0.0, 0.0),
@@ -148,6 +176,8 @@ const EMPTY_RECEIVER_PASS_CANDIDATE: ReceiverPassCandidate = ReceiverPassCandida
     short_combination_value: 0.0,
     layoff_retention_value: 0.0,
     receiver_arrival: 0.0,
+    candidate_arrival_prior: 0.0,
+    debug_target_source_mask: 0,
     base_accuracy: 0.0,
     goal_target_fit: 0.0,
     is_long: false,
@@ -173,13 +203,16 @@ fn append_raw_pass_targets(
     output: &mut [RawPassTargetMeta],
     output_count: &mut usize,
     targets: &[RawPassTarget],
+    source_mask: u16,
 ) {
     assert!(
         output.len() - *output_count >= targets.len(),
         "raw pass target buffer exceeds its fixed capacity"
     );
     for target in targets {
-        output[*output_count] = (*target).into();
+        let mut tagged: RawPassTargetMeta = (*target).into();
+        tagged.source_mask = source_mask;
+        output[*output_count] = tagged;
         *output_count += 1;
     }
 }
@@ -195,6 +228,7 @@ fn compact_raw_pass_targets(targets: &mut [RawPassTargetMeta], target_count: usi
         if let Some(existing_index) = existing_index {
             let existing = &mut targets[existing_index];
             existing.arrival = existing.arrival.max(source.arrival);
+            existing.source_mask |= source.source_mask;
             existing.tactical_space |= source.tactical_space;
             existing.tactical_space_prior = existing
                 .tactical_space_prior
@@ -545,6 +579,8 @@ pub struct ReceiverPassCandidate {
     pub short_combination_value: f64,
     pub layoff_retention_value: f64,
     pub receiver_arrival: f64,
+    pub candidate_arrival_prior: f64,
+    pub debug_target_source_mask: u16,
     pub base_accuracy: f64,
     pub goal_target_fit: f64,
     pub is_long: bool,
@@ -658,6 +694,8 @@ pub struct TeamPassCandidate {
     pub short_combination_value: f64,
     pub layoff_retention_value: f64,
     pub receiver_arrival: f64,
+    pub candidate_arrival_prior: f64,
+    pub debug_target_source_mask: u16,
     pub base_accuracy: f64,
     pub goal_target_fit: f64,
     pub is_long: bool,
@@ -705,6 +743,8 @@ pub const EMPTY_TEAM_PASS_CANDIDATE: TeamPassCandidate = TeamPassCandidate {
     short_combination_value: 0.0,
     layoff_retention_value: 0.0,
     receiver_arrival: 0.0,
+    candidate_arrival_prior: 0.0,
+    debug_target_source_mask: 0,
     base_accuracy: 0.0,
     goal_target_fit: 0.0,
     is_long: false,
@@ -1798,10 +1838,7 @@ pub fn delivery_space_targets(input: &DeliverySpaceTargetsInput) -> Vec<RawPassT
     };
     let delivery_pressure = carrier_progress.max(target_progress_hint);
     let central_pull = input.pitch_width / 2.0 - input.receiver.pos.1;
-    if input.low_visibility
-        || delivery_pressure <= 0.70
-        || receiver_forward <= 0.5
-    {
+    if input.low_visibility || delivery_pressure <= 0.70 || receiver_forward <= 0.5 {
         return Vec::new();
     }
 
@@ -1815,10 +1852,7 @@ pub fn delivery_space_targets(input: &DeliverySpaceTargetsInput) -> Vec<RawPassT
             input.receiver.pos.1 + (committed_target.1 - input.receiver.pos.1) * run_progress;
         targets.push(RawPassTarget {
             target: pitch_clamp(
-                (
-                    run_x,
-                    run_y + central_pull * center_scale,
-                ),
+                (run_x, run_y + central_pull * center_scale),
                 input.pitch_length,
                 input.pitch_width,
             ),
@@ -1873,10 +1907,7 @@ fn delivery_space_targets_into(
     };
     let delivery_pressure = carrier_progress.max(target_progress_hint);
     let central_pull = input.pitch_width / 2.0 - input.receiver.pos.1;
-    if input.low_visibility
-        || delivery_pressure <= 0.70
-        || receiver_forward <= 0.5
-    {
+    if input.low_visibility || delivery_pressure <= 0.70 || receiver_forward <= 0.5 {
         return 0;
     }
 
@@ -1890,10 +1921,7 @@ fn delivery_space_targets_into(
             input.receiver.pos.1 + (committed_target.1 - input.receiver.pos.1) * run_progress;
         output[count] = RawPassTarget {
             target: pitch_clamp(
-                (
-                    run_x,
-                    run_y + central_pull * center_scale,
-                ),
+                (run_x, run_y + central_pull * center_scale),
                 input.pitch_length,
                 input.pitch_width,
             ),
@@ -2018,10 +2046,7 @@ fn receiver_spatial_candidates_into(
         };
 
         consider_candidate(input.receiver.pos);
-        for path_end in [
-            input.receiver.target_pos,
-            input.receiver.tactical_anchor,
-        ] {
+        for path_end in [input.receiver.target_pos, input.receiver.tactical_anchor] {
             let path = (
                 path_end.0 - input.receiver.pos.0,
                 path_end.1 - input.receiver.pos.1,
@@ -2386,7 +2411,7 @@ fn evaluate_raw_pass_target_prevalue_with_motion_context_and_geometry(
         receiver_arrival *= 1.0 - 0.72 * target_occupation_risk;
     }
 
-    let is_long = d > 30.0;
+    let is_long = crate::physics::is_long_pass_distance(d);
     let passing = if is_long {
         input.long_passing
     } else {
@@ -2716,6 +2741,7 @@ fn receiver_pass_candidates_batch_into(
         raw_targets,
         &mut raw_target_count,
         &target_buffer[..base.target_count],
+        PASS_TARGET_SOURCE_BASE,
     );
     let stale_release_count = stale_release_targets_into(
         &StaleReleaseTargetsInput {
@@ -2733,6 +2759,7 @@ fn receiver_pass_candidates_batch_into(
         raw_targets,
         &mut raw_target_count,
         &target_buffer[..stale_release_count],
+        PASS_TARGET_SOURCE_STALE_RELEASE,
     );
     let layoff_count = layoff_targets_into(
         &LayoffTargetsInput {
@@ -2749,6 +2776,7 @@ fn receiver_pass_candidates_batch_into(
         raw_targets,
         &mut raw_target_count,
         &target_buffer[..layoff_count],
+        PASS_TARGET_SOURCE_LAYOFF,
     );
     let second_line_count = second_line_targets_into(
         &SecondLineTargetsInput {
@@ -2766,6 +2794,7 @@ fn receiver_pass_candidates_batch_into(
         raw_targets,
         &mut raw_target_count,
         &target_buffer[..second_line_count],
+        PASS_TARGET_SOURCE_SECOND_LINE,
     );
     let box_delivery_count = box_delivery_targets_into(
         &BoxDeliveryTargetsInput {
@@ -2782,6 +2811,7 @@ fn receiver_pass_candidates_batch_into(
         raw_targets,
         &mut raw_target_count,
         &target_buffer[..box_delivery_count],
+        PASS_TARGET_SOURCE_BOX_DELIVERY,
     );
     let delivery_space_count = delivery_space_targets_into(
         &DeliverySpaceTargetsInput {
@@ -2798,6 +2828,7 @@ fn receiver_pass_candidates_batch_into(
         raw_targets,
         &mut raw_target_count,
         &target_buffer[..delivery_space_count],
+        PASS_TARGET_SOURCE_DELIVERY_SPACE,
     );
     let value_field_count = value_field_raw_targets_into(
         &ValueFieldTargetsInput {
@@ -2826,6 +2857,7 @@ fn receiver_pass_candidates_batch_into(
         raw_targets[raw_target_count] = RawPassTargetMeta {
             target: target.target,
             arrival: target.arrival,
+            source_mask: PASS_TARGET_SOURCE_VALUE_FIELD,
             tactical_space: true,
             tactical_space_prior: target.tactical_space_prior,
             tactical_space_value: target.tactical_space_value,
@@ -2865,6 +2897,7 @@ fn receiver_pass_candidates_batch_into(
         raw_targets[raw_target_count] = RawPassTargetMeta {
             target: target.target,
             arrival: 1.0,
+            source_mask: PASS_TARGET_SOURCE_RECEIVER_SPATIAL,
             tactical_space: false,
             tactical_space_prior: 0.0,
             tactical_space_value: 0.0,
@@ -3014,6 +3047,8 @@ fn receiver_pass_candidates_batch_into(
             short_combination_value: value.short_combination_value,
             layoff_retention_value: value.layoff_retention_value,
             receiver_arrival: value.receiver_arrival,
+            candidate_arrival_prior: raw.arrival,
+            debug_target_source_mask: raw.source_mask,
             base_accuracy: value.base_accuracy,
             goal_target_fit: value.goal_target_fit,
             is_long: value.is_long,
@@ -3263,6 +3298,8 @@ fn team_pass_candidates_batch_into_internal(
                 short_combination_value: candidate.short_combination_value,
                 layoff_retention_value: candidate.layoff_retention_value,
                 receiver_arrival: candidate.receiver_arrival,
+                candidate_arrival_prior: candidate.candidate_arrival_prior,
+                debug_target_source_mask: candidate.debug_target_source_mask,
                 base_accuracy: candidate.base_accuracy,
                 goal_target_fit: candidate.goal_target_fit,
                 is_long: candidate.is_long,
@@ -3437,11 +3474,13 @@ mod tests {
         targets[0] = RawPassTargetMeta {
             target: (52.04, 34.02),
             arrival: 0.72,
+            source_mask: PASS_TARGET_SOURCE_BASE,
             ..EMPTY_RAW_PASS_TARGET_META
         };
         targets[1] = RawPassTargetMeta {
             target: (52.01, 34.04),
             arrival: 0.91,
+            source_mask: PASS_TARGET_SOURCE_VALUE_FIELD,
             tactical_space: true,
             tactical_space_prior: 0.44,
             tactical_space_value: 0.38,
@@ -3460,6 +3499,10 @@ mod tests {
         assert_eq!(count, 2);
         assert_eq!(targets[0].target, (52.04, 34.02));
         assert_eq!(targets[0].arrival, 0.91);
+        assert_eq!(
+            pass_target_source_names(targets[0].source_mask),
+            vec!["base", "value_field"]
+        );
         assert!(targets[0].tactical_space);
         assert_eq!(targets[0].tactical_space_prior, 0.44);
         assert_eq!(targets[0].tactical_space_value, 0.38);
@@ -4097,6 +4140,10 @@ mod tests {
             (left.short_combination_value, right.short_combination_value),
             (left.layoff_retention_value, right.layoff_retention_value),
             (left.receiver_arrival, right.receiver_arrival),
+            (
+                left.candidate_arrival_prior,
+                right.candidate_arrival_prior,
+            ),
             (left.base_accuracy, right.base_accuracy),
             (left.goal_target_fit, right.goal_target_fit),
             (left.distance, right.distance),

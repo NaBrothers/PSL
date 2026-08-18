@@ -3,8 +3,7 @@ use crate::offside::is_offside_position;
 use crate::physics::distance;
 use crate::physics::smoothstep;
 use crate::possession_control::{
-    continuation_control_readiness, directional_control_readiness, shot_release_readiness,
-    PossessionControlState,
+    continuation_control_readiness, directional_control_readiness, PossessionControlState,
 };
 use crate::shot_quality::{
     estimate_shot_outcome, ShotContestDefender, ShotQualityCache, ShotQualityCacheKey,
@@ -168,7 +167,7 @@ fn centrality(y: f64, pitch_width: f64) -> f64 {
     (1.0 - ((y - pitch_width / 2.0).abs() / (pitch_width / 2.0).max(1.0))).clamp(0.0, 1.0)
 }
 
-fn local_pressure(pos: (f64, f64), opponents: &[(f64, f64)]) -> f64 {
+pub(crate) fn local_pressure(pos: (f64, f64), opponents: &[(f64, f64)]) -> f64 {
     let mut pressure = 0.0;
     for opponent in opponents {
         let distance = distance(pos, *opponent);
@@ -206,7 +205,7 @@ pub(crate) fn pass_receive_target_pressures(
     }
 }
 
-fn outlet_quality(
+pub(crate) fn outlet_quality(
     origin: (f64, f64),
     target: (f64, f64),
     target_pressure: f64,
@@ -328,13 +327,14 @@ fn support_structure_static(
     }
 }
 
-fn support_structure_with_static(
+fn support_structure_with_static_controller_extent(
     pos: (f64, f64),
     teammates: &[(usize, f64, f64)],
     goalkeeper_indices: &[usize],
     pitch_length: f64,
     pitch_width: f64,
     static_structure: SupportStructureStatic,
+    include_controller_in_extent: bool,
 ) -> (f64, f64) {
     if static_structure.field_player_count == 0 {
         return (0.0, 0.0);
@@ -351,10 +351,21 @@ fn support_structure_with_static(
         }
     }
 
-    let min_x = pos.0.min(static_structure.min_x);
-    let max_x = pos.0.max(static_structure.max_x);
-    let min_y = pos.1.min(static_structure.min_y);
-    let max_y = pos.1.max(static_structure.max_y);
+    let (min_x, max_x, min_y, max_y) = if include_controller_in_extent {
+        (
+            pos.0.min(static_structure.min_x),
+            pos.0.max(static_structure.max_x),
+            pos.1.min(static_structure.min_y),
+            pos.1.max(static_structure.max_y),
+        )
+    } else {
+        (
+            static_structure.min_x,
+            static_structure.max_x,
+            static_structure.min_y,
+            static_structure.max_y,
+        )
+    };
     let longitudinal_span = (max_x - min_x) / pitch_length.max(1.0);
     let lateral_span = (max_y - min_y) / pitch_width.max(1.0);
     let support_width = smoothstep(0.16, 0.42, lateral_span);
@@ -364,6 +375,126 @@ fn support_structure_with_static(
         (0.38 * support_width + 0.42 * depth_layering + 0.20 * crowding_relief).clamp(0.0, 1.0);
 
     (support_width, structure)
+}
+
+#[derive(Clone, Copy, Debug)]
+pub struct SupportTopologyStructure {
+    pub support_width: f64,
+    pub structure: f64,
+    pub connection_mass: f64,
+    pub aligned_overlap: f64,
+    pub complementary_overlap: f64,
+    pub redundant_overlap: f64,
+    pub crowding_relief: f64,
+    pub baseline_local_crowding: f64,
+    pub baseline_crowding_relief: f64,
+}
+
+pub fn diagnostic_support_topology_structure(
+    input: &StateValueInput<'_>,
+) -> SupportTopologyStructure {
+    let mut min_x = input.pos.0;
+    let mut max_x = input.pos.0;
+    let mut min_y = input.pos.1;
+    let mut max_y = input.pos.1;
+    let mut field_player_count = 0usize;
+    let mut connections = [(0.0, 0.0, 0.0, 0.0); MAX_POSSESSION_NETWORK_NODES];
+    let mut connection_count = 0usize;
+    let mut connection_mass = 0.0;
+    let mut baseline_local_crowding = 0.0;
+    for (index, x, y) in input.teammate_positions {
+        if input.teammate_goalkeeper_indices.contains(index) {
+            continue;
+        }
+        field_player_count += 1;
+        let target = (*x, *y);
+        min_x = min_x.min(target.0);
+        max_x = max_x.max(target.0);
+        min_y = min_y.min(target.1);
+        max_y = max_y.max(target.1);
+        let dx = target.0 - input.pos.0;
+        let dy = target.1 - input.pos.1;
+        let target_distance = (dx * dx + dy * dy).sqrt();
+        if target_distance < 12.0 {
+            baseline_local_crowding += 1.0 - target_distance / 12.0;
+        }
+        if target_distance <= 1e-12 || connection_count == connections.len() {
+            continue;
+        }
+        let target_pressure = local_pressure(target, input.opponent_positions);
+        let weight = outlet_quality(
+            input.pos,
+            target,
+            target_pressure,
+            input.pitch_length,
+            input.attacking_right,
+        )
+        .clamp(0.0, 1.0);
+        connections[connection_count] = (
+            weight,
+            dx / target_distance,
+            dy / target_distance,
+            target_distance,
+        );
+        connection_count += 1;
+        connection_mass += weight;
+    }
+    if field_player_count == 0 {
+        return SupportTopologyStructure {
+            support_width: 0.0,
+            structure: 0.0,
+            connection_mass: 0.0,
+            aligned_overlap: 0.0,
+            complementary_overlap: 0.0,
+            redundant_overlap: 0.0,
+            crowding_relief: 0.0,
+            baseline_local_crowding: 0.0,
+            baseline_crowding_relief: 0.0,
+        };
+    }
+
+    let mut aligned_pair_mass = 0.0;
+    let mut complementary_pair_mass = 0.0;
+    for left_index in 0..connection_count {
+        let (left_weight, left_x, left_y, left_distance) = connections[left_index];
+        for &(right_weight, right_x, right_y, right_distance) in
+            &connections[left_index + 1..connection_count]
+        {
+            let cosine = (left_x * right_x + left_y * right_y).clamp(-1.0, 1.0);
+            let pair_weight = left_weight * right_weight;
+            let same_direction = cosine.max(0.0).powi(2);
+            let radial_similarity = 2.0 * left_distance * right_distance
+                / (left_distance * left_distance + right_distance * right_distance).max(1e-12);
+            let aligned = pair_weight * same_direction * radial_similarity.powi(2);
+            aligned_pair_mass += aligned;
+            complementary_pair_mass +=
+                pair_weight * (1.0 - cosine * cosine) * radial_similarity.powi(2);
+        }
+    }
+    let normalization = connection_mass.max(1e-12);
+    let aligned_overlap = aligned_pair_mass / normalization;
+    let complementary_overlap = complementary_pair_mass / normalization;
+    let redundant_overlap = (aligned_overlap - complementary_overlap).max(0.0);
+    let crowding_relief = 1.0 / (1.0 + redundant_overlap * 0.42);
+    let baseline_crowding_relief = 1.0 / (1.0 + baseline_local_crowding * 0.42);
+    let longitudinal_span = (max_x - min_x) / input.pitch_length.max(1.0);
+    let lateral_span = (max_y - min_y) / input.pitch_width.max(1.0);
+    let support_width = smoothstep(0.16, 0.42, lateral_span);
+    let depth_layering = smoothstep(0.18, 0.52, longitudinal_span);
+    let structure =
+        (0.38 * support_width + 0.42 * depth_layering + 0.20 * crowding_relief).clamp(0.0, 1.0);
+
+    SupportTopologyStructure {
+        support_width,
+        structure,
+        connection_mass,
+        aligned_overlap,
+        complementary_overlap,
+        redundant_overlap,
+        crowding_relief,
+        baseline_local_crowding,
+        baseline_crowding_relief,
+    }
 }
 
 fn terminal_shot_profile(input: &StateValueInput<'_>, player_index: usize) -> (f64, f64) {
@@ -470,7 +601,7 @@ fn terminal_shot_value_at(
     let controller_release_readiness = if is_current_controller {
         input
             .control_state
-            .map(shot_release_readiness)
+            .map(crate::shot_release_probability)
             .unwrap_or(1.0)
     } else {
         1.0
@@ -849,6 +980,82 @@ pub fn possession_value_context(input: &StateValueInput<'_>) -> PossessionValueC
     }
 }
 
+pub(crate) fn diagnostic_possession_state_value_with_goalkeeper_recycle_node(
+    input: &StateValueInput<'_>,
+) -> PossessionStateValue {
+    let (teammate_static_nodes, teammate_static_node_count) = teammate_static_nodes(input);
+    let mut static_nodes = [EMPTY_PASS_RECEIVE_STATIC_NODE; MAX_POSSESSION_NETWORK_NODES];
+    let mut static_node_count = 0;
+    for (player_index, x, y) in input.teammate_positions {
+        if *player_index == input.player_index {
+            continue;
+        }
+        assert!(
+            static_node_count < static_nodes.len(),
+            "goalkeeper-symmetric possession network exceeds capacity"
+        );
+        let pos = (*x, *y);
+        static_nodes[static_node_count] = PassReceiveStaticNode {
+            player_index: *player_index,
+            pos,
+            pressure: local_pressure(pos, input.opponent_positions),
+            direct_xg: if input.teammate_goalkeeper_indices.contains(player_index) {
+                0.0
+            } else {
+                terminal_xg_at(input, pos, *player_index, false)
+            },
+        };
+        static_node_count += 1;
+    }
+    let context = PossessionValueContext {
+        receiver_index: input.player_index,
+        static_nodes,
+        static_node_count,
+        teammate_static_nodes,
+        teammate_static_node_count,
+        support_structure_static: support_structure_static(
+            input.teammate_positions,
+            input.teammate_goalkeeper_indices,
+        ),
+        static_connection_geometries: static_connection_geometries(
+            input,
+            &static_nodes,
+            static_node_count,
+        ),
+    };
+    possession_state_value_with_context(input, &context)
+}
+
+pub(crate) fn diagnostic_possession_state_value_with_symmetric_field_shape(
+    input: &StateValueInput<'_>,
+    context: &PossessionValueContext,
+) -> PossessionStateValue {
+    let controller_is_goalkeeper = input
+        .teammate_goalkeeper_indices
+        .contains(&input.player_index);
+    if !controller_is_goalkeeper {
+        return possession_state_value_with_context(input, context);
+    }
+    let support_structure = support_structure_with_static_controller_extent(
+        input.pos,
+        input.teammate_positions,
+        input.teammate_goalkeeper_indices,
+        input.pitch_length,
+        input.pitch_width,
+        context.support_structure_static,
+        false,
+    );
+    possession_state_value_evaluation_with_pass_receive_context(
+        input,
+        Some(context),
+        None,
+        None,
+        Some(support_structure),
+        None,
+    )
+    .state
+}
+
 pub(crate) fn pass_receive_team_value_context(
     input: &PassReceiveValueInput<'_>,
 ) -> PassReceiveTeamValueContext {
@@ -1062,6 +1269,35 @@ fn control_horizon_residual(
     (territorial_opportunity * collective_control).clamp(0.0, 0.18)
 }
 
+pub(crate) fn diagnostic_control_horizon_residual(
+    pos: (f64, f64),
+    opponents: &[(f64, f64)],
+    teammates: &[(usize, f64, f64)],
+    goalkeeper_indices: &[usize],
+    outlet_access: f64,
+    pitch_length: f64,
+    pitch_width: f64,
+    attacking_right: bool,
+) -> f64 {
+    let pressure = local_pressure(pos, opponents);
+    let (support_width, structure) = support_structure(
+        pos,
+        teammates,
+        goalkeeper_indices,
+        pitch_length,
+        pitch_width,
+    );
+    control_horizon_residual(
+        pos,
+        pressure,
+        outlet_access,
+        structure,
+        support_width,
+        pitch_length,
+        attacking_right,
+    )
+}
+
 pub(crate) fn possession_bellman_geometry(
     input: &StateValueInput<'_>,
     context: &PossessionValueContext,
@@ -1097,13 +1333,14 @@ pub(crate) fn possession_bellman_geometry(
         pressures[node_index] = static_node.pressure;
     }
 
-    let (support_width, structure) = support_structure_with_static(
+    let (support_width, structure) = support_structure_with_static_controller_extent(
         input.pos,
         input.teammate_positions,
         input.teammate_goalkeeper_indices,
         input.pitch_length,
         input.pitch_width,
         context.support_structure_static,
+        true,
     );
     let mut connection_probabilities =
         [[0.0; MAX_POSSESSION_NETWORK_NODES]; MAX_POSSESSION_NETWORK_NODES];
@@ -1229,13 +1466,134 @@ fn bellman_continuation_values(
     (source_xg, source_value)
 }
 
-fn immediate_connection_readiness(
-    input: &StateValueInput<'_>,
+#[derive(Clone, Copy)]
+struct DiagnosticLinkDuration {
+    configured_pass_speed: f64,
+    tick_duration: f64,
+    tempo: f64,
+    time_budget_seconds: Option<f64>,
+}
+
+fn diagnostic_connection_duration_seconds(
+    origin: (f64, f64),
     target: (f64, f64),
+    duration: DiagnosticLinkDuration,
 ) -> f64 {
+    let pass_distance = distance(origin, target);
+    let pass_speed = crate::pass_average_speed(
+        pass_distance,
+        duration.configured_pass_speed,
+        duration.tick_duration,
+    );
+    pass_distance / pass_speed.max(0.1) * duration.tick_duration.max(f64::EPSILON)
+}
+
+fn duration_adjusted_connections(
+    nodes: &[PossessionNetworkNode; MAX_POSSESSION_NETWORK_NODES],
+    node_count: usize,
+    connection_probabilities: &[[f64; MAX_POSSESSION_NETWORK_NODES]; MAX_POSSESSION_NETWORK_NODES],
+    duration: DiagnosticLinkDuration,
+) -> [[f64; MAX_POSSESSION_NETWORK_NODES]; MAX_POSSESSION_NETWORK_NODES] {
+    let mut adjusted = *connection_probabilities;
+    let discount_rate = 0.0015 + 0.0060 * duration.tempo.clamp(0.0, 1.0);
+    for source_index in 0..node_count {
+        for target_index in 0..node_count {
+            if source_index == target_index
+                || connection_probabilities[source_index][target_index] <= 0.0
+            {
+                continue;
+            }
+            let duration_seconds = diagnostic_connection_duration_seconds(
+                nodes[source_index].pos,
+                nodes[target_index].pos,
+                duration,
+            );
+            adjusted[source_index][target_index] *=
+                (-discount_rate * duration_seconds.max(0.1)).exp();
+        }
+    }
+    adjusted
+}
+
+fn bellman_continuation_values_with_time_budget(
+    nodes: &[PossessionNetworkNode; MAX_POSSESSION_NETWORK_NODES],
+    node_count: usize,
+    direct_values: [f64; MAX_POSSESSION_NETWORK_NODES],
+    terminal_values: [f64; MAX_POSSESSION_NETWORK_NODES],
+    connection_probabilities: &[[f64; MAX_POSSESSION_NETWORK_NODES]; MAX_POSSESSION_NETWORK_NODES],
+    first_link_readiness: [f64; MAX_POSSESSION_NETWORK_NODES],
+    duration: DiagnosticLinkDuration,
+    time_budget_seconds: f64,
+) -> (f64, f64) {
+    let budget = time_budget_seconds.max(0.0);
+    let mut frontiers: [Vec<(f64, f64)>; MAX_POSSESSION_NETWORK_NODES] =
+        std::array::from_fn(|_| Vec::new());
+    let mut queue = std::collections::VecDeque::new();
+    frontiers[0].push((0.0, 1.0));
+    queue.push_back((0usize, 0.0, 1.0));
+    let mut source_xg = direct_values[0];
+    let mut source_value = terminal_values[0];
+
+    while let Some((source_index, elapsed_seconds, path_probability)) = queue.pop_front() {
+        let still_present = frontiers[source_index].iter().any(|(elapsed, probability)| {
+            (*elapsed - elapsed_seconds).abs() <= 1e-12
+                && (*probability - path_probability).abs() <= 1e-12
+        });
+        if !still_present {
+            continue;
+        }
+        for target_index in 0..node_count {
+            if source_index == target_index {
+                continue;
+            }
+            let connection = connection_probabilities[source_index][target_index];
+            if connection <= 0.0 {
+                continue;
+            }
+            let next_elapsed = elapsed_seconds
+                + diagnostic_connection_duration_seconds(
+                    nodes[source_index].pos,
+                    nodes[target_index].pos,
+                    duration,
+                );
+            if next_elapsed > budget + 1e-12 {
+                continue;
+            }
+            let readiness = if source_index == 0 && elapsed_seconds <= 1e-12 {
+                first_link_readiness[target_index]
+            } else {
+                1.0
+            };
+            let next_probability = path_probability * readiness * connection;
+            if next_probability <= 0.0 {
+                continue;
+            }
+            source_xg = source_xg.max(next_probability * direct_values[target_index]);
+            source_value = source_value.max(next_probability * terminal_values[target_index]);
+
+            if frontiers[target_index].iter().any(|(elapsed, probability)| {
+                *elapsed <= next_elapsed + 1e-12
+                    && *probability + 1e-12 >= next_probability
+            }) {
+                continue;
+            }
+            frontiers[target_index].retain(|(elapsed, probability)| {
+                !(next_elapsed <= *elapsed + 1e-12
+                    && next_probability + 1e-12 >= *probability)
+            });
+            frontiers[target_index].push((next_elapsed, next_probability));
+            queue.push_back((target_index, next_elapsed, next_probability));
+        }
+    }
+
+    (source_xg, source_value)
+}
+
+fn immediate_connection_readiness(input: &StateValueInput<'_>, target: (f64, f64)) -> f64 {
     input.control_state.map_or(1.0, |control_state| {
-        let target_heading =
-            (target.1 - input.pos.1).atan2(target.0 - input.pos.0).to_degrees();
+        let target_heading = (target.1 - input.pos.1)
+            .atan2(target.0 - input.pos.0)
+            .to_degrees();
         0.24 + 0.76 * directional_control_readiness(control_state, target_heading)
     })
 }
@@ -1254,6 +1612,7 @@ fn finite_horizon_continuation_value(
     current_direct_xg: f64,
     pass_receive_context: Option<&PassReceiveValueContext>,
     bellman_geometry: Option<&PossessionBellmanGeometry>,
+    diagnostic_link_duration: Option<DiagnosticLinkDuration>,
 ) -> (f64, f64, f64, f64) {
     if let Some(context) = pass_receive_context {
         assert_eq!(
@@ -1268,12 +1627,20 @@ fn finite_horizon_continuation_value(
             );
             let mut direct_values = [0.0; MAX_POSSESSION_NETWORK_NODES];
             let mut first_link_readiness = [1.0; MAX_POSSESSION_NETWORK_NODES];
+            let mut nodes = [PossessionNetworkNode {
+                player_index: input.player_index,
+                pos: input.pos,
+            }; MAX_POSSESSION_NETWORK_NODES];
             direct_values[0] = current_direct_xg;
             for (offset, static_node) in context.static_nodes[..context.static_node_count]
                 .iter()
                 .enumerate()
             {
                 let node_index = offset + 1;
+                nodes[node_index] = PossessionNetworkNode {
+                    player_index: static_node.player_index,
+                    pos: static_node.pos,
+                };
                 direct_values[node_index] = static_node.direct_xg;
                 first_link_readiness[node_index] =
                     immediate_connection_readiness(input, static_node.pos);
@@ -1283,18 +1650,64 @@ fn finite_horizon_continuation_value(
                 + (1.0 - current_direct_xg)
                     * geometry.residual_values[0]
                     * current_control_readiness_factor(input);
+            if let Some((duration, budget)) = diagnostic_link_duration
+                .zip(diagnostic_link_duration.and_then(|value| value.time_budget_seconds))
+            {
+                let (continuation_xg, continuation_value) =
+                    bellman_continuation_values_with_time_budget(
+                        &nodes,
+                        node_count,
+                        direct_values,
+                        terminal_values,
+                        &geometry.connection_probabilities,
+                        first_link_readiness,
+                        duration,
+                        budget,
+                    );
+                let mut one_link_xg: f64 = 0.0;
+                for target_index in 1..node_count {
+                    let link_duration = diagnostic_connection_duration_seconds(
+                        nodes[0].pos,
+                        nodes[target_index].pos,
+                        duration,
+                    );
+                    if link_duration <= budget + 1e-12 {
+                        one_link_xg = one_link_xg.max(
+                            first_link_readiness[target_index]
+                                * geometry.connection_probabilities[0][target_index]
+                                * direct_values[target_index],
+                        );
+                    }
+                }
+                return (
+                    one_link_xg,
+                    continuation_xg,
+                    geometry.residual_values[0],
+                    continuation_value,
+                );
+            }
+            let duration_adjusted = diagnostic_link_duration.map(|duration| {
+                duration_adjusted_connections(
+                    &nodes,
+                    node_count,
+                    &geometry.connection_probabilities,
+                    duration,
+                )
+            });
+            let connection_probabilities =
+                duration_adjusted.as_ref().unwrap_or(&geometry.connection_probabilities);
             let (continuation_xg, continuation_value) = bellman_continuation_values(
                 node_count,
                 direct_values,
                 terminal_values,
-                &geometry.connection_probabilities,
+                connection_probabilities,
                 first_link_readiness,
             );
             let mut one_link_xg: f64 = 0.0;
             for target_index in 1..node_count {
                 one_link_xg = one_link_xg.max(
                     first_link_readiness[target_index]
-                        * geometry.connection_probabilities[0][target_index]
+                        * connection_probabilities[0][target_index]
                         * direct_values[target_index],
                 );
             }
@@ -1423,15 +1836,70 @@ fn finite_horizon_continuation_value(
             1.0
         };
         terminal_values[node_index] = direct_values[node_index]
-            + (1.0 - direct_values[node_index])
-                * residual_values[node_index]
-                * residual_readiness;
+            + (1.0 - direct_values[node_index]) * residual_values[node_index] * residual_readiness;
+    }
+    if let Some((duration, budget)) = diagnostic_link_duration
+        .zip(diagnostic_link_duration.and_then(|value| value.time_budget_seconds))
+    {
+        one_link_xg = 0.0;
+        for node_index in 0..node_count {
+            let link_duration = diagnostic_connection_duration_seconds(
+                nodes[0].pos,
+                nodes[node_index].pos,
+                duration,
+            );
+            if link_duration <= budget + 1e-12 {
+                one_link_xg = one_link_xg.max(
+                    first_link_readiness[node_index]
+                        * connection_probabilities[0][node_index]
+                        * direct_values[node_index],
+                );
+            }
+        }
+        let (continuation_xg, continuation_value) =
+            bellman_continuation_values_with_time_budget(
+                &nodes,
+                node_count,
+                direct_values,
+                terminal_values,
+                &connection_probabilities,
+                first_link_readiness,
+                duration,
+                budget,
+            );
+        return (
+            one_link_xg,
+            continuation_xg,
+            residual_values[0],
+            continuation_value,
+        );
+    }
+    let duration_adjusted = diagnostic_link_duration.map(|duration| {
+        duration_adjusted_connections(
+            &nodes,
+            node_count,
+            &connection_probabilities,
+            duration,
+        )
+    });
+    let continuation_connections = duration_adjusted
+        .as_ref()
+        .unwrap_or(&connection_probabilities);
+    if duration_adjusted.is_some() {
+        one_link_xg = 0.0;
+        for node_index in 0..node_count {
+            one_link_xg = one_link_xg.max(
+                first_link_readiness[node_index]
+                    * continuation_connections[0][node_index]
+                    * direct_values[node_index],
+            );
+        }
     }
     let (continuation_xg, continuation_value) = bellman_continuation_values(
         node_count,
         direct_values,
         terminal_values,
-        &connection_probabilities,
+        continuation_connections,
         first_link_readiness,
     );
 
@@ -1444,14 +1912,84 @@ fn finite_horizon_continuation_value(
 }
 
 pub fn possession_state_value(input: &StateValueInput<'_>) -> PossessionStateValue {
-    possession_state_value_evaluation_with_pass_receive_context(input, None, None, None).state
+    possession_state_value_evaluation_with_pass_receive_context(
+        input, None, None, None, None, None,
+    )
+    .state
+}
+
+pub fn diagnostic_possession_state_value_with_structure(
+    input: &StateValueInput<'_>,
+    support_width: f64,
+    structure: f64,
+) -> PossessionStateValue {
+    possession_state_value_evaluation_with_pass_receive_context(
+        input,
+        None,
+        None,
+        None,
+        Some((support_width, structure)),
+        None,
+    )
+    .state
+}
+
+pub fn diagnostic_possession_state_value_with_link_duration(
+    input: &StateValueInput<'_>,
+    configured_pass_speed: f64,
+    tick_duration: f64,
+    tempo: f64,
+) -> PossessionStateValue {
+    possession_state_value_evaluation_with_pass_receive_context(
+        input,
+        None,
+        None,
+        None,
+        None,
+        Some(DiagnosticLinkDuration {
+            configured_pass_speed,
+            tick_duration,
+            tempo,
+            time_budget_seconds: None,
+        }),
+    )
+    .state
+}
+
+pub fn diagnostic_possession_state_value_with_time_budget(
+    input: &StateValueInput<'_>,
+    configured_pass_speed: f64,
+    tick_duration: f64,
+    time_budget_seconds: f64,
+) -> PossessionStateValue {
+    possession_state_value_evaluation_with_pass_receive_context(
+        input,
+        None,
+        None,
+        None,
+        None,
+        Some(DiagnosticLinkDuration {
+            configured_pass_speed,
+            tick_duration,
+            tempo: 0.0,
+            time_budget_seconds: Some(time_budget_seconds),
+        }),
+    )
+    .state
 }
 
 pub fn possession_state_value_with_context(
     input: &StateValueInput<'_>,
     context: &PossessionValueContext,
 ) -> PossessionStateValue {
-    possession_state_value_evaluation_with_pass_receive_context(input, Some(context), None, None)
+    possession_state_value_evaluation_with_pass_receive_context(
+        input,
+        Some(context),
+        None,
+        None,
+        None,
+        None,
+    )
         .state
 }
 
@@ -1465,6 +2003,56 @@ pub(crate) fn possession_state_value_with_context_and_bellman_geometry(
         Some(context),
         Some(bellman_geometry),
         None,
+        None,
+        None,
+    )
+    .state
+}
+
+pub(crate) fn diagnostic_possession_state_value_with_context_and_bellman_geometry_link_duration(
+    input: &StateValueInput<'_>,
+    context: &PossessionValueContext,
+    bellman_geometry: &PossessionBellmanGeometry,
+    configured_pass_speed: f64,
+    tick_duration: f64,
+    tempo: f64,
+) -> PossessionStateValue {
+    possession_state_value_evaluation_with_pass_receive_context(
+        input,
+        Some(context),
+        Some(bellman_geometry),
+        None,
+        None,
+        Some(DiagnosticLinkDuration {
+            configured_pass_speed,
+            tick_duration,
+            tempo,
+            time_budget_seconds: None,
+        }),
+    )
+    .state
+}
+
+pub(crate) fn diagnostic_possession_state_value_with_context_and_bellman_geometry_time_budget(
+    input: &StateValueInput<'_>,
+    context: &PossessionValueContext,
+    bellman_geometry: &PossessionBellmanGeometry,
+    configured_pass_speed: f64,
+    tick_duration: f64,
+    time_budget_seconds: f64,
+) -> PossessionStateValue {
+    possession_state_value_evaluation_with_pass_receive_context(
+        input,
+        Some(context),
+        Some(bellman_geometry),
+        None,
+        None,
+        Some(DiagnosticLinkDuration {
+            configured_pass_speed,
+            tick_duration,
+            tempo: 0.0,
+            time_budget_seconds: Some(time_budget_seconds),
+        }),
     )
     .state
 }
@@ -1473,7 +2061,14 @@ pub fn possession_state_value_evaluation_with_context(
     input: &StateValueInput<'_>,
     context: &PossessionValueContext,
 ) -> PossessionStateValueEvaluation {
-    possession_state_value_evaluation_with_pass_receive_context(input, Some(context), None, None)
+    possession_state_value_evaluation_with_pass_receive_context(
+        input,
+        Some(context),
+        None,
+        None,
+        None,
+        None,
+    )
 }
 
 fn possession_state_value_evaluation_with_pass_receive_context(
@@ -1481,6 +2076,8 @@ fn possession_state_value_evaluation_with_pass_receive_context(
     pass_receive_context: Option<&PassReceiveValueContext>,
     bellman_geometry: Option<&PossessionBellmanGeometry>,
     current_pressure_override: Option<f64>,
+    support_structure_override: Option<(f64, f64)>,
+    diagnostic_link_duration: Option<DiagnosticLinkDuration>,
 ) -> PossessionStateValueEvaluation {
     let territory = attacking_progress(input.pos, input.pitch_length, input.attacking_right);
     let bellman_geometry = bellman_geometry.filter(|geometry| geometry.applies_to(input));
@@ -1528,32 +2125,35 @@ fn possession_state_value_evaluation_with_pass_receive_context(
     }
     let pass_receive_context = pass_receive_context.filter(|_| context_matches_teammate_snapshot);
 
-    let (support_width, structure) = bellman_geometry.map_or_else(
-        || {
-            pass_receive_context.map_or_else(
-                || {
-                    support_structure(
-                        input.pos,
-                        input.teammate_positions,
-                        input.teammate_goalkeeper_indices,
-                        input.pitch_length,
-                        input.pitch_width,
-                    )
-                },
-                |context| {
-                    support_structure_with_static(
-                        input.pos,
-                        input.teammate_positions,
-                        input.teammate_goalkeeper_indices,
-                        input.pitch_length,
-                        input.pitch_width,
-                        context.support_structure_static,
-                    )
-                },
-            )
-        },
-        |geometry| (geometry.support_width, geometry.structure),
-    );
+    let (support_width, structure) = support_structure_override.unwrap_or_else(|| {
+        bellman_geometry.map_or_else(
+            || {
+                pass_receive_context.map_or_else(
+                    || {
+                        support_structure(
+                            input.pos,
+                            input.teammate_positions,
+                            input.teammate_goalkeeper_indices,
+                            input.pitch_length,
+                            input.pitch_width,
+                        )
+                    },
+                    |context| {
+                        support_structure_with_static_controller_extent(
+                            input.pos,
+                            input.teammate_positions,
+                            input.teammate_goalkeeper_indices,
+                            input.pitch_length,
+                            input.pitch_width,
+                            context.support_structure_static,
+                            true,
+                        )
+                    },
+                )
+            },
+            |geometry| (geometry.support_width, geometry.structure),
+        )
+    });
     let creation_access = (0.52 * forward_access
         + 0.24 * outlet_access
         + 0.14 * support_width
@@ -1574,7 +2174,7 @@ fn possession_state_value_evaluation_with_pass_receive_context(
             terminal_shot_base,
             input
                 .control_state
-                .map(shot_release_readiness)
+                .map(crate::shot_release_probability)
                 .unwrap_or(1.0),
         ),
         finishing: terminal_shot_base.finishing,
@@ -1594,6 +2194,7 @@ fn possession_state_value_evaluation_with_pass_receive_context(
             direct_xg,
             pass_receive_context,
             bellman_geometry,
+            diagnostic_link_duration,
         );
     let value = continuation_value.clamp(0.0002, 0.65);
 
@@ -1697,6 +2298,8 @@ fn pass_receive_value_breakdown_with_optional_target_pressures(
         pass_receive_context,
         None,
         Some(target_pressures.local),
+        None,
+        None,
     )
     .state;
     let progress = attacking_progress(input.pos, input.pitch_length, input.attacking_right);
@@ -2072,11 +2675,8 @@ mod tests {
         );
 
         let uncached = possession_state_value_with_context(&input, &context);
-        let cached = possession_state_value_with_context_and_bellman_geometry(
-            &input,
-            &context,
-            &geometry,
-        );
+        let cached =
+            possession_state_value_with_context_and_bellman_geometry(&input, &context, &geometry);
         assert_eq!(cached.one_link_xg.to_bits(), uncached.one_link_xg.to_bits());
         assert_eq!(
             cached.continuation_value.to_bits(),
@@ -2186,6 +2786,141 @@ mod tests {
     }
 
     #[test]
+    fn goalkeeper_recycle_node_diagnostic_is_symmetric_for_the_goalkeeper_controller() {
+        let opponents = [(66.0, 27.0), (68.0, 42.0)];
+        let teammates = [
+            (0, 8.0, 34.0),
+            (1, 31.0, 18.0),
+            (2, 38.0, 50.0),
+            (3, 52.0, 34.0),
+        ];
+        let mut goalkeeper_input = state_input((8.0, 34.0), 0, &teammates, &opponents);
+        goalkeeper_input.teammate_goalkeeper_indices = &[0];
+        let production = possession_state_value(&goalkeeper_input);
+        let symmetric =
+            diagnostic_possession_state_value_with_goalkeeper_recycle_node(&goalkeeper_input);
+
+        assert_eq!(
+            symmetric.continuation_value.to_bits(),
+            production.continuation_value.to_bits()
+        );
+    }
+
+    #[test]
+    fn goalkeeper_recycle_node_diagnostic_does_not_reduce_outfield_network_value() {
+        let opponents = [(66.0, 27.0), (68.0, 42.0)];
+        let teammates = [
+            (0, 8.0, 34.0),
+            (1, 31.0, 18.0),
+            (2, 38.0, 50.0),
+            (3, 52.0, 34.0),
+        ];
+        let mut outfield_input = state_input((52.0, 34.0), 3, &teammates, &opponents);
+        outfield_input.teammate_goalkeeper_indices = &[0];
+        let production = possession_state_value(&outfield_input);
+        let symmetric =
+            diagnostic_possession_state_value_with_goalkeeper_recycle_node(&outfield_input);
+
+        assert!(symmetric.continuation_value >= production.continuation_value);
+    }
+
+    #[test]
+    fn symmetric_field_shape_diagnostic_preserves_outfield_controller_value() {
+        let opponents = [(66.0, 27.0), (68.0, 42.0)];
+        let teammates = [
+            (0, 8.0, 34.0),
+            (1, 31.0, 18.0),
+            (2, 38.0, 50.0),
+            (3, 52.0, 34.0),
+        ];
+        let mut input = state_input((52.0, 34.0), 3, &teammates, &opponents);
+        input.teammate_goalkeeper_indices = &[0];
+        let context = possession_value_context(&input);
+        let production = possession_state_value_with_context(&input, &context);
+        let symmetric =
+            diagnostic_possession_state_value_with_symmetric_field_shape(&input, &context);
+
+        assert_eq!(symmetric.value.to_bits(), production.value.to_bits());
+        assert_eq!(
+            symmetric.continuation_value.to_bits(),
+            production.continuation_value.to_bits()
+        );
+        assert_eq!(symmetric.structure.to_bits(), production.structure.to_bits());
+    }
+
+    #[test]
+    fn symmetric_field_shape_diagnostic_excludes_goalkeeper_controller_from_field_extent() {
+        let opponents = [(66.0, 27.0), (68.0, 42.0)];
+        let teammates = [
+            (0, 8.0, 34.0),
+            (1, 31.0, 18.0),
+            (2, 38.0, 50.0),
+            (3, 52.0, 34.0),
+        ];
+        let mut input = state_input((8.0, 34.0), 0, &teammates, &opponents);
+        input.teammate_goalkeeper_indices = &[0];
+        let context = possession_value_context(&input);
+        let production = possession_state_value_with_context(&input, &context);
+        let symmetric =
+            diagnostic_possession_state_value_with_symmetric_field_shape(&input, &context);
+
+        assert!(symmetric.structure < production.structure);
+        assert!(symmetric.continuation_value <= production.continuation_value);
+    }
+
+    #[test]
+    fn physical_time_budget_excludes_links_beyond_the_remaining_horizon() {
+        let node_count = 3;
+        let mut nodes = [PossessionNetworkNode {
+            player_index: 0,
+            pos: (0.0, 0.0),
+        }; MAX_POSSESSION_NETWORK_NODES];
+        nodes[1] = PossessionNetworkNode {
+            player_index: 1,
+            pos: (10.0, 0.0),
+        };
+        nodes[2] = PossessionNetworkNode {
+            player_index: 2,
+            pos: (20.0, 0.0),
+        };
+        let direct_values = [0.0; MAX_POSSESSION_NETWORK_NODES];
+        let mut terminal_values = [0.0; MAX_POSSESSION_NETWORK_NODES];
+        terminal_values[1] = 0.10;
+        terminal_values[2] = 0.80;
+        let mut connections =
+            [[0.0; MAX_POSSESSION_NETWORK_NODES]; MAX_POSSESSION_NETWORK_NODES];
+        connections[0][1] = 0.90;
+        connections[1][2] = 0.90;
+        let duration = DiagnosticLinkDuration {
+            configured_pass_speed: 10.0,
+            tick_duration: 1.0,
+            tempo: 0.0,
+            time_budget_seconds: Some(1.5),
+        };
+
+        let (_, bounded_value) = bellman_continuation_values_with_time_budget(
+            &nodes,
+            node_count,
+            direct_values,
+            terminal_values,
+            &connections,
+            [1.0; MAX_POSSESSION_NETWORK_NODES],
+            duration,
+            1.5,
+        );
+        let (_, unbounded_value) = bellman_continuation_values(
+            node_count,
+            direct_values,
+            terminal_values,
+            &connections,
+            [1.0; MAX_POSSESSION_NETWORK_NODES],
+        );
+
+        assert!((bounded_value - 0.09).abs() < 1e-12);
+        assert!((unbounded_value - 0.648).abs() < 1e-12);
+    }
+
+    #[test]
     fn possession_value_never_discounts_its_already_releasable_direct_shot_twice() {
         let opponents = [(101.0, 18.0), (101.0, 50.0)];
         let teammates = [(1, 94.0, 34.0), (2, 70.0, 18.0)];
@@ -2250,7 +2985,7 @@ mod tests {
             shooter_pos: input.pos,
             finishing: input.finishing,
             long_shot: input.long_shot,
-            possession_ticks: 2,
+            possession_seconds: 2.0,
             consecutive_carries: 0,
             last_receive_origin: (82.0, 34.0),
             opponents: input.opponent_positions,
@@ -2258,6 +2993,7 @@ mod tests {
             pitch_width: input.pitch_width,
             attacking_right: input.attacking_right,
             shot_on_target_base: input.shot_on_target_base,
+            shot_execution_accuracy_scale: 1.0,
             gk_save_base: input.gk_save_base,
             gk_attributes: input.gk_attributes,
             gk_pos: input.gk_pos,

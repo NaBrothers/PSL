@@ -46,6 +46,35 @@ impl ControlContactTransition {
         self.contact.defender_index.is_some()
             && roll.clamp(0.0, 1.0) < self.contact.contact_probability
     }
+
+    pub fn with_elapsed_fraction(self, elapsed_fraction: f64) -> Self {
+        let elapsed_fraction = elapsed_fraction.clamp(0.0, 1.0);
+        if elapsed_fraction >= 1.0 {
+            return self;
+        }
+        let base_contact_probability = self.contact.contact_probability.clamp(0.0, 1.0);
+        let contact_probability = crate::execution_transition::continuous_exposure_probability(
+            base_contact_probability,
+            elapsed_fraction,
+        );
+        let exposure_scale = if base_contact_probability > f64::EPSILON {
+            contact_probability / base_contact_probability
+        } else {
+            0.0
+        };
+        let opposing_control_probability = self.opposing_control_probability * exposure_scale;
+        let unresolved_probability = self.unresolved_probability * exposure_scale;
+        Self {
+            contact: DetectionResult {
+                contact_probability,
+                ..self.contact
+            },
+            retained_probability: (1.0 - opposing_control_probability - unresolved_probability)
+                .clamp(0.0, 1.0),
+            opposing_control_probability,
+            unresolved_probability,
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -142,6 +171,38 @@ pub enum DuelOutcome {
     AttackerWins,
     DefenderWins,
     LooseBall,
+}
+
+pub fn foul_probability(
+    outcome: DuelOutcome,
+    defender_action: &str,
+    contact_quality: f64,
+    attacker_dribbling: f64,
+    defender_tackling: f64,
+) -> f64 {
+    if outcome == DuelOutcome::DefenderWins {
+        return 0.0;
+    }
+    let commitment = match defender_action {
+        "tackle" => 1.0,
+        "body_challenge" => 0.62,
+        _ => return 0.0,
+    };
+    let contact = smoothstep(0.28, 0.92, contact_quality.clamp(0.0, 1.0));
+    let mistiming = (0.5 + (attacker_dribbling - defender_tackling) / 100.0).clamp(0.0, 1.0);
+    let unresolved_contact = if outcome == DuelOutcome::LooseBall {
+        0.72
+    } else {
+        1.0
+    };
+    // Calibrated against the 2024/25 Premier League's 8,398 committed fouls
+    // across 380 matches. This is one officiating scale for every physical
+    // failed challenge, not an action-, role-, or formation-specific bonus.
+    (commitment * unresolved_contact * contact * (0.2673 + 0.6472 * mistiming)).clamp(0.0, 0.918)
+}
+
+pub fn penalty_foul_probability(ordinary_foul_probability: f64) -> f64 {
+    (ordinary_foul_probability.clamp(0.0, 1.0) * 0.251).clamp(0.0, 1.0)
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -387,7 +448,7 @@ struct ContactEngagementProfile {
     containment_reach_scale: f64,
 }
 
-const CONTACT_ENGAGEMENT_PROFILES: [ContactEngagementProfile; 10] = [
+const CONTACT_ENGAGEMENT_PROFILES: [ContactEngagementProfile; 12] = [
     ContactEngagementProfile {
         action: "smother",
         reach_scale: 1.32,
@@ -405,6 +466,24 @@ const CONTACT_ENGAGEMENT_PROFILES: [ContactEngagementProfile; 10] = [
         records_tackle_attempt: true,
         containment_weight: 0.28,
         containment_reach_scale: 0.95,
+    },
+    ContactEngagementProfile {
+        action: "tackle_committed",
+        reach_scale: 0.0,
+        engagement_weight: 0.0,
+        outcome_commitment: 0.0,
+        records_tackle_attempt: false,
+        containment_weight: 0.0,
+        containment_reach_scale: 0.0,
+    },
+    ContactEngagementProfile {
+        action: "tackle_spent",
+        reach_scale: 0.0,
+        engagement_weight: 0.0,
+        outcome_commitment: 0.0,
+        records_tackle_attempt: false,
+        containment_weight: 0.0,
+        containment_reach_scale: 0.0,
     },
     ContactEngagementProfile {
         action: "approach",
@@ -510,7 +589,10 @@ pub fn duel_resolution_defender(
     contact: DetectionResult,
 ) -> DefenderActionInput {
     if contact.distance <= PLAYER_BODY_SEPARATION
-        && !matches!(defender.action, "tackle" | "smother" | "defeated_contact")
+        && !matches!(
+            defender.action,
+            "tackle" | "tackle_committed" | "tackle_spent" | "smother" | "defeated_contact"
+        )
     {
         defender.action = "body_challenge";
     }
@@ -596,10 +678,7 @@ pub fn moving_body_collision_position(
     other_start: (f64, f64),
     other_end: (f64, f64),
 ) -> (f64, f64) {
-    let initial_offset = (
-        mover_start.0 - other_start.0,
-        mover_start.1 - other_start.1,
-    );
+    let initial_offset = (mover_start.0 - other_start.0, mover_start.1 - other_start.1);
     let initial_distance =
         (initial_offset.0 * initial_offset.0 + initial_offset.1 * initial_offset.1).sqrt();
     let relative_velocity = (
@@ -1120,24 +1199,25 @@ fn detect_duel_on_segment(
         contact_quality: 0.0,
     };
     for defender in defenders {
+        if matches!(defender.action, "tackle_committed" | "tackle_spent") {
+            continue;
+        }
         let profile = engagement_profile(defender.action);
         let closest_distance =
             simultaneous_closest_distance(holder_pos, carrier_end, defender.pos, defender.new_pos);
         let physical_body_contact = closest_distance <= PLAYER_BODY_SEPARATION;
         let physical_smother_contact =
             defender.is_goalkeeper && defender.action == "smother" && closest_distance <= 2.0;
-        if !physical_body_contact
-            && !physical_smother_contact
-            && profile.engagement_weight <= 0.0
-        {
+        if !physical_body_contact && !physical_smother_contact && profile.engagement_weight <= 0.0 {
             continue;
         }
-        let physical_reach = defender_action_physical_reach(tackle_range, defender.action)
-            .max(if physical_body_contact {
+        let physical_reach = defender_action_physical_reach(tackle_range, defender.action).max(
+            if physical_body_contact {
                 PLAYER_BODY_SEPARATION
             } else {
                 0.0
-            });
+            },
+        );
         if !physical_smother_contact && closest_distance > physical_reach {
             continue;
         }
@@ -1470,12 +1550,13 @@ mod tests {
         carrier_body_collision_position, carry_contact_transition_for_segment,
         carry_containment_transition, carry_survival_transition,
         carry_survival_transition_with_defender_responses, control_interference_probability,
-        detect_duel, duel_outcome_probabilities, duel_resolution_defender,
-        moving_body_collision_position, pass_release_contact_transition, records_tackle_attempt,
-        resolve_duel, track_defensive_pressures, track_defensive_pressures_into,
-        CarryContainmentInput, CarrySurvivalInput, DefenderActionInput, DefensivePressureInput,
-        DetectionResult, DuelDetectionInput, DuelOutcome, DuelResolveInput,
-        GoalkeeperSmotherTransition, PLAYER_BODY_SEPARATION,
+        detect_duel, duel_outcome_probabilities, duel_resolution_defender, foul_probability,
+        moving_body_collision_position, pass_release_contact_transition, penalty_foul_probability,
+        records_tackle_attempt, resolve_duel, track_defensive_pressures,
+        track_defensive_pressures_into, CarryContainmentInput, CarrySurvivalInput,
+        ControlContactTransition, DefenderActionInput, DefensivePressureInput, DetectionResult,
+        DuelDetectionInput, DuelOutcome, DuelResolveInput, GoalkeeperSmotherTransition,
+        PLAYER_BODY_SEPARATION,
     };
     use crate::{distance, temporal_option_value, PossessionTransition, TemporalOptionValueInput};
 
@@ -1530,6 +1611,35 @@ mod tests {
     }
 
     #[test]
+    fn fractional_control_contact_preserves_conditionals_and_composes_exposure() {
+        let full = ControlContactTransition {
+            contact: DetectionResult {
+                defender_index: Some(4),
+                distance: 0.8,
+                contact_probability: 0.64,
+                contact_quality: 0.72,
+            },
+            retained_probability: 0.68,
+            opposing_control_probability: 0.24,
+            unresolved_probability: 0.08,
+        };
+        let half = full.with_elapsed_fraction(0.5);
+        let expected_half_contact = 0.4;
+
+        assert_eq!(full.with_elapsed_fraction(1.0).contact.contact_probability, 0.64);
+        assert!((half.contact.contact_probability - expected_half_contact).abs() < 1e-12);
+        assert!(
+            (1.0 - (1.0 - half.contact.contact_probability).powi(2)
+                - full.contact.contact_probability)
+                .abs()
+                < 1e-12
+        );
+        assert!((half.opposing_control_probability / half.contact.contact_probability - 0.375).abs() < 1e-12);
+        assert!((half.unresolved_probability / half.contact.contact_probability - 0.125).abs() < 1e-12);
+        assert!((half.retained_probability + half.opposing_control_probability + half.unresolved_probability - 1.0).abs() < 1e-12);
+    }
+
+    #[test]
     fn high_quality_tackle_can_dispossess_a_strong_dribbler_at_pass_release() {
         let outcome = resolve_duel(&DuelResolveInput {
             attacker_dribbling: 105.0,
@@ -1578,13 +1688,8 @@ mod tests {
     #[test]
     fn physical_approach_projection_uses_body_challenge_outcome_probabilities() {
         let approaching = defender(1, (1.4, 0.0), (0.4, 0.0), "approach");
-        let transition = carry_contact_transition_for_segment(
-            (0.0, 0.0),
-            (2.0, 0.0),
-            82.0,
-            &[approaching],
-            6.0,
-        );
+        let transition =
+            carry_contact_transition_for_segment((0.0, 0.0), (2.0, 0.0), 82.0, &[approaching], 6.0);
         let resolved = duel_resolution_defender(approaching, transition.contact);
         let (attacker_wins, defender_wins, loose_ball) = duel_outcome_probabilities(
             82.0,
@@ -1798,36 +1903,24 @@ mod tests {
         assert!(
             (distance(carrier_contact, defender_contact) - PLAYER_BODY_SEPARATION).abs() <= 1e-9
         );
-        let carrier_progress = distance(carrier_start, carrier_contact)
-            / distance(carrier_start, carrier_end);
-        let defender_progress = distance(defender_start, defender_contact)
-            / distance(defender_start, defender_end);
+        let carrier_progress =
+            distance(carrier_start, carrier_contact) / distance(carrier_start, carrier_end);
+        let defender_progress =
+            distance(defender_start, defender_contact) / distance(defender_start, defender_end);
         assert!((carrier_progress - defender_progress).abs() <= 1e-9);
     }
 
     #[test]
     fn overlapping_bodies_are_separated_when_their_motion_keeps_converging() {
-        let mover = moving_body_collision_position(
-            (0.0, 0.0),
-            (1.0, 0.0),
-            (0.5, 0.0),
-            (0.5, 0.0),
-        );
+        let mover = moving_body_collision_position((0.0, 0.0), (1.0, 0.0), (0.5, 0.0), (0.5, 0.0));
 
-        assert!(
-            (distance(mover, (0.5, 0.0)) - PLAYER_BODY_SEPARATION).abs() <= 1e-9
-        );
+        assert!((distance(mover, (0.5, 0.0)) - PLAYER_BODY_SEPARATION).abs() <= 1e-9);
         assert!(mover.0 < 0.0);
     }
 
     #[test]
     fn overlapping_bodies_can_naturally_disengage_when_motion_is_separating() {
-        let mover = moving_body_collision_position(
-            (0.0, 0.0),
-            (-1.0, 0.0),
-            (0.5, 0.0),
-            (0.5, 0.0),
-        );
+        let mover = moving_body_collision_position((0.0, 0.0), (-1.0, 0.0), (0.5, 0.0), (0.5, 0.0));
 
         assert_eq!(mover, (-1.0, 0.0));
     }
@@ -1900,6 +1993,39 @@ mod tests {
         assert_eq!(result.defender_index, Some(5));
         assert!(result.distance < 1.7);
         assert!(result.contact_probability > 0.2);
+    }
+
+    #[test]
+    fn foul_risk_requires_a_committed_unsuccessful_contact() {
+        assert_eq!(
+            foul_probability(DuelOutcome::DefenderWins, "tackle", 0.9, 85.0, 60.0),
+            0.0
+        );
+        assert_eq!(
+            foul_probability(DuelOutcome::AttackerWins, "approach", 0.9, 85.0, 60.0),
+            0.0
+        );
+        assert!(
+            foul_probability(DuelOutcome::AttackerWins, "tackle", 0.9, 85.0, 60.0)
+                > foul_probability(DuelOutcome::LooseBall, "tackle", 0.9, 85.0, 60.0)
+        );
+        assert!(
+            foul_probability(DuelOutcome::AttackerWins, "tackle", 0.9, 85.0, 60.0)
+                > foul_probability(DuelOutcome::AttackerWins, "tackle", 0.45, 85.0, 60.0)
+        );
+        assert!(
+            foul_probability(DuelOutcome::AttackerWins, "tackle", 0.9, 85.0, 60.0)
+                > foul_probability(DuelOutcome::AttackerWins, "tackle", 0.9, 55.0, 90.0)
+        );
+    }
+
+    #[test]
+    fn penalty_family_uses_its_observed_frequency_without_changing_contact_ordering() {
+        let low = foul_probability(DuelOutcome::LooseBall, "body_challenge", 0.5, 75.0, 75.0);
+        let high = foul_probability(DuelOutcome::AttackerWins, "tackle", 0.9, 85.0, 60.0);
+
+        assert!(penalty_foul_probability(low) < penalty_foul_probability(high));
+        assert!((penalty_foul_probability(high) - high * 0.251).abs() < 1e-12);
     }
 
     #[test]
@@ -2413,8 +2539,7 @@ mod tests {
     }
 
     #[test]
-    fn responsive_defenders_reduce_long_carry_survival_without_recording_lane_blocks_as_tackles()
-    {
+    fn responsive_defenders_reduce_long_carry_survival_without_recording_lane_blocks_as_tackles() {
         let stale_defenders = [defender(6, (14.0, 7.0), (14.0, 7.0), "tackle")];
         let input = CarrySurvivalInput {
             holder_pos: (0.0, 0.0),

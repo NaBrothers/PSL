@@ -4,6 +4,16 @@ pub fn distance(a: (f64, f64), b: (f64, f64)) -> f64 {
     (dx * dx + dy * dy).sqrt()
 }
 
+/// Distance threshold used by the engine's long-pass execution model.
+///
+/// This is a physical distance bucket, not Opta's contextual `long_ball`
+/// qualifier (which also describes a high ball played into space or an area).
+pub const LONG_PASS_DISTANCE_METERS: f64 = 32.0;
+
+pub fn is_long_pass_distance(distance_meters: f64) -> bool {
+    distance_meters >= LONG_PASS_DISTANCE_METERS
+}
+
 pub fn direction(origin: (f64, f64), target: (f64, f64)) -> (f64, f64) {
     let dx = target.0 - origin.0;
     let dy = target.1 - origin.1;
@@ -469,6 +479,12 @@ pub fn out_of_bounds_restart(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn long_pass_distance_boundary_is_shared_and_inclusive() {
+        assert!(!is_long_pass_distance(LONG_PASS_DISTANCE_METERS - 0.001));
+        assert!(is_long_pass_distance(LONG_PASS_DISTANCE_METERS));
+    }
 
     #[test]
     fn player_body_overlap_resolution_separates_a_dense_cluster() {

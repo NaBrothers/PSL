@@ -54,6 +54,7 @@ pub struct ScoreGoalPlanInput<'a> {
     pub assister_color: &'a str,
     pub tick: i32,
     pub tick_duration: f64,
+    pub kickoff_restart_ticks: i32,
 }
 
 #[derive(Clone, Debug)]
@@ -266,6 +267,7 @@ pub struct ShotArrivalPlanInput<'a> {
     pub gk_pos: (f64, f64),
     pub gk_attributes: crate::goalkeeper::GkSaveAttributes,
     pub save_roll: f64,
+    pub save_probability_override: Option<f64>,
     pub big_chance: bool,
     pub total_xg: f64,
     pub logged_xg_sum: f64,
@@ -299,6 +301,7 @@ pub struct OutOfBoundsPlanInput {
     pub total_xg: f64,
     pub logged_xg_sum: f64,
     pub goal_kick_restart_ticks: i32,
+    pub corner_restart_ticks: i32,
     pub throw_in_restart_ticks: i32,
 }
 
@@ -490,6 +493,7 @@ pub struct HoldPhasePlanInput<'a> {
     pub error_roll: f64,
     pub loose_x_roll: f64,
     pub loose_y_roll: f64,
+    pub elapsed_fraction: f64,
 }
 
 #[derive(Clone, Debug)]
@@ -1006,6 +1010,7 @@ pub fn hold_phase_plan(input: &HoldPhasePlanInput<'_>) -> HoldPhasePlanOutput {
         error_roll: input.error_roll,
         loose_x_roll: input.loose_x_roll,
         loose_y_roll: input.loose_y_roll,
+        elapsed_fraction: input.elapsed_fraction,
     });
     HoldPhasePlanOutput {
         transition: hold.transition,
@@ -1081,7 +1086,7 @@ pub fn shot_log_entry(input: &ShotLogEntryInput<'_>) -> ShotLogEntryOutput {
 }
 
 pub fn shot_arrival_plan(input: &ShotArrivalPlanInput<'_>) -> ShotArrivalPlanOutput {
-    let arrival = crate::arrival::resolve_shot_arrival(&crate::arrival::ShotArrivalInput {
+    let mut arrival = crate::arrival::resolve_shot_arrival(&crate::arrival::ShotArrivalInput {
         shot_origin: input.shot_origin,
         shot_target: input.shot_target,
         attacking_right: input.attacking_right,
@@ -1092,6 +1097,16 @@ pub fn shot_arrival_plan(input: &ShotArrivalPlanInput<'_>) -> ShotArrivalPlanOut
         gk_attributes: input.gk_attributes,
         save_roll: input.save_roll,
     });
+    if input.on_target {
+        if let Some(save_probability) = input.save_probability_override {
+            arrival.save_prob = save_probability.clamp(0.0, 1.0);
+            arrival.outcome_code = if input.save_roll < arrival.save_prob {
+                1
+            } else {
+                2
+            };
+        }
+    }
     let outcome = match arrival.outcome_code {
         1 => "saved",
         2 => "goal",
@@ -1146,10 +1161,10 @@ pub fn out_of_bounds_plan(input: &OutOfBoundsPlanInput) -> OutOfBoundsPlanOutput
         input.possession_team_home,
         input.attacking_right,
     );
-    let restart_ticks = if reason == "goal_kick" {
-        input.goal_kick_restart_ticks
-    } else {
-        input.throw_in_restart_ticks
+    let restart_ticks = match reason {
+        "goal_kick" => input.goal_kick_restart_ticks,
+        "corner" => input.corner_restart_ticks,
+        _ => input.throw_in_restart_ticks,
     };
     let has_shot_log = input.flight_type_code == 3;
     let shot_log = if has_shot_log {
@@ -1268,7 +1283,7 @@ pub fn score_goal_plan(input: &ScoreGoalPlanInput<'_>) -> ScoreGoalPlanOutput {
         event_text: event.event_text,
         pause_ms: 3000,
         restart_team_home: input.conceding_team_home,
-        restart_ticks: 3,
+        restart_ticks: input.kickoff_restart_ticks.max(1),
     }
 }
 
@@ -1390,6 +1405,58 @@ pub fn player_move_tick_fraction(
     }
 }
 
+pub fn player_move_elapsed_seconds(
+    input: &PlayerMoveTickInput<'_>,
+    elapsed_seconds: f64,
+    tick_duration: f64,
+) -> PlayerMoveTickOutput {
+    let tick_duration = tick_duration.max(f64::EPSILON);
+    let mut pos = input.pos;
+    let mut velocity_per_second = (
+        input.velocity.0 / tick_duration,
+        input.velocity.1 / tick_duration,
+    );
+    let mut remaining_seconds = elapsed_seconds.max(0.0);
+    let mut distance_covered = 0.0;
+    let mut facing_direction = None;
+    let mut desired_speed_per_second = 0.0;
+    while remaining_seconds > 1e-9 {
+        let step_seconds = remaining_seconds.min(1.0);
+        let movement = player_move_tick_fraction(
+            &PlayerMoveTickInput {
+                pos,
+                target_pos: input.target_pos,
+                velocity: velocity_per_second,
+                speed_ability: input.speed_ability,
+                movement_intent: input.movement_intent,
+                state: input.state,
+                player_max_speed: input.player_max_speed / tick_duration,
+                player_min_speed: input.player_min_speed / tick_duration,
+                pitch_length: input.pitch_length,
+                pitch_width: input.pitch_width,
+            },
+            step_seconds,
+        );
+        pos = movement.pos;
+        velocity_per_second = movement.velocity;
+        distance_covered += movement.distance_covered;
+        facing_direction = movement.facing_direction.or(facing_direction);
+        desired_speed_per_second = movement.desired_speed;
+        remaining_seconds -= step_seconds;
+    }
+    PlayerMoveTickOutput {
+        moved: distance_covered > 1e-6,
+        pos,
+        velocity: (
+            velocity_per_second.0 * tick_duration,
+            velocity_per_second.1 * tick_duration,
+        ),
+        distance_covered,
+        facing_direction,
+        desired_speed: desired_speed_per_second * tick_duration,
+    }
+}
+
 pub fn player_set_movement_target(
     input: &PlayerSetMovementTargetInput<'_>,
 ) -> PlayerSetMovementTargetOutput {
@@ -1503,6 +1570,7 @@ pub struct GoalKickPlayerInput {
 pub struct GoalKickShapeInput<'a> {
     pub pitch_length: f64,
     pub pitch_width: f64,
+    pub defending_press_intensity: f64,
     pub players: &'a [GoalKickPlayerInput],
 }
 
@@ -1577,9 +1645,11 @@ pub struct RestartShapePlayerInput<'a> {
 #[derive(Clone, Debug)]
 pub struct RestartShapePlanInput<'a> {
     pub reason: &'a str,
+    pub ball_pos: (f64, f64),
     pub force: bool,
     pub pitch_length: f64,
     pub pitch_width: f64,
+    pub defending_press_intensity: f64,
     pub players: &'a [RestartShapePlayerInput<'a>],
 }
 
@@ -2048,6 +2118,31 @@ pub fn goal_kick_shape_targets(input: &GoalKickShapeInput<'_>) -> GoalKickShapeO
     } else {
         1.0
     };
+    let restart_targets = input
+        .players
+        .iter()
+        .filter(|player| player.team_is_restart && !player.is_goalkeeper)
+        .map(|player| {
+            let base_progress = if player.team_attacking_right {
+                player.base_pos.0 / input.pitch_length
+            } else {
+                (input.pitch_length - player.base_pos.0) / input.pitch_length
+            };
+            let progress =
+                goal_kick_target_progress(base_progress, true, false, input.pitch_length);
+            let x = if player.team_attacking_right {
+                progress * input.pitch_length
+            } else {
+                (1.0 - progress) * input.pitch_length
+            };
+            let base_width = player.base_pos.1 - input.pitch_width / 2.0;
+            pitch_clamp(
+                (x, input.pitch_width / 2.0 + base_width * 1.08),
+                input.pitch_length,
+                input.pitch_width,
+            )
+        })
+        .collect::<Vec<_>>();
     for player in input.players {
         let attacking = player.team_is_restart;
         let base_progress = if player.team_attacking_right {
@@ -2073,13 +2168,35 @@ pub fn goal_kick_shape_targets(input: &GoalKickShapeInput<'_>) -> GoalKickShapeO
         } else {
             let distance_from_goal =
                 defending_distance_from_restart_goal(*player, input.pitch_length);
-            let x = if player.restart_attacking_right {
+            let block_x = if player.restart_attacking_right {
                 distance_from_goal
             } else {
                 input.pitch_length - distance_from_goal
             };
-            let y = input.pitch_width / 2.0 + base_width * 0.92 + ball_side * 2.2;
-            pitch_clamp((x, y), input.pitch_length, input.pitch_width)
+            let block_y = input.pitch_width / 2.0 + base_width * 0.92 + ball_side * 2.2;
+            let block_target =
+                pitch_clamp((block_x, block_y), input.pitch_length, input.pitch_width);
+            let mark_target = restart_targets.iter().copied().min_by(|left, right| {
+                crate::physics::distance(block_target, *left)
+                    .total_cmp(&crate::physics::distance(block_target, *right))
+            });
+            if player.is_goalkeeper {
+                block_target
+            } else if let Some(mark_target) = mark_target {
+                let press_commitment = input.defending_press_intensity.clamp(0.0, 1.0);
+                pitch_clamp(
+                    (
+                        block_target.0 * (1.0 - press_commitment)
+                            + mark_target.0 * press_commitment,
+                        block_target.1 * (1.0 - press_commitment)
+                            + mark_target.1 * press_commitment,
+                    ),
+                    input.pitch_length,
+                    input.pitch_width,
+                )
+            } else {
+                block_target
+            }
         };
         targets.push((player.index, target));
     }
@@ -2115,6 +2232,7 @@ pub fn restart_shape_plan(input: &RestartShapePlanInput<'_>) -> RestartShapePlan
         let shape = goal_kick_shape_targets(&GoalKickShapeInput {
             pitch_length: input.pitch_length,
             pitch_width: input.pitch_width,
+            defending_press_intensity: input.defending_press_intensity,
             players: &goal_kick_players,
         });
         let mut outputs = Vec::new();
@@ -2205,6 +2323,141 @@ pub fn restart_shape_plan(input: &RestartShapePlanInput<'_>) -> RestartShapePlan
         return RestartShapePlanOutput {
             has_shape: true,
             ball_pos: (input.pitch_length / 2.0, input.pitch_width / 2.0),
+            players: outputs,
+        };
+    }
+    if input.reason == "corner" {
+        let goal_x = if restart_attacking_right {
+            input.pitch_length
+        } else {
+            0.0
+        };
+        let direction = if restart_attacking_right { -1.0 } else { 1.0 };
+        let center_y = input.pitch_width * 0.5;
+        let corner_pos = (
+            if restart_attacking_right {
+                input.pitch_length - 0.5
+            } else {
+                0.5
+            },
+            if input.ball_pos.1 <= center_y {
+                0.5
+            } else {
+                input.pitch_width - 0.5
+            },
+        );
+        let taker = input
+            .players
+            .iter()
+            .filter(|player| player.team_is_restart && !player.is_goalkeeper)
+            .min_by(|left, right| {
+                crate::physics::distance(left.current_pos, corner_pos)
+                    .total_cmp(&crate::physics::distance(right.current_pos, corner_pos))
+            })
+            .map(|player| (player.team_code, player.index));
+        let mut attacking_ordinal = 0usize;
+        let mut defending_ordinal = 0usize;
+        let mut outputs = Vec::new();
+        for player in input.players {
+            let target = if taker == Some((player.team_code, player.index)) {
+                corner_pos
+            } else if player.is_goalkeeper {
+                if player.team_is_restart {
+                    (goal_x + direction * 38.0, center_y)
+                } else {
+                    (goal_x + direction * 1.5, center_y)
+                }
+            } else if player.team_is_restart {
+                let lanes = [-13.0, -7.0, -2.5, 2.5, 7.0, 13.0];
+                let depths = [6.0, 9.5, 12.5, 7.5, 15.0, 11.0];
+                let index = attacking_ordinal % lanes.len();
+                attacking_ordinal += 1;
+                (
+                    goal_x + direction * depths[index],
+                    (center_y + lanes[index]).clamp(1.0, input.pitch_width - 1.0),
+                )
+            } else {
+                let lanes = [-12.0, -6.0, -2.0, 2.0, 6.0, 12.0];
+                let depths = [5.0, 8.5, 11.5, 7.0, 13.5, 10.0];
+                let index = defending_ordinal % lanes.len();
+                defending_ordinal += 1;
+                (
+                    goal_x + direction * depths[index],
+                    (center_y + lanes[index]).clamp(1.0, input.pitch_width - 1.0),
+                )
+            };
+            outputs.push(RestartShapePlanPlayerOutput {
+                team_code: player.team_code,
+                index: player.index,
+                target,
+                snap: input.force,
+            });
+        }
+        return RestartShapePlanOutput {
+            has_shape: true,
+            ball_pos: corner_pos,
+            players: outputs,
+        };
+    }
+    if matches!(input.reason, "free_kick" | "offside") {
+        const MINIMUM_DISTANCE: f64 = 9.15;
+        let center = (input.pitch_length * 0.5, input.pitch_width * 0.5);
+        let mut outputs = Vec::new();
+        for player in input
+            .players
+            .iter()
+            .filter(|player| !player.team_is_restart)
+        {
+            let separation = crate::physics::distance(player.current_pos, input.ball_pos);
+            if separation >= MINIMUM_DISTANCE - 1e-9 {
+                continue;
+            }
+            let raw_direction = (
+                player.current_pos.0 - input.ball_pos.0,
+                player.current_pos.1 - input.ball_pos.1,
+            );
+            let raw_length = (raw_direction.0.powi(2) + raw_direction.1.powi(2)).sqrt();
+            let direction = if raw_length > 1e-9 {
+                (raw_direction.0 / raw_length, raw_direction.1 / raw_length)
+            } else {
+                let toward_center = (center.0 - input.ball_pos.0, center.1 - input.ball_pos.1);
+                let length = (toward_center.0.powi(2) + toward_center.1.powi(2))
+                    .sqrt()
+                    .max(f64::EPSILON);
+                (toward_center.0 / length, toward_center.1 / length)
+            };
+            let mut target = pitch_clamp(
+                (
+                    input.ball_pos.0 + direction.0 * MINIMUM_DISTANCE,
+                    input.ball_pos.1 + direction.1 * MINIMUM_DISTANCE,
+                ),
+                input.pitch_length,
+                input.pitch_width,
+            );
+            if crate::physics::distance(input.ball_pos, target) < MINIMUM_DISTANCE - 1e-9 {
+                let toward_center = (center.0 - input.ball_pos.0, center.1 - input.ball_pos.1);
+                let length = (toward_center.0.powi(2) + toward_center.1.powi(2))
+                    .sqrt()
+                    .max(f64::EPSILON);
+                target = pitch_clamp(
+                    (
+                        input.ball_pos.0 + toward_center.0 / length * MINIMUM_DISTANCE,
+                        input.ball_pos.1 + toward_center.1 / length * MINIMUM_DISTANCE,
+                    ),
+                    input.pitch_length,
+                    input.pitch_width,
+                );
+            }
+            outputs.push(RestartShapePlanPlayerOutput {
+                team_code: player.team_code,
+                index: player.index,
+                target,
+                snap: input.force,
+            });
+        }
+        return RestartShapePlanOutput {
+            has_shape: true,
+            ball_pos: input.ball_pos,
             players: outputs,
         };
     }
@@ -2894,7 +3147,7 @@ pub fn restart_play_decision(input: &RestartPlayInput<'_>) -> RestartPlayOutput 
             }
         }
         "corner" => {
-            let y = if input.corner_y_roll < 0.5 {
+            let y = if input.ball_pos.1 <= input.pitch_width * 0.5 {
                 0.5
             } else {
                 input.pitch_width - 0.5
@@ -2907,8 +3160,22 @@ pub fn restart_play_decision(input: &RestartPlayInput<'_>) -> RestartPlayOutput 
             RestartPlayOutput {
                 ball_pos: pos,
                 receiver_index: closest_restart_player(input.players, pos, true),
-                set_receiver_pos: true,
+                set_receiver_pos: false,
                 pending_cut: false,
+            }
+        }
+        "penalty" => {
+            let x = if input.restart_attacking_right {
+                input.pitch_length - 11.0
+            } else {
+                11.0
+            };
+            let pos = (x, input.pitch_width / 2.0);
+            RestartPlayOutput {
+                ball_pos: pos,
+                receiver_index: closest_restart_player(input.players, pos, true),
+                set_receiver_pos: true,
+                pending_cut: true,
             }
         }
         "throw_in" | "offside" => {
@@ -2985,8 +3252,16 @@ pub fn track_pass_stats(input: &PassStatInput) -> PassStatOutput {
         crosses_attempted: if crosses { 1 } else { 0 },
         crosses_completed: if crosses { 1 } else { 0 },
         progressive_passes: if progress > 10.0 { 1 } else { 0 },
-        long_passes: if dist > 30.0 { 1 } else { 0 },
-        completed_long_passes: if dist > 30.0 { 1 } else { 0 },
+        long_passes: if crate::physics::is_long_pass_distance(dist) {
+            1
+        } else {
+            0
+        },
+        completed_long_passes: if crate::physics::is_long_pass_distance(dist) {
+            1
+        } else {
+            0
+        },
         passes_into_final_third: if passes_into_final_third { 1 } else { 0 },
         passes_into_box: if passes_into_box { 1 } else { 0 },
     }
@@ -3020,6 +3295,313 @@ pub fn track_carry_stats(input: &CarryStatInput) -> CarryStatOutput {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn elapsed_second_player_motion_preserves_physical_state_across_tick_sizes() {
+        let one_second = player_move_elapsed_seconds(
+            &PlayerMoveTickInput {
+                pos: (30.0, 34.0),
+                target_pos: (45.0, 34.0),
+                velocity: (1.2, 0.0),
+                speed_ability: 80,
+                movement_intent: "attack_run",
+                state: "off_ball",
+                player_max_speed: 9.0,
+                player_min_speed: 2.0,
+                pitch_length: 105.0,
+                pitch_width: 68.0,
+            },
+            0.5,
+            1.0,
+        );
+        let half_second = player_move_elapsed_seconds(
+            &PlayerMoveTickInput {
+                pos: (30.0, 34.0),
+                target_pos: (45.0, 34.0),
+                velocity: (0.6, 0.0),
+                speed_ability: 80,
+                movement_intent: "attack_run",
+                state: "off_ball",
+                player_max_speed: 4.5,
+                player_min_speed: 1.0,
+                pitch_length: 105.0,
+                pitch_width: 68.0,
+            },
+            0.5,
+            0.5,
+        );
+
+        assert!((one_second.pos.0 - half_second.pos.0).abs() < 0.05);
+        assert!((one_second.velocity.0 * 0.5 - half_second.velocity.0).abs() < 0.05);
+    }
+
+    #[test]
+    fn corner_restart_uses_its_own_physical_setup_duration() {
+        let plan = out_of_bounds_plan(&OutOfBoundsPlanInput {
+            boundary: crate::physics::PitchBoundaryKind::GoalLine,
+            boundary_point: (0.0, 4.0),
+            pitch_length: 105.0,
+            pitch_width: 68.0,
+            possession_team_home: false,
+            flight_type_code: 0,
+            origin: (100.0, 12.0),
+            attacking_right: true,
+            big_chance: false,
+            total_xg: 0.0,
+            logged_xg_sum: 0.0,
+            goal_kick_restart_ticks: 16,
+            corner_restart_ticks: 26,
+            throw_in_restart_ticks: 8,
+        });
+
+        assert_eq!(plan.reason, "corner");
+        assert_eq!(plan.restart_ticks, 26);
+    }
+
+    #[test]
+    fn goal_plan_uses_configured_kickoff_restart_duration() {
+        let plan = score_goal_plan(&ScoreGoalPlanInput {
+            scorer_name: "Scorer",
+            scoring_team_home: true,
+            conceding_team_home: false,
+            home_score: 0,
+            away_score: 0,
+            last_passer_team_home: None,
+            last_passer_idx: -1,
+            scorer_idx: 9,
+            scoring_team_size: 11,
+            assister_name: "",
+            assister_color: "",
+            tick: 1200,
+            tick_duration: 1.0,
+            kickoff_restart_ticks: 45,
+        });
+
+        assert_eq!(plan.restart_ticks, 45);
+    }
+
+    #[test]
+    fn corner_uses_the_boundary_side_without_requesting_a_taker_teleport() {
+        let players = [
+            RestartPlayerInput {
+                index: 4,
+                pos: (80.0, 12.0),
+                is_goalkeeper: false,
+            },
+            RestartPlayerInput {
+                index: 7,
+                pos: (92.0, 60.0),
+                is_goalkeeper: false,
+            },
+        ];
+        let restart = restart_play_decision(&RestartPlayInput {
+            reason: "corner",
+            ball_pos: (105.0, 4.0),
+            restart_attacking_right: true,
+            pitch_length: 105.0,
+            pitch_width: 68.0,
+            corner_y_roll: 0.99,
+            players: &players,
+        });
+
+        assert_eq!(restart.ball_pos, (104.5, 0.5));
+        assert_eq!(restart.receiver_index, Some(4));
+        assert!(!restart.set_receiver_pos);
+    }
+
+    #[test]
+    fn corner_shape_places_a_taker_at_the_ball_and_targets_both_teams_near_the_box() {
+        let players = [
+            RestartShapePlayerInput {
+                index: 0,
+                team_code: 0,
+                team_is_restart: true,
+                team_attacking_right: true,
+                restart_attacking_right: true,
+                base_pos: (8.0, 34.0),
+                current_pos: (90.0, 2.0),
+                is_goalkeeper: false,
+                is_attacker: true,
+                is_midfielder: false,
+                is_defender: false,
+                position: "ST",
+            },
+            RestartShapePlayerInput {
+                index: 1,
+                team_code: 0,
+                team_is_restart: true,
+                team_attacking_right: true,
+                restart_attacking_right: true,
+                base_pos: (60.0, 30.0),
+                current_pos: (70.0, 30.0),
+                is_goalkeeper: false,
+                is_attacker: false,
+                is_midfielder: true,
+                is_defender: false,
+                position: "CM",
+            },
+            RestartShapePlayerInput {
+                index: 0,
+                team_code: 1,
+                team_is_restart: false,
+                team_attacking_right: false,
+                restart_attacking_right: true,
+                base_pos: (100.0, 34.0),
+                current_pos: (100.0, 34.0),
+                is_goalkeeper: true,
+                is_attacker: false,
+                is_midfielder: false,
+                is_defender: false,
+                position: "GK",
+            },
+        ];
+        let ball_pos = (104.5, 0.5);
+        let shape = restart_shape_plan(&RestartShapePlanInput {
+            reason: "corner",
+            ball_pos,
+            force: true,
+            pitch_length: 105.0,
+            pitch_width: 68.0,
+            defending_press_intensity: 0.5,
+            players: &players,
+        });
+
+        assert!(shape.has_shape);
+        assert_eq!(shape.ball_pos, ball_pos);
+        assert_eq!(shape.players[0].target, ball_pos);
+        assert!(shape.players[1].target.0 >= 88.0);
+        assert_eq!(shape.players[2].target, (103.5, 34.0));
+    }
+
+    #[test]
+    fn free_kick_moves_only_illegal_defenders_beyond_nine_point_fifteen_metres() {
+        let players = [
+            RestartShapePlayerInput {
+                index: 4,
+                team_code: 0,
+                team_is_restart: true,
+                team_attacking_right: true,
+                restart_attacking_right: true,
+                base_pos: (50.0, 34.0),
+                current_pos: (50.0, 34.0),
+                is_goalkeeper: false,
+                is_attacker: false,
+                is_midfielder: true,
+                is_defender: false,
+                position: "CM",
+            },
+            RestartShapePlayerInput {
+                index: 7,
+                team_code: 1,
+                team_is_restart: false,
+                team_attacking_right: false,
+                restart_attacking_right: true,
+                base_pos: (46.0, 34.0),
+                current_pos: (52.0, 34.0),
+                is_goalkeeper: false,
+                is_attacker: false,
+                is_midfielder: true,
+                is_defender: false,
+                position: "CM",
+            },
+            RestartShapePlayerInput {
+                index: 8,
+                team_code: 1,
+                team_is_restart: false,
+                team_attacking_right: false,
+                restart_attacking_right: true,
+                base_pos: (35.0, 20.0),
+                current_pos: (35.0, 20.0),
+                is_goalkeeper: false,
+                is_attacker: false,
+                is_midfielder: true,
+                is_defender: false,
+                position: "CM",
+            },
+        ];
+        let ball_pos = (50.0, 34.0);
+        let shape = restart_shape_plan(&RestartShapePlanInput {
+            reason: "free_kick",
+            ball_pos,
+            force: true,
+            pitch_length: 105.0,
+            pitch_width: 68.0,
+            defending_press_intensity: 1.0,
+            players: &players,
+        });
+
+        assert!(shape.has_shape);
+        assert_eq!(shape.ball_pos, ball_pos);
+        assert_eq!(shape.players.len(), 1);
+        assert_eq!(shape.players[0].index, 7);
+        assert!(crate::physics::distance(shape.players[0].target, ball_pos) >= 9.15 - 1e-9);
+        assert!(shape.players[0].snap);
+    }
+
+    fn goal_kick_test_players() -> Vec<GoalKickPlayerInput> {
+        vec![
+            GoalKickPlayerInput {
+                index: 0,
+                team_is_restart: true,
+                team_attacking_right: true,
+                restart_attacking_right: true,
+                base_pos: (5.0, 34.0),
+                is_goalkeeper: true,
+                is_attacker: false,
+                is_midfielder: false,
+                is_defender: false,
+            },
+            GoalKickPlayerInput {
+                index: 1,
+                team_is_restart: true,
+                team_attacking_right: true,
+                restart_attacking_right: true,
+                base_pos: (21.0, 25.0),
+                is_goalkeeper: false,
+                is_attacker: false,
+                is_midfielder: false,
+                is_defender: true,
+            },
+            GoalKickPlayerInput {
+                index: 2,
+                team_is_restart: false,
+                team_attacking_right: false,
+                restart_attacking_right: true,
+                base_pos: (84.0, 25.0),
+                is_goalkeeper: false,
+                is_attacker: true,
+                is_midfielder: false,
+                is_defender: false,
+            },
+        ]
+    }
+
+    #[test]
+    fn goal_kick_press_shape_continuously_closes_the_short_outlet() {
+        let players = goal_kick_test_players();
+        let block = goal_kick_shape_targets(&GoalKickShapeInput {
+            pitch_length: 105.0,
+            pitch_width: 68.0,
+            defending_press_intensity: 0.0,
+            players: &players,
+        });
+        let press = goal_kick_shape_targets(&GoalKickShapeInput {
+            pitch_length: 105.0,
+            pitch_width: 68.0,
+            defending_press_intensity: 0.8,
+            players: &players,
+        });
+        let restart_outlet = press.targets[1].1;
+        let block_defender = block.targets[2].1;
+        let pressing_defender = press.targets[2].1;
+
+        assert!(
+            crate::physics::distance(pressing_defender, restart_outlet)
+                < crate::physics::distance(block_defender, restart_outlet),
+            "a stronger team press must close the actual short outlet rather than remain on a fixed restart line"
+        );
+        assert_eq!(block_defender.0.to_bits(), 34.0f64.to_bits());
+    }
 
     #[test]
     fn rounded_shot_log_xg_does_not_reclassify_big_chance_boundary() {
@@ -3106,6 +3688,50 @@ mod tests {
         });
         assert_eq!(final_tick.position, (50.0, 0.0));
         assert!(final_tick.complete);
+    }
+
+    #[test]
+    fn penalty_restart_uses_the_eleven_metre_spot_and_an_outfield_taker() {
+        let players = [
+            RestartPlayerInput {
+                index: 0,
+                pos: (100.0, 34.0),
+                is_goalkeeper: true,
+            },
+            RestartPlayerInput {
+                index: 9,
+                pos: (90.0, 34.0),
+                is_goalkeeper: false,
+            },
+        ];
+        for (attacking_right, expected_x) in [(true, 94.0), (false, 11.0)] {
+            let restart = restart_play_decision(&RestartPlayInput {
+                reason: "penalty",
+                ball_pos: (52.5, 34.0),
+                restart_attacking_right: attacking_right,
+                pitch_length: 105.0,
+                pitch_width: 68.0,
+                corner_y_roll: 0.0,
+                players: &players,
+            });
+            assert_eq!(restart.ball_pos, (expected_x, 34.0));
+            assert_eq!(restart.receiver_index, Some(9));
+            assert!(restart.set_receiver_pos);
+        }
+    }
+
+    #[test]
+    fn penalty_release_probabilities_close_to_the_observed_2024_25_partition() {
+        let on_target: f64 = 83.0 / 84.0;
+        let conditional_save: f64 = 14.0 / 83.0;
+        let goal = on_target * (1.0 - conditional_save);
+        let saved = on_target * conditional_save;
+        let off_target = 1.0 - on_target;
+
+        assert!((goal - 69.0 / 84.0).abs() < 1e-12);
+        assert!((saved - 14.0 / 84.0).abs() < 1e-12);
+        assert!((off_target - 1.0 / 84.0).abs() < 1e-12);
+        assert!((goal + saved + off_target - 1.0).abs() < 1e-12);
     }
 
     #[test]
@@ -3363,6 +3989,8 @@ mod tests {
             );
         }
     }
+
+
 
     #[test]
     fn attacking_shape_uses_goalkeeper_in_the_offside_boundary() {

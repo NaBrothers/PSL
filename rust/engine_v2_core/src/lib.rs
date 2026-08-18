@@ -2,6 +2,7 @@
 
 pub mod action_timing;
 pub mod action_value;
+pub mod aerial_contest;
 pub mod arrival;
 pub mod ball_physics;
 pub mod contested;
@@ -9,6 +10,7 @@ pub mod decision;
 pub mod defense_coordination;
 pub mod execution;
 pub mod execution_transition;
+pub mod free_ball_pursuit;
 pub mod goal;
 pub mod goalkeeper;
 pub mod interactions;
@@ -26,6 +28,7 @@ pub mod position_value;
 pub mod possession_control;
 pub mod shot_quality;
 pub mod state_value;
+pub mod tackle_commitment;
 pub mod tactical_task;
 pub mod team_cognition;
 pub mod team_communication;
@@ -43,6 +46,10 @@ pub use action_value::{
     ActionOutcomeValueOutput, PossessionTransition, SecondBallControlEstimate,
     SecondBallControlInput, SecondBallPlayerInput, ShotPossessionTransitionInput,
     TemporalOptionValueInput, TemporalOptionValueOutput,
+};
+pub use aerial_contest::{
+    aerial_contest, aerial_player_first_contact_probability, best_aerial_delivery_target, best_aerial_delivery_target_by,
+    AerialContestOutput, AerialContestPlayerInput, AerialDeliveryTarget,
 };
 pub use arrival::{
     resolve_clearance_arrival, resolve_first_touch, resolve_pass_arrival, resolve_shot_arrival,
@@ -94,6 +101,10 @@ pub use execution::{
     HoldExecutionOutput, PassExecutionInput, PassExecutionOutput, ShotExecutionInput,
     ShotExecutionOutput,
 };
+pub use free_ball_pursuit::{
+    free_ball_team_pursuit_tick_into, FreeBallPursuitConfig, FreeBallPursuitOutput,
+    FreeBallPursuitPlayerInput, FREE_BALL_TEAM_SIZE,
+};
 pub use goal::{
     apply_generic_on_ball_goal_continuity, apply_specialized_on_ball_bias, build_defensive_goal,
     build_off_ball_attack_goal, evaluate_arc_arrival_goal, evaluate_attack_far_post_goal,
@@ -126,13 +137,13 @@ pub use interactions::{
     carry_survival_transition_with_defender_responses, control_contact_transition,
     defender_action_physical_reach, detect_duel, detect_interception, detect_wasted_tackle,
     duel_contest_margin_band, duel_margin, duel_outcome_code_from_margin, interception_chance,
-    pass_release_contact_transition, records_tackle_attempt, resolve_duel, resolve_interception,
-    track_defensive_pressures, track_defensive_pressures_into, CarrySurvivalInput,
-    CarrySurvivalTransition, ControlContactTransition, DefenderActionInput, DefensivePressureInput,
-    DefensivePressureOutput, DetectionResult, DuelDetectionInput, DuelOutcome,
-    DuelOutcomeProbabilities, DuelOutcomeTransition, DuelResolveInput, GoalkeeperSmotherTransition,
-    InterceptionDetectionInput, InterceptionResolveInput, PassReleaseContactTransition,
-    WastedTackleInput,
+    pass_release_contact_transition, penalty_foul_probability, records_tackle_attempt,
+    resolve_duel, resolve_interception, track_defensive_pressures, track_defensive_pressures_into,
+    CarrySurvivalInput, CarrySurvivalTransition, ControlContactTransition, DefenderActionInput,
+    DefensivePressureInput, DefensivePressureOutput, DetectionResult, DuelDetectionInput,
+    DuelOutcome, DuelOutcomeProbabilities, DuelOutcomeTransition, DuelResolveInput,
+    GoalkeeperSmotherTransition, InterceptionDetectionInput, InterceptionResolveInput,
+    PassReleaseContactTransition, WastedTackleInput,
 };
 pub use match_clock::{MatchClock, MatchClockPhase, MatchClockSnapshot};
 pub use match_flow::{
@@ -142,41 +153,41 @@ pub use match_flow::{
     key_pass_for_shot, kickoff_shape_targets, must_leave_penalty_area_for_goal_kick,
     out_of_bounds_plan, pass_arrival_plan, pass_control_strength, pass_control_transition,
     pass_loose_control_strength, pass_phase_outcome, pass_phase_plan, pass_receive_plan,
-    pass_trace_payload, player_apply_stun, player_move_speed, player_move_tick,
-    player_move_tick_fraction, player_set_movement_target, player_set_movement_target_ref,
-    player_tick_stun, restart_play_decision, restart_play_plan, restart_shape_plan,
-    sample_ball_flight_curve, score_block_lane_legacy, score_block_lane_zone, score_goal_plan,
-    score_mark_runner_legacy, score_mark_runner_zone, score_tackle, shot_arrival_event,
-    shot_arrival_plan, shot_log_entry, shot_log_xg, shot_phase_plan, shot_xg_value,
-    team_phase_update, team_shape_plan, team_shape_plan_into, tick_ball_flight, track_carry_stats,
-    track_pass_stats, BallFlightFrameInput, BallFlightFrameOutput, CarryPhasePlanInput,
-    CarryPhasePlanOutput, CarryStatInput, CarryStatOutput, ClearPhasePlanInput,
-    ClearPhasePlanOutput, ClearanceArrivalPlanInput, ClearanceArrivalPlanOutput,
-    ContestedTickPlanInput, ContestedTickPlanOutput, DefenseZoneAttackerInput,
-    DefenseZoneHelperInput, DefenseZoneHelperOutput, DefensivePressureAdjustDefenderInput,
-    DefensivePressureAdjustInput, DefensivePressureAdjustOutput, DefensivePressureAdjustPlanOutput,
-    DuelPhasePlanInput, DuelPhasePlanOutput, FlightCurveSample, FlightMovementPlanInput,
-    FlightMovementPlanOutput, FlightMovementPlanPlayerOutput, FlightMovementPlayerInput,
-    FlightTickInput, FlightTickOutput, GiveBallPlanInput, GiveBallPlanOutput, GoalEventInput,
-    GoalEventOutput, GoalKickPlayerInput, GoalKickShapeInput, GoalKickShapeOutput,
-    HoldPhasePlanInput, HoldPhasePlanOutput, KeyPassInput, KeyPassOutput, KickoffPlayerInput,
-    KickoffShapeInput, KickoffShapeOutput, OutOfBoundsPlanInput, OutOfBoundsPlanOutput,
-    PassArrivalPlanInput, PassArrivalPlanOutput, PassControlInput, PassControlOutput,
-    PassControlTransitionInput, PassControlTransitionOutput, PassLooseControlInput,
-    PassLooseControlOutput, PassPhaseOutcomeInput, PassPhaseOutcomeOutput, PassPhasePlanInput,
-    PassPhasePlanOutput, PassReceivePlanInput, PassReceivePlanOutput, PassStatInput,
-    PassStatOutput, PassTraceInput, PassTraceOutput, PlayerApplyStunInput, PlayerApplyStunOutput,
-    PlayerMoveSpeedInput, PlayerMoveSpeedOutput, PlayerMoveTickInput, PlayerMoveTickOutput,
-    PlayerSetMovementTargetInput, PlayerSetMovementTargetOutput, PlayerSetMovementTargetRefOutput,
-    PlayerTickStunInput, PlayerTickStunOutput, RestartPlayInput, RestartPlayOutput,
-    RestartPlayPlanInput, RestartPlayPlanOutput, RestartPlayerInput, RestartShapePlanInput,
-    RestartShapePlanOutput, RestartShapePlanPlayerOutput, RestartShapePlayerInput,
-    ScoreGoalPlanInput, ScoreGoalPlanOutput, ShotArrivalEventInput, ShotArrivalEventOutput,
-    ShotArrivalPlanInput, ShotArrivalPlanOutput, ShotLogEntryInput, ShotLogEntryOutput,
-    ShotLogXgInput, ShotLogXgOutput, ShotPhasePlanInput, ShotPhasePlanOutput, ShotXgInput,
-    ShotXgOutput, TackleScoreInput, TackleScoreOutput, TeamPhaseUpdateInput, TeamPhaseUpdateOutput,
-    TeamShapeOpponentInput, TeamShapePlanInput, TeamShapePlanOutput, TeamShapePlayerInput,
-    TeamShapePlayerOutput,
+    pass_trace_payload, player_apply_stun, player_move_elapsed_seconds, player_move_speed,
+    player_move_tick, player_move_tick_fraction, player_set_movement_target,
+    player_set_movement_target_ref, player_tick_stun, restart_play_decision, restart_play_plan,
+    restart_shape_plan, sample_ball_flight_curve, score_block_lane_legacy, score_block_lane_zone,
+    score_goal_plan, score_mark_runner_legacy, score_mark_runner_zone, score_tackle,
+    shot_arrival_event, shot_arrival_plan, shot_log_entry, shot_log_xg, shot_phase_plan,
+    shot_xg_value, team_phase_update, team_shape_plan, team_shape_plan_into, tick_ball_flight,
+    track_carry_stats, track_pass_stats, BallFlightFrameInput, BallFlightFrameOutput,
+    CarryPhasePlanInput, CarryPhasePlanOutput, CarryStatInput, CarryStatOutput,
+    ClearPhasePlanInput, ClearPhasePlanOutput, ClearanceArrivalPlanInput,
+    ClearanceArrivalPlanOutput, ContestedTickPlanInput, ContestedTickPlanOutput,
+    DefenseZoneAttackerInput, DefenseZoneHelperInput, DefenseZoneHelperOutput,
+    DefensivePressureAdjustDefenderInput, DefensivePressureAdjustInput,
+    DefensivePressureAdjustOutput, DefensivePressureAdjustPlanOutput, DuelPhasePlanInput,
+    DuelPhasePlanOutput, FlightCurveSample, FlightMovementPlanInput, FlightMovementPlanOutput,
+    FlightMovementPlanPlayerOutput, FlightMovementPlayerInput, FlightTickInput, FlightTickOutput,
+    GiveBallPlanInput, GiveBallPlanOutput, GoalEventInput, GoalEventOutput, GoalKickPlayerInput,
+    GoalKickShapeInput, GoalKickShapeOutput, HoldPhasePlanInput, HoldPhasePlanOutput, KeyPassInput,
+    KeyPassOutput, KickoffPlayerInput, KickoffShapeInput, KickoffShapeOutput, OutOfBoundsPlanInput,
+    OutOfBoundsPlanOutput, PassArrivalPlanInput, PassArrivalPlanOutput, PassControlInput,
+    PassControlOutput, PassControlTransitionInput, PassControlTransitionOutput,
+    PassLooseControlInput, PassLooseControlOutput, PassPhaseOutcomeInput, PassPhaseOutcomeOutput,
+    PassPhasePlanInput, PassPhasePlanOutput, PassReceivePlanInput, PassReceivePlanOutput,
+    PassStatInput, PassStatOutput, PassTraceInput, PassTraceOutput, PlayerApplyStunInput,
+    PlayerApplyStunOutput, PlayerMoveSpeedInput, PlayerMoveSpeedOutput, PlayerMoveTickInput,
+    PlayerMoveTickOutput, PlayerSetMovementTargetInput, PlayerSetMovementTargetOutput,
+    PlayerSetMovementTargetRefOutput, PlayerTickStunInput, PlayerTickStunOutput, RestartPlayInput,
+    RestartPlayOutput, RestartPlayPlanInput, RestartPlayPlanOutput, RestartPlayerInput,
+    RestartShapePlanInput, RestartShapePlanOutput, RestartShapePlanPlayerOutput,
+    RestartShapePlayerInput, ScoreGoalPlanInput, ScoreGoalPlanOutput, ShotArrivalEventInput,
+    ShotArrivalEventOutput, ShotArrivalPlanInput, ShotArrivalPlanOutput, ShotLogEntryInput,
+    ShotLogEntryOutput, ShotLogXgInput, ShotLogXgOutput, ShotPhasePlanInput, ShotPhasePlanOutput,
+    ShotXgInput, ShotXgOutput, TackleScoreInput, TackleScoreOutput, TeamPhaseUpdateInput,
+    TeamPhaseUpdateOutput, TeamShapeOpponentInput, TeamShapePlanInput, TeamShapePlanOutput,
+    TeamShapePlayerInput, TeamShapePlayerOutput,
 };
 pub use match_runner::{run_match_v2, MatchV2RunRequest, MatchV2RunResponse};
 pub use off_ball_attack::{
@@ -231,9 +242,10 @@ pub use pass_value::{
 pub use physics::resolve_player_body_overlaps;
 pub use physics::{
     angle_between_points, angle_diff, angle_to_goal, clamp, direction, distance, interpolate,
-    is_attacking_box_pos, is_in_fov, midpoint, move_toward, out_of_bounds_restart, player_speed,
-    point_along, residual_ball_velocity, segment_pitch_boundary_crossing, smoothstep,
-    PitchBoundaryCrossing, PitchBoundaryKind,
+    is_attacking_box_pos, is_in_fov, is_long_pass_distance, midpoint, move_toward,
+    out_of_bounds_restart, player_speed, point_along, residual_ball_velocity,
+    segment_pitch_boundary_crossing, smoothstep, PitchBoundaryCrossing, PitchBoundaryKind,
+    LONG_PASS_DISTANCE_METERS,
 };
 pub use position_value::{
     defensive_position_value, position_value, protection_value, receive_reachability,
@@ -241,14 +253,15 @@ pub use position_value::{
 };
 pub use possession_control::{
     continuation_control_readiness, directional_control_readiness, observe_possession_control,
-    shot_release_readiness, transition_possession_control, PossessionControlObservation,
-    PossessionControlState, PossessionControlTransitionInput,
+    shot_release_probability, shot_release_readiness, transition_possession_control,
+    PossessionControlObservation, PossessionControlState, PossessionControlTransitionInput,
 };
 pub use shot_quality::{
-    estimate_goalkeeper_save_probability, estimate_shot_contest, estimate_shot_outcome,
-    expected_goalkeeper_save_probability, resolve_shot_contest, shot_contest_intent,
-    shot_quality_at, ShotContestDefender, ShotContestEstimate, ShotContestIntent,
-    ShotContestResolution, ShotOutcomeEstimate, ShotQualityInput,
+    calibrated_shot_execution_probabilities, estimate_goalkeeper_save_probability,
+    estimate_shot_contest, estimate_shot_outcome, expected_goalkeeper_save_probability,
+    resolve_shot_contest, shot_contest_intent, shot_quality_at, ShotContestDefender,
+    ShotContestEstimate, ShotContestIntent, ShotContestResolution, ShotOutcomeEstimate,
+    ShotQualityInput,
 };
 pub use state_value::{
     pass_receive_value, pass_receive_value_breakdown, possession_state_value,
@@ -259,12 +272,12 @@ pub use state_value::{
 pub use tactical_task::{
     accept_task, coordinate_team_spatial_tasks_into, formation_debt, observe_entities_into,
     spatial_claim_conflict, spatial_claim_for_task, task_intent_from_goal, task_motion_target,
-    task_policy_utility, update_player_belief, BelievedEntity, GoalProposal, PlayerBelief,
-    PlayerObservation, SpatialClaim, TacticalTask, TacticalTaskCoordination, TacticalTaskIntent,
-    TacticalTaskPhase, TaskAcceptance, TaskAcceptanceInput, TaskMotionInput, TeamSpatialAssignment,
-    TeamSpatialAssignmentInput, TeamSpatialCandidate, TeamSpatialCoordinationSummary,
-    TeamSpatialPlayerInput, VisibleEntity, MAX_FIXED_TEAM_TACTICAL_TASKS,
-    MAX_PLAYER_OBSERVED_ENTITIES, MAX_TASK_OUTLET_COVERAGE,
+    task_policy_utility, update_player_belief, BelievedEntity, CommunicatedTeammateHint,
+    GoalProposal, PlayerBelief, PlayerObservation, SpatialClaim, TacticalTask,
+    TacticalTaskCoordination, TacticalTaskIntent, TacticalTaskPhase, TaskAcceptance,
+    TaskAcceptanceInput, TaskMotionInput, TeamSpatialAssignment, TeamSpatialAssignmentInput,
+    TeamSpatialCandidate, TeamSpatialCoordinationSummary, TeamSpatialPlayerInput, VisibleEntity,
+    MAX_FIXED_TEAM_TACTICAL_TASKS, MAX_PLAYER_OBSERVED_ENTITIES, MAX_TASK_OUTLET_COVERAGE,
 };
 pub use team_communication::{
     TeamCommunicationBus, TeamCommunicationPublishInput, TeamSharedBelief,

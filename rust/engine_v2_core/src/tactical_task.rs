@@ -496,7 +496,8 @@ pub struct GoalProposal<'a> {
     pub raw_target: (f64, f64),
     pub local_value: f64,
     pub accepted_tick: i32,
-    pub expected_duration_ticks: i32,
+    pub expected_duration_seconds: f64,
+    pub tick_duration: f64,
     pub pressure_interrupt: f64,
     pub coordination: TacticalTaskCoordination,
 }
@@ -523,6 +524,7 @@ const EMPTY_VISIBLE_ENTITY: VisibleEntity = VisibleEntity {
 
 #[derive(Clone, Copy, Debug)]
 pub struct PlayerObservation<'a> {
+    pub tick_duration: f64,
     pub self_index: usize,
     pub self_pos: (f64, f64),
     pub facing_direction: f64,
@@ -550,6 +552,21 @@ const EMPTY_BELIEVED_ENTITY: BelievedEntity = BelievedEntity {
     is_goalkeeper: false,
 };
 
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct CommunicatedTeammateHint {
+    pub index: usize,
+    pub pos: (f64, f64),
+    pub confidence: f64,
+    pub observed_tick: i32,
+}
+
+const EMPTY_COMMUNICATED_TEAMMATE_HINT: CommunicatedTeammateHint = CommunicatedTeammateHint {
+    index: 0,
+    pos: (0.0, 0.0),
+    confidence: 0.0,
+    observed_tick: i32::MIN / 4,
+};
+
 #[derive(Clone, Copy, Debug)]
 pub struct PlayerBelief {
     pub ball_pos: (f64, f64),
@@ -559,6 +576,8 @@ pub struct PlayerBelief {
     observed_carrier_control_readiness: f64,
     entities: [BelievedEntity; MAX_PLAYER_OBSERVED_ENTITIES],
     entity_count: usize,
+    communicated_teammates: [CommunicatedTeammateHint; MAX_PLAYER_OBSERVED_ENTITIES],
+    communicated_teammate_count: usize,
 }
 
 impl Default for PlayerBelief {
@@ -571,6 +590,9 @@ impl Default for PlayerBelief {
             observed_carrier_control_readiness: 0.0,
             entities: [EMPTY_BELIEVED_ENTITY; MAX_PLAYER_OBSERVED_ENTITIES],
             entity_count: 0,
+            communicated_teammates: [EMPTY_COMMUNICATED_TEAMMATE_HINT;
+                MAX_PLAYER_OBSERVED_ENTITIES],
+            communicated_teammate_count: 0,
         }
     }
 }
@@ -588,6 +610,16 @@ impl PlayerBelief {
                 self.observed_carrier_control_readiness,
             )
         })
+    }
+
+    pub fn communicated_teammates(&self) -> &[CommunicatedTeammateHint] {
+        &self.communicated_teammates[..self.communicated_teammate_count]
+    }
+
+    pub fn replace_communicated_teammates(&mut self, hints: &[CommunicatedTeammateHint]) {
+        self.communicated_teammate_count = hints.len().min(MAX_PLAYER_OBSERVED_ENTITIES);
+        self.communicated_teammates[..self.communicated_teammate_count]
+            .copy_from_slice(&hints[..self.communicated_teammate_count]);
     }
 }
 
@@ -610,6 +642,10 @@ pub struct TaskAcceptance {
     pub accepted: bool,
     pub candidate_value: f64,
     pub retained_value: f64,
+    pub active_current: bool,
+    pub same_responsibility: bool,
+    pub coordinated_reassignment: bool,
+    pub value_advantage_clears_margin: bool,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -618,6 +654,7 @@ pub struct TaskMotionInput {
     pub player_pos: (f64, f64),
     pub tactical_anchor: (f64, f64),
     pub tick: i32,
+    pub tick_duration: f64,
     pub plan_signals: TeamPlanSignals,
 }
 
@@ -661,7 +698,9 @@ pub fn update_player_belief(
     iq: f64,
 ) {
     let inference = smoothstep(40.0, 95.0, iq);
-    let retained_confidence = 0.08 + 0.22 * inference;
+    let one_second_retained_confidence = 0.08 + 0.22 * inference;
+    let retained_confidence =
+        one_second_retained_confidence.powf(observation.tick_duration.max(0.0));
     let previous = *belief;
     let mut entities = [EMPTY_BELIEVED_ENTITY; MAX_PLAYER_OBSERVED_ENTITIES];
     let mut entity_count = 0;
@@ -723,9 +762,7 @@ pub fn update_player_belief(
             let nearest = observation
                 .visible_entities
                 .iter()
-                .filter(|entity| {
-                    !entity.is_teammate && !entity.is_goalkeeper && entity.confidence >= 0.18
-                })
+                .filter(|entity| !entity.is_teammate && entity.confidence >= 0.18)
                 .filter_map(|entity| {
                     let distance = ball_distance(entity);
                     (distance <= carrier_radius).then_some((entity.index, distance))
@@ -735,7 +772,10 @@ pub fn update_player_belief(
                 });
             let retained = previous
                 .observed_carrier_index
-                .filter(|_| previous.observed_carrier_ticks >= 2)
+                .filter(|_| {
+                    previous.observed_carrier_ticks as f64 * observation.tick_duration.max(0.0)
+                        >= 2.0
+                })
                 .and_then(|index| {
                     observation
                         .visible_entities
@@ -743,7 +783,6 @@ pub fn update_player_belief(
                         .find(|entity| {
                             entity.index == index
                                 && !entity.is_teammate
-                                && !entity.is_goalkeeper
                                 && entity.confidence >= 0.18
                         })
                         .map(|entity| {
@@ -797,6 +836,8 @@ pub fn update_player_belief(
         observed_carrier_control_readiness,
         entities,
         entity_count,
+        communicated_teammates: previous.communicated_teammates,
+        communicated_teammate_count: previous.communicated_teammate_count,
     };
 }
 
@@ -957,7 +998,6 @@ pub fn accept_task(input: &TaskAcceptanceInput<'_>) -> TaskAcceptance {
     let candidate_value =
         candidate_local_value * (confidence + 0.10 * policy_utility - 0.14 * debt);
     let active_current = input.current.active(input.proposal.accepted_tick);
-    let same_intent = active_current && input.current.intent == intent;
     let retained_value = if active_current {
         input.current.local_value
             * (1.0 + 0.10 * input.current.policy_utility - 0.14 * input.current.formation_debt
@@ -965,25 +1005,33 @@ pub fn accept_task(input: &TaskAcceptanceInput<'_>) -> TaskAcceptance {
     } else {
         f64::NEG_INFINITY
     };
+    let same_intent = active_current && input.current.intent == intent;
+    let same_responsibility = same_intent
+        && spatial_claim_conflict(input.current.spatial_claim, spatial_claim);
     let coordinated_reassignment = coordination.active();
-    let accepted = same_intent
+    let value_advantage_clears_margin = candidate_value > retained_value + 0.035;
+    let accepted = same_responsibility
         || !active_current
         || coordinated_reassignment
-        || candidate_value > retained_value + 0.035;
+        || value_advantage_clears_margin;
     let retained_coordination = if coordination.active() {
         coordination
     } else {
         input.current.coordination
     };
-    let task = if same_intent {
+    let proposal_duration_ticks = (input.proposal.expected_duration_seconds.clamp(1.0, 12.0)
+        / input.proposal.tick_duration.max(f64::EPSILON))
+    .ceil() as i32;
+    let task = if same_responsibility {
         TacticalTask {
             intent,
             phase: TacticalTaskPhase::Active,
             raw_target: input.proposal.raw_target,
             accepted_tick: input.current.accepted_tick,
-            expires_tick: input.current.expires_tick.max(
-                input.proposal.accepted_tick + input.proposal.expected_duration_ticks.clamp(1, 12),
-            ),
+            expires_tick: input
+                .current
+                .expires_tick
+                .max(input.proposal.accepted_tick + proposal_duration_ticks),
             commitment: (0.60 * input.current.commitment
                 + 0.40
                     * intent_commitment(intent)
@@ -1003,8 +1051,7 @@ pub fn accept_task(input: &TaskAcceptanceInput<'_>) -> TaskAcceptance {
             phase: TacticalTaskPhase::Active,
             raw_target: input.proposal.raw_target,
             accepted_tick: input.proposal.accepted_tick,
-            expires_tick: input.proposal.accepted_tick
-                + input.proposal.expected_duration_ticks.clamp(1, 12),
+            expires_tick: input.proposal.accepted_tick + proposal_duration_ticks,
             commitment: (intent_commitment(intent)
                 * (0.58 + 0.42 * confidence)
                 * (1.0 - 0.30 * input.proposal.pressure_interrupt.clamp(0.0, 1.0)))
@@ -1024,6 +1071,10 @@ pub fn accept_task(input: &TaskAcceptanceInput<'_>) -> TaskAcceptance {
         accepted,
         candidate_value,
         retained_value,
+        active_current,
+        same_responsibility,
+        coordinated_reassignment,
+        value_advantage_clears_margin,
     }
 }
 
@@ -1031,8 +1082,9 @@ pub fn task_motion_target(input: &TaskMotionInput) -> (f64, f64) {
     if !input.task.active(input.tick) {
         return input.tactical_anchor;
     }
-    let remaining = (input.task.expires_tick - input.tick).max(0) as f64;
-    let time_pressure = 1.0 - smoothstep(0.0, 5.0, remaining);
+    let remaining_seconds = (input.task.expires_tick - input.tick).max(0) as f64
+        * input.tick_duration.max(0.0);
+    let time_pressure = 1.0 - smoothstep(0.0, 5.0, remaining_seconds);
     let commitment = (input.task.commitment * (0.72 + 0.28 * time_pressure)).clamp(0.0, 1.0);
     let structural_pull = (1.0 - commitment)
         * input.task.formation_debt
@@ -1070,6 +1122,7 @@ mod tests {
 
     fn observation<'a>(entities: &'a [VisibleEntity]) -> PlayerObservation<'a> {
         PlayerObservation {
+            tick_duration: 1.0,
             self_index: 0,
             self_pos: (45.0, 34.0),
             facing_direction: 0.0,
@@ -1165,6 +1218,35 @@ mod tests {
                 .map(|(index, ticks, _)| (index, ticks)),
             Some((12, 1)),
             "a visible player's body may occlude the ball without hiding that they carry it"
+        );
+    }
+
+    #[test]
+    fn visible_opposing_goalkeeper_with_the_ball_is_still_a_carrier() {
+        let goalkeeper = VisibleEntity {
+            index: 12,
+            pos: (52.4, 34.1),
+            velocity: (0.0, 0.0),
+            confidence: 0.92,
+            is_teammate: false,
+            is_goalkeeper: true,
+        };
+        let visible_ball = PlayerObservation {
+            ball_pos: (52.0, 34.0),
+            ball_confidence: 1.0,
+            visible_entities: &[goalkeeper],
+            ..observation(&[])
+        };
+        let mut belief = PlayerBelief::default();
+
+        update_player_belief(&mut belief, &visible_ball, 82.0);
+
+        assert_eq!(
+            belief
+                .observed_carrier()
+                .map(|(index, ticks, _)| (index, ticks)),
+            Some((12, 1)),
+            "goalkeeper status changes available actions, not whether an opponent visibly controls the ball"
         );
     }
 
@@ -1294,6 +1376,158 @@ mod tests {
     }
 
     #[test]
+    fn carrier_association_retention_requires_two_physical_seconds() {
+        let visible = [
+            VisibleEntity {
+                index: 2,
+                pos: (52.0, 34.0),
+                velocity: (0.0, 0.0),
+                confidence: 1.0,
+                is_teammate: false,
+                is_goalkeeper: false,
+            },
+            VisibleEntity {
+                index: 3,
+                pos: (52.2, 34.0),
+                velocity: (0.0, 0.0),
+                confidence: 1.0,
+                is_teammate: false,
+                is_goalkeeper: false,
+            },
+        ];
+        let run = |tick_duration: f64, observations: usize| {
+            let mut belief = PlayerBelief::default();
+            for _ in 0..observations {
+                update_player_belief(
+                    &mut belief,
+                    &PlayerObservation {
+                        tick_duration,
+                        self_index: 0,
+                        self_pos: (45.0, 34.0),
+                        facing_direction: 0.0,
+                        ball_pos: (52.0, 34.0),
+                        ball_confidence: 1.0,
+                        visible_entities: &visible[..1],
+                    },
+                    82.0,
+                );
+            }
+            update_player_belief(
+                &mut belief,
+                &PlayerObservation {
+                    tick_duration,
+                    self_index: 0,
+                    self_pos: (45.0, 34.0),
+                    facing_direction: 0.0,
+                    ball_pos: (52.2, 34.0),
+                    ball_confidence: 1.0,
+                    visible_entities: &visible,
+                },
+                82.0,
+            );
+            belief.observed_carrier().map(|(index, _, _)| index)
+        };
+
+        assert_eq!(run(1.0, 2), run(0.5, 4));
+    }
+
+    #[test]
+    fn hidden_memory_decay_depends_on_elapsed_seconds() {
+        let visible = [VisibleEntity {
+            index: 2,
+            pos: (52.0, 34.0),
+            velocity: (0.0, 0.0),
+            confidence: 1.0,
+            is_teammate: false,
+            is_goalkeeper: false,
+        }];
+        let run = |tick_duration: f64, hidden_steps: usize| {
+            let mut belief = PlayerBelief::default();
+            update_player_belief(
+                &mut belief,
+                &PlayerObservation {
+                    tick_duration,
+                    self_index: 0,
+                    self_pos: (45.0, 34.0),
+                    facing_direction: 0.0,
+                    ball_pos: (52.0, 34.0),
+                    ball_confidence: 1.0,
+                    visible_entities: &visible,
+                },
+                82.0,
+            );
+            for _ in 0..hidden_steps {
+                update_player_belief(
+                    &mut belief,
+                    &PlayerObservation {
+                        tick_duration,
+                        self_index: 0,
+                        self_pos: (45.0, 34.0),
+                        facing_direction: 0.0,
+                        ball_pos: (0.0, 0.0),
+                        ball_confidence: 0.0,
+                        visible_entities: &[],
+                    },
+                    82.0,
+                );
+            }
+            belief.ball_confidence
+        };
+
+        assert!((run(1.0, 1) - run(0.5, 2)).abs() <= 1e-12);
+    }
+
+    #[test]
+    fn hidden_teammate_memory_preserves_physical_time_across_phase_splits() {
+        let visible = [VisibleEntity {
+            index: 2,
+            pos: (52.0, 34.0),
+            velocity: (0.0, 0.0),
+            confidence: 1.0,
+            is_teammate: true,
+            is_goalkeeper: false,
+        }];
+        let run = |tick_duration: f64, hidden_steps: usize| {
+            let mut belief = PlayerBelief::default();
+            update_player_belief(
+                &mut belief,
+                &PlayerObservation {
+                    tick_duration: 0.0,
+                    self_index: 0,
+                    self_pos: (45.0, 34.0),
+                    facing_direction: 0.0,
+                    ball_pos: (52.0, 34.0),
+                    ball_confidence: 1.0,
+                    visible_entities: &visible,
+                },
+                82.0,
+            );
+            for _ in 0..hidden_steps {
+                update_player_belief(
+                    &mut belief,
+                    &PlayerObservation {
+                        tick_duration,
+                        self_index: 0,
+                        self_pos: (45.0, 34.0),
+                        facing_direction: 180.0,
+                        ball_pos: (52.0, 34.0),
+                        ball_confidence: 1.0,
+                        visible_entities: &[],
+                    },
+                    82.0,
+                );
+            }
+            belief
+                .entities()
+                .iter()
+                .find(|entity| entity.index == 2)
+                .map(|entity| entity.confidence)
+        };
+
+        assert_eq!(run(1.0, 1), run(0.5, 2));
+    }
+
+    #[test]
     fn visible_carrier_association_switches_when_a_new_opponent_clearly_controls_the_ball() {
         let previous_carrier = VisibleEntity {
             index: 12,
@@ -1368,10 +1602,41 @@ mod tests {
             player_pos: (52.0, 28.0),
             tactical_anchor: (58.0, 28.0),
             tick: 12,
+            tick_duration: 1.0,
             plan_signals: team_plan_signals(TeamPlanKind::Recycle),
         });
         assert_ne!(movement_target, task.raw_target);
         assert_eq!(task.raw_target, (78.0, 14.0));
+    }
+
+    #[test]
+    fn task_motion_target_uses_remaining_physical_seconds() {
+        let task_at = |expires_tick| TacticalTask {
+            intent: TacticalTaskIntent::Support,
+            phase: TacticalTaskPhase::Active,
+            raw_target: (72.0, 18.0),
+            accepted_tick: 0,
+            expires_tick,
+            commitment: 0.76,
+            local_value: 0.7,
+            policy_utility: 0.4,
+            formation_debt: 0.5,
+            interruption: 0.0,
+            coordination: TacticalTaskCoordination::default(),
+            spatial_claim: SpatialClaim::default(),
+        };
+        let target_at = |task, tick, tick_duration| {
+            task_motion_target(&TaskMotionInput {
+                task,
+                player_pos: (52.0, 28.0),
+                tactical_anchor: (58.0, 28.0),
+                tick,
+                tick_duration,
+                plan_signals: team_plan_signals(TeamPlanKind::Recycle),
+            })
+        };
+
+        assert_eq!(target_at(task_at(6), 3, 1.0), target_at(task_at(12), 6, 0.5));
     }
 
     #[test]
@@ -1398,6 +1663,7 @@ mod tests {
                 player_pos: (52.0, 34.0),
                 tactical_anchor: anchor,
                 tick: 14,
+                tick_duration: 1.0,
                 plan_signals: team_plan_signals(TeamPlanKind::DefendBlock),
             }),
             anchor
@@ -1435,7 +1701,8 @@ mod tests {
                 raw_target: (76.0, 12.0),
                 local_value: 1.18,
                 accepted_tick: 20,
-                expected_duration_ticks: 7,
+                expected_duration_seconds: 7.0,
+                tick_duration: 1.0,
                 pressure_interrupt: 0.08,
                 coordination: TacticalTaskCoordination::default(),
             },
@@ -1450,6 +1717,127 @@ mod tests {
         assert!(accepted.accepted);
         assert_eq!(accepted.task.raw_target, (76.0, 12.0));
         assert!(accepted.task.formation_debt > 0.0);
+    }
+
+    #[test]
+    fn task_expiry_preserves_seconds_across_tick_resolutions() {
+        let visible = [];
+        let observation = observation(&visible);
+        let belief = PlayerBelief::default();
+        let accept_at = |accepted_tick, tick_duration| {
+            accept_task(&TaskAcceptanceInput {
+                current: TacticalTask::inactive((47.0, 34.0)),
+                proposal: GoalProposal {
+                    goal_type: "support_carrier",
+                    phase: "support",
+                    raw_target: (55.0, 30.0),
+                    local_value: 1.0,
+                    accepted_tick,
+                    expected_duration_seconds: 6.0,
+                    tick_duration,
+                    pressure_interrupt: 0.0,
+                    coordination: TacticalTaskCoordination::default(),
+                },
+                tactical_anchor: (47.0, 34.0),
+                observation: &observation,
+                belief: &belief,
+                plan_signals: team_plan_signals(TeamPlanKind::Recycle),
+                attacking_right: true,
+                pitch_length: 105.0,
+                pitch_width: 68.0,
+            })
+            .task
+        };
+
+        let one_second = accept_at(20, 1.0);
+        let half_second = accept_at(40, 0.5);
+        assert_eq!(one_second.expires_tick - one_second.accepted_tick, 6);
+        assert_eq!(half_second.expires_tick - half_second.accepted_tick, 12);
+        assert_eq!(
+            (one_second.expires_tick - one_second.accepted_tick) as f64,
+            (half_second.expires_tick - half_second.accepted_tick) as f64 * 0.5
+        );
+    }
+
+    #[test]
+    fn support_refresh_requires_the_same_spatial_responsibility() {
+        let visible = [];
+        let observation = observation(&visible);
+        let belief = PlayerBelief::default();
+        let current_target = (55.0, 30.0);
+        let current = TacticalTask {
+            intent: TacticalTaskIntent::Support,
+            phase: TacticalTaskPhase::Active,
+            raw_target: current_target,
+            accepted_tick: 20,
+            expires_tick: 26,
+            commitment: 0.82,
+            local_value: 1.0,
+            policy_utility: 0.3,
+            formation_debt: 0.1,
+            interruption: 0.0,
+            coordination: TacticalTaskCoordination::default(),
+            spatial_claim: spatial_claim_for_task(
+                observation.self_pos,
+                current_target,
+                TacticalTaskIntent::Support,
+                true,
+            ),
+        };
+        let propose = |target, value, coordination| {
+            accept_task(&TaskAcceptanceInput {
+                current,
+                proposal: GoalProposal {
+                    goal_type: "support_carrier",
+                    phase: "support",
+                    raw_target: target,
+                    local_value: value,
+                    accepted_tick: 22,
+                    expected_duration_seconds: 6.0,
+                    tick_duration: 1.0,
+                    pressure_interrupt: 0.0,
+                    coordination,
+                },
+                tactical_anchor: (47.0, 34.0),
+                observation: &observation,
+                belief: &belief,
+                plan_signals: team_plan_signals(TeamPlanKind::Recycle),
+                attacking_right: true,
+                pitch_length: 105.0,
+                pitch_width: 68.0,
+            })
+        };
+
+        let nearby = propose((56.0, 30.5), 0.98, TacticalTaskCoordination::default());
+        assert!(nearby.accepted);
+        assert!(nearby.active_current);
+        assert!(nearby.same_responsibility);
+        assert!(!nearby.coordinated_reassignment);
+        assert!(!nearby.value_advantage_clears_margin);
+        assert_eq!(nearby.task.accepted_tick, current.accepted_tick);
+
+        let distant = propose((78.0, 12.0), 0.98, TacticalTaskCoordination::default());
+        assert!(!distant.accepted);
+        assert!(distant.active_current);
+        assert!(!distant.same_responsibility);
+        assert!(!distant.coordinated_reassignment);
+        assert!(!distant.value_advantage_clears_margin);
+        assert_eq!(distant.task.raw_target, current_target);
+
+        let coordinated = propose(
+            (78.0, 12.0),
+            0.98,
+            TacticalTaskCoordination {
+                commitment: 1.0,
+                ..TacticalTaskCoordination::default()
+            },
+        );
+        assert!(coordinated.accepted);
+        assert!(coordinated.active_current);
+        assert!(!coordinated.same_responsibility);
+        assert!(coordinated.coordinated_reassignment);
+        assert!(!coordinated.value_advantage_clears_margin);
+        assert_eq!(coordinated.task.raw_target, (78.0, 12.0));
     }
 
     fn spatial_candidate(
@@ -1573,4 +1961,47 @@ mod tests {
         assert_eq!(assignments[1].candidate_index, 0);
         assert!(!assignments[1].displaced_from_preference);
     }
+
+    #[test]
+    fn communicated_teammates_remain_separate_from_visual_entities() {
+        let mut belief = PlayerBelief::default();
+        let hint = CommunicatedTeammateHint {
+            index: 4,
+            pos: (44.0, 28.0),
+            confidence: 0.35,
+            observed_tick: 7,
+        };
+
+        belief.replace_communicated_teammates(&[hint]);
+
+        assert!(belief.entities().is_empty());
+        assert_eq!(belief.communicated_teammates(), &[hint]);
+    }
+
+    #[test]
+    fn visual_belief_refresh_preserves_communicated_teammate_hints() {
+        let mut belief = PlayerBelief::default();
+        let hint = CommunicatedTeammateHint {
+            index: 4,
+            pos: (44.0, 28.0),
+            confidence: 0.35,
+            observed_tick: 7,
+        };
+        belief.replace_communicated_teammates(&[hint]);
+        let observation = PlayerObservation {
+            tick_duration: 1.0,
+            self_index: 2,
+            self_pos: (50.0, 34.0),
+            facing_direction: 0.0,
+            ball_pos: (51.0, 34.0),
+            ball_confidence: 1.0,
+            visible_entities: &[],
+        };
+
+        update_player_belief(&mut belief, &observation, 80.0);
+
+        assert!(belief.entities().is_empty());
+        assert_eq!(belief.communicated_teammates(), &[hint]);
+    }
+
 }

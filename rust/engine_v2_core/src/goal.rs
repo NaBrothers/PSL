@@ -126,7 +126,7 @@ pub struct CutInsideGoalInput {
     pub current_shot: f64,
     pub current_readiness: f64,
     pub consecutive_carries: i32,
-    pub goal_age_ticks: i32,
+    pub goal_age_seconds: f64,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -297,6 +297,7 @@ pub struct OffBallAttackGoalBuildInput {
     pub inside_support: f64,
     pub support_angle_value: f64,
     pub layoff_window: f64,
+    pub distance_to_ball: f64,
     pub candidate_progress: f64,
     pub candidate_width: f64,
 }
@@ -402,7 +403,7 @@ pub struct HoldOpportunityGoalInput {
     pub current_shot: f64,
     pub shot_readiness: f64,
     pub immediate_best_score: f64,
-    pub goal_age_ticks: i32,
+    pub goal_age_seconds: f64,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -719,7 +720,6 @@ pub fn apply_generic_on_ball_goal_continuity(
         alignments.push(alignment.clamp(0.0, 1.0));
         biased_scores.push(candidate.score);
     }
-
     Some(OnBallGenericContinuityOutput {
         selected_goal_type,
         selected_action_code,
@@ -911,19 +911,19 @@ pub fn evaluate_cut_inside_goal(input: &CutInsideGoalInput) -> CutInsideGoalOutp
         * (0.35 + 0.65 * crate::physics::smoothstep(0.02, 0.14, input.carry_to_shoot_window));
     let drive_staleness =
         crate::physics::smoothstep(2.0, 5.0, input.consecutive_carries.max(0) as f64).max(
-            crate::physics::smoothstep(4.0, 9.0, input.goal_age_ticks.max(0) as f64),
+            crate::physics::smoothstep(4.0, 9.0, input.goal_age_seconds.max(0.0)),
         );
     let already_shootable = crate::physics::smoothstep(0.08, 0.16, input.current_shot)
         * crate::physics::smoothstep(0.20, 0.70, input.current_readiness);
     let finish_window = crate::physics::smoothstep(0.09, 0.18, input.current_shot)
         * (0.45 + 0.55 * crate::physics::smoothstep(0.12, 0.70, input.current_readiness));
-    let stalled_drive = (input.consecutive_carries >= 3 || input.goal_age_ticks >= 6)
+    let stalled_drive = (input.consecutive_carries >= 3 || input.goal_age_seconds >= 6.0)
         && width > 0.58
         && input.current_shot < 0.045
         && finish_window < 0.12;
     let release_window =
         crate::physics::smoothstep(2.0, 4.0, input.consecutive_carries.max(0) as f64).max(
-            crate::physics::smoothstep(4.0, 8.0, input.goal_age_ticks.max(0) as f64),
+            crate::physics::smoothstep(4.0, 8.0, input.goal_age_seconds.max(0.0)),
         ) * crate::physics::smoothstep(0.58, 0.82, width)
             * (1.0 - crate::physics::smoothstep(0.035, 0.070, input.current_shot));
     let value = 0.0_f64
@@ -1304,8 +1304,9 @@ pub fn build_off_ball_attack_goal(
 ) -> OffBallAttackGoalBuildOutput {
     let second_line = input.second_line_support;
     let inside = input.inside_support;
-    let support_angle = input.support_angle_value;
-    let layoff = input.layoff_window;
+    let support_distance_weight = (-input.distance_to_ball.max(0.0) / 12.0).exp();
+    let support_angle = input.support_angle_value * support_distance_weight;
+    let layoff = input.layoff_window * support_distance_weight;
     let candidate_progress = input.candidate_progress;
     let candidate_width = input.candidate_width;
     let box_arrival = crate::physics::smoothstep(0.76, 0.92, candidate_progress)
@@ -1520,7 +1521,7 @@ pub fn evaluate_hold_opportunity_goal(
         * crate::physics::smoothstep(0.030, 0.120, opportunity_window)
         * no_clear_shot;
     let interrupt = crate::physics::smoothstep(0.14, 0.32, input.immediate_best_score);
-    let stale = crate::physics::smoothstep(5.0, 9.0, input.goal_age_ticks.max(0) as f64);
+    let stale = crate::physics::smoothstep(5.0, 9.0, input.goal_age_seconds.max(0.0));
     let value = (support_window * (1.0 - interrupt) * (1.0 - 0.55 * stale)).max(0.0);
     if value <= 0.0 {
         return HoldOpportunityGoalOutput {
@@ -1624,7 +1625,7 @@ mod tests {
             current_shot: 0.0,
             shot_readiness: 0.0,
             immediate_best_score: 0.0,
-            goal_age_ticks: 0,
+            goal_age_seconds: 0.0,
         });
 
         assert!(
@@ -1778,3 +1779,25 @@ mod tests {
         assert!(prepared.alignments[0] < 0.10);
     }
 }
+    #[test]
+    fn support_carrier_classification_requires_local_support_strength() {
+        let input = OffBallAttackGoalBuildInput {
+            target_pos: (55.0, 34.0),
+            value: 0.4,
+            second_line_support: 0.0,
+            inside_support: 0.0,
+            support_angle_value: 0.8,
+            layoff_window: 0.0,
+            distance_to_ball: 6.0,
+            candidate_progress: 0.55,
+            candidate_width: 0.25,
+        };
+        let near = build_off_ball_attack_goal(&input);
+        let far = build_off_ball_attack_goal(&OffBallAttackGoalBuildInput {
+            distance_to_ball: 30.0,
+            ..input
+        });
+
+        assert_eq!(near.goal_type, "support_carrier");
+        assert_ne!(far.goal_type, "support_carrier");
+    }

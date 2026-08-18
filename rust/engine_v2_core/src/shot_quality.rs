@@ -90,6 +90,23 @@ pub struct ShotOutcomeEstimate {
 
 pub type ShotQualityCache = RefCell<HashMap<ShotQualityCacheKey, ShotOutcomeEstimate>>;
 
+pub fn calibrated_shot_execution_probabilities(
+    expected_goal_probability: f64,
+    modeled_on_target_probability: f64,
+    league_accuracy_scale: f64,
+) -> (f64, f64) {
+    let expected_goal_probability = expected_goal_probability.clamp(0.0, 1.0);
+    let on_target = (modeled_on_target_probability.clamp(0.0, 1.0)
+        * league_accuracy_scale.max(0.0))
+    .clamp(expected_goal_probability, 0.995);
+    let save_probability = if on_target <= f64::EPSILON {
+        0.0
+    } else {
+        (1.0 - expected_goal_probability / on_target).clamp(0.0, 1.0)
+    };
+    (on_target, save_probability)
+}
+
 fn outside_penalty_area(pos: (f64, f64), input: &ShotQualityInput<'_>) -> bool {
     let progress = if input.attacking_right {
         pos.0 / input.pitch_length.max(1.0)
@@ -552,6 +569,15 @@ mod tests {
             cache_key: None,
         });
         assert!(close > far);
+    }
+
+    #[test]
+    fn execution_accuracy_can_change_without_changing_expected_goals() {
+        let xg = 0.12;
+        let (on_target, save_probability) = calibrated_shot_execution_probabilities(xg, 0.36, 1.25);
+
+        assert!((on_target - 0.45).abs() < 1e-12);
+        assert!((on_target * (1.0 - save_probability) - xg).abs() < 1e-12);
     }
 
     #[test]

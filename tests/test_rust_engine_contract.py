@@ -80,6 +80,24 @@ def test_engine_config_serializes_rust_runtime_contract():
     assert "trace" not in payload
 
 
+def test_engine_config_preserves_clock_windows_across_tick_resolutions():
+    one_second = EngineConfig(tick_duration=1.0).to_rust_payload()
+    half_second = EngineConfig(tick_duration=0.5).to_rust_payload()
+
+    for name in (
+        "total_ticks",
+        "half_ticks",
+        "frame_interval",
+        "transition_ticks",
+        "goal_kick_restart_ticks",
+        "throw_in_restart_ticks",
+        "free_kick_restart_ticks",
+        "restart_setup_ticks",
+    ):
+        assert half_second[name] == 2 * one_second[name]
+        assert half_second[name] * 0.5 == one_second[name] * 1.0
+
+
 def test_default_engine_config_preserves_ninety_minutes_at_one_second_resolution():
     config = EngineConfig()
 

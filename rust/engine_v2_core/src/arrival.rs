@@ -131,8 +131,10 @@ fn pass_arrival_score(
         target_bias += (1.0 - distance(goal_pos, target) / 16.0).max(0.0) * 0.65;
     }
     let committed_run = smoothstep(0.12, 0.82, target_bias);
-    let movement_target = if player.is_intended || !team_side_is_passer {
+    let movement_target = if !team_side_is_passer {
         target
+    } else if player.is_intended {
+        player.target_pos
     } else {
         player.current_goal_pos.unwrap_or(player.target_pos)
     };
@@ -207,9 +209,6 @@ fn arrival_control_radius(
     pitch_width: f64,
 ) -> f64 {
     let physical_control_radius = contest_radius.min(1.35);
-    if !player.is_goalkeeper {
-        return physical_control_radius;
-    }
     let own_goal_x = if player.pos.0 <= pitch_length * 0.5 {
         0.0
     } else {
@@ -217,6 +216,9 @@ fn arrival_control_radius(
     };
     let in_penalty_area =
         (target.0 - own_goal_x).abs() <= 16.5 && (target.1 - pitch_width * 0.5).abs() <= 20.2;
+    if !player.is_goalkeeper {
+        return physical_control_radius;
+    }
     if in_penalty_area {
         physical_control_radius.max(1.8)
     } else {
@@ -516,7 +518,9 @@ mod tests {
     #[test]
     fn committed_receiver_can_control_a_ball_reached_during_flight() {
         let target = (5.0, 0.0);
-        let receiver = arrival_player(1, (0.0, 0.0), false, true);
+        let mut receiver = arrival_player(1, (0.0, 0.0), false, true);
+        receiver.target_pos = target;
+        receiver.current_goal_pos = Some(target);
         let passer = arrival_player(0, (-10.0, 0.0), true, false);
         let arrival = resolve_pass_arrival(&PassArrivalInput {
             flight_origin: passer.pos,
@@ -591,6 +595,35 @@ mod tests {
             target_pos: target,
             flight_ticks_total: 0.0,
             flight_speed: 20.0,
+            passer_team_is_receiver_team: true,
+            contest_radius: 2.5,
+            player_max_speed: 5.5,
+            player_min_speed: 2.5,
+            pitch_length: 105.0,
+            pitch_width: 68.0,
+            target_occupation_weight: 0.18,
+            receivers: &[passer, receiver],
+            opponents: &[],
+        });
+
+        assert_eq!(arrival.receiver_control, 0.0);
+        assert_eq!(arrival.winner_code, 2);
+    }
+
+    #[test]
+    fn intended_receiver_does_not_redirect_toward_a_hidden_delivery_error() {
+        let declared_target = (50.0, 34.0);
+        let sampled_miss_target = (50.0, 42.0);
+        let passer = arrival_player(0, (18.0, 34.0), true, false);
+        let mut receiver = arrival_player(1, declared_target, false, true);
+        receiver.target_pos = declared_target;
+        receiver.current_goal_pos = Some(declared_target);
+
+        let arrival = resolve_pass_arrival(&PassArrivalInput {
+            flight_origin: passer.pos,
+            target_pos: sampled_miss_target,
+            flight_ticks_total: 3.0,
+            flight_speed: 12.0,
             passer_team_is_receiver_team: true,
             contest_radius: 2.5,
             player_max_speed: 5.5,

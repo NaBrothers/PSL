@@ -3,8 +3,8 @@ use crate::interactions::{
     DefenderActionInput,
 };
 use crate::physics::{
-    advance_player_motion, distance, player_speed, segment_pitch_boundary_crossing,
-    PitchBoundaryCrossing, PlayerMotionInput,
+    advance_player_motion, advance_player_motion_fraction, distance, player_speed,
+    segment_pitch_boundary_crossing, PitchBoundaryCrossing, PlayerMotionInput,
 };
 
 #[derive(Clone, Copy, Debug)]
@@ -172,6 +172,7 @@ pub struct HoldExecutionInput<'a> {
     pub error_roll: f64,
     pub loose_x_roll: f64,
     pub loose_y_roll: f64,
+    pub elapsed_fraction: f64,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -442,7 +443,7 @@ pub fn execute_carry(input: &CarryExecutionInput<'_>) -> CarryExecutionOutput {
 
 pub fn execute_pass(input: &PassExecutionInput) -> PassExecutionOutput {
     let retention_probability = input.retention_probability.clamp(0.0, 1.0);
-    let technical_probability = input.technical_probability.clamp(0.0, 1.0);
+    let input_technical_probability = input.technical_probability.clamp(0.0, 1.0);
     let computed_transition = crate::execution_transition::PassActionTransition {
         release: crate::interactions::PassReleaseContactTransition {
             contact: crate::interactions::DetectionResult {
@@ -456,7 +457,7 @@ pub fn execute_pass(input: &PassExecutionInput) -> PassExecutionOutput {
             unresolved_probability: 0.0,
         },
         execution: crate::execution_transition::PassExecutionTransition::new(
-            technical_probability,
+            input_technical_probability,
             0.0,
         ),
         spatial: crate::execution_transition::PassSpatialTransition::new(
@@ -468,6 +469,7 @@ pub fn execute_pass(input: &PassExecutionInput) -> PassExecutionOutput {
         ),
     };
     let transition = input.transition.unwrap_or(computed_transition);
+    let technical_probability = transition.execution.delivery.success_probability;
     let delivery_miss = matches!(
         transition.execution.delivery.sample(input.technical_roll),
         crate::execution_transition::BinaryExecutionOutcome::Failure
@@ -565,6 +567,7 @@ pub fn generate_clear_target(input: &ClearTargetInput) -> ClearTargetOutput {
 }
 
 pub fn execute_hold(input: &HoldExecutionInput<'_>) -> HoldExecutionOutput {
+    let elapsed_fraction = input.elapsed_fraction.clamp(0.0, 1.0);
     let mut pressure_x = 0.0;
     let mut pressure_y = 0.0;
     let mut pressure = 0.0;
@@ -636,20 +639,27 @@ pub fn execute_hold(input: &HoldExecutionInput<'_>) -> HoldExecutionOutput {
         );
         desired_speed = move_dist;
     }
-    let motion = advance_player_motion(&PlayerMotionInput {
-        pos: input.holder_pos,
-        target: desired_target,
-        velocity: input.velocity,
-        speed_ability: input.speed_ability,
-        desired_speed,
-        acceleration_scale: 0.7,
-        player_max_speed: input.player_max_speed,
-        player_min_speed: input.player_min_speed,
-        pitch_length: input.pitch_length,
-        pitch_width: input.pitch_width,
-    });
-    let computed_error_chance =
+    let motion = advance_player_motion_fraction(
+        &PlayerMotionInput {
+            pos: input.holder_pos,
+            target: desired_target,
+            velocity: input.velocity,
+            speed_ability: input.speed_ability,
+            desired_speed,
+            acceleration_scale: 0.7,
+            player_max_speed: input.player_max_speed,
+            player_min_speed: input.player_min_speed,
+            pitch_length: input.pitch_length,
+            pitch_width: input.pitch_width,
+        },
+        elapsed_fraction,
+    );
+    let full_tick_error_chance =
         (pressure - 0.6).max(0.0) * (100.0 - input.dribbling) / (input.carry_error_divisor * 1.8);
+    let computed_error_chance = crate::execution_transition::continuous_exposure_probability(
+        full_tick_error_chance,
+        elapsed_fraction,
+    );
     let computed_transition = crate::execution_transition::ControlActionTransition {
         contact: crate::interactions::ControlContactTransition {
             contact: crate::interactions::DetectionResult {
@@ -789,6 +799,10 @@ mod tests {
             output.transition.execution.delivery.success_probability,
             0.20
         );
+        assert_eq!(
+            output.technical_probability, 0.20,
+            "the flight must retain the probability that actually sampled delivery"
+        );
         assert_ne!(output.target, baseline.ideal_target);
     }
 
@@ -878,6 +892,7 @@ mod tests {
             error_roll: 0.50,
             loose_x_roll: 0.5,
             loose_y_roll: 0.5,
+            elapsed_fraction: 1.0,
         });
 
         assert_eq!(output.new_pos, frozen.new_pos);
@@ -885,6 +900,49 @@ mod tests {
         assert_eq!(output.facing_direction, frozen.facing_direction);
         assert!(output.is_error);
         assert_eq!(output.transition.contact.contact.defender_index, Some(2));
+    }
+
+    #[test]
+    fn fractional_hold_scales_motion_and_technical_exposure_together() {
+        let opponents = [
+            ExecutionOpponent {
+                pos: (40.6, 34.0),
+                is_goalkeeper: false,
+            },
+            ExecutionOpponent {
+                pos: (40.8, 34.4),
+                is_goalkeeper: false,
+            },
+        ];
+        let run = |elapsed_fraction| {
+            execute_hold(&HoldExecutionInput {
+                transition: None,
+                holder_pos: (40.0, 34.0),
+                velocity: (0.0, 0.0),
+                speed_ability: 80,
+                dribbling: 40.0,
+                attacking_right: true,
+                pitch_length: 105.0,
+                pitch_width: 68.0,
+                player_max_speed: 8.0,
+                player_min_speed: 2.5,
+                carry_error_divisor: 100.0,
+                opponents: &opponents,
+                opportunity_target: Some((48.0, 38.0)),
+                error_roll: 1.0,
+                loose_x_roll: 0.5,
+                loose_y_roll: 0.5,
+                elapsed_fraction,
+            })
+        };
+        let full = run(1.0);
+        let half = run(0.5);
+        let expected_half_error =
+            crate::execution_transition::continuous_exposure_probability(full.error_chance, 0.5);
+
+        assert!(half.distance_covered < full.distance_covered);
+        assert!((half.error_chance - expected_half_error).abs() < 1e-12);
+        assert!(half.error_chance < full.error_chance);
     }
 
     fn carry_input<'a>(defender_responses: &'a [DefenderActionInput]) -> CarryExecutionInput<'a> {
