@@ -28330,36 +28330,6 @@ fn apply_projected_temporal_option_value(
             action.debug_expected_restart_ticks = values.expected_restart_ticks;
             action.debug_retained_restart_position = values.retained_restart_position;
             action.debug_opposing_restart_position = values.opposing_restart_position;
-            action.debug_retained_restart_value = values
-                .retained_restart_position
-                .map(|position| {
-                    runner_opponent_control_value(
-                        position,
-                        teammates,
-                        opponents,
-                        holder_home,
-                        attacking_right,
-                        tick,
-                        shot_quality_cache,
-                        config,
-                    )
-                })
-                .unwrap_or(0.0);
-            action.debug_opposing_restart_value = values
-                .opposing_restart_position
-                .map(|position| {
-                    runner_opponent_control_value(
-                        position,
-                        opponents,
-                        teammates,
-                        !holder_home,
-                        !attacking_right,
-                        tick,
-                        shot_quality_cache,
-                        config,
-                    )
-                })
-                .unwrap_or(0.0);
             action.debug_retained_restart_probabilities_by_kind =
                 values.retained_restart_probabilities_by_kind;
             action.debug_opposing_restart_probabilities_by_kind =
@@ -28368,45 +28338,77 @@ fn apply_projected_temporal_option_value(
                 values.retained_restart_positions_by_kind;
             action.debug_opposing_restart_positions_by_kind =
                 values.opposing_restart_positions_by_kind;
-            let restart_reasons = ["throw_in", "corner", "goal_kick"];
-            action.debug_retained_restart_values_by_kind = std::array::from_fn(|kind| {
-                values.retained_restart_positions_by_kind[kind]
+            if config.trace_detail != "off" {
+                action.debug_retained_restart_value = values
+                    .retained_restart_position
                     .map(|position| {
-                        runner_restart_control_value(
-                            restart_reasons[kind],
+                        runner_opponent_control_value(
                             position,
-                            true,
                             teammates,
                             opponents,
                             holder_home,
                             attacking_right,
-                            opponent_plan_signals.press_intensity,
                             tick,
                             shot_quality_cache,
                             config,
                         )
                     })
-                    .unwrap_or(0.0)
-            });
-            action.debug_opposing_restart_values_by_kind = std::array::from_fn(|kind| {
-                values.opposing_restart_positions_by_kind[kind]
+                    .unwrap_or(0.0);
+                action.debug_opposing_restart_value = values
+                    .opposing_restart_position
                     .map(|position| {
-                        runner_restart_control_value(
-                            restart_reasons[kind],
+                        runner_opponent_control_value(
                             position,
-                            false,
-                            teammates,
                             opponents,
-                            holder_home,
-                            attacking_right,
-                            team_plan_signals.press_intensity,
+                            teammates,
+                            !holder_home,
+                            !attacking_right,
                             tick,
                             shot_quality_cache,
                             config,
                         )
                     })
-                    .unwrap_or(0.0)
-            });
+                    .unwrap_or(0.0);
+                let restart_reasons = ["throw_in", "corner", "goal_kick"];
+                action.debug_retained_restart_values_by_kind = std::array::from_fn(|kind| {
+                    values.retained_restart_positions_by_kind[kind]
+                        .map(|position| {
+                            runner_restart_control_value(
+                                restart_reasons[kind],
+                                position,
+                                true,
+                                teammates,
+                                opponents,
+                                holder_home,
+                                attacking_right,
+                                opponent_plan_signals.press_intensity,
+                                tick,
+                                shot_quality_cache,
+                                config,
+                            )
+                        })
+                        .unwrap_or(0.0)
+                });
+                action.debug_opposing_restart_values_by_kind = std::array::from_fn(|kind| {
+                    values.opposing_restart_positions_by_kind[kind]
+                        .map(|position| {
+                            runner_restart_control_value(
+                                restart_reasons[kind],
+                                position,
+                                false,
+                                teammates,
+                                opponents,
+                                holder_home,
+                                attacking_right,
+                                team_plan_signals.press_intensity,
+                                tick,
+                                shot_quality_cache,
+                                config,
+                            )
+                        })
+                        .unwrap_or(0.0)
+                });
+            }
             action.success_prob = if matches!(
                 action.action,
                 RunnerHeldAction::Pass { lofted: true, .. }
@@ -38298,7 +38300,9 @@ fn choose_default_held_action(
     let mut best_communication_task_pass = None;
     let mut best_communication_task_contact_pass = None;
     let mut communication_task_pass_counterfactual = Vec::new();
-    let communication_pass_counterfactual = if config.team_communication_enabled {
+    let communication_pass_counterfactual = if config.trace_detail != "off"
+        && config.team_communication_enabled
+    {
         let mut visually_perceived = [false; RUNNER_TEAM_SIZE];
         for player in &state.held_decision_arena.scratch.pass_space_players
             [..state.held_decision_arena.scratch.pass_space_count]

@@ -497,6 +497,11 @@ fn project_team_plan_formation_into_with_target_provider(
         let mut pos = player.pos;
         let mut velocity = player.velocity;
         if player.is_mobile {
+            let (max_speed, acceleration) = crate::physics::player_motion_kinematics(
+                player.speed_ability,
+                input.player_max_speed,
+                input.player_min_speed,
+            );
             for tick_index in 0..duration_ticks {
                 let motion_input = crate::physics::PlayerMotionInput {
                         pos,
@@ -516,14 +521,13 @@ fn project_team_plan_formation_into_with_target_provider(
                 } else {
                     1.0
                 };
-                let movement = if elapsed_fraction >= 1.0 {
-                    crate::physics::advance_player_motion(&motion_input)
-                } else {
-                    crate::physics::advance_player_motion_fraction(
+                let movement =
+                    crate::physics::advance_player_motion_state_fraction_with_kinematics(
                         &motion_input,
                         elapsed_fraction,
-                    )
-                };
+                        max_speed,
+                        acceleration,
+                    );
                 pos = movement.pos;
                 velocity = movement.velocity;
             }

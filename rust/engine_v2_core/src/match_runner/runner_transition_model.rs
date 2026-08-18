@@ -2805,36 +2805,38 @@ fn append_projected_uncontrolled_pass_outcome(
             scratch,
         )
     };
-    let pursuit_teammates = projected_pass_pursuit_team_positions(
-        teammates,
-        projected_teammates.slice(),
-        position,
-        attacking_right,
-        team_plan_signals,
-        config,
-    );
-    let pursuit_opponents = projected_pass_pursuit_team_positions(
-        opponents,
-        projected_opponents.slice(),
-        position,
-        !attacking_right,
-        opponent_plan_signals,
-        config,
-    );
-    let pursuit_second_ball_inputs = RunnerSecondBallInputs::from_projected_positions(
-        teammates,
-        opponents,
-        pursuit_teammates.slice(),
-        pursuit_opponents.slice(),
-        config,
-    );
-    let pursuit_second_ball = pursuit_second_ball_inputs.estimate(position, config);
-    outcomes.debug_pursuit_second_ball_attacking_probability =
-        pursuit_second_ball.attacking_control_probability;
-    outcomes.debug_pursuit_second_ball_defending_probability =
-        pursuit_second_ball.defending_control_probability;
-    outcomes.debug_pursuit_second_ball_unresolved_probability =
-        pursuit_second_ball.unresolved_probability;
+    if config.trace_detail != "off" {
+        let pursuit_teammates = projected_pass_pursuit_team_positions(
+            teammates,
+            projected_teammates.slice(),
+            position,
+            attacking_right,
+            team_plan_signals,
+            config,
+        );
+        let pursuit_opponents = projected_pass_pursuit_team_positions(
+            opponents,
+            projected_opponents.slice(),
+            position,
+            !attacking_right,
+            opponent_plan_signals,
+            config,
+        );
+        let pursuit_second_ball_inputs = RunnerSecondBallInputs::from_projected_positions(
+            teammates,
+            opponents,
+            pursuit_teammates.slice(),
+            pursuit_opponents.slice(),
+            config,
+        );
+        let pursuit_second_ball = pursuit_second_ball_inputs.estimate(position, config);
+        outcomes.debug_pursuit_second_ball_attacking_probability =
+            pursuit_second_ball.attacking_control_probability;
+        outcomes.debug_pursuit_second_ball_defending_probability =
+            pursuit_second_ball.defending_control_probability;
+        outcomes.debug_pursuit_second_ball_unresolved_probability =
+            pursuit_second_ball.unresolved_probability;
+    }
     second_ball_inputs.refresh_projected_positions(
         teammates,
         opponents,

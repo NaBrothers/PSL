@@ -195,7 +195,11 @@ pub fn segment_pitch_boundary_crossing(
 fn speed_ability_progress(speed_ability: i32) -> f64 {
     let ability = speed_ability.max(0) as f64;
     let regulation = (ability / 99.0).min(1.0);
-    let elite_bonus = 1.0 - (-(ability - 99.0).max(0.0) / 55.0).exp();
+    let elite_bonus = if ability <= 99.0 {
+        0.0
+    } else {
+        1.0 - (-(ability - 99.0) / 55.0).exp()
+    };
     regulation + 0.18 * elite_bonus
 }
 
@@ -203,10 +207,17 @@ pub fn player_speed(speed_ability: i32, max_speed: f64, min_speed: f64) -> f64 {
     min_speed + speed_ability_progress(speed_ability) * (max_speed - min_speed)
 }
 
-fn player_acceleration(speed_ability: i32, max_speed: f64, min_speed: f64) -> f64 {
-    let top_speed = player_speed(speed_ability, max_speed, min_speed);
+pub(crate) fn player_motion_kinematics(
+    speed_ability: i32,
+    max_speed: f64,
+    min_speed: f64,
+) -> (f64, f64) {
     let ability_progress = speed_ability_progress(speed_ability);
-    top_speed * (0.34 + 0.25 * ability_progress)
+    let top_speed = min_speed + ability_progress * (max_speed - min_speed);
+    (
+        top_speed,
+        top_speed * (0.34 + 0.25 * ability_progress),
+    )
 }
 
 pub fn advance_player_motion(input: &PlayerMotionInput) -> PlayerMotionOutput {
@@ -216,6 +227,56 @@ pub fn advance_player_motion(input: &PlayerMotionInput) -> PlayerMotionOutput {
 pub fn advance_player_motion_fraction(
     input: &PlayerMotionInput,
     tick_fraction: f64,
+) -> PlayerMotionOutput {
+    let (max_speed, acceleration) = player_motion_kinematics(
+        input.speed_ability,
+        input.player_max_speed,
+        input.player_min_speed,
+    );
+    advance_player_motion_fraction_with_kinematics(
+        input,
+        tick_fraction,
+        max_speed,
+        acceleration,
+    )
+}
+
+pub(crate) fn advance_player_motion_fraction_with_kinematics(
+    input: &PlayerMotionInput,
+    tick_fraction: f64,
+    max_speed: f64,
+    acceleration: f64,
+) -> PlayerMotionOutput {
+    advance_player_motion_fraction_impl(
+        input,
+        tick_fraction,
+        max_speed,
+        acceleration,
+        true,
+    )
+}
+
+pub(crate) fn advance_player_motion_state_fraction_with_kinematics(
+    input: &PlayerMotionInput,
+    tick_fraction: f64,
+    max_speed: f64,
+    acceleration: f64,
+) -> PlayerMotionOutput {
+    advance_player_motion_fraction_impl(
+        input,
+        tick_fraction,
+        max_speed,
+        acceleration,
+        false,
+    )
+}
+
+fn advance_player_motion_fraction_impl(
+    input: &PlayerMotionInput,
+    tick_fraction: f64,
+    max_speed: f64,
+    acceleration: f64,
+    include_diagnostics: bool,
 ) -> PlayerMotionOutput {
     let tick_fraction = tick_fraction.clamp(0.0, 1.0);
     if tick_fraction <= 1e-9 {
@@ -227,16 +288,7 @@ pub fn advance_player_motion_fraction(
             facing_direction: None,
         };
     }
-    let max_speed = player_speed(
-        input.speed_ability,
-        input.player_max_speed,
-        input.player_min_speed,
-    );
-    let accel = player_acceleration(
-        input.speed_ability,
-        input.player_max_speed,
-        input.player_min_speed,
-    ) * input.acceleration_scale.clamp(0.2, 1.5);
+    let accel = acceleration * input.acceleration_scale.clamp(0.2, 1.5);
     let brake_accel = accel * 1.28;
     let target_distance = distance(input.pos, input.target);
     let target_direction = direction(input.pos, input.target);
@@ -320,12 +372,15 @@ pub fn advance_player_motion_fraction(
             } else {
                 (0.0, 0.0)
             },
-            distance_covered: distance(input.pos, pos),
-            facing_direction: if distance(input.pos, pos) > 0.1 {
-                Some(angle_between_points(input.pos, pos))
+            distance_covered: if include_diagnostics {
+                distance(input.pos, pos)
             } else {
-                None
+                0.0
             },
+            facing_direction: include_diagnostics
+                .then(|| distance(input.pos, pos))
+                .filter(|distance_covered| *distance_covered > 0.1)
+                .map(|_| angle_between_points(input.pos, pos)),
         };
     }
 
@@ -340,12 +395,15 @@ pub fn advance_player_motion_fraction(
     if pos.1 != unclamped_pos.1 {
         velocity.1 = 0.0;
     }
-    let distance_covered = distance(input.pos, pos);
-    let facing_direction = if distance_covered > 0.1 {
-        Some(angle_between_points(input.pos, pos))
+    let distance_covered = if include_diagnostics {
+        distance(input.pos, pos)
     } else {
-        None
+        0.0
     };
+    let facing_direction = include_diagnostics
+        .then_some(distance_covered)
+        .filter(|distance_covered| *distance_covered > 0.1)
+        .map(|_| angle_between_points(input.pos, pos));
     PlayerMotionOutput {
         pos,
         unclamped_pos,
