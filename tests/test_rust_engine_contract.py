@@ -145,6 +145,12 @@ def test_match_facade_runs_rust_contract_deterministically():
 
     frames = [line for line in replay if line["type"] == "frame"]
     assert frames
+    flight_frames = [frame for frame in frames if frame.get("ball_flight")]
+    assert flight_frames
+    assert all(
+        0 <= frame["ball_flight"]["terminal_speed_ratio"] <= 1
+        for frame in flight_frames
+    )
     for frame in frames:
         assert len(frame["home_player_goals"]) == 11
         assert len(frame["away_player_goals"]) == 11

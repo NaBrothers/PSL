@@ -1447,6 +1447,7 @@ struct RunnerReplayBallFlight {
     start_tick: f64,
     elapsed_ticks: i32,
     total_ticks: i32,
+    terminal_speed_ratio: f64,
     complete: bool,
     end_reason: Option<&'static str>,
 }
@@ -19432,6 +19433,11 @@ fn replay_ball_flight(
         start_tick: flight.replay_start_tick,
         elapsed_ticks: flight.ticks_elapsed.min(total_ticks),
         total_ticks,
+        terminal_speed_ratio: if flight.kind == RunnerFlightKind::Pass {
+            pass_terminal_speed_ratio(flight)
+        } else {
+            1.0
+        },
         complete: false,
         end_reason: None,
     })
@@ -54137,6 +54143,7 @@ fn tick_match_phase(
                                             start_tick: replay_start_tick,
                                             elapsed_ticks: 1,
                                             total_ticks: 1,
+                                            terminal_speed_ratio: 1.0,
                                             complete: true,
                                             end_reason: Some("blocked"),
                                         }),

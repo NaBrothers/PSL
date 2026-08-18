@@ -24,6 +24,7 @@ interface ReplayFrame {
     on_target?: boolean
     elapsed_ticks?: number
     total_ticks?: number
+    terminal_speed_ratio?: number
     complete?: boolean
     end_reason?: string | null
   }
@@ -199,7 +200,7 @@ function replayEventLabel(frame: ReplayFrame): string | null {
   switch (frame.ball_flight.end_reason) {
     case 'intercepted': return '拦截'
     case 'first_touch_error': return '停球失误'
-    case 'loose': return '球权未定'
+    case 'loose': return null
     case 'offside': return '越位'
     case 'out_of_play': return '出界'
     default: return null
@@ -244,6 +245,46 @@ function flightProgress(flight: NonNullable<ReplayFrame['ball_flight']>) {
   return totalTicks > 0
     ? Math.min(Math.max((flight.elapsed_ticks || 0) / totalTicks, 0), 1)
     : 0
+}
+
+function flightPositionProgress(
+  flight: NonNullable<ReplayFrame['ball_flight']>,
+  timeProgress: number,
+) {
+  const progress = Math.min(Math.max(timeProgress, 0), 1)
+  const terminalRatio = flight.terminal_speed_ratio
+  if (terminalRatio === undefined) return progress
+  const ratio = Math.min(Math.max(terminalRatio, 0), 1)
+  return (2 - ratio) * progress - (1 - ratio) * progress * progress
+}
+
+function flightTimeProgressAtPosition(
+  flight: NonNullable<ReplayFrame['ball_flight']>,
+  position: [number, number],
+): number | null {
+  const terminalRatio = flight.terminal_speed_ratio
+  if (terminalRatio === undefined) return null
+  const dx = flight.to[0] - flight.from[0]
+  const dy = flight.to[1] - flight.from[1]
+  const lengthSquared = dx * dx + dy * dy
+  if (lengthSquared <= 1e-9) return null
+  const positionProgress = Math.min(Math.max(
+    ((position[0] - flight.from[0]) * dx + (position[1] - flight.from[1]) * dy)
+      / lengthSquared,
+    0,
+  ), 1)
+  const ratio = Math.min(Math.max(terminalRatio, 0), 1)
+  if (ratio >= 1 - 1e-9) return positionProgress
+  const initialSpeedRatio = 2 - ratio
+  const deceleration = 1 - ratio
+  const discriminant = Math.max(
+    initialSpeedRatio * initialSpeedRatio - 4 * deceleration * positionProgress,
+    0,
+  )
+  return Math.min(Math.max(
+    (initialSpeedRatio - Math.sqrt(discriminant)) / (2 * deceleration),
+    0,
+  ), 1)
 }
 
 function terminalFlightFrame(
@@ -304,9 +345,24 @@ function ballFlightPosition(
       && nextFlight?.id === flight.id
       && nextFlight.total_ticks === flight.total_ticks
     if (continuesSameFlight && frame.ball && nextFrame.ball) {
+      const startTimeProgress = flightTimeProgressAtPosition(flight, frame.ball)
+      const endTimeProgress = flightTimeProgressAtPosition(flight, nextFrame.ball)
+      const segmentProgress = startTimeProgress !== null
+        && endTimeProgress !== null
+        && endTimeProgress > startTimeProgress + 1e-9
+        ? (() => {
+            const positionStart = flightPositionProgress(flight, startTimeProgress)
+            const positionEnd = flightPositionProgress(flight, endTimeProgress)
+            const positionNow = flightPositionProgress(
+              flight,
+              lerp(startTimeProgress, endTimeProgress, interpolation),
+            )
+            return (positionNow - positionStart) / (positionEnd - positionStart)
+          })()
+        : interpolation
       return [
-        lerp(frame.ball[0], nextFrame.ball[0], interpolation),
-        lerp(frame.ball[1], nextFrame.ball[1], interpolation),
+        lerp(frame.ball[0], nextFrame.ball[0], segmentProgress),
+        lerp(frame.ball[1], nextFrame.ball[1], segmentProgress),
       ]
     }
     const startProgress = flightProgress(flight)
@@ -315,7 +371,10 @@ function ballFlightPosition(
       : 1
     return pointAlongFlightPath(
       flightPath(frames, idx, flight),
-      startProgress + (endProgress - startProgress) * interpolation,
+      flightPositionProgress(
+        flight,
+        startProgress + (endProgress - startProgress) * interpolation,
+      ),
     )
   }
 
