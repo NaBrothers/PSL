@@ -188,6 +188,8 @@ nohup.out
 psl.db
 psl.db-shm
 psl.db-wal
+/psl-*.json
+/runner_transition_model.rs
 data/images/
 data/replays/*.jsonl
 bot/data/
