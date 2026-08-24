@@ -19,6 +19,7 @@ done
 
 repo_root=$(cd "$(dirname "$0")/.." && pwd)
 crate_dir="$repo_root/rust/engine_v2_core"
+build_jobs=${PSL_ENGINE_BUILD_JOBS:-1}
 pgo_root=$(mktemp -d "${TMPDIR:-/tmp}/psl-engine-v2-pgo.XXXXXX")
 trap 'rm -rf "$pgo_root"' EXIT
 
@@ -43,7 +44,7 @@ mkdir -p "$profile_dir"
 
 (
   cd "$crate_dir"
-  CARGO_TARGET_DIR="$generate_target" \
+  CARGO_BUILD_JOBS="$build_jobs" CARGO_TARGET_DIR="$generate_target" \
     RUSTFLAGS="-C profile-generate=$profile_dir -C codegen-units=1$native_flag" \
     cargo build --release --bin engine
 )
@@ -55,10 +56,16 @@ done
 "$llvm_profdata" merge -o "$profile_dir/merged.profdata" "$profile_dir"/*.profraw
 (
   cd "$crate_dir"
-  RUSTFLAGS="-C profile-use=$profile_dir/merged.profdata$native_flag" \
+  CARGO_BUILD_JOBS="$build_jobs" \
+    RUSTFLAGS="-C profile-use=$profile_dir/merged.profdata$native_flag" \
     cargo build --release --bin engine
 )
-python3 "$repo_root/scripts/engine_v2_source_digest.py" "$crate_dir" \
-  > "$crate_dir/target/release/.engine.pgo"
+marker="$crate_dir/target/release/.engine.pgo"
+marker_tmp="$marker.tmp.$$"
+{
+  printf 'source=%s\n' "$(python3 "$repo_root/scripts/engine_v2_source_digest.py" "$crate_dir")"
+  printf 'binary=%s\n' "$(shasum -a 256 "$crate_dir/target/release/engine" | awk '{print $1}')"
+} > "$marker_tmp"
+mv "$marker_tmp" "$marker"
 
 echo "PGO engine built at $crate_dir/target/release/engine"

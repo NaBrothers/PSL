@@ -83,7 +83,10 @@ def test_pgo_marker_preserves_fresh_binary_and_invalidates_when_source_changes(
     monkeypatch.setattr(rust_bridge, "RUST_CRATE", crate)
     monkeypatch.setattr(rust_bridge, "RUST_ENGINE", engine)
     monkeypatch.setattr(rust_bridge, "RUST_PGO_MARKER", marker)
-    marker.write_text(rust_bridge._source_digest())
+    marker.write_text(
+        f"source={rust_bridge._source_digest()}\n"
+        f"binary={rust_bridge._file_digest(engine)}\n"
+    )
     digest_process = subprocess.run(
         [sys.executable, str(ROOT / "scripts" / "engine_v2_source_digest.py"), str(crate)],
         text=True,
@@ -92,6 +95,7 @@ def test_pgo_marker_preserves_fresh_binary_and_invalidates_when_source_changes(
     )
     assert digest_process.stdout.strip() == rust_bridge._source_digest()
     assert rust_bridge._needs_build() is False
+    assert rust_bridge._pgo_marker_matches() is True
     assert marker.exists()
 
     source.touch()
@@ -99,6 +103,11 @@ def test_pgo_marker_preserves_fresh_binary_and_invalidates_when_source_changes(
     source.write_text("changed fixture")
     assert rust_bridge._needs_build() is True
     assert marker.exists()
+
+    source.write_text("fixture")
+    assert rust_bridge._needs_build() is False
+    engine.write_text("replaced binary")
+    assert rust_bridge._needs_build() is True
 
 
 def test_engine_config_serializes_rust_runtime_contract():

@@ -99,6 +99,11 @@ scripts/build_engine_v2_pgo.sh /path/to/match-request.json
 `start.sh`、`config.sh` 和 Python bridge 会复用与当前 Rust 源码 digest 匹配的 PGO
 引擎；Rust 源码或 Cargo manifest 变化后会自动回落到普通 release 构建。
 如只在当前机器部署，可显式传 `--native`，默认构建保持跨同架构机器可移植。
+`start.sh` 默认会在 PGO 缺失或过期时，从 `PSL_DB_PATH`（默认 `psl.db`）选择
+完整真实阵容并自动重训；有效 PGO 会直接复用。单核小内存服务器默认使用 1 个
+Cargo build job。临时跳过自动 PGO 可设置 `PSL_ENGINE_AUTO_PGO=0`，需要调整
+编译并发可设置 `PSL_ENGINE_BUILD_JOBS`。首次启动或 Rust 源码变化后的启动会执行
+两次 release 编译和一场训练比赛，耗时明显更长；构建完成后后续启动直接复用。
 
 ## 6. 测试
 

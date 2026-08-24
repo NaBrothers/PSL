@@ -17,6 +17,7 @@ RUST_CRATE = ROOT / "rust" / "engine_v2_core"
 RUST_ENGINE = RUST_CRATE / "target" / "release" / "engine"
 RUST_BUILD_LOCK = RUST_CRATE / "target" / ".engine.release.lock"
 RUST_PGO_MARKER = RUST_CRATE / "target" / "release" / ".engine.pgo"
+RUST_BUILD_SCRIPT = ROOT / "scripts" / "build_engine_v2_release.sh"
 
 
 class RustEngineError(RuntimeError):
@@ -41,12 +42,29 @@ def _source_digest() -> str:
     return digest.hexdigest()
 
 
+def _file_digest(path: Path) -> str:
+    return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+def _pgo_marker_matches() -> bool:
+    if not RUST_ENGINE.exists() or not RUST_PGO_MARKER.exists():
+        return False
+    values = {}
+    for line in RUST_PGO_MARKER.read_text().splitlines():
+        key, separator, value = line.partition("=")
+        if separator:
+            values[key] = value
+    return values.get("source") == _source_digest() and values.get(
+        "binary"
+    ) == _file_digest(RUST_ENGINE)
+
+
 def _needs_build() -> bool:
     if not RUST_ENGINE.exists():
         return True
     binary_mtime = RUST_ENGINE.stat().st_mtime
     if RUST_PGO_MARKER.exists():
-        return RUST_PGO_MARKER.read_text().strip() != _source_digest()
+        return not _pgo_marker_matches()
     return any(path.stat().st_mtime > binary_mtime for path in _source_paths())
 
 
@@ -58,8 +76,8 @@ def _build_release_engine() -> None:
             if not _needs_build():
                 return
             process = subprocess.run(
-                ["cargo", "build", "--quiet", "--release", "--bin", "engine"],
-                cwd=RUST_CRATE,
+                [str(RUST_BUILD_SCRIPT)],
+                cwd=ROOT,
                 text=True,
                 capture_output=True,
                 check=False,
@@ -69,7 +87,6 @@ def _build_release_engine() -> None:
                     "failed to build Rust match engine:\n"
                     + (process.stderr.strip() or process.stdout.strip())
                 )
-            RUST_PGO_MARKER.unlink(missing_ok=True)
         finally:
             fcntl.flock(lock_file, fcntl.LOCK_UN)
 

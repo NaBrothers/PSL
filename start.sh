@@ -1,15 +1,17 @@
-#!/bin/bash
-cd "$(dirname "$0")"
+#!/usr/bin/env bash
+set -euo pipefail
 
-pkill -f "python3 bot/bot.py" 2>/dev/null
-pkill -f "python3 -m server" 2>/dev/null
-sleep 1
+cd "$(dirname "$0")"
 
 echo "Building frontend..."
 cd web && npm run build && cd ..
 
 echo "Building Rust engine..."
 scripts/build_engine_v2_release.sh
+
+pkill -f "python3 bot/bot.py" 2>/dev/null || true
+pkill -f "python3 -m server" 2>/dev/null || true
+sleep 1
 
 echo "Starting bot..."
 export PSL_RUST_PROFILE=release
